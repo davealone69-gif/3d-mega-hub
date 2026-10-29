@@ -8,6 +8,7 @@ import android.view.SurfaceView
 import android.widget.FrameLayout
 import com.google.android.filament.Camera
 import com.google.android.filament.Engine
+import com.google.android.filament.Filament
 import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
 import com.google.android.filament.SwapChain
@@ -17,10 +18,9 @@ import com.google.android.filament.Viewport
 /**
  * Minimal Filament OpenGL ES bring-up.
  *
- * Deliberately avoids filament-utils ModelViewer/Manipulator JNI. The previous
- * ModelViewer constructor crashed on this device in Manipulator.nCreateBuilder,
- * before a frame could be drawn. This first gate proves the core Filament
- * renderer/surface path independently; GLB loading is a later gate.
+ * Initialise Filament's native runtime explicitly before touching Engine. The
+ * Java wrappers can be present while the JNI library has not yet been loaded;
+ * calling Engine.create() first then fails at Engine.nCreateBuilder().
  */
 class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolder.Callback {
     private val surfaceView = SurfaceView(context)
@@ -57,6 +57,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     reportStatus("Frame error: ${error.message ?: error.javaClass.simpleName}")
                     running = false
                     return
+                } catch (error: LinkageError) {
+                    Log.e(TAG, "Filament frame JNI failure", error)
+                    persistCheckpoint("Renderer JNI failure during frame: ${error.message ?: error.javaClass.simpleName}")
+                    running = false
+                    return
                 }
             }
             if (running) Choreographer.getInstance().postFrameCallback(this)
@@ -88,7 +93,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     override fun surfaceCreated(holder: SurfaceHolder) {
         if (engine != null) return
         try {
-            persistCheckpoint("Creating Filament OpenGL ES engine")
+            persistCheckpoint("Loading Filament native runtime")
+            Filament.init()
+            persistCheckpoint("Filament native runtime loaded; creating OpenGL ES engine")
             val newEngine = Engine.create(Engine.Backend.OPENGL)
             checkNotNull(newEngine) { "Engine.create(OPENGL) returned null" }
             engine = newEngine
