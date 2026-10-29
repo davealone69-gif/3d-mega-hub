@@ -65,8 +65,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context) {
     override fun onDetachedFromWindow() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         surfaceView.setOnTouchListener(null)
-        runCatching { viewer?.destroy() }
-            .onFailure { Log.w(TAG, "Renderer cleanup reported an error", it) }
+        // ModelViewer registers its own SurfaceView detach listener and destroys its engine
+        // there. Clear our reference before child detachment so re-attachment creates a fresh
+        // viewer instead of reusing a destroyed engine.
         viewer = null
         super.onDetachedFromWindow()
     }
