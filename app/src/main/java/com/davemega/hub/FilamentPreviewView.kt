@@ -12,10 +12,7 @@ import com.google.android.filament.utils.Utils
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * Minimal real GLB viewport. It deliberately requests Filament's OpenGL backend,
- * not automatic backend selection, because Vulkan has not been verified on the target phone.
- */
+/** OpenGL-only Filament GLB viewport with persistent breadcrumbs for fatal native crashes. */
 class FilamentPreviewView(context: Context) : FrameLayout(context) {
     private val surfaceView = SurfaceView(context)
     private var viewer: ModelViewer? = null
@@ -33,14 +30,25 @@ class FilamentPreviewView(context: Context) : FrameLayout(context) {
         statusListener?.invoke(value)
     }
 
+    private fun persistCheckpoint(value: String) {
+        context.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+            .edit().putString(LAST_CHECKPOINT, value).commit()
+        reportStatus(value)
+        Log.i(TAG, "Renderer checkpoint: $value")
+    }
+
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
             val current = viewer ?: return
             try {
+                if (!firstFrameReported) {
+                    context.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+                        .edit().putString(LAST_CHECKPOINT, "Calling ModelViewer.render() for first frame").commit()
+                }
                 val submitted = current.render(frameTimeNanos)
                 if (submitted && !firstFrameReported) {
                     firstFrameReported = true
-                    reportStatus("OpenGL ES frame submitted. Visible pixels still require device verification.")
+                    persistCheckpoint("First frame submitted; visible pixels still need visual confirmation")
                 }
             } catch (error: Throwable) {
                 Log.e(TAG, "Filament render loop failed", error)
@@ -52,10 +60,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context) {
     }
 
     init {
-        addView(
-            surfaceView,
-            LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
-        )
+        addView(surfaceView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
     }
 
     override fun onAttachedToWindow() {
@@ -66,9 +71,6 @@ class FilamentPreviewView(context: Context) : FrameLayout(context) {
     override fun onDetachedFromWindow() {
         Choreographer.getInstance().removeFrameCallback(frameCallback)
         surfaceView.setOnTouchListener(null)
-        // ModelViewer registers its own SurfaceView detach listener and destroys its engine
-        // there. Clear our reference before child detachment so re-attachment creates a fresh
-        // viewer instead of reusing a destroyed engine.
         viewer = null
         super.onDetachedFromWindow()
     }
@@ -76,32 +78,42 @@ class FilamentPreviewView(context: Context) : FrameLayout(context) {
     private fun startViewer() {
         if (viewer != null) return
         try {
-            // Filament.init() initializes the core API. ModelViewer also uses native code
-            // from filament-utils-android, so its separate Utils.init() is required before
-            // constructing Manipulator (otherwise nCreateBuilder has no JNI implementation).
+            persistCheckpoint("Entering Filament.init()")
             Filament.init()
+            persistCheckpoint("Entering Utils.init() / filament-utils JNI load")
             Utils.init()
+            persistCheckpoint("Entering Engine.create(OPENGL)")
             val engine = Engine.create(Engine.Backend.OPENGL)
+            checkNotNull(engine) { "Engine.create(OPENGL) returned null" }
+            persistCheckpoint("Entering ModelViewer constructor / Manipulator JNI")
             val next = ModelViewer(surfaceView, engine)
+            persistCheckpoint("Reading models/female.glb from assets")
             val bytes = context.assets.open("models/female.glb").use { it.readBytes() }
             val buffer = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder())
             buffer.put(bytes)
             buffer.flip()
+            persistCheckpoint("Entering ModelViewer.loadModelGlb()")
             next.loadModelGlb(buffer)
             check(next.asset != null) { "Filament could not create an asset from models/female.glb" }
+            persistCheckpoint("Entering transformToUnitCube()")
             next.transformToUnitCube()
             surfaceView.setOnTouchListener(next)
             viewer = next
             firstFrameReported = false
-            reportStatus("Filament OpenGL backend selected; CC0 GLB loaded. Waiting for first frame.")
+            persistCheckpoint("GLB loaded; scheduling first render frame")
             Choreographer.getInstance().postFrameCallback(frameCallback)
         } catch (error: Throwable) {
             Log.e(TAG, "Could not start the Filament OpenGL viewport", error)
-            reportStatus("Renderer unavailable: ${error.message ?: error.javaClass.simpleName}")
+            val message = "Renderer unavailable: ${error.message ?: error.javaClass.simpleName}"
+            context.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
+                .edit().putString(LAST_CHECKPOINT, message).commit()
+            reportStatus(message)
         }
     }
 
     companion object {
         private const val TAG = "MegaHubRenderer"
+        const val DIAGNOSTICS_PREFS = "renderer_diagnostics"
+        const val LAST_CHECKPOINT = "last_checkpoint"
     }
 }
