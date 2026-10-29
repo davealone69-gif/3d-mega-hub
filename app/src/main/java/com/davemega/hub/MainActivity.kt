@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -44,7 +45,8 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MegaHubHome() {
     val context = LocalContext.current
-    var rendererStatus by remember { mutableStateOf("Waiting for the OpenGL ES viewport.") }
+    var rendererStatus by remember { mutableStateOf("Renderer not started. The app shell should remain usable without loading native graphics libraries.") }
+    var showRenderer by remember { mutableStateOf(false) }
     val capabilities = listOf(
         RuntimeCapability(name = "Avatar generation engine"),
         RuntimeCapability(name = "Embedded AI"),
@@ -57,20 +59,45 @@ private fun MegaHubHome() {
     ) {
         Text("3D Mega Hub", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(
-            "Renderer proof: Filament with an explicitly selected OpenGL ES backend and a bundled GLB model.",
+            "Renderer integration test: Filament with an explicitly selected OpenGL ES backend and a bundled GLB model.",
             style = MaterialTheme.typography.bodyMedium
         )
 
         Text("3D viewport", style = MaterialTheme.typography.titleLarge)
-        Card(modifier = Modifier.fillMaxWidth()) {
-            AndroidView(
-                factory = { viewContext ->
-                    FilamentPreviewView(viewContext).apply {
-                        setStatusListener { rendererStatus = it }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(360.dp)
+        if (!showRenderer) {
+            Text(
+                "The renderer is deliberately held back at startup so we can separate an app-shell crash from a native graphics crash.",
+                style = MaterialTheme.typography.bodyMedium
             )
+            Button(
+                onClick = {
+                    rendererStatus = "Starting Filament OpenGL ES. If the app closes now, the renderer/native initialization path is implicated."
+                    showRenderer = true
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Start 3D renderer test")
+            }
+        } else {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                AndroidView(
+                    factory = { viewContext ->
+                        FilamentPreviewView(viewContext).apply {
+                            setStatusListener { rendererStatus = it }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(360.dp)
+                )
+            }
+            Button(
+                onClick = {
+                    showRenderer = false
+                    rendererStatus = "Renderer detached. App shell remains active."
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Stop renderer test")
+            }
         }
         Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
 
