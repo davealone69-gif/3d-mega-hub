@@ -1,49 +1,64 @@
 # Donor Baseline Snapshot
 
-Checked against the repositories' current default branches on 2026-10-30. This is a README/metadata pass, not a full source audit or build.
+Checked against GitHub repository metadata, source files and workflow results on 2026-10-30. This is a targeted source audit, not a full line-by-line audit or local build.
 
-## Repositories
+## 3DDD
 
-### AvatarForge
-- Default branch observed: `main`.
-- Candidate role: primary native engine, C ABI, Kotlin SDK, renderer and diagnostics.
-- Its current README describes a fully offline Android engine and reports a host test harness passing 386 checks. This differs from an earlier project note mentioning 405 checks. Do not reuse either count as current verification until the exact commit and test command are run.
-- Known target-device concern: Vulkan has not been verified on the user's Samsung SM-S921B; prioritize GLES and visible-render verification.
-- Status for 3D Mega Hub: **candidate only; not imported or compiled here**.
+- Repository: https://github.com/davealone69-gif/3DDD
+- Observed default branch `main` HEAD: `be5bf17d8afe46247646465941fa1b7317d8e415` (2026-10-04).
+- Source inspected: `app/build.gradle.kts`, `settings.gradle.kts`, `gradle/libs.versions.toml`, `StudioRenderer.kt`, `AndroidManifest.xml`, `RuntimePipelineTest.kt`, and Android CI workflow.
+- Implementation evidence: Android/Kotlin/Compose; Filament Android 1.71.5; OpenGL ES 3.0 declared required in manifest; a renderer that explicitly detects Filament NOOP and attempts OPENGL fallback; a project glTF/GLB reader; bundled GLB fixtures; instrumented tests for visible offscreen pixels, real backend, rig loading, animation, morph/material edits, export and image-to-avatar pipeline.
+- Important qualification: tests containing GPU-dependent assertions can be skipped when the driver cannot create resources. Read test reports and skip reasons, not just overall workflow status.
+- Latest observed `main` Android CI run: [37218532057](https://github.com/davealone69-gif/3DDD/actions/runs/37218532057), failed at `Assemble release APK (unsigned)`; instrumented job was skipped because its build dependency failed.
+- Latest observed `main` Full Repository Audit run: [37218532019](https://github.com/davealone69-gif/3DDD/actions/runs/37218532019), Gradle step failed.
+- A more recent PR CI run on 2026-10-17 also failed: [39074442550](https://github.com/davealone69-gif/3DDD/actions/runs/39074442550). It is not the current main commit.
+- No successful fresh build or target-phone test was performed by this audit. Status for Mega Hub: **source candidate; build not green from observed runs; device runtime UNVERIFIED**.
+- Licence gate: README identifies Filament/filamat as Apache-2.0 and generated base rigs as CC0, but no repository-level LICENSE file appeared in the inspected root listing. Clarify the app/source and each asset licence before copying.
 
-### 3DDD
-- Default branch observed: `main`.
-- Candidate role: compare its Filament viewport lifecycle, glTF/GLB loading, materials, morph targets, skinning, animation and export behavior.
-- Do not mix its Filament stack with AvatarForge's native renderer without a deliberate boundary and measured reason. Choose the smallest working path first.
-- Status for 3D Mega Hub: **candidate only; not imported or compiled here**.
+## AvatarForge
+
+- Repository: https://github.com/davealone69-gif/AvatarForge
+- Observed default branch `main` HEAD: `40ef65ba74686a119d8a576d740a7981fad6f41c`. Its latest commit message is “Restore InputScreen and show the Grok Faces title.” This is not automatically the engine donor state we want.
+- Candidate engine branch `work/android-engine-dev` HEAD observed: `9e36197ace3b18faa6c566d93f8fce89b185c45d`.
+- User's previously referenced branch `arena/bf31ed07-avatarforge` HEAD observed: `262abae3205f599979f4ae34db6e21addd1d91ff`.
+- The `work/android-engine-dev` README reports 464 host checks and explicitly says Android NDK build, Kotlin compilation, compressed GPU upload paths and physical-device rendering are not yet verified. Treat these as repository-authored claims until the exact test command/run is inspected.
+- The `arena/bf31ed07-avatarforge` README reports 386 host checks and says physical-device execution is unverified. Do not mix the check count from one branch with another branch's source.
+- Candidate role: native generation kernel, shared C ABI, Kotlin SDK, rigging/blendshape/animation data and diagnostics. Do not select its custom Vulkan/GLES renderer as the host default until it passes the same visible-frame and stability tests as the chosen renderer.
+- No root LICENSE file appeared in the inspected default-branch tree listing. Clarify licensing before copying or redistributing source/assets.
+- Status for Mega Hub: **candidate only; not imported or compiled here**.
+
+## Other donor candidates
 
 ### Aaa
-- Default branch observed: `main`.
-- Its current README says the SDK, sample APK/AAB and tests build in its reported sandbox, while physical-device rendering and generation remain unverified and multiple avatar/generation features remain incomplete.
-- Candidate role: SDK/provider contracts, model lifecycle, jobs, persistence and truthful unavailable states.
-- Status for 3D Mega Hub: **candidate only; not imported or compiled here**.
+- Repository: https://github.com/davealone69-gif/Aaa
+- Default branch previously observed as `main`.
+- Candidate role: SDK/provider contracts, model lifecycle, jobs, persistence and resource governance.
+- README claims about APK/AAB/tests require exact workflow/artifact verification. Physical-device rendering and generation were not established here.
+- Status: **candidate only; source/build/licence audit pending**.
 
 ### Grok-Girls
-- Default branch observed: `main`.
-- Its README describes a React/Vite client-side app with Capacitor packaging and persona/studio workflows. This is not automatically a native Android engine or embedded LLM runtime.
-- Candidate role: inspect specific useful UI flows, regression cases and optional provider adapters; compare commits and dependencies before adoption.
-- Status for 3D Mega Hub: **candidate only; not imported or compiled here**.
+- Repository: https://github.com/davealone69-gif/Grok-Girls
+- Default branch previously observed as `main`.
+- README describes React/Vite and Capacitor packaging. This is not automatically a native renderer or embedded LLM runtime.
+- Candidate role: inspect specific useful UX flows, regression cases and optional provider adapters.
+- Status: **candidate only; source/build/licence audit pending**.
 
 ### Aura-Studio-Avatar
-- Default branch observed: `main`.
-- Its README describes an Android local-first avatar lab with model selection, gallery, settings and diagnostics. Those descriptions require source/build verification.
-- Candidate role: inspect avatar management and diagnostics patterns; avoid adopting heavyweight model assumptions without device measurements.
-- Status for 3D Mega Hub: **candidate only; not imported or compiled here**.
+- Repository: https://github.com/davealone69-gif/Aura-Studio-Avatar
+- Default branch previously observed as `main`.
+- Candidate role: inspect avatar library, settings and diagnostic patterns.
+- Status: **candidate only; source/build/licence audit pending**.
 
 ## Next evidence required
 
-1. Record exact default-branch commit SHAs for every donor.
-2. Inspect Gradle settings/build files, manifests, native build configuration, licences, model licences, tests, and dependency graphs.
-3. Run build/test workflows or inspect their exact current workflow runs and artifacts.
-4. Compare duplicate renderer stacks and choose one primary path; avoid merging two engines just because both exist.
-5. Evaluate an embedded Android LLM runtime with actual target-device memory, model-size, latency, and offline tests. Ollama/Termux remains optional.
-6. Do not label a feature REAL + VERIFIED until its specific test evidence exists. Physical-device tests remain separate from CI.
+1. Inspect the exact latest AvatarForge engine branch and workflow runs; reconcile source state with the user's expected branch.
+2. Inspect all donor licences, model/texture/voice licences, dependency licences and attribution obligations before importing code/assets.
+3. Diagnose the failing 3DDD release packaging and Full Repository Audit Gradle steps using exact logs.
+4. Build/test the selected 3DDD revision in CI; review instrumentation results including GPU-related skips.
+5. Create a small isolated renderer proof in Mega Hub before importing the native generation engine.
+6. Record every adopted component's source repo, branch, SHA, licence, files/dependencies, local changes and test evidence.
+7. Keep CI and target-phone evidence separate. Never label a feature REAL + VERIFIED without the relevant result.
 
 ## Important limitation
 
-This snapshot uses repository metadata and README content only. It is not a line-by-line audit, licence clearance, successful build, integration, or phone test.
+No donor code has been copied into Mega Hub by this snapshot. No local Gradle build was run in this audit session. No physical-device test was performed.
