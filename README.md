@@ -13,12 +13,18 @@ This repository is the new product host. Existing repositories remain independen
 - Prioritize the Samsung SM-S921B / Exynos 2400 target and a reliable OpenGL ES path. Vulkan remains optional until verified on the actual device.
 - Ship a reproducible Android build, with an AAB as the primary release artifact and a signed APK for installation/testing. Never commit signing secrets.
 
+## Blueprint and audit records
+
+- [Master blueprint](docs/MASTER_BLUEPRINT.md): product architecture, renderer decision, integration phases and release gates.
+- [Integration plan](docs/INTEGRATION_PLAN.md): staged work checklist.
+- [Donor baseline](docs/DONOR_BASELINE.md): inspected branch commits, CI evidence, known blockers and licence questions.
+
 ## Initial donor map (candidates, not yet integrated)
 
 | Source repository | Candidate contribution | Required before adoption |
 |---|---|---|
-| [AvatarForge](https://github.com/davealone69-gif/AvatarForge) | Native rendering engine, C ABI, Kotlin SDK, scene/runtime and diagnostics | Inspect current commit and ABI; compile native and Android targets; verify GLES rendering on device |
-| [3DDD](https://github.com/davealone69-gif/3DDD) | glTF/GLB, materials, skinning, animation and viewport lifecycle | Inspect current implementation, dependency/licence compatibility, and regression coverage |
+| [AvatarForge](https://github.com/davealone69-gif/AvatarForge) | Native avatar kernel, C ABI, Kotlin SDK, rigging/blendshapes and diagnostics | Select intended branch by exact SHA; compile native and Android targets; verify renderer on device; clarify source licence |
+| [3DDD](https://github.com/davealone69-gif/3DDD) | Filament viewport, glTF/GLB, materials, skinning, animation and export | Resolve current CI failures; inspect dependency/licence compatibility and regression coverage |
 | [Aaa](https://github.com/davealone69-gif/Aaa) | SDK/provider boundaries, model management, jobs, resource governance and persistence patterns | Verify working implementations and API contracts |
 | [Grok-Girls](https://github.com/davealone69-gif/Grok-Girls) | Renderer regression cases and optional provider/voice adapters | Compare branch commits; keep external server integration optional |
 | [Aura-Studio-Avatar](https://github.com/davealone69-gif/Aura-Studio-Avatar) | Avatar library/designer and management patterns | Verify source, build, tests, and licence |
@@ -50,5 +56,3 @@ This is a starting map from prior audits, not a claim that every repository or b
 - Android project compilation: **not yet verified in this repository**.
 - On-device renderer, embedded LLM, voice/lip-sync: **not yet verified in this repository**.
 - Release signing and installable artifacts: **not yet configured or verified**.
-
-See docs/INTEGRATION_PLAN.md for the staged integration plan.
