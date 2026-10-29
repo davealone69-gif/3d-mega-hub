@@ -9,18 +9,25 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,8 +45,14 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MegaHubHome() {
     val context = LocalContext.current
+    var rendererStatus by remember { mutableStateOf("Renderer not started. The app shell should remain usable without loading native graphics libraries.") }
+    var showRenderer by remember { mutableStateOf(false) }
+    val lastRendererCheckpoint = remember {
+        context.getSharedPreferences(FilamentPreviewView.DIAGNOSTICS_PREFS, android.content.Context.MODE_PRIVATE)
+            .getString(FilamentPreviewView.LAST_CHECKPOINT, "No renderer attempt recorded yet.")
+            ?: "No renderer attempt recorded yet."
+    }
     val capabilities = listOf(
-        RuntimeCapability(name = "3D renderer"),
         RuntimeCapability(name = "Avatar generation engine"),
         RuntimeCapability(name = "Embedded AI"),
         RuntimeCapability(name = "Voice and lip-sync")
@@ -51,9 +64,49 @@ private fun MegaHubHome() {
     ) {
         Text("3D Mega Hub", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(
-            "Android foundation build. This screen reports integration state honestly; no renderer, AI or generation service is claimed to be connected yet.",
+            "Renderer integration test: Filament with an explicitly selected OpenGL ES backend and a bundled GLB model.",
             style = MaterialTheme.typography.bodyMedium
         )
+
+        Text("3D viewport", style = MaterialTheme.typography.titleLarge)
+        if (!showRenderer) {
+            Text(
+                "The renderer is deliberately held back at startup so we can separate an app-shell crash from a native graphics crash.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Button(
+                onClick = {
+                    rendererStatus = "Starting Filament OpenGL ES. The last completed startup checkpoint is shown below."
+                    showRenderer = true
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Start 3D renderer test")
+            }
+        } else {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                AndroidView(
+                    factory = { viewContext ->
+                        FilamentPreviewView(viewContext).apply {
+                            setStatusListener { rendererStatus = it }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(360.dp)
+                )
+            }
+            Button(
+                onClick = {
+                    showRenderer = false
+                    rendererStatus = "Renderer detached. App shell remains active."
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Stop renderer test")
+            }
+        }
+        Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
+        Text("Last renderer checkpoint: $lastRendererCheckpoint", style = MaterialTheme.typography.bodySmall)
+
         Text("Capability status", style = MaterialTheme.typography.titleLarge)
         capabilities.forEach { capability -> CapabilityCard(capability) }
 
@@ -68,7 +121,7 @@ private fun MegaHubHome() {
             }
         }
         Text(
-            "Next gate: establish a green build, then integrate one renderer and verify visible model pixels before adding generation or AI.",
+            "This is a renderer integration test, not yet a device-verified release. Avatar generation and AI remain separate integrations.",
             style = MaterialTheme.typography.bodySmall
         )
     }
