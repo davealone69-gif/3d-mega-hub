@@ -8,6 +8,7 @@ import android.widget.FrameLayout
 import com.google.android.filament.Engine
 import com.google.android.filament.Filament
 import com.google.android.filament.utils.ModelViewer
+import com.google.android.filament.utils.Utils
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -75,7 +76,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context) {
     private fun startViewer() {
         if (viewer != null) return
         try {
+            // Filament.init() initializes the core API. ModelViewer also uses native code
+            // from filament-utils-android, so its separate Utils.init() is required before
+            // constructing Manipulator (otherwise nCreateBuilder has no JNI implementation).
             Filament.init()
+            Utils.init()
             val engine = Engine.create(Engine.Backend.OPENGL)
             val next = ModelViewer(surfaceView, engine)
             val bytes = context.assets.open("models/female.glb").use { it.readBytes() }
