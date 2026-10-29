@@ -47,6 +47,11 @@ private fun MegaHubHome() {
     val context = LocalContext.current
     var rendererStatus by remember { mutableStateOf("Renderer not started. The app shell should remain usable without loading native graphics libraries.") }
     var showRenderer by remember { mutableStateOf(false) }
+    val lastRendererCheckpoint = remember {
+        context.getSharedPreferences(FilamentPreviewView.DIAGNOSTICS_PREFS, android.content.Context.MODE_PRIVATE)
+            .getString(FilamentPreviewView.LAST_CHECKPOINT, "No renderer attempt recorded yet.")
+            ?: "No renderer attempt recorded yet."
+    }
     val capabilities = listOf(
         RuntimeCapability(name = "Avatar generation engine"),
         RuntimeCapability(name = "Embedded AI"),
@@ -71,7 +76,7 @@ private fun MegaHubHome() {
             )
             Button(
                 onClick = {
-                    rendererStatus = "Starting Filament OpenGL ES. If the app closes now, the renderer/native initialization path is implicated."
+                    rendererStatus = "Starting Filament OpenGL ES. The last completed startup checkpoint is shown below."
                     showRenderer = true
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -100,6 +105,7 @@ private fun MegaHubHome() {
             }
         }
         Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
+        Text("Last renderer checkpoint: $lastRendererCheckpoint", style = MaterialTheme.typography.bodySmall)
 
         Text("Capability status", style = MaterialTheme.typography.titleLarge)
         capabilities.forEach { capability -> CapabilityCard(capability) }
