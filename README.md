@@ -18,18 +18,14 @@ This repository is the new product host. Existing repositories remain independen
 - [Master blueprint](docs/MASTER_BLUEPRINT.md): product architecture, renderer decision, integration phases and release gates.
 - [Integration plan](docs/INTEGRATION_PLAN.md): staged work checklist.
 - [Donor baseline](docs/DONOR_BASELINE.md): inspected branch commits, CI evidence, known blockers and licence questions.
+- [Third-party notices](THIRD_PARTY_NOTICES.md): renderer dependency and bundled model provenance.
 
-## Initial donor map (candidates, not yet integrated)
+## Current implementation
 
-| Source repository | Candidate contribution | Required before adoption |
-|---|---|---|
-| [AvatarForge](https://github.com/davealone69-gif/AvatarForge) | Native avatar kernel, C ABI, Kotlin SDK, rigging/blendshapes and diagnostics | Select intended branch by exact SHA; compile native and Android targets; verify renderer on device; clarify source licence |
-| [3DDD](https://github.com/davealone69-gif/3DDD) | Filament viewport, glTF/GLB, materials, skinning, animation and export | Resolve current CI failures; inspect dependency/licence compatibility and regression coverage |
-| [Aaa](https://github.com/davealone69-gif/Aaa) | SDK/provider boundaries, model management, jobs, resource governance and persistence patterns | Verify working implementations and API contracts |
-| [Grok-Girls](https://github.com/davealone69-gif/Grok-Girls) | Renderer regression cases and optional provider/voice adapters | Compare branch commits; keep external server integration optional |
-| [Aura-Studio-Avatar](https://github.com/davealone69-gif/Aura-Studio-Avatar) | Avatar library/designer and management patterns | Verify source, build, tests, and licence |
-
-This is a starting map from prior audits, not a claim that every repository or branch has been fully re-audited. Heavy 3D generation models are not assumed to run locally on the phone; their requirements and any remote-provider boundary must be explicit.
+- **Android shell:** Kotlin/Compose; CI builds and unit tests passed in [run 40924116626](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/40924116626).
+- **Renderer branch:** Filament 1.71.5 with explicit OpenGL ES backend selection and a bundled CC0 base-rig GLB is under CI validation in [PR #2](https://github.com/davealone69-gif/3d-mega-hub/pull/2).
+- **Avatar generation, embedded LLM, voice/lip-sync:** not integrated.
+- **Physical Samsung runtime / visible-pixel evidence:** not yet verified.
 
 ## Engineering rules
 
@@ -48,11 +44,3 @@ This is a starting map from prior audits, not a claim that every repository or b
 - **PARTIAL**: some parts work; named gaps remain.
 - **MISSING**: not implemented.
 - **BLOCKED**: a concrete dependency or access limitation prevents the next check.
-
-## Current baseline
-
-- Repository created and writable: **verified**.
-- Product scope and donor shortlist: **documented; source integration not yet verified**.
-- Android project compilation: **not yet verified in this repository**.
-- On-device renderer, embedded LLM, voice/lip-sync: **not yet verified in this repository**.
-- Release signing and installable artifacts: **not yet configured or verified**.
