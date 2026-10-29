@@ -22,10 +22,11 @@ Checked against GitHub repository metadata, source files and workflow results on
 - Observed default branch `main` HEAD: `40ef65ba74686a119d8a576d740a7981fad6f41c`. Its latest commit message is “Restore InputScreen and show the Grok Faces title.” This is not automatically the engine donor state we want.
 - Candidate engine branch `work/android-engine-dev` HEAD observed: `9e36197ace3b18faa6c566d93f8fce89b185c45d`.
 - User's previously referenced branch `arena/bf31ed07-avatarforge` HEAD observed: `262abae3205f599979f4ae34db6e21addd1d91ff`.
-- The `work/android-engine-dev` README reports 464 host checks and explicitly says Android NDK build, Kotlin compilation, compressed GPU upload paths and physical-device rendering are not yet verified. Treat these as repository-authored claims until the exact test command/run is inspected.
+- The `work/android-engine-dev` README reports 464 host checks and explicitly says Android NDK build, Kotlin compilation, compressed GPU upload paths and physical-device rendering are not yet verified. Treat the check count as a repository-authored claim until the exact command/run is reviewed.
+- Positive CI evidence: [workflow run 40102403904](https://github.com/davealone69-gif/AvatarForge/actions/runs/40102403904) on `work/android-engine-dev` commit `9e36197ace3b18faa6c566d93f8fce89b185c45d` completed successfully on 2026-10-24. Its jobs report success for the host/native regression checks, ASan/UBSan GLB importer fuzzing, headless real GLES/Vulkan frame checks and Android package build/ABI audit. It uploaded artifact `AvatarForge-Android-9e36197ace3b18faa6c566d93f8fce89b185c45d` (about 11.4 MB). This is strong CI evidence, **not target-phone verification**; the headless GPU checks do not establish stability on the Samsung.
 - The `arena/bf31ed07-avatarforge` README reports 386 host checks and says physical-device execution is unverified. Do not mix the check count from one branch with another branch's source.
 - Candidate role: native generation kernel, shared C ABI, Kotlin SDK, rigging/blendshape/animation data and diagnostics. Do not select its custom Vulkan/GLES renderer as the host default until it passes the same visible-frame and stability tests as the chosen renderer.
-- No root LICENSE file appeared in the inspected default-branch tree listing. Clarify licensing before copying or redistributing source/assets.
+- No root source `LICENSE` file appeared in the inspected branch tree. Third-party codec licences are present, but those do not grant a licence to the full project. Clarify source and asset licensing before copying or redistributing code.
 - Status for Mega Hub: **candidate only; not imported or compiled here**.
 
 ## Other donor candidates
@@ -52,13 +53,12 @@ Checked against GitHub repository metadata, source files and workflow results on
 
 ## Next evidence required
 
-1. Inspect the exact latest AvatarForge engine branch and workflow runs; reconcile source state with the user's expected branch.
-2. Inspect all donor licences, model/texture/voice licences, dependency licences and attribution obligations before importing code/assets.
-3. Fix or verify the 3DDD backup-rule conflicts and Room schema/KSP failure against a current branch/commit.
-4. Build/test the selected 3DDD revision in CI; review instrumentation results including GPU-related skips.
-5. Create a small isolated renderer proof in Mega Hub before importing the native generation engine.
-6. Record every adopted component's source repo, branch, SHA, licence, files/dependencies, local changes and test evidence.
-7. Keep CI and target-phone evidence separate. Never label a feature REAL + VERIFIED without the relevant result.
+1. Resolve source licence and model/texture/voice asset licences for each intended donor.
+2. Fix or verify the 3DDD backup-rule conflicts and Room schema/KSP failure against a current branch/commit.
+3. Review the successful AvatarForge `work/android-engine-dev` workflow artifact and its exact branch history; do not use the unrelated default `main` branch as a substitute.
+4. Create a small isolated renderer proof in Mega Hub before importing the native generation engine.
+5. Record every adopted component's source repo, branch, SHA, licence, files/dependencies, local changes and test evidence.
+6. Keep CI and target-phone evidence separate. Never label a feature REAL + VERIFIED without the relevant result.
 
 ## Important limitation
 
