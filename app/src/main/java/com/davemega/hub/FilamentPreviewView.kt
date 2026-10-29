@@ -3,22 +3,70 @@ package com.davemega.hub
 import android.content.Context
 import android.util.Log
 import android.view.Choreographer
+import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
+import com.google.android.filament.Camera
 import com.google.android.filament.Engine
-import com.google.android.filament.Filament
-import com.google.android.filament.utils.ModelViewer
-import com.google.android.filament.utils.Utils
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import com.google.android.filament.Renderer
+import com.google.android.filament.Scene
+import com.google.android.filament.SwapChain
+import com.google.android.filament.View
+import com.google.android.filament.Viewport
 
-/** OpenGL-only Filament GLB viewport with persistent breadcrumbs for fatal native crashes. */
-class FilamentPreviewView(context: Context) : FrameLayout(context) {
+/**
+ * Minimal Filament OpenGL ES bring-up.
+ *
+ * Deliberately avoids filament-utils ModelViewer/Manipulator JNI. The previous
+ * ModelViewer constructor crashed on this device in Manipulator.nCreateBuilder,
+ * before a frame could be drawn. This first gate proves the core Filament
+ * renderer/surface path independently; GLB loading is a later gate.
+ */
+class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolder.Callback {
     private val surfaceView = SurfaceView(context)
-    private var viewer: ModelViewer? = null
-    private var firstFrameReported = false
-    private var lastStatus = "Waiting for the OpenGL ES viewport."
+    private var engine: Engine? = null
+    private var renderer: Renderer? = null
+    private var scene: Scene? = null
+    private var view: View? = null
+    private var camera: Camera? = null
+    private var swapChain: SwapChain? = null
+    private var cameraEntity = 0
+    private var running = false
     private var statusListener: ((String) -> Unit)? = null
+    private var lastStatus = "Waiting for an Android surface."
+    private var lastFrameTime = 0L
+
+    private val frameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            if (!running) return
+            val activeRenderer = renderer
+            val activeSwapChain = swapChain
+            val activeView = view
+            if (activeRenderer != null && activeSwapChain != null && activeView != null) {
+                try {
+                    if (activeRenderer.beginFrame(activeSwapChain, frameTimeNanos)) {
+                        activeRenderer.render(activeView)
+                        activeRenderer.endFrame()
+                        if (lastFrameTime == 0L) {
+                            lastFrameTime = frameTimeNanos
+                            persistCheckpoint("Filament OpenGL ES first frame submitted; inspect viewport for pixels")
+                        }
+                    }
+                } catch (error: Exception) {
+                    Log.e(TAG, "Filament frame failed", error)
+                    reportStatus("Frame error: ${error.message ?: error.javaClass.simpleName}")
+                    running = false
+                    return
+                }
+            }
+            if (running) Choreographer.getInstance().postFrameCallback(this)
+        }
+    }
+
+    init {
+        addView(surfaceView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        surfaceView.holder.addCallback(this)
+    }
 
     fun setStatusListener(listener: (String) -> Unit) {
         statusListener = listener
@@ -37,78 +85,92 @@ class FilamentPreviewView(context: Context) : FrameLayout(context) {
         Log.i(TAG, "Renderer checkpoint: $value")
     }
 
-    private val frameCallback = object : Choreographer.FrameCallback {
-        override fun doFrame(frameTimeNanos: Long) {
-            val current = viewer ?: return
-            try {
-                if (!firstFrameReported) {
-                    context.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
-                        .edit().putString(LAST_CHECKPOINT, "Calling ModelViewer.render() for first frame").commit()
-                }
-                val submitted = current.render(frameTimeNanos)
-                if (submitted && !firstFrameReported) {
-                    firstFrameReported = true
-                    persistCheckpoint("First frame submitted; visible pixels still need visual confirmation")
-                }
-            } catch (error: Throwable) {
-                Log.e(TAG, "Filament render loop failed", error)
-                reportStatus("Renderer error: ${error.message ?: error.javaClass.simpleName}")
-                return
-            }
-            if (viewer != null) Choreographer.getInstance().postFrameCallback(this)
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        if (engine != null) return
+        try {
+            persistCheckpoint("Creating Filament OpenGL ES engine")
+            val newEngine = Engine.create(Engine.Backend.OPENGL)
+            checkNotNull(newEngine) { "Engine.create(OPENGL) returned null" }
+            engine = newEngine
+
+            persistCheckpoint("Creating Filament renderer, scene and view")
+            renderer = newEngine.createRenderer()
+            scene = newEngine.createScene()
+            view = newEngine.createView()
+
+            persistCheckpoint("Creating camera entity")
+            cameraEntity = com.google.android.filament.EntityManager.get().create()
+            camera = newEngine.createCamera(cameraEntity)
+            camera?.setProjection(45.0, 1.0, 0.1, 100.0, Camera.Fov.VERTICAL)
+            camera?.lookAt(0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+            view?.camera = camera
+            view?.scene = scene
+
+            persistCheckpoint("Creating OpenGL ES swap chain")
+            swapChain = newEngine.createSwapChain(holder.surface)
+            val width = surfaceView.width.coerceAtLeast(1)
+            val height = surfaceView.height.coerceAtLeast(1)
+            view?.viewport = Viewport(0, 0, width, height)
+
+            persistCheckpoint("Filament OpenGL ES initialized; starting clear-frame test")
+            running = true
+            lastFrameTime = 0L
+            Choreographer.getInstance().postFrameCallback(frameCallback)
+        } catch (error: Exception) {
+            Log.e(TAG, "Filament OpenGL ES initialization failed", error)
+            persistCheckpoint("Renderer unavailable: ${error.message ?: error.javaClass.simpleName}")
+            releaseEngine()
+        } catch (error: LinkageError) {
+            Log.e(TAG, "Filament native library/linkage failure", error)
+            persistCheckpoint("Renderer native library failure: ${error.message ?: error.javaClass.simpleName}")
+            releaseEngine()
         }
     }
 
-    init {
-        addView(surfaceView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        if (width > 0 && height > 0) view?.viewport = Viewport(0, 0, width, height)
     }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        startViewer()
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        stopRendering()
+        releaseEngine()
+    }
+
+    private fun stopRendering() {
+        running = false
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+    }
+
+    private fun releaseEngine() {
+        stopRendering()
+        val activeEngine = engine ?: return
+        try {
+            swapChain?.let { activeEngine.destroySwapChain(it) }
+            swapChain = null
+            view?.let { activeEngine.destroyView(it) }
+            view = null
+            scene?.let { activeEngine.destroyScene(it) }
+            scene = null
+            if (cameraEntity != 0) {
+                activeEngine.destroyCameraComponent(cameraEntity)
+                com.google.android.filament.EntityManager.get().destroy(cameraEntity)
+                cameraEntity = 0
+            }
+            renderer?.let { activeEngine.destroyRenderer(it) }
+            renderer = null
+            activeEngine.destroy()
+        } catch (error: Exception) {
+            Log.w(TAG, "Filament cleanup failed", error)
+        } finally {
+            engine = null
+            camera = null
+        }
     }
 
     override fun onDetachedFromWindow() {
-        Choreographer.getInstance().removeFrameCallback(frameCallback)
-        surfaceView.setOnTouchListener(null)
-        viewer = null
+        surfaceView.holder.removeCallback(this)
+        releaseEngine()
         super.onDetachedFromWindow()
-    }
-
-    private fun startViewer() {
-        if (viewer != null) return
-        try {
-            persistCheckpoint("Entering Filament.init()")
-            Filament.init()
-            persistCheckpoint("Entering Utils.init() / filament-utils JNI load")
-            Utils.init()
-            persistCheckpoint("Entering Engine.create(OPENGL)")
-            val engine = Engine.create(Engine.Backend.OPENGL)
-            checkNotNull(engine) { "Engine.create(OPENGL) returned null" }
-            persistCheckpoint("Entering ModelViewer constructor / Manipulator JNI")
-            val next = ModelViewer(surfaceView, engine)
-            persistCheckpoint("Reading models/female.glb from assets")
-            val bytes = context.assets.open("models/female.glb").use { it.readBytes() }
-            val buffer = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder())
-            buffer.put(bytes)
-            buffer.flip()
-            persistCheckpoint("Entering ModelViewer.loadModelGlb()")
-            next.loadModelGlb(buffer)
-            check(next.asset != null) { "Filament could not create an asset from models/female.glb" }
-            persistCheckpoint("Entering transformToUnitCube()")
-            next.transformToUnitCube()
-            surfaceView.setOnTouchListener(next)
-            viewer = next
-            firstFrameReported = false
-            persistCheckpoint("GLB loaded; scheduling first render frame")
-            Choreographer.getInstance().postFrameCallback(frameCallback)
-        } catch (error: Throwable) {
-            Log.e(TAG, "Could not start the Filament OpenGL viewport", error)
-            val message = "Renderer unavailable: ${error.message ?: error.javaClass.simpleName}"
-            context.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
-                .edit().putString(LAST_CHECKPOINT, message).commit()
-            reportStatus(message)
-        }
     }
 
     companion object {
