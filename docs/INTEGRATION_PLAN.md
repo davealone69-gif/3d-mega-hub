@@ -5,18 +5,21 @@
 - [x] Confirm this repository exists and is writable.
 - [x] Record the product scope, donor candidates, and verification rules.
 - [ ] Inventory each donor's default branch, recent commits, build files, licenses, native binaries, tests, and working-tree assumptions.
-- [ ] Record exact donor commit SHAs before copying code.
+- [x] Pin AvatarForge `work/android-engine-dev` at `9e36197ace3b18faa6c566d93f8fce89b185c45d` before copying its selected core. A full inventory of every donor remains open.
 
 ## Phase 1: choose the minimum viable Android shell
 
-- [ ] Create a Kotlin/Jetpack Compose Android application using Gradle Kotlin DSL and a version catalog.
-- [ ] Establish package/module boundaries before importing native code.
-- [ ] Add a basic diagnostic screen that reports actual runtime capability, memory pressure, renderer selection, and model/provider state.
-- [ ] Configure CI to compile and test; do not label CI success as phone verification.
+- [x] Create a Kotlin/Jetpack Compose Android application using Gradle Kotlin DSL and a version catalog.
+- [x] Establish package/module boundaries before importing native code.
+- [x] Add a basic diagnostic screen that reports actual runtime capability, memory pressure, renderer selection, and model/provider state.
+- [x] Configure CI to compile and test; do not label CI success as phone verification.
 
-## Phase 2: integrate the 3D engine
+## Phase 2: integrate the AvatarForge generation core and select a viewer
 
-- [ ] Inspect AvatarForge's current native C ABI, Kotlin SDK, render lifecycle, licensing, and tests.
+- [x] Inspect and pin AvatarForge's native C ABI, Kotlin spec/resource models, build files, branch CI evidence, and source-license status.
+- [x] Add `:avatarforge-engine` with the kernel sources, ABI/version health check, cancellation-aware GLB generation API, resource gate, and spec/safety unit tests.
+- [x] Pass a clean Android/NDK build and inspect the app APK's native libraries for `arm64-v8a` and `x86_64`.
+- [ ] Run a real generation request on the target phone; record resource snapshot, generated GLB, native stats, timings, and errors. BLOCKED in this sandbox: no `adb`, emulator, or attached target device.
 - [ ] Select a working GLES path first for the Samsung SM-S921B target. Vulkan is optional until real device evidence exists.
 - [ ] Inspect 3DDD for specific glTF/GLB, material, skinning, morph-target, animation, and lifecycle improvements. Port only compatible components with tests.
 - [ ] Add a deterministic sample scene and a render-health test. A nonzero FPS counter alone is not proof that a model is visible.
@@ -50,7 +53,7 @@
 - [ ] Clean Gradle build from a fresh checkout.
 - [ ] Unit, native, integration, and dependency/licence checks pass.
 - [ ] AAB build succeeds; APK is signed using a configured key without committing secrets.
-- [ ] Install and runtime-test on the actual target Samsung phone. If installation cannot be performed through available tools, mark device verification BLOCKED and give exact user-side steps.
+- [ ] Install and runtime-test on the actual target Samsung phone. Current sandbox verification is BLOCKED because no `adb`, emulator, or attached target device is available.
 - [ ] Confirm renderer produces visible geometry, AI inference completes offline, and voice/lip-sync is synchronized before calling those features verified.
 - [ ] Publish exact commit, workflow run, artifact link, test results, and remaining gaps.
 
