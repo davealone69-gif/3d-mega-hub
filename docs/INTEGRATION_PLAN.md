@@ -1,71 +1,65 @@
 # Integration Plan
 
-## Phase 0: trustworthy baseline
+## Phase 0: source and provenance
 
-- [x] Confirm repository exists and is writable.
-- [x] Record product scope, donor candidates, and verification rules.
-- [ ] Complete exact-SHA inventory of donor branches, build files, licences, native binaries, tests, and current workflow results before adopting code.
-- [ ] Record exact donor commit SHAs and licences for every adopted source file and asset.
+- [x] Establish the Android host and record donor provenance.
+- [x] Keep the AvatarForge generation core isolated in `:avatarforge-engine`.
+- [x] Keep the Filament renderer as a separate replaceable viewer.
+- [ ] Refresh the AvatarForge donor pin after the current donor fixes are pushed and reviewed.
 
-## Phase 1: minimum viable Android shell
+## Phase 1: Android host and engine module
 
-- [x] Kotlin/Jetpack Compose Android application, Gradle Kotlin DSL, and version catalog.
-- [x] Initial `:app` boundary before importing donor code.
-- [x] Capability-status screen that does not claim disconnected backends are ready.
-- [x] Android CI runs unit tests, assembles a debug APK, and uploads the APK artifact.
-- [ ] Extend diagnostics with measured memory pressure, thermal state, model/provider readiness, and renderer health.
+- [x] Kotlin/Jetpack Compose host app and Gradle Kotlin DSL.
+- [x] Isolated AvatarForge C++/JNI generation module.
+- [x] User-triggered prompt generation with cancellation and resource/thermal gates.
+- [ ] Run combined unit tests, lint, native compilation, and APK packaging on the exact integration candidate.
+- [ ] Verify a bounded generation on the Samsung SM-S921B and record resource snapshot, GLB size, triangles, timing and failures.
 
-Evidence: Android shell CI and unit tests are documented as passing in [workflow run 40924116626](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/40924116626). CI is not physical-device verification.
+## Phase 2: real model viewer
 
-## Phase 2: renderer proof
+- [x] Filament startup with OpenGL ES primary and Vulkan fallback.
+- [x] gltfio loader for bundled sample and self-contained GLB assets.
+- [x] Bounds-based camera framing and first glTF animation playback.
+- [ ] Combined CI and R8/minification pass.
+- [ ] On Samsung SM-S921B, verify visible model pixels, materials, animation, camera controls, attach/detach, repeated open/close, memory pressure and sustained thermal behavior.
+- [ ] Add viewer lifecycle and malformed-file regression tests.
+- [ ] Add camera orbit/zoom controls after stable rendering is confirmed.
 
-- [x] Select Filament Vulkan as the preferred backend and OpenGL ES as the automatic fallback if full Vulkan session initialization fails.
-- [x] Add a bundled CC0 base-rig GLB fixture, touch-orbit handling, render loop, and visible status/error reporting.
-- [ ] Confirm the renderer PR's latest CI build and tests pass.
-- [ ] On Samsung SM-S921B, verify visible model pixels, geometry/bounds, materials, camera controls, lifecycle recovery, memory pressure, and sustained thermal behaviour.
-- [ ] Add automated regression coverage for viewer attach/detach, repeated open/close, and renderer initialization failure.
-- [ ] Evaluate skinning, animation, and morph-target behaviour with a known fixture before accepting the renderer as baseline.
+A submitted frame or successful gltfio resource upload is not proof that model pixels are visible.
 
-A submitted frame is only a renderer signal, not proof that the model produced visible pixels.
+## Phase 3: integrated AI
 
-## Phase 3: avatar engine
+- [ ] Evaluate embedded Android LLM runtimes and models against target RAM, storage, ABI, licence and latency.
+- [ ] Keep the provider interface honest: unloaded or unavailable models are not shown as ready.
+- [ ] Keep Ollama optional; the app must not secretly require a local server.
+- [ ] Add cancellation, streaming, conversation persistence, model lifecycle and memory-pressure handling.
+- [ ] Test offline operation.
 
-- [ ] Inspect AvatarForge's intended native C ABI, Kotlin SDK, lifecycle, licences, build settings, and tests at exact commit SHAs.
-- [ ] Inspect 3DDD for glTF/GLB, materials, skinning, morph targets, animation, and lifecycle improvements. Port only compatible components with tests.
-- [ ] Integrate a versioned avatar-engine adapter only after ABI, licence, Android build, and runtime checks pass.
+## Phase 4: voice and avatar behaviour
 
-## Phase 4: integrated AI
+- [ ] Define a timed event interface connecting assistant output, speech playback, visemes, facial expressions and animation.
+- [x] Android TextToSpeech output.
+- [ ] Viseme extraction and avatar lip-sync.
+- [ ] Test interruption, cancellation, audio focus and renderer/voice lifecycle together.
 
-- [ ] Evaluate an embedded Android LLM runtime and models against target RAM, storage, ABI, licence, and latency limits.
-- [ ] Keep AI behind a provider interface; an unavailable or unloaded model must be reported honestly.
-- [ ] Keep Ollama/Termux optional; the app must not secretly require a local server.
-- [ ] Add cancellation, streaming, conversation persistence, model lifecycle, and memory-pressure handling.
-- [ ] Test offline operation. Distinguish LLM chat from image-to-3D generation, which has separate model and compute requirements.
+## Phase 5: studio features
 
-## Phase 5: voice and avatar behaviour
+- [x] Import and persist self-contained GLB assets.
+- [ ] Durable generation-job queue with real progress, cancellation and actionable failure details.
+- [ ] Model/provider management and resource governor UI.
+- [ ] Diagnostic export with sensitive data excluded by default.
+- [ ] Audit every button, route, setting and dialog for a real action or clearly disabled state.
 
-- [ ] Define an event/state interface connecting assistant output, speech playback, viseme/lip-sync, facial expressions, and animation.
-- [ ] Add Android speech output and an explicit voice-provider interface.
-- [ ] Implement lip-sync from timed phoneme/viseme data where available; audio playback alone is not lip-sync.
-- [ ] Test interruption, cancellation, audio focus, and renderer/voice lifecycle together.
-
-## Phase 6: studio features
-
-- [ ] Add a persistent avatar library and import/export.
-- [ ] Add a durable generation-job queue with real progress, cancellation, and actionable failure details.
-- [ ] Add model/provider management and a resource governor.
-- [ ] Add diagnostic export with sensitive data excluded by default.
-- [ ] Audit every button, route, setting, and dialog for a real action or a clearly disabled state.
-
-## Phase 7: release gates
+## Phase 6: release gates
 
 - [ ] Clean Gradle build from a fresh checkout.
-- [ ] Unit, native, integration, dependency, and licence checks pass.
-- [ ] AAB build succeeds; APK is signed using a configured key without committing secrets.
-- [ ] Install and runtime-test on the target Samsung phone. If device testing cannot be performed, mark it BLOCKED and give exact user-side steps.
-- [ ] Confirm visible geometry, offline AI inference, and synchronized voice/lip-sync before calling those features verified.
-- [ ] Publish exact commit, workflow run, artifact link, test outcomes, and remaining gaps.
+- [ ] Unit, native, integration, dependency and licence checks pass.
+- [ ] Debug APK assembled and SHA-256 recorded.
+- [ ] Signed AAB/APK built only when a valid release keystore is configured.
+- [ ] Install and runtime-test on the Samsung phone. If unavailable, mark BLOCKED/UNVERIFIED and provide exact user-side steps.
+- [ ] Confirm visible geometry, on-device generation, animation, offline AI inference and synchronized voice/lip-sync before calling those features verified.
+- [ ] Publish exact commit, workflow run, artifact link, test outcomes and remaining gaps.
 
 ## Donor rules
 
-No wholesale repository merges. For each adopted component, record source repository, branch and commit SHA, licence, files/dependencies adopted, local modifications, tests run, and reason for inclusion. If a component cannot be compiled or verified, keep it isolated and label it UNVERIFIED.
+No wholesale repository merges. For each adopted component, record source repository, branch and commit SHA, licence, files/dependencies adopted, local modifications, tests run and reason for inclusion. If a component cannot be compiled or verified, keep it isolated and label it UNVERIFIED.

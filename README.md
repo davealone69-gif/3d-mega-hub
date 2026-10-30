@@ -1,43 +1,39 @@
 # 3D Mega Hub
 
-**An Android 3D hub in active integration. Current status: PARTIAL; physical-device and signed-release gates remain.**
+**Status: integration candidate. Android CI and Samsung runtime verification are still required.**
 
-## Latest available debug APK
+## Current candidate
 
-[Download the existing GitHub debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk) from [release `android-build-46`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/android-build-46). It is a troubleshooting/debug build signed with the Android debug key, not a signed Play Store release. The published file's SHA-256 is `9b786e1fcab1b1b7ffbc657f41053ec021b719c4bcb9c66c8ccdc2b5693a61b5`.
+- Branch: `work/engine-integration-candidate`
+- Draft PR: [#7](https://github.com/davealone69-gif/3d-mega-hub/pull/7)
+- `main` is unchanged.
+- The candidate combines the Filament renderer work with the AvatarForge native generation module.
 
-A fresh Vulkan-first debug build is available as [`3D-Mega-Hub-vulkan-primary-debug.apk`](build-evidence/deliverables/3D-Mega-Hub-vulkan-primary-debug.apk) (36,062,582 bytes; SHA-256 `b86b76cce795614c3b30b35fd0f078d7150e1adcbd71edd0470275573020f596`). It is development-signed; do not treat it as a production release. Its verification report and build log are in `build-evidence/`.
+## What is now wired in source
 
-## Current implementation
+- **AvatarForge generation:** isolated `:avatarforge-engine` Android library, JNI bridge, and C++ generation kernel. The Avatar Studio exposes a user-triggered prompt generation action, cancellation, and the engine's existing RAM/storage/thermal gates.
+- **3D viewer:** Filament gltfio loads the bundled sample GLB and self-contained imported/generated GLB files. It plays the first glTF animation when present and frames the camera from the asset bounds.
+- **Graphics backend:** OpenGL ES is primary; Vulkan is an optional fallback if the complete GLES session fails.
+- **Avatar library:** imported and generated file URIs are persisted. A bundled sample is loaded when no user avatar is selected.
+- **Local AI:** existing chat sends requests to the configured Ollama `/api/tags` and `/api/chat` endpoints. This is an external local service, not an embedded LLM.
+- **Voice:** existing Android TextToSpeech output is connected. Viseme extraction and avatar lip-sync are not connected.
 
-- **Navigation:** Home, Avatar, AI, Voice, and Settings screens are connected with Compose navigation.
-- **Avatar library:** GLB/glTF selection and removal are wired, and the selected URI is persisted. The current app does **not** display the selected model: `FilamentPreviewView` is not mounted in the app screens and its current implementation is a clear-frame renderer bring-up, not an avatar viewer.
-- **Filament:** The source explicitly loads Filament, then attempts a Vulkan renderer session first and retries with OpenGL ES if Vulkan initialization fails. Filament R8 keep rules are present. The JNI libraries and symbols are packaged, but runtime rendering has not been verified on the target phone.
-- **AI:** Chat and connection checks call the configured Ollama `/api` endpoints. This is not an embedded model; it requires a reachable Ollama server and configured model.
-- **Voice:** Text-to-speech uses Android's installed speech engine. Viseme extraction and avatar lip-sync are not connected.
-- **AvatarForge:** The native generation core is on open [PR #5](https://github.com/davealone69-gif/3d-mega-hub/pull/5), not in the tracked source of the latest renderer branch. Generation is therefore not available in that branch's app.
+## Known boundaries
 
-## Build and release status
+- The AvatarForge module is copied from `work/avatarforge-core-integration` at `731bd31bf431cf391cb052d1c06d49e0c7255ba9`, with donor source pinned to AvatarForge `work/android-engine-dev` at `9e36197ace3b18faa6c566d93f8fce89b185c45d`. This is older than the current AvatarForge fixes in progress and must be refreshed after those changes are pushed and reviewed.
+- The first viewer pass supports self-contained GLB files. External-resource `.gltf` files are rejected with an explicit status.
+- Prompt generation is deterministic native parsing, not photo-to-identity reconstruction and not an embedded LLM.
+- A submitted frame or successful gltfio upload is not proof of visible pixels on the phone.
 
-The latest feature source inspected is `work/filament-renderer-live-diagnostics` at commit `fbd62f55538d96dfa44e87dac12a82c5030c32dd`; [PR #4](https://github.com/davealone69-gif/3d-mega-hub/pull/4) and [PR #5](https://github.com/davealone69-gif/3d-mega-hub/pull/5) are still open. That source commit passed [GitHub Actions run 40990370483](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/40990370483). The current, unpushed Vulkan-first changes passed 7 local unit tests, lint, debug APK assembly, and release R8 minification; see `build-evidence/vulkan-primary-build.log`.
+## Verification
 
-No signed release APK or AAB was produced: the release keystore file is missing. The signing alias and saved password references are available, but debug keystores cannot be used as release keys. The local Gradle release packaging tasks now fail explicitly with `BLOCKED` if the keystore or credentials are missing, rather than silently producing an unsigned release. Configure `releaseStoreFile`, `releaseStorePassword`, `releaseKeyAlias`, and `releaseKeyPassword` as Gradle properties, or use the corresponding `ANDROID_RELEASE_*` environment variables. Never commit these values.
+- Renderer source branch CI passed at `2a1352c5994a42a586a929d995a33fcb4f6ebd67`.
+- AvatarForge core source branch CI passed at `731bd31bf431cf391cb052d1c06d49e0c7255ba9`.
+- Combined candidate CI must pass on the exact current candidate commit.
+- Fresh candidate APK, artifact link, and SHA-256 are pending.
+- Samsung SM-S921B install, model visibility, generation, animation, lifecycle, RAM and thermal behavior remain **UNVERIFIED**.
+- Signed release APK/AAB remains **BLOCKED** until the release keystore file and credentials are available.
 
-No new GitHub release was published. The existing release is debug-only. A future public release must be reviewed and approved with its exact tag, release notes, artifact list, and hashes before publication.
+## Existing debug build
 
-## Target-device verification
-
-The target is the Samsung Galaxy S24 SM-S921B (Exynos 2400, ARM64, Android 17/API 37). The separate Vulkan Checker log reports Vulkan 1.3.304 with Dynamic Rendering, Push Descriptor, and `fillModeNonSolid`, plus OpenGL ES 3.2 via ANGLE over Vulkan. This confirms device capability only, not app runtime. The app now attempts Filament Vulkan first and retries OpenGL ES if the Vulkan engine, renderer, or swap-chain setup fails; it does not pin a required Vulkan patch version. No physical phone is connected (`adb devices -l` is empty), so install, launch, navigation, renderer startup, and visible-pixel verification remain **BLOCKED / UNVERIFIED**. The project currently compiles with SDK 35 / target SDK 35; API 37 behavior has not been tested.
-
-## Project records
-
-- [Project status](PROJECT_STATUS.md): evidence and remaining gates.
-- [Master blueprint](docs/MASTER_BLUEPRINT.md): architecture and renderer decision.
-- [Integration plan](docs/INTEGRATION_PLAN.md): staged integration checklist.
-- [Donor baseline](docs/DONOR_BASELINE.md): donor source and evidence.
-- [Third-party notices](THIRD_PARTY_NOTICES.md): dependency and asset provenance.
-
-
-## Engine integration candidate
-
-The isolated candidate branch is `work/engine-integration-candidate`. It combines the existing Filament renderer work with the pinned AvatarForge generation module without modifying `main` or either donor branch. The native module is a generation kernel, not a renderer or LLM. The Filament gltfio viewer is intended to display the bundled sample and generated/imported self-contained GLB files. External-resource `.gltf` assets are not supported in this first pass. Combined CI, fresh APK packaging, and Samsung runtime verification are pending; do not treat this candidate as release-ready.
+[Download the previously published debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk). This is an older troubleshooting build, not the current integration candidate and not a production release.

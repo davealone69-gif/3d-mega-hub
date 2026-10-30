@@ -97,7 +97,7 @@ dependencies {
     implementation(libs.filament.android)
     implementation(libs.filament.utils.android)
     implementation(libs.filament.gltfio.android)
-    implementation(project(\":avatarforge-engine\"))
+    implementation(project(":avatarforge-engine"))
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)

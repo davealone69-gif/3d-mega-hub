@@ -259,7 +259,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             LightManager.Builder(LightManager.Type.DIRECTIONAL)
                 .color(1.0f, 0.96f, 0.90f)
                 .intensity(75_000.0f)
-                .direction(0.0f, -1.0f, -0.5f)
+                .direction(0.0f, -0.8944272f, -0.4472136f)
                 .castShadows(false)
                 .build(activeEngine, entity)
             activeScene.addEntity(entity)
@@ -351,18 +351,22 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             resources.loadResources(newAsset)
             newAsset.releaseSourceData()
             activeScene.addEntities(newAsset.entities)
-            filamentAsset = newAsset
             animator = newAsset.instance.animator
             animationCount = animator?.animationCount ?: 0
             animationStartNanos = System.nanoTime()
             frameCamera(newAsset.boundingBox)
+            filamentAsset = newAsset
             val label = uri?.lastPathSegment ?: BUNDLED_MODEL
             reportStatus("GLB loaded and GPU resources submitted: $label · ${newAsset.entities.size} nodes · $animationCount animation(s)")
         } catch (failure: Exception) {
+            animator = null
+            animationCount = 0
             activeScene.removeEntities(newAsset.entities)
             loader.destroyAsset(newAsset)
             throw failure
         } catch (failure: LinkageError) {
+            animator = null
+            animationCount = 0
             activeScene.removeEntities(newAsset.entities)
             loader.destroyAsset(newAsset)
             throw failure
