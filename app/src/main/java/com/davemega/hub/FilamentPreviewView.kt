@@ -3,6 +3,7 @@ package com.davemega.hub
 import android.content.Context
 import android.util.Log
 import android.view.Choreographer
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
@@ -16,7 +17,7 @@ import com.google.android.filament.View
 import com.google.android.filament.Viewport
 
 /**
- * Minimal Filament OpenGL ES bring-up.
+ * Minimal Filament clear-frame bring-up, preferring Vulkan and falling back to OpenGL ES.
  *
  * Initialise Filament's native runtime explicitly before touching Engine. The
  * Java wrappers can be present while the JNI library has not yet been loaded;
@@ -31,10 +32,21 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var camera: Camera? = null
     private var swapChain: SwapChain? = null
     private var cameraEntity = 0
+    private var activeBackend: Engine.Backend? = null
     private var running = false
     private var statusListener: ((String) -> Unit)? = null
     private var lastStatus = "Waiting for an Android surface."
     private var lastFrameTime = 0L
+
+    private data class RendererSession(
+        val engine: Engine,
+        val renderer: Renderer,
+        val scene: Scene,
+        val view: View,
+        val camera: Camera,
+        val cameraEntity: Int,
+        val swapChain: SwapChain
+    )
 
     private val frameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
@@ -49,7 +61,8 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                         activeRenderer.endFrame()
                         if (lastFrameTime == 0L) {
                             lastFrameTime = frameTimeNanos
-                            persistCheckpoint("Filament OpenGL ES first frame submitted; inspect viewport for pixels")
+                            val backendName = activeBackend?.displayName() ?: "unknown backend"
+                            persistCheckpoint("Filament $backendName first frame submitted; inspect viewport for pixels")
                         }
                     }
                 } catch (error: Exception) {
@@ -95,42 +108,129 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         try {
             persistCheckpoint("Loading Filament native runtime")
             Filament.init()
-            persistCheckpoint("Filament native runtime loaded; creating OpenGL ES engine")
-            val newEngine = Engine.create(Engine.Backend.OPENGL)
-            checkNotNull(newEngine) { "Engine.create(OPENGL) returned null" }
-            engine = newEngine
+            persistCheckpoint("Filament native runtime loaded; trying Vulkan first with OpenGL ES fallback")
+            val selection = createWithRendererBackendFallback { backend ->
+                try {
+                    createRendererSession(holder.surface, backend)
+                } catch (failure: Exception) {
+                    val nextStep = if (backend == Engine.Backend.VULKAN) {
+                        "trying OpenGL ES fallback"
+                    } else {
+                        "no backend remains"
+                    }
+                    Log.w(TAG, "Filament ${backend.displayName()} initialization failed; $nextStep", failure)
+                    persistCheckpoint("Filament ${backend.displayName()} initialization failed; $nextStep")
+                    throw failure
+                } catch (failure: LinkageError) {
+                    val nextStep = if (backend == Engine.Backend.VULKAN) {
+                        "trying OpenGL ES fallback"
+                    } else {
+                        "no backend remains"
+                    }
+                    Log.w(TAG, "Filament ${backend.displayName()} native initialization failed; $nextStep", failure)
+                    persistCheckpoint("Filament ${backend.displayName()} native initialization failed; $nextStep")
+                    throw failure
+                }
+            }
+            val session = selection.value
+            engine = session.engine
+            renderer = session.renderer
+            scene = session.scene
+            view = session.view
+            camera = session.camera
+            cameraEntity = session.cameraEntity
+            swapChain = session.swapChain
+            activeBackend = selection.backend
 
-            persistCheckpoint("Creating Filament renderer, scene and view")
-            renderer = newEngine.createRenderer()
-            scene = newEngine.createScene()
-            view = newEngine.createView()
-
-            persistCheckpoint("Creating camera entity")
-            cameraEntity = com.google.android.filament.EntityManager.get().create()
-            camera = newEngine.createCamera(cameraEntity)
-            camera?.setProjection(45.0, 1.0, 0.1, 100.0, Camera.Fov.VERTICAL)
-            camera?.lookAt(0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
-            view?.camera = camera
-            view?.scene = scene
-
-            persistCheckpoint("Creating OpenGL ES swap chain")
-            swapChain = newEngine.createSwapChain(holder.surface)
-            val width = surfaceView.width.coerceAtLeast(1)
-            val height = surfaceView.height.coerceAtLeast(1)
-            view?.viewport = Viewport(0, 0, width, height)
-
-            persistCheckpoint("Filament OpenGL ES initialized; starting clear-frame test")
+            persistCheckpoint(
+                "Filament ${selection.backend.displayName()} initialized " +
+                    "(Vulkan preferred, OpenGL ES fallback); starting clear-frame test"
+            )
             running = true
             lastFrameTime = 0L
             Choreographer.getInstance().postFrameCallback(frameCallback)
         } catch (error: Exception) {
-            Log.e(TAG, "Filament OpenGL ES initialization failed", error)
+            Log.e(TAG, "Filament Vulkan/OpenGL ES initialization failed", error)
             persistCheckpoint("Renderer unavailable: ${error.message ?: error.javaClass.simpleName}")
             releaseEngine()
         } catch (error: LinkageError) {
             Log.e(TAG, "Filament native library/linkage failure", error)
             persistCheckpoint("Renderer native library failure: ${error.message ?: error.javaClass.simpleName}")
             releaseEngine()
+        }
+    }
+
+    private fun createRendererSession(surface: Surface, backend: Engine.Backend): RendererSession {
+        persistCheckpoint("Creating Filament ${backend.displayName()} engine")
+        val candidateEngine = checkNotNull(Engine.create(backend)) {
+            "Engine.create(${backend.displayName()}) returned null"
+        }
+        var candidateRenderer: Renderer? = null
+        var candidateScene: Scene? = null
+        var candidateView: View? = null
+        var candidateCamera: Camera? = null
+        var candidateSwapChain: SwapChain? = null
+        var candidateCameraEntity = 0
+
+        try {
+            persistCheckpoint("Creating ${backend.displayName()} renderer, scene and view")
+            val newRenderer = checkNotNull(candidateEngine.createRenderer()) { "Filament renderer was null" }
+            candidateRenderer = newRenderer
+            val newScene = checkNotNull(candidateEngine.createScene()) { "Filament scene was null" }
+            candidateScene = newScene
+            val newView = checkNotNull(candidateEngine.createView()) { "Filament view was null" }
+            candidateView = newView
+
+            persistCheckpoint("Creating ${backend.displayName()} camera")
+            candidateCameraEntity = com.google.android.filament.EntityManager.get().create()
+            val newCamera = checkNotNull(candidateEngine.createCamera(candidateCameraEntity)) {
+                "Filament camera was null"
+            }
+            candidateCamera = newCamera
+            newCamera.setProjection(45.0, 1.0, 0.1, 100.0, Camera.Fov.VERTICAL)
+            newCamera.lookAt(0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+            newView.camera = newCamera
+            newView.scene = newScene
+
+            persistCheckpoint("Creating ${backend.displayName()} swap chain")
+            val newSwapChain = checkNotNull(candidateEngine.createSwapChain(surface)) {
+                "Filament ${backend.displayName()} swap chain was null"
+            }
+            candidateSwapChain = newSwapChain
+            val width = surfaceView.width.coerceAtLeast(1)
+            val height = surfaceView.height.coerceAtLeast(1)
+            newView.viewport = Viewport(0, 0, width, height)
+            return RendererSession(
+                engine = candidateEngine,
+                renderer = newRenderer,
+                scene = newScene,
+                view = newView,
+                camera = newCamera,
+                cameraEntity = candidateCameraEntity,
+                swapChain = newSwapChain
+            )
+        } catch (failure: Exception) {
+            destroyResources(
+                candidateEngine,
+                candidateSwapChain,
+                candidateView,
+                candidateScene,
+                candidateCamera,
+                candidateCameraEntity,
+                candidateRenderer
+            )
+            throw failure
+        } catch (failure: LinkageError) {
+            destroyResources(
+                candidateEngine,
+                candidateSwapChain,
+                candidateView,
+                candidateScene,
+                candidateCamera,
+                candidateCameraEntity,
+                candidateRenderer
+            )
+            throw failure
         }
     }
 
@@ -151,26 +251,54 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private fun releaseEngine() {
         stopRendering()
         val activeEngine = engine ?: return
+        destroyResources(
+            activeEngine,
+            swapChain,
+            view,
+            scene,
+            camera,
+            cameraEntity,
+            renderer
+        )
+        engine = null
+        renderer = null
+        scene = null
+        view = null
+        camera = null
+        swapChain = null
+        cameraEntity = 0
+        activeBackend = null
+    }
+
+    private fun destroyResources(
+        activeEngine: Engine,
+        activeSwapChain: SwapChain?,
+        activeView: View?,
+        activeScene: Scene?,
+        activeCamera: Camera?,
+        activeCameraEntity: Int,
+        activeRenderer: Renderer?
+    ) {
+        activeSwapChain?.let { safelyDestroy("swap chain") { activeEngine.destroySwapChain(it) } }
+        activeView?.let { safelyDestroy("view") { activeEngine.destroyView(it) } }
+        activeScene?.let { safelyDestroy("scene") { activeEngine.destroyScene(it) } }
+        if (activeCamera != null && activeCameraEntity != 0) {
+            safelyDestroy("camera component") { activeEngine.destroyCameraComponent(activeCameraEntity) }
+        }
+        if (activeCameraEntity != 0) {
+            safelyDestroy("camera entity") { com.google.android.filament.EntityManager.get().destroy(activeCameraEntity) }
+        }
+        activeRenderer?.let { safelyDestroy("renderer") { activeEngine.destroyRenderer(it) } }
+        safelyDestroy("engine") { activeEngine.destroy() }
+    }
+
+    private fun safelyDestroy(resource: String, destroy: () -> Unit) {
         try {
-            swapChain?.let { activeEngine.destroySwapChain(it) }
-            swapChain = null
-            view?.let { activeEngine.destroyView(it) }
-            view = null
-            scene?.let { activeEngine.destroyScene(it) }
-            scene = null
-            if (cameraEntity != 0) {
-                activeEngine.destroyCameraComponent(cameraEntity)
-                com.google.android.filament.EntityManager.get().destroy(cameraEntity)
-                cameraEntity = 0
-            }
-            renderer?.let { activeEngine.destroyRenderer(it) }
-            renderer = null
-            activeEngine.destroy()
+            destroy()
         } catch (error: Exception) {
-            Log.w(TAG, "Filament cleanup failed", error)
-        } finally {
-            engine = null
-            camera = null
+            Log.w(TAG, "Filament $resource cleanup failed", error)
+        } catch (error: LinkageError) {
+            Log.w(TAG, "Filament $resource native cleanup failed", error)
         }
     }
 

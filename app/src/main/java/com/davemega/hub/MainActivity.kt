@@ -220,7 +220,7 @@ private fun MegaHubApp() {
                 HubPage.SETTINGS -> {
                     Text("System & settings", style = MaterialTheme.typography.headlineSmall)
                     HubCard("Runtime", "Android ${Build.VERSION.RELEASE}", "API ${Build.VERSION.SDK_INT} · ${Build.SUPPORTED_ABIS.joinToString()}")
-                    HubCard("Graphics", "Filament OpenGL ES", "Vulkan is not required. Visible avatar rendering still needs device verification.")
+                    HubCard("Graphics", "Filament Vulkan (OpenGL ES fallback)", "Vulkan is preferred when available; visible avatar rendering still needs device verification.")
                     HubCard("AI endpoint", endpoint, "Saved locally on this device.")
                     Button(onClick = {
                         prefs.edit().putString("ollama_url", endpoint.trim()).putString("ollama_model", model.trim()).apply()

@@ -49,8 +49,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  release-build-check:
-    name: Release build and R8 check (unsigned)
+  release-minification-check:
+    name: Release R8/minification check (no APK/AAB)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -63,7 +63,7 @@ jobs:
           packages: "platform-tools platforms;android-35 build-tools;35.0.0"
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
-      - run: ./gradlew --no-daemon assembleRelease --stacktrace
+      - run: ./gradlew --no-daemon minifyReleaseWithR8 --stacktrace
 
   lint:
     name: Android lint
@@ -80,37 +80,3 @@ jobs:
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon lintDebug --stacktrace
-
-  publish-debug-release:
-    name: Publish public APK download
-    if: github.event_name == 'push' && github.ref == 'refs/heads/work/filament-renderer-live-diagnostics'
-    needs: [unit-tests, debug-build, release-build-check, lint]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v7
-        with:
-          name: 3D-Mega-Hub-debug-apk
-          path: release-apk
-      - name: Verify and name APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK="$(find release-apk -maxdepth 2 -type f -name '*.apk' -print -quit)"
-          test -n "$APK"
-          cp "$APK" 3D-Mega-Hub-debug.apk
-          test -s 3D-Mega-Hub-debug.apk
-          sha256sum 3D-Mega-Hub-debug.apk
-      - name: Publish GitHub Release asset
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          TAG="android-build-${GITHUB_RUN_NUMBER}"
-          gh release create "$TAG" 3D-Mega-Hub-debug.apk \
-            --target "$GITHUB_SHA" \
-            --title "3D Mega Hub Android build ${GITHUB_RUN_NUMBER}" \
-            --notes "Automated Android debug APK. CI test, lint, debug build and unsigned release/R8 checks passed for commit ${GITHUB_SHA}. This is a debug APK, not a signed Play Store release. Physical-device runtime remains unverified." \
-            --latest

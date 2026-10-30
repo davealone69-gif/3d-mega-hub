@@ -19,7 +19,7 @@ Evidence: Android shell CI and unit tests are documented as passing in [workflow
 
 ## Phase 2: renderer proof
 
-- [x] Select Filament with explicit OpenGL ES backend selection for the first renderer proof. Vulkan is not required to start.
+- [x] Select Filament Vulkan as the preferred backend and OpenGL ES as the automatic fallback if full Vulkan session initialization fails.
 - [x] Add a bundled CC0 base-rig GLB fixture, touch-orbit handling, render loop, and visible status/error reporting.
 - [ ] Confirm the renderer PR's latest CI build and tests pass.
 - [ ] On Samsung SM-S921B, verify visible model pixels, geometry/bounds, materials, camera controls, lifecycle recovery, memory pressure, and sustained thermal behaviour.
