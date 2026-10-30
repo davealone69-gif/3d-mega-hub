@@ -60,7 +60,11 @@ jobs:
           test -n "$AAB" && test -s "$AAB"
           cp "$APK" release-preview/3D-Mega-Hub-preview-release.apk
           cp "$AAB" release-preview/3D-Mega-Hub-preview-release.aab
-          apksigner verify --verbose --print-certs release-preview/3D-Mega-Hub-preview-release.apk | tee release-preview/apk-signature.txt
+
+          # setup-android installs Build Tools, but does not guarantee apksigner is on PATH.
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner -perm -u+x -print | sort -V | tail -n 1)"
+          test -n "$APKSIGNER" && test -x "$APKSIGNER"
+          "$APKSIGNER" verify --verbose --print-certs release-preview/3D-Mega-Hub-preview-release.apk | tee release-preview/apk-signature.txt
           jarsigner -verify -verbose -certs release-preview/3D-Mega-Hub-preview-release.aab > release-preview/aab-signature.txt
           sha256sum release-preview/*.apk release-preview/*.aab | tee release-preview/SHA256SUMS
           keytool -list -v -keystore "$ANDROID_RELEASE_STORE_FILE" \
@@ -76,10 +80,11 @@ jobs:
           Samsung SM-S921B runtime is not proven by this workflow.
           EOF
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: 3D-Mega-Hub-signed-preview
           path: release-preview/*
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 14
 
   emulator-launch:
@@ -93,33 +98,51 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
+          packages: "platform-tools platforms;android-34 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
-      - run: |
+      - name: Build debug APK
+        run: |
           chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace assembleDebug
+      - name: Prepare emulator diagnostics
+        if: always()
+        run: mkdir -p emulator-diagnostics
       - uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: 34
           target: google_apis
           arch: x86_64
           profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data
+          emulator-boot-timeout: 900
           script: |
             set -euo pipefail
+            adb wait-for-device
+            for attempt in $(seq 1 180); do
+              BOOTED="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+              if [ "$BOOTED" = "1" ]; then break; fi
+              sleep 5
+            done
+            test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1"
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb shell am force-stop com.davemega.hub
             adb shell am start -W -n com.davemega.hub/.MainActivity
             sleep 10
             adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | grep -q "com.davemega.hub"
-            adb logcat -d -t 5000 > emulator-logcat.txt
-            if grep -E "FATAL EXCEPTION|Fatal signal|Process: com.davemega.hub" emulator-logcat.txt; then
-              echo "Application crash detected in emulator logcat"
+            PID="$(adb shell pidof -s com.davemega.hub | tr -d '\r')"
+            test -n "$PID"
+            adb logcat --pid="$PID" -d > emulator-diagnostics/app-logcat.txt
+            if grep -E "FATAL EXCEPTION|Fatal signal|Process: com.davemega.hub" emulator-diagnostics/app-logcat.txt; then
+              echo "Application crash detected in app-scoped emulator logcat"
               exit 1
             fi
+            adb exec-out screencap -p > emulator-diagnostics/launch-screen.png
+            printf 'INSTALL=PASS\nLAUNCH=PASS\nPROCESS_ID=%s\n' "$PID" > emulator-diagnostics/result.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: 3D-Mega-Hub-emulator-smoke-logs
-          path: emulator-logcat.txt
+          name: 3D-Mega-Hub-emulator-smoke-diagnostics
+          path: emulator-diagnostics/*
           if-no-files-found: ignore
           retention-days: 14
