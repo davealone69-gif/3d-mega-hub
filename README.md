@@ -4,6 +4,12 @@
 
 This repository is the new product host. Existing repositories remain independent donor/source projects until their code, dependencies, licences, tests, and build status have been checked. No donor is considered integrated merely because its files or documentation were copied.
 
+## Latest Android debug APK
+
+[**Open the latest successful GitHub Actions build and download the 3D-Mega-Hub-debug-apk artifact**](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/40979269390)
+
+On the run page, scroll to **Artifacts** and tap **3D-Mega-Hub-debug-apk**. GitHub downloads a ZIP; extract it and install the APK inside. This is a CI debug APK, not a signed Play Store release. The build passed CI, but physical-device runtime verification is still outstanding. The artifact expires on 28 January 2027.
+
 ## Product goals
 
 - Render and manage customizable 3D avatars on Android.
