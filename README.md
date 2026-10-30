@@ -1,58 +1,55 @@
 # 3D Mega Hub
 
-**Android-first avatar studio with an integrated AI assistant and a real 3D runtime.**
+**Android-first avatar studio foundation with a selected native avatar-generation core.**
 
-This repository is the new product host. Existing repositories remain independent donor/source projects until their code, dependencies, licences, tests, and build status have been checked. No donor is considered integrated merely because its files or documentation were copied.
+This repository is the canonical product host. Donor repositories remain independent source projects unless a component, its dependencies, licence, tests, and build status have been checked. Copying files alone is not considered integration.
 
 ## Product goals
 
-- Render and manage customizable 3D avatars on Android.
-- Integrate an AI assistant that can run on-device where a compatible model/runtime fits the target device; make network/provider backends optional rather than silently required.
-- Support avatar voice, expressions, animation, and lip-sync through explicit interfaces.
-- Provide avatar import/export, a persistent library, generation-job status, resource controls, and useful diagnostics.
-- Prioritize the Samsung SM-S921B / Exynos 2400 target and a reliable OpenGL ES path. Vulkan remains optional until verified on the actual device.
-- Ship a reproducible Android build, with an AAB as the primary release artifact and a signed APK for installation/testing. Never commit signing secrets.
+The planned studio will render and manage customizable avatars, provide an optional AI assistant, support voice, expressions, animation and lip-sync, and include import/export, a persistent library, job status and resource controls. These are goals, not all current features. AvatarForge's generation kernel is the first integrated engine component; there is not yet a generation screen or selected model viewer. Prioritize the Samsung SM-S921B / Exynos 2400 and a tested OpenGL ES path. Do not treat host or CI builds as phone verification.
 
 ## Blueprint and audit records
 
-- [Master blueprint](docs/MASTER_BLUEPRINT.md): product architecture, renderer decision, integration phases and release gates.
-- [Integration plan](docs/INTEGRATION_PLAN.md): staged work checklist.
-- [Donor baseline](docs/DONOR_BASELINE.md): inspected branch commits, CI evidence, known blockers and licence questions.
+- [Master blueprint](docs/MASTER_BLUEPRINT.md): architecture, renderer decision, phases and release gates.
+- [Integration plan](docs/INTEGRATION_PLAN.md): staged implementation checklist.
+- [Donor baseline](docs/DONOR_BASELINE.md): branch, commit, CI, blockers and licence evidence.
+- [AvatarForge integration](docs/AVATARFORGE_INTEGRATION.md): source pin, module boundary, build evidence and remaining device gates.
 
-## Initial donor map (candidates, not yet integrated)
+## Selected donor map
 
-| Source repository | Candidate contribution | Required before adoption |
+| Source | Candidate contribution | Current decision / next gate |
 |---|---|---|
-| [AvatarForge](https://github.com/davealone69-gif/AvatarForge) | Native avatar kernel, C ABI, Kotlin SDK, rigging/blendshapes and diagnostics | Select intended branch by exact SHA; compile native and Android targets; verify renderer on device; clarify source licence |
-| [3DDD](https://github.com/davealone69-gif/3DDD) | Filament viewport, glTF/GLB, materials, skinning, animation and export | Resolve current CI failures; inspect dependency/licence compatibility and regression coverage |
-| [Aaa](https://github.com/davealone69-gif/Aaa) | SDK/provider boundaries, model management, jobs, resource governance and persistence patterns | Verify working implementations and API contracts |
-| [Grok-Girls](https://github.com/davealone69-gif/Grok-Girls) | Renderer regression cases and optional provider/voice adapters | Compare branch commits; keep external server integration optional |
-| [Aura-Studio-Avatar](https://github.com/davealone69-gif/Aura-Studio-Avatar) | Avatar library/designer and management patterns | Verify source, build, tests, and licence |
+| [AvatarForge](https://github.com/davealone69-gif/AvatarForge) | Renderer-independent C++ generation kernel; Kotlin spec and resource controls | Integrated from `work/android-engine-dev` at `9e36197ace3b18faa6c566d93f8fce89b185c45d`; clean Android/NDK debug and minified release builds pass locally. On-phone generation remains unverified; no root donor `LICENSE` was found. |
+| [3DDD](https://github.com/davealone69-gif/3DDD) | Filament/glTF viewport, materials, skinning, animation and export | Keep as a separate viewer candidate. The inspected Android CI run failed; resolve build, lifecycle and licensing gates before importing it. |
+| [Aaa](https://github.com/davealone69-gif/Aaa) | SDK/provider boundaries, model management, jobs, resource governance and persistence patterns | Re-audit specific implementations and API contracts before adoption. |
+| [Grok-Girls](https://github.com/davealone69-gif/Grok-Girls) | Renderer regression cases and optional provider/voice adapters | Compare branches and keep external service integration optional. |
+| [Aura-Studio-Avatar](https://github.com/davealone69-gif/Aura-Studio-Avatar) | Avatar library/designer and management patterns | Verify source, build, tests and licence before adoption. |
 
-This is a starting map from prior audits, not a claim that every repository or branch has been fully re-audited. Heavy 3D generation models are not assumed to run locally on the phone; their requirements and any remote-provider boundary must be explicit.
+The prior repository scan enumerated 99 accessible repositories and identified 17 likely first-party 3D/avatar projects. That shortlist is not a claim that every branch and dependency has been fully re-audited. Heavy generation is not assumed to run locally on the phone; compute and provider requirements must be explicit.
+
+## Build and verification
+
+With Android SDK, NDK `26.1.10909125`, and CMake `3.22.1` installed, run `./gradlew clean testDebugUnitTest lintDebug assembleDebug assembleRelease`. The current local clean build passed with eight Kotlin unit tests, lint, debug APK assembly, and minified release assembly for `arm64-v8a` and `x86_64`. Release signing/AAB output is not configured. The sandbox had no attached Android device or emulator, so generation, cancellation under load, and rendering on the Samsung target remain unverified.
 
 ## Engineering rules
 
-1. Preserve all donor repositories and their branches.
-2. Inspect the current default branch and recent commits before choosing source code.
-3. Prefer tested, minimal integrations over wholesale merges.
-4. Do not ship mock AI, fake controls, placeholder success states, or dummy services.
-5. Show unavailable capabilities as unavailable, with actionable diagnostics.
-6. Keep secrets out of source control. Do not weaken main history with force pushes.
-7. A green CI build is not a green device build.
+1. Preserve donor repositories and their branches; prefer minimal, pinned integrations.
+2. Do not ship mock AI, fake controls, placeholder success states or dummy services.
+3. Report unavailable capabilities accurately and provide actionable diagnostics.
+4. Keep secrets out of source control. Do not force-push shared branches.
+5. A green build is not proof of correct device behavior.
 
 ## Verification labels
 
-- **REAL + VERIFIED**: implementation exists and the stated test was run successfully.
-- **UNVERIFIED**: code or documentation exists, but the required test has not been run.
-- **PARTIAL**: some parts work; named gaps remain.
+- **REAL + VERIFIED**: implementation exists and the stated test passed.
+- **PARTIAL**: some components work; named gaps remain.
+- **UNVERIFIED**: code exists, but the required test has not been run.
+- **BLOCKED**: a concrete access or dependency limit prevents the next check.
 - **MISSING**: not implemented.
-- **BLOCKED**: a concrete dependency or access limitation prevents the next check.
 
 ## Current baseline
 
-- Repository created and writable: **verified**.
-- Product scope and donor shortlist: **documented; source integration not yet verified**.
-- Android project compilation: **not yet verified in this repository**.
-- On-device renderer, embedded LLM, voice/lip-sync: **not yet verified in this repository**.
-- Release signing and installable artifacts: **not yet configured or verified**.
+- Android shell and capability diagnostics: present.
+- AvatarForge native generation core: integrated; clean local build and unit/lint checks pass; no generation UI or target-phone run yet.
+- Renderer/viewer, embedded LLM, voice and lip-sync: not integrated.
+- Release signing and AAB: not configured.

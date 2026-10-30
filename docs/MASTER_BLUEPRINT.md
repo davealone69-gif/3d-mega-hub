@@ -16,10 +16,14 @@
 |---|---|---|
 | [3D Mega Hub](https://github.com/davealone69-gif/3d-mega-hub) | Canonical host app, architecture, integration records and release evidence | Keep `main` stable; work through controlled branches |
 | [3DDD](https://github.com/davealone69-gif/3DDD) | Filament viewport, glTF/GLB reader, materials, skinning, morphs, animation and export | Source looks substantial; latest observed `main` CI failed. License/build/runtime gates still required |
-| [AvatarForge](https://github.com/davealone69-gif/AvatarForge) | Native avatar kernel, C ABI, Kotlin SDK, rigging/blendshapes and diagnostics | Inspect `work/android-engine-dev` and other intended branches, not just default `main`; do not import its renderer by default |
+| [AvatarForge](https://github.com/davealone69-gif/AvatarForge) | Selected renderer-independent generation kernel and Kotlin spec/resource pieces, pinned to `work/android-engine-dev` at `9e36197ace3b18faa6c566d93f8fce89b185c45d` | Keep the C ABI/version boundary; custom renderer is not part of this transplant; host and device checks still required |
 | [Aaa](https://github.com/davealone69-gif/Aaa) | SDK/provider contracts, jobs, model lifecycle, persistence and resource governance | Reuse only after source/build/licence inspection |
 | [Grok-Girls](https://github.com/davealone69-gif/Grok-Girls) | Potential studio/persona workflows and provider adapters | Web/Capacitor UI is not proof of native rendering or embedded inference |
 | [Aura-Studio-Avatar](https://github.com/davealone69-gif/Aura-Studio-Avatar) | Potential avatar library, settings and diagnostic patterns | Verify implementation and runtime before adoption |
+
+## Generation engine decision
+
+AvatarForge `afcore` is the selected generation-kernel source for the host app. The integration lives in `:avatarforge-engine`, uses the pinned ABI-v1 C interface, Kotlin avatar specification/resource checks, and exports generated GLB files to app-private storage. This selection does **not** select AvatarForge's custom renderer; rendering remains a separate adapter decision so only one renderer is activated after target-device tests.
 
 ## Renderer decision
 

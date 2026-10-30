@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.davemega.hub.avatarforge.AvatarForgeEngine
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,21 +39,35 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MegaHubHome() {
     val context = LocalContext.current
+    val engineHealth = AvatarForgeEngine.health()
+    val engineDetail = engineHealth.problem ?: buildString {
+        append("AvatarForge ")
+        append(engineHealth.engineVersion ?: "native core")
+        append(" · ABI ")
+        append(engineHealth.abiVersion ?: "unknown")
+        append(". Native generation is wired; generation and renderer behavior remain unverified on the target phone.")
+    }
     val capabilities = listOf(
         RuntimeCapability(name = "3D renderer"),
-        RuntimeCapability(name = "Avatar generation engine"),
+        RuntimeCapability(
+            name = "Avatar generation engine",
+            backend = "AvatarForge C++ core",
+            initialized = engineHealth.usable,
+            problem = engineHealth.problem,
+            detail = engineDetail,
+        ),
         RuntimeCapability(name = "Embedded AI"),
-        RuntimeCapability(name = "Voice and lip-sync")
+        RuntimeCapability(name = "Voice and lip-sync"),
     )
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Text("3D Mega Hub", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(
-            "Android foundation build. This screen reports integration state honestly; no renderer, AI or generation service is claimed to be connected yet.",
-            style = MaterialTheme.typography.bodyMedium
+            "AvatarForge's native generation kernel is integrated. The renderer, embedded AI, voice and on-device generation behavior are not claimed as device-verified.",
+            style = MaterialTheme.typography.bodyMedium,
         )
         Text("Capability status", style = MaterialTheme.typography.titleLarge)
         capabilities.forEach { capability -> CapabilityCard(capability) }
@@ -68,8 +83,8 @@ private fun MegaHubHome() {
             }
         }
         Text(
-            "Next gate: establish a green build, then integrate one renderer and verify visible model pixels before adding generation or AI.",
-            style = MaterialTheme.typography.bodySmall
+            "Next gate: run a measured AvatarForge generation on the target phone, then connect one renderer and verify visible model pixels before layering in AI and voice.",
+            style = MaterialTheme.typography.bodySmall,
         )
     }
 }
@@ -80,7 +95,8 @@ private fun CapabilityCard(capability: RuntimeCapability) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(capability.name, style = MaterialTheme.typography.titleMedium)
             Text(capability.status, style = MaterialTheme.typography.labelLarge)
-            if (capability.backend.isNullOrBlank()) {
+            capability.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            if (capability.backend.isNullOrBlank() && capability.detail == null) {
                 Text("No backend is connected in this build.", style = MaterialTheme.typography.bodySmall)
             }
         }
