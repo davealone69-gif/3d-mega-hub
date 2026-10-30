@@ -26,6 +26,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -44,6 +46,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun MegaHubHome() {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val diagnostics = remember {
         context.getSharedPreferences(FilamentPreviewView.DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
     }
@@ -54,6 +57,27 @@ private fun MegaHubHome() {
         mutableStateOf(diagnostics.getString(FilamentPreviewView.LAST_CHECKPOINT, "No renderer attempt recorded yet.") ?: "No renderer attempt recorded yet.")
     }
     var showRenderer by remember { mutableStateOf(false) }
+
+    val diagnosticReport = """
+3D Mega Hub diagnostic report
+Device: ${Build.MODEL.ifBlank { "Unknown" }}
+Manufacturer: ${Build.MANUFACTURER.ifBlank { "Unknown" }}
+Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})
+Supported ABIs: ${Build.SUPPORTED_ABIS.joinToString().ifBlank { "Unknown" }}
+Native library directory: ${context.applicationInfo.nativeLibraryDir}
+Package: ${context.packageName}
+
+Live renderer status:
+$rendererStatus
+
+Last renderer checkpoint:
+$lastRendererCheckpoint
+
+Test scope:
+Filament OpenGL ES initialisation and frame submission only.
+A GLB avatar is not loaded in this diagnostic build.
+A submitted frame does not prove that an avatar is visible.
+""".trimIndent()
 
     val capabilities = listOf(
         RuntimeCapability(name = "Avatar generation engine"),
