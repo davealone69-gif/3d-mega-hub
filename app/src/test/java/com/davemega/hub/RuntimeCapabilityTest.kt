@@ -13,7 +13,15 @@ class RuntimeCapabilityTest {
     fun configuredButUninitializedBackendIsNotVerified() {
         assertEquals(
             "UNVERIFIED",
-            RuntimeCapability("Renderer", backend = "Filament/Vulkan (OpenGL ES fallback)").status
+            RuntimeCapability("Renderer", backend = "Filament/OpenGL ES").status
+        )
+    }
+
+    @Test
+    fun backendWithNativeLoadFailureIsUnavailable() {
+        assertEquals(
+            "UNAVAILABLE",
+            RuntimeCapability("Avatar engine", backend = "AvatarForge", problem = "ABI mismatch").status
         )
     }
 
@@ -21,7 +29,7 @@ class RuntimeCapabilityTest {
     fun initializedBackendIsNotMislabelledDeviceVerified() {
         assertEquals(
             "INITIALIZED, NOT DEVICE-VERIFIED",
-            RuntimeCapability("Renderer", backend = "Filament/Vulkan (OpenGL ES fallback)", initialized = true).status
+            RuntimeCapability("Renderer", backend = "Filament/OpenGL ES", initialized = true).status
         )
     }
 }

@@ -4,6 +4,7 @@
 
 - Dependency: `com.google.android.filament:filament-android:1.71.5`
 - Dependency: `com.google.android.filament:filament-utils-android:1.71.5`
+- Dependency: `com.google.android.filament:gltfio-android:1.71.5`
 - License: Apache License 2.0
 - Upstream: https://github.com/google/filament
 

@@ -57,7 +57,7 @@ private fun MegaHubApp() {
     var prompt by remember { mutableStateOf("") }
     var chat by remember { mutableStateOf(listOf<ChatLine>()) }
     var avatarUri by remember { mutableStateOf(prefs.getString("avatar_uri", null)?.let(Uri::parse)) }
-    var avatarName by remember { mutableStateOf(prefs.getString("avatar_name", "No avatar imported") ?: "No avatar imported") }
+    var avatarName by remember { mutableStateOf(prefs.getString("avatar_name", "Built-in sample model") ?: "Built-in sample model") }
     var voiceText by remember { mutableStateOf("Hello. Your 3D Mega Hub voice output is ready.") }
     var voiceStatus by remember { mutableStateOf("Android text-to-speech is available on this device.") }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
@@ -161,23 +161,30 @@ private fun MegaHubApp() {
                 HubPage.HOME -> {
                     Text("Your creative workspace", style = MaterialTheme.typography.headlineSmall)
                     Text("A single hub for 3D assets, local AI and voice. Each integration reports its real connection state.")
-                    HubCard("3D / Avatar", avatarName, "Import a GLB or glTF asset to your library.") { page = HubPage.AVATAR }
+                    HubCard("3D / Avatar", avatarName, "Import a GLB or generate an avatar on-device.") { page = HubPage.AVATAR }
                     HubCard("Local AI", connection, "Endpoint: $endpoint · Model: $model") { page = HubPage.AI }
                     HubCard("Voice", voiceStatus, "Android speech output") { page = HubPage.VOICE }
                     HubCard("Device", "${Build.MANUFACTURER} ${Build.MODEL}", "Android ${Build.VERSION.RELEASE} · API ${Build.VERSION.SDK_INT}") { page = HubPage.SETTINGS }
                 }
                 HubPage.AVATAR -> {
-                    Text("Avatar library", style = MaterialTheme.typography.headlineSmall)
-                    Text("Import a .glb or .gltf file from device storage. Import stores access to the original file; rendering and editing are not yet connected.")
-                    Button(onClick = { avatarPicker.launch(arrayOf("model/gltf-binary", "model/gltf+json", "application/octet-stream", "*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Import 3D model") }
-                    HubCard("Selected asset", avatarName, avatarUri?.toString() ?: "No file selected")
-                    if (avatarUri != null) {
-                        OutlinedButton(onClick = {
-                            avatarUri = null; avatarName = "No avatar imported"
+                    AvatarStudioScreen(
+                        avatarUri = avatarUri,
+                        avatarName = avatarName,
+                        onImport = {
+                            avatarPicker.launch(arrayOf("model/gltf-binary", "application/octet-stream"))
+                        },
+                        onRemove = {
+                            avatarUri = null
+                            avatarName = "Built-in sample model"
                             prefs.edit().remove("avatar_uri").remove("avatar_name").apply()
-                        }) { Text("Remove from library") }
-                    }
-                    HubCard("Rendering status", "NOT CONNECTED", "The current Filament preview is a renderer diagnostic, not a GLB avatar viewer.")
+                        },
+                        onGenerated = { uri, name ->
+                            avatarUri = uri
+                            avatarName = name
+                            prefs.edit().putString("avatar_uri", uri.toString())
+                                .putString("avatar_name", name).apply()
+                        }
+                    )
                 }
                 HubPage.AI -> {
                     Text("Local AI assistant", style = MaterialTheme.typography.headlineSmall)
@@ -220,7 +227,7 @@ private fun MegaHubApp() {
                 HubPage.SETTINGS -> {
                     Text("System & settings", style = MaterialTheme.typography.headlineSmall)
                     HubCard("Runtime", "Android ${Build.VERSION.RELEASE}", "API ${Build.VERSION.SDK_INT} · ${Build.SUPPORTED_ABIS.joinToString()}")
-                    HubCard("Graphics", "Filament Vulkan (OpenGL ES fallback)", "Vulkan is preferred when available; visible avatar rendering still needs device verification.")
+                    HubCard("Graphics", "Filament OpenGL ES (Vulkan fallback)", "OpenGL ES is the primary path. Vulkan is attempted only if GLES initialization fails; device rendering remains unverified.")
                     HubCard("AI endpoint", endpoint, "Saved locally on this device.")
                     Button(onClick = {
                         prefs.edit().putString("ollama_url", endpoint.trim()).putString("ollama_model", model.trim()).apply()

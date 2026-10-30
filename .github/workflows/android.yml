@@ -22,7 +22,7 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon testDebugUnitTest --stacktrace
@@ -38,7 +38,7 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon assembleDebug --stacktrace
@@ -60,7 +60,7 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon minifyReleaseWithR8 --stacktrace
@@ -76,7 +76,7 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon lintDebug --stacktrace

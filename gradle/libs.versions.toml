@@ -5,6 +5,7 @@ coreKtx = "1.15.0"
 activityCompose = "1.9.3"
 composeBom = "2024.12.01"
 filament = "1.71.5"
+coroutines = "1.8.1"
 junit = "4.13.2"
 
 [libraries]
@@ -18,9 +19,12 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 filament-android = { group = "com.google.android.filament", name = "filament-android", version.ref = "filament" }
 filament-utils-android = { group = "com.google.android.filament", name = "filament-utils-android", version.ref = "filament" }
+filament-gltfio-android = { group = "com.google.android.filament", name = "gltfio-android", version.ref = "filament" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

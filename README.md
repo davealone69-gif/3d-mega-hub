@@ -36,3 +36,8 @@ The target is the Samsung Galaxy S24 SM-S921B (Exynos 2400, ARM64, Android 17/AP
 - [Integration plan](docs/INTEGRATION_PLAN.md): staged integration checklist.
 - [Donor baseline](docs/DONOR_BASELINE.md): donor source and evidence.
 - [Third-party notices](THIRD_PARTY_NOTICES.md): dependency and asset provenance.
+
+
+## Engine integration candidate
+
+The isolated candidate branch is `work/engine-integration-candidate`. It combines the existing Filament renderer work with the pinned AvatarForge generation module without modifying `main` or either donor branch. The native module is a generation kernel, not a renderer or LLM. The Filament gltfio viewer is intended to display the bundled sample and generated/imported self-contained GLB files. External-resource `.gltf` assets are not supported in this first pass. Combined CI, fresh APK packaging, and Samsung runtime verification are pending; do not treat this candidate as release-ready.
