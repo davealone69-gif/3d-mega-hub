@@ -2,43 +2,81 @@ name: Android CI
 
 on:
   push:
-    branches: [main, "work/**"]
+    branches: [main, "work/**", "fix/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "work/**"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build:
-    name: Build and unit-test Android app
+  unit-tests:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           packages: "platform-tools platforms;android-35 build-tools;35.0.0"
           accept-android-sdk-licenses: true
+      - run: chmod +x ./gradlew
+      - run: ./gradlew --no-daemon testDebugUnitTest --stacktrace
 
-      - name: Make Gradle wrapper executable
-        run: chmod +x ./gradlew
-
-      - name: Run unit tests and build debug APK
-        run: ./gradlew --no-daemon clean testDebugUnitTest assembleDebug --stacktrace
-
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
+  debug-build:
+    name: Debug APK build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
+          accept-android-sdk-licenses: true
+      - run: chmod +x ./gradlew
+      - run: ./gradlew --no-daemon assembleDebug --stacktrace
+      - uses: actions/upload-artifact@v7
         with:
           name: 3D-Mega-Hub-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 7
+
+  release-minification-check:
+    name: Release R8/minification check (no APK/AAB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
+          accept-android-sdk-licenses: true
+      - run: chmod +x ./gradlew
+      - run: ./gradlew --no-daemon minifyReleaseWithR8 --stacktrace
+
+  lint:
+    name: Android lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
+          accept-android-sdk-licenses: true
+      - run: chmod +x ./gradlew
+      - run: ./gradlew --no-daemon lintDebug --stacktrace
