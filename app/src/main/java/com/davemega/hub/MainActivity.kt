@@ -4,6 +4,8 @@ import android.app.Activity
 import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
@@ -13,6 +15,15 @@ import android.widget.TextView
 
 class MainActivity : Activity() {
     private var glView: InteractiveGlView? = null
+    private var diagnosticsLabel: TextView? = null
+    private val diagnosticsHandler = Handler(Looper.getMainLooper())
+    private val diagnosticsTicker = object : Runnable {
+        override fun run() {
+            val renderer = glView?.renderer
+            diagnosticsLabel?.text = renderer?.diagnostics ?: "Renderer stopped"
+            if (glView != null) diagnosticsHandler.postDelayed(this, 1000L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -20,6 +31,8 @@ class MainActivity : Activity() {
     }
 
     private fun showHome() {
+        diagnosticsHandler.removeCallbacks(diagnosticsTicker)
+        diagnosticsLabel = null
         glView?.onPause()
         glView = null
         val content = LinearLayout(this).apply {
@@ -102,12 +115,20 @@ class MainActivity : Activity() {
             setOnClickListener { showHome() }
         })
         root.addView(controls)
-        root.addView(TextView(this).apply {
-            text = "Backend: OpenGL ES 2.0 API • Scene: procedural six-face 3D cube • Draw mode: indexed-free triangles"
+        diagnosticsLabel = TextView(this).apply {
+            text = "Waiting for OpenGL context…"
             textSize = 12f
             setPadding(0, dp(8), 0, 0)
+        }
+        root.addView(diagnosticsLabel)
+        root.addView(TextView(this).apply {
+            text = "Backend: OpenGL ES 2.0 • Scene: procedural cube • Drag to rotate, pinch to zoom"
+            textSize = 12f
+            setPadding(0, dp(4), 0, 0)
         })
         setContentView(root)
+        diagnosticsHandler.removeCallbacks(diagnosticsTicker)
+        diagnosticsHandler.post(diagnosticsTicker)
     }
 
     private fun glEsVersion(): String {
@@ -124,8 +145,17 @@ class MainActivity : Activity() {
     }
 
     override fun onPause() {
+        diagnosticsHandler.removeCallbacks(diagnosticsTicker)
         glView?.onPause()
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        diagnosticsHandler.removeCallbacks(diagnosticsTicker)
+        diagnosticsLabel = null
+        glView?.onPause()
+        glView = null
+        super.onDestroy()
     }
 
     @Deprecated("Deprecated in Android API 33")
