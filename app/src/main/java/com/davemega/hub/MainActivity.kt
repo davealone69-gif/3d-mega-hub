@@ -115,12 +115,13 @@ class MainActivity : Activity() {
             setOnClickListener { showHome() }
         })
         root.addView(controls)
-        diagnosticsLabel = TextView(this).apply {
+        val liveDiagnostics = TextView(this).apply {
             text = "Waiting for OpenGL context…"
             textSize = 12f
             setPadding(0, dp(8), 0, 0)
         }
-        root.addView(diagnosticsLabel)
+        diagnosticsLabel = liveDiagnostics
+        root.addView(liveDiagnostics)
         root.addView(TextView(this).apply {
             text = "Backend: OpenGL ES 2.0 • Scene: procedural cube • Drag to rotate, pinch to zoom"
             textSize = 12f
@@ -142,6 +143,10 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         glView?.onResume()
+        if (glView != null) {
+            diagnosticsHandler.removeCallbacks(diagnosticsTicker)
+            diagnosticsHandler.post(diagnosticsTicker)
+        }
     }
 
     override fun onPause() {
