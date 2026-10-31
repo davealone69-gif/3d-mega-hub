@@ -1,96 +1,136 @@
 package com.davemega.hub
 
+import android.app.Activity
+import android.opengl.GLSurfaceView
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Card
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
+import android.view.Gravity
+import android.view.View
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 
-class MainActivity : ComponentActivity() {
+class MainActivity : Activity() {
+    private var glView: InteractiveGlView? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    MegaHubHome()
-                }
-            }
-        }
+        showHome()
     }
-}
 
-@Composable
-private fun MegaHubHome() {
-    val context = LocalContext.current
-    val capabilities = listOf(
-        RuntimeCapability(name = "3D renderer"),
-        RuntimeCapability(name = "Avatar generation engine"),
-        RuntimeCapability(name = "Embedded AI"),
-        RuntimeCapability(name = "Voice and lip-sync")
-    )
-
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Text("3D Mega Hub", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text(
-            "Android foundation build. This screen reports integration state honestly; no renderer, AI or generation service is claimed to be connected yet.",
-            style = MaterialTheme.typography.bodyMedium
+    private fun showHome() {
+        glView = null
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(24), dp(20), dp(20))
+        }
+        content.addView(TextView(this).apply {
+            text = "3D Mega Hub"
+            textSize = 28f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        })
+        content.addView(TextView(this).apply {
+            text = "First working graphics milestone"
+            textSize = 16f
+            setPadding(0, dp(6), 0, dp(18))
+        })
+        content.addView(Button(this).apply {
+            text = "OPEN INTERACTIVE 3D SCENE"
+            setOnClickListener { showViewer() }
+        })
+        content.addView(TextView(this).apply {
+            text = "Device snapshot"
+            textSize = 20f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, dp(22), 0, dp(10))
+        })
+        val details = listOf(
+            "Device" to Build.MODEL,
+            "Manufacturer" to Build.MANUFACTURER,
+            "Android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
+            "Supported ABIs" to Build.SUPPORTED_ABIS.joinToString(),
+            "OpenGL ES requirement" to glEsVersion(),
+            "Package" to packageName
         )
-        Text("Capability status", style = MaterialTheme.typography.titleLarge)
-        capabilities.forEach { capability -> CapabilityCard(capability) }
-
-        Text("Device snapshot", style = MaterialTheme.typography.titleLarge)
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DetailRow("Device", Build.MODEL.ifBlank { "Unknown" })
-                DetailRow("Manufacturer", Build.MANUFACTURER.ifBlank { "Unknown" })
-                DetailRow("Android", "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-                DetailRow("Supported ABIs", Build.SUPPORTED_ABIS.joinToString().ifBlank { "Unknown" })
-                DetailRow("Package", context.packageName)
-            }
+        details.forEach { (label, value) ->
+            content.addView(TextView(this).apply {
+                text = "$label: ${value.ifBlank { "Unknown" }}"
+                textSize = 15f
+                setPadding(0, dp(7), 0, dp(7))
+            })
         }
-        Text(
-            "Next gate: establish a green build, then integrate one renderer and verify visible model pixels before adding generation or AI.",
-            style = MaterialTheme.typography.bodySmall
-        )
+        content.addView(TextView(this).apply {
+            text = "Renderer: NOT STARTED. Open the scene to initialise a real OpenGL ES context."
+            textSize = 14f
+            setPadding(0, dp(18), 0, 0)
+        })
+        setContentView(ScrollView(this).apply { addView(content) })
     }
-}
 
-@Composable
-private fun CapabilityCard(capability: RuntimeCapability) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(capability.name, style = MaterialTheme.typography.titleMedium)
-            Text(capability.status, style = MaterialTheme.typography.labelLarge)
-            if (capability.backend.isNullOrBlank()) {
-                Text("No backend is connected in this build.", style = MaterialTheme.typography.bodySmall)
-            }
+    private fun showViewer() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(12), dp(12), dp(12))
         }
+        root.addView(TextView(this).apply {
+            text = "OpenGL ES interactive test"
+            textSize = 21f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        })
+        root.addView(TextView(this).apply {
+            text = "Drag to rotate • Pinch to zoom • Reset to recenter"
+            textSize = 14f
+            setPadding(0, dp(6), 0, dp(10))
+        })
+        val scene = InteractiveGlView(this)
+        glView = scene
+        root.addView(scene, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f
+        ))
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        controls.addView(Button(this).apply {
+            text = "RESET VIEW"
+            setOnClickListener { scene.renderer.resetView() }
+        })
+        controls.addView(Button(this).apply {
+            text = "BACK"
+            setOnClickListener { scene.onPause(); showHome() }
+        })
+        root.addView(controls)
+        root.addView(TextView(this).apply {
+            text = "Backend: OpenGL ES 2.0 API • Scene: procedural six-face 3D cube • Draw mode: indexed-free triangles"
+            textSize = 12f
+            setPadding(0, dp(8), 0, 0)
+        })
+        setContentView(root)
     }
-}
 
-@Composable
-private fun DetailRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("$label:", fontWeight = FontWeight.SemiBold)
-        Text(value)
+    private fun glEsVersion(): String {
+        val info = packageManager.systemAvailableFeatures.firstOrNull {
+            it.name == null && it.reqGlEsVersion > 0
+        } ?: return "Not reported"
+        val version = info.reqGlEsVersion
+        return "${version shr 16}.${version and 0xffff}"
     }
+
+    override fun onResume() {
+        super.onResume()
+        glView?.onResume()
+    }
+
+    override fun onPause() {
+        glView?.onPause()
+        super.onPause()
+    }
+
+    @Deprecated("Deprecated in Android API 33")
+    override fun onBackPressed() {
+        if (glView != null) showHome() else super.onBackPressed()
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 }
