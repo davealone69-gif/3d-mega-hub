@@ -20,6 +20,7 @@ class MainActivity : Activity() {
     }
 
     private fun showHome() {
+        glView?.onPause()
         glView = null
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -98,7 +99,7 @@ class MainActivity : Activity() {
         })
         controls.addView(Button(this).apply {
             text = "BACK"
-            setOnClickListener { scene.onPause(); showHome() }
+            setOnClickListener { showHome() }
         })
         root.addView(controls)
         root.addView(TextView(this).apply {
