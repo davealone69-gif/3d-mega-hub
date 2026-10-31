@@ -51,6 +51,14 @@ class InteractiveGlView(context: Context) : GLSurfaceView(context) {
 }
 
 class CubeRenderer : GLSurfaceView.Renderer {
+    @Volatile var diagnostics: String = "Waiting for OpenGL context"
+        private set
+    private var frameCount = 0
+    private var lastFpsTime = 0L
+    private var measuredFps = 0f
+    private var glVendor = "Unknown"
+    private var glRenderer = "Unknown"
+    private var glVersion = "Unknown"
     @Volatile private var angleX = 22f
     @Volatile private var angleY = -28f
     @Volatile private var cameraDistance = 6f
@@ -81,15 +89,29 @@ class CubeRenderer : GLSurfaceView.Renderer {
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        glVendor = GLES20.glGetString(GLES20.GL_VENDOR) ?: "Unavailable"
+        glRenderer = GLES20.glGetString(GLES20.GL_RENDERER) ?: "Unavailable"
+        glVersion = GLES20.glGetString(GLES20.GL_VERSION) ?: "Unavailable"
         GLES20.glClearColor(0.055f, 0.075f, 0.11f, 1f)
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
-        program = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
-        positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
-        colorHandle = GLES20.glGetAttribLocation(program, "aColor")
-        matrixHandle = GLES20.glGetUniformLocation(program, "uMvp")
-        val data = buildGeometry()
-        vertices = floatBuffer(data.first)
-        colors = floatBuffer(data.second)
+        try {
+            program = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+            positionHandle = GLES20.glGetAttribLocation(program, "aPosition")
+            colorHandle = GLES20.glGetAttribLocation(program, "aColor")
+            matrixHandle = GLES20.glGetUniformLocation(program, "uMvp")
+            require(positionHandle >= 0 && colorHandle >= 0 && matrixHandle >= 0) {
+                "Required shader attributes/uniforms were not found"
+            }
+            val data = buildGeometry()
+            vertices = floatBuffer(data.first)
+            colors = floatBuffer(data.second)
+            diagnostics = "RENDERER READY • $glRenderer • $glVersion"
+        } catch (failure: Exception) {
+            program = 0
+            diagnostics = "RENDERER FAILED • ${failure.message ?: failure.javaClass.simpleName}"
+        }
+        lastFpsTime = System.nanoTime()
+        frameCount = 0
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -100,6 +122,20 @@ class CubeRenderer : GLSurfaceView.Renderer {
 
     override fun onDrawFrame(gl: GL10?) {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT)
+        val now = System.nanoTime()
+        frameCount++
+        val elapsed = now - lastFpsTime
+        if (elapsed >= 1_000_000_000L) {
+            measuredFps = frameCount * 1_000_000_000f / elapsed
+            frameCount = 0
+            lastFpsTime = now
+            val glError = GLES20.glGetError()
+            diagnostics = if (program == 0) {
+                "RENDERER FAILED • $glRenderer • $glVersion"
+            } else {
+                "RENDERER READY • ${"%.1f".format(java.util.Locale.US, measuredFps)} FPS • $glVendor • $glRenderer • $glVersion • GL error: 0x${glError.toString(16)}"
+            }
+        }
         if (program == 0) return
         Matrix.setLookAtM(view, 0, 0f, 0f, cameraDistance, 0f, 0f, 0f, 0f, 1f, 0f)
         Matrix.setIdentityM(model, 0)
