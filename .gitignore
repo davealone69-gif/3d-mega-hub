@@ -1,0 +1,6 @@
+# Gradle state and generated build outputs
+.gradle/
+**/build/
+
+# Local Android SDK configuration
+local.properties

@@ -4,6 +4,7 @@
     <application
         android:allowBackup="false"
         android:label="3D Mega Hub"
+        android:icon="@drawable/ic_launcher"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
