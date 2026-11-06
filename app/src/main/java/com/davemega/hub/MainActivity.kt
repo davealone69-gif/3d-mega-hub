@@ -50,7 +50,7 @@ private fun MegaHubApp() {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("mega_hub", Context.MODE_PRIVATE) }
     var page by remember { mutableStateOf(HubPage.HOME) }
-    var endpoint by remember { mutableStateOf(prefs.getString("ollama_url", "http://127.0.0.1:11434") ?: "http://127.0.0.1:11434") }
+    var endpoint by remember { mutableStateOf(prefs.getString("ollama_url", "http://localhost:11434") ?: "http://localhost:11434") }
     var model by remember { mutableStateOf(prefs.getString("ollama_model", "llama3.2:1b") ?: "llama3.2:1b") }
     var connection by remember { mutableStateOf("Not checked") }
     var busy by remember { mutableStateOf(false) }
@@ -84,51 +84,103 @@ private fun MegaHubApp() {
     }
 
     fun checkOllama() {
+        val baseUrl = try {
+            OllamaEndpoint.normalize(endpoint)
+        } catch (error: IllegalArgumentException) {
+            connection = error.message ?: "Invalid Ollama endpoint."
+            return
+        }
+        endpoint = baseUrl
+        prefs.edit().putString("ollama_url", baseUrl).apply()
         busy = true
-        connection = "Checking $endpoint ..."
-        thread {
+        connection = "Checking $baseUrl ..."
+        thread(name = "MegaHubOllamaCheck") {
             val result = try {
-                val url = URL(endpoint.trimEnd('/') + "/api/tags")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 3500; readTimeout = 3500; requestMethod = "GET"
+                val conn = (URL("$baseUrl/api/tags").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4_000
+                    readTimeout = 5_000
+                    requestMethod = "GET"
+                    instanceFollowRedirects = false
+                    useCaches = false
+                    setRequestProperty("Accept", "application/json")
                 }
                 try {
-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
+                    val code = conn.responseCode
+                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                    val body = stream?.use { readLimitedResponse(it, 1_048_576) }.orEmpty()
+                    if (code !in 200..299) error("Ollama returned HTTP $code: ${body.take(1_024)}")
                     val names = JSONObject(body).optJSONArray("models")
-                    val count = names?.length() ?: 0
-                    "Connected. Ollama returned $count model(s)."
-                } finally { conn.disconnect() }
-            } catch (e: Exception) { "Connection failed: ${e.message ?: e.javaClass.simpleName}" }
-            (context as? ComponentActivity)?.runOnUiThread { connection = result; busy = false }
+                    "Connected. Ollama returned ${names?.length() ?: 0} model(s)."
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (error: Exception) {
+                "Connection failed: ${error.message ?: error.javaClass.simpleName}"
+            }
+            (context as? ComponentActivity)?.runOnUiThread {
+                connection = result
+                busy = false
+            }
         }
     }
 
     fun sendPrompt() {
+        if (busy) return
         val question = prompt.trim()
-        if (question.isEmpty() || busy) return
+        if (question.isEmpty()) return
+        if (question.length > 32_768) {
+            connection = "Message is too long. Keep it under 32,768 characters."
+            return
+        }
+        val baseUrl = try {
+            OllamaEndpoint.normalize(endpoint)
+        } catch (error: IllegalArgumentException) {
+            connection = error.message ?: "Invalid Ollama endpoint."
+            return
+        }
+        val modelName = try {
+            OllamaEndpoint.validateModel(model)
+        } catch (error: IllegalArgumentException) {
+            connection = error.message ?: "Invalid model name."
+            return
+        }
+        endpoint = baseUrl
+        model = modelName
+        prefs.edit().putString("ollama_url", baseUrl).putString("ollama_model", modelName).apply()
         chat = chat + ChatLine(true, question)
         prompt = ""
         busy = true
         chat = chat + ChatLine(false, "Thinking…")
-        thread {
+        thread(name = "MegaHubOllamaChat") {
             val result = try {
                 val payload = JSONObject()
-                    .put("model", model.trim())
+                    .put("model", modelName)
                     .put("stream", false)
                     .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", question)))
-                val conn = (URL(endpoint.trimEnd('/') + "/api/chat").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8000; readTimeout = 120000; requestMethod = "POST"
+                val conn = (URL("$baseUrl/api/chat").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8_000
+                    readTimeout = 120_000
+                    requestMethod = "POST"
+                    instanceFollowRedirects = false
+                    useCaches = false
                     doOutput = true
-                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
                 }
                 try {
                     conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
-                    val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
-                    val body = stream.bufferedReader().use { it.readText() }
-                    if (conn.responseCode !in 200..299) error("HTTP ${conn.responseCode}: $body")
-                    JSONObject(body).optJSONObject("message")?.optString("content").orEmpty().ifBlank { "Ollama returned an empty response." }
-                } finally { conn.disconnect() }
-            } catch (e: Exception) { "Request failed: ${e.message ?: e.javaClass.simpleName}" }
+                    val code = conn.responseCode
+                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                    val body = stream?.use { readLimitedResponse(it, 4_194_304) }.orEmpty()
+                    if (code !in 200..299) error("Ollama returned HTTP $code: ${body.take(2_048)}")
+                    JSONObject(body).optJSONObject("message")?.optString("content").orEmpty()
+                        .ifBlank { "Ollama returned an empty response." }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (error: Exception) {
+                "Request failed: ${error.message ?: error.javaClass.simpleName}"
+            }
             (context as? ComponentActivity)?.runOnUiThread {
                 chat = chat.dropLast(1) + ChatLine(false, result)
                 busy = false
@@ -191,10 +243,7 @@ private fun MegaHubApp() {
                     OutlinedTextField(endpoint, { endpoint = it }, label = { Text("Ollama URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(model, { model = it }, label = { Text("Model name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = {
-                            prefs.edit().putString("ollama_url", endpoint.trim()).putString("ollama_model", model.trim()).apply()
-                            checkOllama()
-                        }, enabled = !busy) { Text("Test connection") }
+                        Button(onClick = { checkOllama() }, enabled = !busy) { Text("Test connection") }
                         Text(connection, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     }
                     Text("Chat", style = MaterialTheme.typography.titleLarge)
@@ -207,10 +256,7 @@ private fun MegaHubApp() {
                         }
                     }
                     OutlinedTextField(prompt, { prompt = it }, label = { Text("Message your local model") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-                    Button(onClick = {
-                        prefs.edit().putString("ollama_url", endpoint.trim()).putString("ollama_model", model.trim()).apply()
-                        sendPrompt()
-                    }, enabled = !busy && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Working…" else "Send to Ollama") }
+                    Button(onClick = { sendPrompt() }, enabled = !busy && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Working…" else "Send to Ollama") }
                     Text("This sends requests directly to the configured Ollama /api/chat endpoint. It does not use a cloud AI service.", style = MaterialTheme.typography.bodySmall)
                 }
                 HubPage.VOICE -> {
@@ -230,13 +276,36 @@ private fun MegaHubApp() {
                     HubCard("Graphics", "Filament OpenGL ES (Vulkan fallback)", "OpenGL ES is the primary path. Vulkan is attempted only if GLES initialization fails; device rendering remains unverified.")
                     HubCard("AI endpoint", endpoint, "Saved locally on this device.")
                     Button(onClick = {
-                        prefs.edit().putString("ollama_url", endpoint.trim()).putString("ollama_model", model.trim()).apply()
-                        Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
+                        try {
+                            val normalized = OllamaEndpoint.normalize(endpoint)
+                            val validModel = OllamaEndpoint.validateModel(model)
+                            endpoint = normalized
+                            model = validModel
+                            prefs.edit().putString("ollama_url", normalized).putString("ollama_model", validModel).apply()
+                            Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
+                        } catch (error: IllegalArgumentException) {
+                            Toast.makeText(context, error.message ?: "Invalid settings", Toast.LENGTH_LONG).show()
+                        }
                     }, modifier = Modifier.fillMaxWidth()) { Text("Save settings") }
                 }
             }
         }
     }
+}
+
+
+private fun readLimitedResponse(input: java.io.InputStream, maxBytes: Int): String {
+    val output = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(8_192)
+    var total = 0
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        require(total <= maxBytes) { "Ollama response exceeded the $maxBytes-byte safety limit." }
+        output.write(buffer, 0, count)
+    }
+    return output.toString(Charsets.UTF_8.name())
 }
 
 @Composable
