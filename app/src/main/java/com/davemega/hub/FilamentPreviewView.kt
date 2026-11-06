@@ -24,6 +24,7 @@ import com.google.android.filament.gltfio.FilamentAsset
 import com.google.android.filament.gltfio.Gltfio
 import com.google.android.filament.gltfio.ResourceLoader
 import com.google.android.filament.gltfio.UbershaderProvider
+import com.davemega.hub.avatarforge.GlbValidator
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -297,6 +298,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                 }
                 bytes = readBounded(stream)
                 if (bytes!!.isEmpty()) error("Selected GLB is empty")
+                GlbValidator.validate(bytes!!)
             } catch (error: Exception) {
                 failure = error
             }
