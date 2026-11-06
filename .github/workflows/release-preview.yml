@@ -3,7 +3,7 @@ name: Release preview and Android emulator smoke
 on:
   workflow_dispatch:
   push:
-    branches: ["work/engine-integration-candidate", "fix/**"]
+    branches: ["work/engine-integration-candidate"]
   pull_request:
     branches: [main]
     paths:
@@ -16,7 +16,7 @@ on:
       - ".github/scripts/**"
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
