@@ -37,7 +37,9 @@ fun AvatarStudioScreen(
     avatarName: String,
     onImport: () -> Unit,
     onRemove: () -> Unit,
-    onGenerated: (Uri, String) -> Unit
+    onGenerated: (Uri, String) -> Unit,
+    isImporting: Boolean = false,
+    importStatus: String = ""
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -69,8 +71,13 @@ fun AvatarStudioScreen(
                 )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
                 Text("Selected asset: $avatarName", style = MaterialTheme.typography.bodySmall)
+                if (importStatus.isNotBlank()) {
+                    Text(importStatus, style = MaterialTheme.typography.bodySmall)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onImport) { Text("Import GLB") }
+                    Button(onClick = onImport, enabled = !isImporting) {
+                        Text(if (isImporting) "Importing…" else "Import GLB")
+                    }
                     if (avatarUri != null) OutlinedButton(onClick = onRemove) { Text("Use sample model") }
                 }
             }
