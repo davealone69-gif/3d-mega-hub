@@ -1,46 +1,68 @@
 # Project Status
 
-Last updated: 2026-10-31.
+Last updated: 2026-11-06.
 
-## Repository
+## Repository and protected work
 
 - Repository: [davealone69-gif/3d-mega-hub](https://github.com/davealone69-gif/3d-mega-hub)
-- Default branch: `main`, unchanged by this integration work.
-- Candidate branch: `work/engine-integration-candidate`.
-- Candidate PR: [#7](https://github.com/davealone69-gif/3d-mega-hub/pull/7), draft.
-- Previous source PRs #4 (Filament startup) and #5 (AvatarForge core) remain separate and unmerged.
+- Default branch: `main`, last confirmed at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
+- Active branch: [`fix/mega-hub-candidate-hardening`](https://github.com/davealone69-gif/3d-mega-hub/tree/fix/mega-hub-candidate-hardening).
+- Active PR: [#8](https://github.com/davealone69-gif/3d-mega-hub/pull/8).
+- Hardening started from confirmed candidate `7ba8526850ef85a3288c4984a82775ac08c77a65`.
+- Previous candidate PR #7 remains open and untouched.
+- The separate dirty renderer checkout was not touched. No force-push or merge into `main` was performed.
 
-## Candidate source
+## Integrated source
 
-| Component | Source |
+| Component | Source / evidence |
 |---|---|
-| Filament host/viewer base | `work/filament-renderer-live-diagnostics` at `2a1352c5994a42a586a929d995a33fcb4f6ebd67` |
-| AvatarForge host module | `work/avatarforge-core-integration` at `731bd31bf431cf391cb052d1c06d49e0c7255ba9` |
-| AvatarForge donor pin | `work/android-engine-dev` at `9e36197ace3b18faa6c566d93f8fce89b185c45d` |
-| Filament Android / gltfio | `1.71.5`, Apache 2.0 |
-| Bundled GLB fixture | `app/src/main/assets/models/female.glb`, provenance in `THIRD_PARTY_NOTICES.md` |
+| Filament host/viewer | Candidate source, Filament Android/gltfio 1.71.5 |
+| AvatarForge Android library | `:avatarforge-engine`, JNI/C++ kernel, Kotlin facade and resource governor |
+| Bundled GLB fixture | `app/src/main/assets/models/female.glb` |
+| Fixture provenance | 3DDD revision `be5bf17d8afe46247646465941fa1b7317d8e415`; matching Git blob `a1c00c6b31f6ab0db3b2e68243526cb2d0e15967` |
+| Filament licence | Apache License 2.0 |
+| Fixture licence statement | 3DDD README at the pinned revision states generated base rigs are original work released under CC0 |
 
-The AvatarForge donor pin is older than the current donor fixes in progress. Refresh the module after the updated AvatarForge source is pushed and reviewed.
+The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d`. It is older than fixes in progress in the standalone AvatarForge repository; refresh only after the donor changes are pushed and reviewed.
+
+## Hardening changes
+
+- Ollama endpoint validation: HTTP limited to loopback; remote endpoints require HTTPS; credentials, paths, query strings and fragments rejected.
+- Ollama requests: redirects disabled, connection/read timeouts, model-name and prompt bounds, response-size limits.
+- Android network security: cleartext denied by default, loopback exception only.
+- GLB validation: GLB v2 magic/version/length, chunk alignment and bounds, JSON chunk and glTF asset version checks; maximum 128 MiB.
+- Generated output: native output is staged, validated and atomically moved into app-private avatar storage; native statistics are checked against geometry and memory-budget invariants.
+- Imported output: content-provider input is copied to app-private storage, size-limited, validated and atomically published. It no longer depends on a possibly non-persistable document URI.
+- UI: prompt bounded to 500 characters, parser warnings surfaced, and conflicting import/remove/generate actions disabled.
+- Renderer: status logging added for diagnosable GLB-load and frame checkpoints.
+- Emulator workflow: standalone Bash script, GLES-specific frame assertion, diagnostic screenshot/log capture, concurrency cancellation and bounded job runtime.
 
 ## Evidence-based status
 
-| Area | Status | Evidence / remaining gate |
+| Gate | Status | Evidence |
 |---|---|---|
-| Native generation module source | **INTEGRATED IN CANDIDATE** | JNI/C++ core, Kotlin facade, spec, resource governor and module tests are present. |
-| Generation UI | **IMPLEMENTED IN SOURCE, UNVERIFIED** | User-triggered prompt generation, cancellation, and status display are wired to `AvatarForgeEngine.generate`. No phone run yet. |
-| Filament GLB viewer | **IMPLEMENTED IN SOURCE, UNVERIFIED** | gltfio asset/resource loading, bundled sample, self-contained GLB loading, bounds-based camera framing and first-animation playback are wired. Visible pixels are not proven by CI. |
-| Backend selection | **IMPLEMENTED IN SOURCE, UNVERIFIED** | GLES is primary; Vulkan is optional fallback. Actual backend is only known after successful session initialization. |
-| Combined unit tests | **PENDING** | Must run against the exact candidate HEAD. |
-| Combined Android lint | **PENDING** | Must run against the exact candidate HEAD. |
-| Combined debug APK | **PENDING** | Must assemble on the exact candidate HEAD and publish artifact plus SHA-256. |
-| Release R8/minification | **PENDING** | Must pass against the exact candidate HEAD. |
-| Samsung SM-S921B runtime | **UNVERIFIED** | Requires install and in-app verification. No USB/ADB assumption. |
-| Release signing | **BLOCKED** | Release keystore file and valid signing credentials are not available in the repository. Do not substitute a debug key. |
-| Embedded LLM | **MISSING** | Ollama remains an external endpoint. |
-| Photo-to-identity reconstruction | **MISSING** | The deterministic prompt parser is not image reconstruction. |
-| Voice lip-sync / visemes | **MISSING** | Android TTS exists; viseme and avatar synchronization do not. |
-| External-resource `.gltf` | **MISSING** | First viewer pass accepts self-contained GLB only. |
+| Ollama endpoint utility | **REAL + VERIFIED** | Kotlin compiler smoke passed; Android unit tests passed on revision `34201cb`. Actual phone-to-Ollama connection remains unverified. |
+| GLB validator | **REAL + VERIFIED** | Kotlin compile/synthetic GLB checks passed; Android unit tests passed on revision `34201cb`; actual bundled `female.glb` (418,556 bytes) passes the validator. |
+| Native GLB atomic publication | **IMPLEMENTED, BUILD VERIFIED ON EARLIER REVISION** | Release preview build at `877f73d` compiled the engine and produced APK/AAB. Latest head still requires CI. |
+| Durable GLB import path | **IMPLEMENTED, UNVERIFIED ON LATEST HEAD** | Source copied to private storage, bounded, validated and atomically moved; latest-head Android build pending. |
+| Android unit tests | **PARTIAL** | Passed on `34201cb`; exact current PR head still pending. |
+| Android lint | **PARTIAL** | Passed on `34201cb`; exact current PR head still pending. |
+| Debug APK build | **PARTIAL** | Passed on `34201cb`; exact current PR head still pending. |
+| Release R8/minification | **PARTIAL** | Passed on `34201cb`; exact current PR head still pending. |
+| Signed preview APK + AAB | **REAL + VERIFIED ON EARLIER REVISION** | Revision `877f73d`; APK and AAB built, signatures checked, SHA-256 recorded. These use a one-run ephemeral key and are not production releases. |
+| Emulator install/launch/GLB/GLES smoke | **PENDING** | Earlier smoke failed before APK install because the action executed script lines in separate shells. A standalone Bash script now fixes that harness defect; corrected run pending. |
+| Visible model pixels | **UNVERIFIED** | Requires inspection of the corrected emulator screenshot and then the Samsung phone. A submitted frame alone is insufficient. |
+| Samsung SM-S921B runtime | **UNVERIFIED** | Must install and exercise the current build on the user's phone. No USB/ADB access assumed. |
+| Production signing | **BLOCKED** | No authorized user-owned release keystore/credentials configured. Do not substitute debug or ephemeral keys. |
+| Embedded LLM | **MISSING** | Ollama remains external. |
+| Photo-to-identity reconstruction | **MISSING** | Deterministic prompt parser is not image reconstruction. |
+| Voice lip-sync / visemes | **MISSING** | Android TTS exists; viseme extraction and avatar synchronization do not. |
+| External-resource `.gltf` | **MISSING** | Self-contained GLB only. |
+
+## Bundled fixture limits
+
+The bundled `female.glb` is a renderer fixture, not a complete rigged avatar: one mesh, one node, seven morph targets, zero skins, zero animations and zero embedded images. It proves neither generated-avatar quality nor skeletal/facial animation. The GLB container validator accepts the fixture, but Filament runtime and visible pixels must be proven separately.
 
 ## Current gate
 
-The first combined candidate has been pushed. Do not merge PR #7 or call the app fixed until combined CI passes, a fresh APK is built and hashed, and the installed app is exercised on the Samsung phone. A passing CI run does not prove visible model pixels or real-device generation.
+Do not merge PR #8 or call the app fixed until the exact current HEAD passes unit tests, lint, debug APK, R8, signed preview APK/AAB and the corrected emulator smoke. Inspect the emulator screenshot for actual model pixels. Then install and test on Samsung SM-S921B, including Ollama, generation, import, animation, lifecycle, memory and thermal behaviour. A passing CI build or emulator is not a substitute for the phone test.
