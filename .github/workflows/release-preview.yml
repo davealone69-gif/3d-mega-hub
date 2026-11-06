@@ -13,6 +13,11 @@ on:
       - "*.gradle.kts"
       - "gradle.properties"
       - ".github/workflows/release-preview.yml"
+      - ".github/scripts/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
