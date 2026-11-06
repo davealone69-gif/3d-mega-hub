@@ -62,7 +62,7 @@ if grep -E "FATAL EXCEPTION|Fatal signal|Process: com.davemega.hub" emulator-dia
 fi
 
 adb shell run-as com.davemega.hub cat shared_prefs/renderer_diagnostics.xml > emulator-diagnostics/renderer-preferences.xml
-grep -q "frame submitted" emulator-diagnostics/renderer-preferences.xml
+grep -q "Filament OpenGL ES frame submitted" emulator-diagnostics/renderer-preferences.xml
 adb exec-out screencap -p > emulator-diagnostics/avatar-studio-screen.png
 test -s emulator-diagnostics/avatar-studio-screen.png
 {
