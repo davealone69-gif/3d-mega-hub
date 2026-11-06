@@ -26,7 +26,7 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 
 ## Known boundaries and missing features
 
-- The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d`, older than fixes in progress in the standalone AvatarForge repository. Refresh only after those donor changes are pushed and reviewed.
+- The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `work/android-engine-dev`. It is **divergent**, not a fast-forward ancestor, of the standalone AvatarForge RB-01 line (`0e782166…` / `fc30efd0…`). Several generation-core files differ in both directions. No wholesale replacement was attempted; any core-only port needs a file-by-file API review and native tests. AvatarForge remains a separate project.
 - Prompt generation is deterministic native parsing, not photo-to-identity reconstruction and not an embedded LLM.
 - External-resource `.gltf` is unsupported; the current viewer path is self-contained GLB.
 - Voice lip-sync/visemes are missing.
