@@ -41,9 +41,12 @@ private data class ChatLine(val fromUser: Boolean, val text: String)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val startPage = resolveHubStartPage(
+            openAvatarStudio = intent.getBooleanExtra(EXTRA_OPEN_AVATAR_STUDIO, false)
+        )
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { MegaHubApp() }
+                Surface(Modifier.fillMaxSize()) { MegaHubApp(startPage) }
             }
         }
     }
@@ -51,10 +54,12 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MegaHubApp() {
+private fun MegaHubApp(startPage: HubStartPage) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("mega_hub", Context.MODE_PRIVATE) }
-    var page by remember { mutableStateOf(HubPage.HOME) }
+    var page by remember {
+        mutableStateOf(if (startPage == HubStartPage.AVATAR) HubPage.AVATAR else HubPage.HOME)
+    }
     var endpoint by remember { mutableStateOf(prefs.getString("ollama_url", "http://localhost:11434") ?: "http://localhost:11434") }
     var model by remember { mutableStateOf(prefs.getString("ollama_model", "llama3.2:1b") ?: "llama3.2:1b") }
     var connection by remember { mutableStateOf("Not checked") }
