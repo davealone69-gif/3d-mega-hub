@@ -139,6 +139,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     private fun reportStatus(value: String) {
         lastStatus = value
+        Log.i(TAG, "Renderer status: $value")
         statusListener?.invoke(value)
     }
 
