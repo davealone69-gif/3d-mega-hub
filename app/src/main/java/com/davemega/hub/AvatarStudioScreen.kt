@@ -87,7 +87,7 @@ fun AvatarStudioScreen(
                 }
                 OutlinedTextField(
                     value = generationPrompt,
-                    onValueChange = { generationPrompt = it },
+                    onValueChange = { generationPrompt = it.take(500) },
                     label = { Text("Describe your avatar") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3
@@ -104,7 +104,8 @@ fun AvatarStudioScreen(
                                     prompt = generationPrompt.trim()
                                 )
                                 onGenerated(Uri.fromFile(result.file), result.file.name)
-                                generationStatus = "Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB"
+                                val warning = result.promptMatchWarning?.let { " · WARNING: $it" }.orEmpty()
+                                generationStatus = "Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB$warning"
                             } catch (cancelled: CancellationException) {
                                 generationStatus = "Generation cancelled."
                             } catch (failure: Exception) {
