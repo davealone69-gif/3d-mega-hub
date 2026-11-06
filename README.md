@@ -1,58 +1,46 @@
 # 3D Mega Hub
 
-**Android-first avatar studio with an integrated AI assistant and a real 3D runtime.**
+**Status: integration hardening in progress. Not ready to merge or call fixed.**
 
-This repository is the new product host. Existing repositories remain independent donor/source projects until their code, dependencies, licences, tests, and build status have been checked. No donor is considered integrated merely because its files or documentation were copied.
+## Current working branch
 
-## Product goals
+- Branch: [`fix/mega-hub-candidate-hardening`](https://github.com/davealone69-gif/3d-mega-hub/tree/fix/mega-hub-candidate-hardening)
+- Review PR: [#8](https://github.com/davealone69-gif/3d-mega-hub/pull/8)
+- Current hardening base: `7ba8526850ef85a3288c4984a82775ac08c77a65`
+- `main` remains unchanged. Earlier candidate PR #7 is left open and untouched.
 
-- Render and manage customizable 3D avatars on Android.
-- Integrate an AI assistant that can run on-device where a compatible model/runtime fits the target device; make network/provider backends optional rather than silently required.
-- Support avatar voice, expressions, animation, and lip-sync through explicit interfaces.
-- Provide avatar import/export, a persistent library, generation-job status, resource controls, and useful diagnostics.
-- Prioritize the Samsung SM-S921B / Exynos 2400 target and a reliable OpenGL ES path. Vulkan remains optional until verified on the actual device.
-- Ship a reproducible Android build, with an AAB as the primary release artifact and a signed APK for installation/testing. Never commit signing secrets.
+## What is wired in source
 
-## Blueprint and audit records
+- **AvatarForge generation:** isolated `:avatarforge-engine` Android library, JNI bridge and C++ generation kernel. Avatar Studio exposes prompt generation, cancellation, resource/thermal checks, native-result validation and atomic publication of validated GLBs.
+- **3D viewer:** Filament gltfio loads the bundled GLB fixture and self-contained imported/generated GLBs. It frames the camera from asset bounds and plays the first animation when present.
+- **Graphics backend:** OpenGL ES is primary. Vulkan remains an optional fallback only after a complete GLES session fails.
+- **Avatar imports:** selected GLBs are copied into app-private storage, size-limited and structurally validated before use. The viewer rejects external-resource `.gltf` files.
+- **Local AI:** Ollama remains an external service, not an embedded LLM. Plain HTTP is restricted to loopback; remote endpoints require HTTPS.
+- **Voice:** Android TextToSpeech output is connected. Viseme extraction and avatar lip-sync are not connected.
 
-- [Master blueprint](docs/MASTER_BLUEPRINT.md): product architecture, renderer decision, integration phases and release gates.
-- [Integration plan](docs/INTEGRATION_PLAN.md): staged work checklist.
-- [Donor baseline](docs/DONOR_BASELINE.md): inspected branch commits, CI evidence, known blockers and licence questions.
+## Important sample-model limitation
 
-## Initial donor map (candidates, not yet integrated)
+The bundled `female.glb` is a renderer fixture, not proof of a complete rigged avatar. Inspection of the exact bundled file shows one mesh, one node, seven morph targets, zero skins, zero animations and zero embedded images. It can exercise GLB loading/rendering, but it does not prove skeletal animation, facial animation, texture quality or generated-avatar quality.
 
-| Source repository | Candidate contribution | Required before adoption |
-|---|---|---|
-| [AvatarForge](https://github.com/davealone69-gif/AvatarForge) | Native avatar kernel, C ABI, Kotlin SDK, rigging/blendshapes and diagnostics | Select intended branch by exact SHA; compile native and Android targets; verify renderer on device; clarify source licence |
-| [3DDD](https://github.com/davealone69-gif/3DDD) | Filament viewport, glTF/GLB, materials, skinning, animation and export | Resolve current CI failures; inspect dependency/licence compatibility and regression coverage |
-| [Aaa](https://github.com/davealone69-gif/Aaa) | SDK/provider boundaries, model management, jobs, resource governance and persistence patterns | Verify working implementations and API contracts |
-| [Grok-Girls](https://github.com/davealone69-gif/Grok-Girls) | Renderer regression cases and optional provider/voice adapters | Compare branch commits; keep external server integration optional |
-| [Aura-Studio-Avatar](https://github.com/davealone69-gif/Aura-Studio-Avatar) | Avatar library/designer and management patterns | Verify source, build, tests, and licence |
+The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646465941fa1b7317d8e415` (Git blob `a1c00c6b31f6ab0db3b2e68243526cb2d0e15967`). The donor README at that revision states the generated base rigs are original work released under CC0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-This is a starting map from prior audits, not a claim that every repository or branch has been fully re-audited. Heavy 3D generation models are not assumed to run locally on the phone; their requirements and any remote-provider boundary must be explicit.
+## Known boundaries and missing features
 
-## Engineering rules
+- The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `work/android-engine-dev`. It is **divergent**, not a fast-forward ancestor, of the standalone AvatarForge RB-01 line (`0e782166…` / `fc30efd0…`). Several generation-core files differ in both directions. No wholesale replacement was attempted; any core-only port needs a file-by-file API review and native tests. AvatarForge remains a separate project.
+- Prompt generation is deterministic native parsing, not photo-to-identity reconstruction and not an embedded LLM.
+- External-resource `.gltf` is unsupported; the current viewer path is self-contained GLB.
+- Voice lip-sync/visemes are missing.
+- The bundled fixture is not a rigged/animated model.
+- Samsung SM-S921B runtime, visible pixels, real-device generation, import lifecycle, memory and thermal behaviour remain **UNVERIFIED**.
 
-1. Preserve all donor repositories and their branches.
-2. Inspect the current default branch and recent commits before choosing source code.
-3. Prefer tested, minimal integrations over wholesale merges.
-4. Do not ship mock AI, fake controls, placeholder success states, or dummy services.
-5. Show unavailable capabilities as unavailable, with actionable diagnostics.
-6. Keep secrets out of source control. Do not weaken main history with force pushes.
-7. A green CI build is not a green device build.
+## Verification
 
-## Verification labels
+- Earlier exact revision `34201cb16154958ae2379be6ce485856806d4bbc`: Android unit tests, lint, debug APK build and R8/minification all passed.
+- Earlier exact revision `877f73d10756cd9a61a99724aaa37b1e63a6df0f`: signed preview APK and AAB built; signature verification and SHA-256 provenance passed. The ephemeral preview key is not a production signing identity.
+- The earlier emulator smoke failed in its shell harness before APK installation. It did **not** establish an app crash. The harness has been replaced with a single Bash script that checks Avatar Studio, GLB load and an OpenGL ES frame.
+- Current hardening HEAD and corrected emulator smoke are pending fresh CI evidence.
+- Production release signing is **BLOCKED** until a user-owned production keystore is configured through protected CI secrets. Never substitute the debug key or a one-run preview key.
 
-- **REAL + VERIFIED**: implementation exists and the stated test was run successfully.
-- **UNVERIFIED**: code or documentation exists, but the required test has not been run.
-- **PARTIAL**: some parts work; named gaps remain.
-- **MISSING**: not implemented.
-- **BLOCKED**: a concrete dependency or access limitation prevents the next check.
+## Existing older debug build
 
-## Current baseline
-
-- Repository created and writable: **verified**.
-- Product scope and donor shortlist: **documented; source integration not yet verified**.
-- Android project compilation: **not yet verified in this repository**.
-- On-device renderer, embedded LLM, voice/lip-sync: **not yet verified in this repository**.
-- Release signing and installable artifacts: **not yet configured or verified**.
+[Download the previously published debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk). This is an older troubleshooting build, not the current integration candidate and not a production release.

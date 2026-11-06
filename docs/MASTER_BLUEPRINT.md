@@ -23,7 +23,7 @@
 
 ## Renderer decision
 
-**First path to evaluate: Filament on OpenGL ES. Vulkan is optional, not a requirement.**
+**Preferred path: Filament on Vulkan, with OpenGL ES as an automatic fallback.** The target Galaxy S24's separate Vulkan Checker reports Vulkan 1.3.304; that confirms device capability, not app runtime. Startup attempts to initialize the complete Filament Vulkan session first, then retries with OpenGL ES if setup fails. The fallback and visible rendering still require verification on the phone.
 
 The 3DDD source declares Filament Android dependencies and contains a dedicated renderer, model loader, material factory, camera, environment, offscreen capture and instrumented runtime tests. Its test suite includes checks for a real graphics backend and visible pixels, not just a nonzero FPS value. This is promising source evidence, not a successful build or proof it works on the target phone.
 
