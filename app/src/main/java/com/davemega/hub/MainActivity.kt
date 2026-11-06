@@ -21,10 +21,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.davemega.hub.avatarforge.GlbValidator
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.net.URL
 import java.util.Locale
+import java.util.UUID
 import kotlin.concurrent.thread
 
 private enum class HubPage(val label: String) {
@@ -58,6 +63,8 @@ private fun MegaHubApp() {
     var chat by remember { mutableStateOf(listOf<ChatLine>()) }
     var avatarUri by remember { mutableStateOf(prefs.getString("avatar_uri", null)?.let(Uri::parse)) }
     var avatarName by remember { mutableStateOf(prefs.getString("avatar_name", "Built-in sample model") ?: "Built-in sample model") }
+    var avatarImporting by remember { mutableStateOf(false) }
+    var avatarImportStatus by remember { mutableStateOf("Imported GLB files are copied into app-private storage and validated before use.") }
     var voiceText by remember { mutableStateOf("Hello. Your 3D Mega Hub voice output is ready.") }
     var voiceStatus by remember { mutableStateOf("Android text-to-speech is available on this device.") }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
@@ -72,15 +79,60 @@ private fun MegaHubApp() {
         onDispose { engine.stop(); engine.shutdown(); tts = null }
     }
 
-    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
+    fun importAvatar(uri: Uri) {
+        if (avatarImporting) return
+        val activity = context as? ComponentActivity ?: return
+        avatarImporting = true
+        avatarImportStatus = "Copying and validating selected GLB…"
+        thread(name = "MegaHubAvatarImport") {
+            var temporaryFile: File? = null
             try {
-                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (_: Exception) { }
-            avatarUri = uri
-            avatarName = uri.lastPathSegment?.substringAfterLast('/') ?: "Imported avatar file"
-            prefs.edit().putString("avatar_uri", uri.toString()).putString("avatar_name", avatarName).apply()
+                val directory = File(context.filesDir, "avatars")
+                check(directory.isDirectory || directory.mkdirs()) { "Could not create the private avatar library directory." }
+                temporaryFile = File.createTempFile("imported-avatar-", ".glb.part", directory)
+                val input = context.contentResolver.openInputStream(uri)
+                    ?: error("Android could not open the selected document.")
+                input.use { source ->
+                    temporaryFile.outputStream().use { target ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val count = source.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            require(total <= GlbValidator.MAX_GLB_BYTES) {
+                                "GLB exceeds the ${GlbValidator.MAX_GLB_BYTES / (1024L * 1024L)} MiB import limit."
+                            }
+                            target.write(buffer, 0, count)
+                        }
+                    }
+                }
+                GlbValidator.validate(temporaryFile)
+                val fileName = "imported-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}.glb"
+                val destination = File(directory, fileName)
+                Files.move(temporaryFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                temporaryFile = null
+                activity.runOnUiThread {
+                    avatarUri = Uri.fromFile(destination)
+                    avatarName = fileName
+                    prefs.edit().putString("avatar_uri", avatarUri.toString())
+                        .putString("avatar_name", fileName).apply()
+                    avatarImporting = false
+                    avatarImportStatus = "Imported and structurally validated · ${destination.length() / 1024L} KiB"
+                }
+            } catch (failure: Exception) {
+                temporaryFile?.delete()
+                activity.runOnUiThread {
+                    avatarImporting = false
+                    avatarImportStatus = "Import failed: ${failure.message ?: failure.javaClass.simpleName}"
+                    Toast.makeText(context, avatarImportStatus, Toast.LENGTH_LONG).show()
+                }
+            }
         }
+    }
+
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importAvatar(uri)
     }
 
     fun checkOllama() {
@@ -235,7 +287,9 @@ private fun MegaHubApp() {
                             avatarName = name
                             prefs.edit().putString("avatar_uri", uri.toString())
                                 .putString("avatar_name", name).apply()
-                        }
+                        },
+                        isImporting = avatarImporting,
+                        importStatus = avatarImportStatus
                     )
                 }
                 HubPage.AI -> {
