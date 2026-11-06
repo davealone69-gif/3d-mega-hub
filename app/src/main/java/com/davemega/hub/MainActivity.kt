@@ -113,21 +113,25 @@ private fun MegaHubApp() {
                 val destination = File(directory, fileName)
                 Files.move(outputFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
                 temporaryFile = null
-                activity.runOnUiThread {
-                    val importedUri = Uri.fromFile(destination)
-                    avatarUri = importedUri
-                    avatarName = fileName
-                    prefs.edit().putString("avatar_uri", importedUri.toString())
-                        .putString("avatar_name", fileName).apply()
-                    avatarImporting = false
-                    avatarImportStatus = "Imported and structurally validated · ${destination.length() / 1024L} KiB"
+                val importedUri = Uri.fromFile(destination)
+                prefs.edit().putString("avatar_uri", importedUri.toString())
+                    .putString("avatar_name", fileName).apply()
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread {
+                        avatarUri = importedUri
+                        avatarName = fileName
+                        avatarImporting = false
+                        avatarImportStatus = "Imported and structurally validated · ${destination.length() / 1024L} KiB"
+                    }
                 }
             } catch (failure: Exception) {
                 temporaryFile?.delete()
-                activity.runOnUiThread {
-                    avatarImporting = false
-                    avatarImportStatus = "Import failed: ${failure.message ?: failure.javaClass.simpleName}"
-                    Toast.makeText(context, avatarImportStatus, Toast.LENGTH_LONG).show()
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread {
+                        avatarImporting = false
+                        avatarImportStatus = "Import failed: ${failure.message ?: failure.javaClass.simpleName}"
+                        Toast.makeText(context, avatarImportStatus, Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
