@@ -12,7 +12,7 @@ import java.nio.charset.StandardCharsets
  * Bounded structural validation for generated glTF Binary (GLB) files.
  * This catches truncated or malformed native output before it enters the avatar library.
  */
-internal object GlbValidator {
+object GlbValidator {
     private const val GLB_MAGIC = 0x46546C67L
     private const val JSON_CHUNK = 0x4E4F534AL
     private const val MAX_JSON_CHUNK_BYTES = 16L * 1024L * 1024L
