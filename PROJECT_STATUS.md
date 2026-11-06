@@ -23,7 +23,7 @@ Last updated: 2026-11-06.
 | Filament licence | Apache License 2.0 |
 | Fixture licence statement | 3DDD README at the pinned revision states generated base rigs are original work released under CC0 |
 
-The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d`. It is older than fixes in progress in the standalone AvatarForge repository; refresh only after the donor changes are pushed and reviewed.
+The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `work/android-engine-dev`. It diverges from the standalone AvatarForge RB-01 line (`0e78216643d1a305be7d278011d6732e56d62d62` / merge `fc30efd0db3d7892cfee388a783508ea18f32471`): the comparison reports 48 commits unique to RB-01 and 138 unique to the donor side. Multiple generation-core files differ in both directions. Do not wholesale copy either tree. Any update must be a controlled core-only port with API review and native tests; AvatarForge remains standalone.
 
 ## Hardening changes
 
