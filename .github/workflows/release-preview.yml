@@ -3,7 +3,7 @@ name: Release preview and Android emulator smoke
 on:
   workflow_dispatch:
   push:
-    branches: ["work/engine-integration-candidate"]
+    branches: ["work/engine-integration-candidate", "fix/**"]
   pull_request:
     branches: [main]
     paths:
@@ -117,14 +117,11 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data
           emulator-boot-timeout: 900
           script: |
-            set -euo pipefail
+            set -eu
             adb wait-for-device
-            for attempt in $(seq 1 180); do
-              BOOTED="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
-              if [ "$BOOTED" = "1" ]; then break; fi
-              sleep 5
-            done
-            test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1"
+            # The emulator action waits for boot; assert readiness without a shell loop.
+            BOOTED="$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"
+            test "$BOOTED" = "1"
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb shell am force-stop com.davemega.hub
             adb shell am start -W -n com.davemega.hub/.MainActivity
