@@ -142,7 +142,9 @@ object AvatarForgeEngine {
                 check(result[0] in 1..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid vertex count." }
                 check(result[1] in 1..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid index count." }
                 check(result[2] in 1..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid triangle count." }
-                check(result[3] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid submesh count." }
+                check(result[1] >= result[2] * 3L) { "AvatarForge index count is inconsistent with its triangle count." }
+                check(result[3] in 1..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid submesh count." }
+                check(result[8] <= budget) { "AvatarForge reported peak field memory above its assigned budget." }
                 check(result[4] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid joint count." }
                 check(result[5] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid blendshape count." }
                 check(result[9] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid prompt-match count." }
