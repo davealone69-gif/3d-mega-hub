@@ -75,10 +75,10 @@ fun AvatarStudioScreen(
                     Text(importStatus, style = MaterialTheme.typography.bodySmall)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onImport, enabled = !isImporting) {
+                    Button(onClick = onImport, enabled = !isImporting && !generating) {
                         Text(if (isImporting) "Importing…" else "Import GLB")
                     }
-                    if (avatarUri != null) OutlinedButton(onClick = onRemove) { Text("Use sample model") }
+                    if (avatarUri != null) OutlinedButton(onClick = onRemove, enabled = !isImporting && !generating) { Text("Use sample model") }
                 }
             }
         }
@@ -122,7 +122,7 @@ fun AvatarStudioScreen(
                             }
                         }
                     },
-                    enabled = engineHealth.usable && !generating && generationPrompt.isNotBlank(),
+                    enabled = engineHealth.usable && !generating && !isImporting && generationPrompt.isNotBlank(),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (generating) "Generating…" else "Generate avatar")
