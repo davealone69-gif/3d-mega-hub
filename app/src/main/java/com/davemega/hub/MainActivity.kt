@@ -89,11 +89,12 @@ private fun MegaHubApp() {
             try {
                 val directory = File(context.filesDir, "avatars")
                 check(directory.isDirectory || directory.mkdirs()) { "Could not create the private avatar library directory." }
-                temporaryFile = File.createTempFile("imported-avatar-", ".glb.part", directory)
+                val outputFile = File.createTempFile("imported-avatar-", ".glb.part", directory)
+                temporaryFile = outputFile
                 val input = context.contentResolver.openInputStream(uri)
                     ?: error("Android could not open the selected document.")
                 input.use { source ->
-                    temporaryFile.outputStream().use { target ->
+                    outputFile.outputStream().use { target ->
                         val buffer = ByteArray(64 * 1024)
                         var total = 0L
                         while (true) {
@@ -107,15 +108,16 @@ private fun MegaHubApp() {
                         }
                     }
                 }
-                GlbValidator.validate(temporaryFile)
+                GlbValidator.validate(outputFile)
                 val fileName = "imported-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}.glb"
                 val destination = File(directory, fileName)
-                Files.move(temporaryFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                Files.move(outputFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
                 temporaryFile = null
                 activity.runOnUiThread {
-                    avatarUri = Uri.fromFile(destination)
+                    val importedUri = Uri.fromFile(destination)
+                    avatarUri = importedUri
                     avatarName = fileName
-                    prefs.edit().putString("avatar_uri", avatarUri.toString())
+                    prefs.edit().putString("avatar_uri", importedUri.toString())
                         .putString("avatar_name", fileName).apply()
                     avatarImporting = false
                     avatarImportStatus = "Imported and structurally validated · ${destination.length() / 1024L} KiB"
