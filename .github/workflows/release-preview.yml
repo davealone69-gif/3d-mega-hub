@@ -125,17 +125,32 @@ jobs:
             adb install -r app/build/outputs/apk/debug/app-debug.apk
             adb shell am force-stop com.davemega.hub
             adb shell am start -W -n com.davemega.hub/.MainActivity
-            sleep 10
+            sleep 5
             adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | grep -q "com.davemega.hub"
             PID="$(adb shell pidof -s com.davemega.hub | tr -d '\r')"
             test -n "$PID"
+
+            # Open Avatar Studio using display metrics instead of a fixed emulator resolution.
+            DISPLAY_SIZE="$(adb shell wm size | awk -F': ' '/Physical size/{print $2}' | tr -d '\r')"
+            SCREEN_W="${DISPLAY_SIZE%x*}"
+            SCREEN_H="${DISPLAY_SIZE#*x}"
+            DENSITY="$(adb shell wm density | awk -F': ' '/Physical density/{print $2}' | tr -d '\r')"
+            test -n "$SCREEN_W" && test -n "$SCREEN_H" && test -n "$DENSITY"
+            AVATAR_X=$((SCREEN_W * 3 / 10))
+            AVATAR_Y=$((SCREEN_H - (64 * DENSITY / 160)))
+            adb shell input tap "$AVATAR_X" "$AVATAR_Y"
+            sleep 15
+
             adb logcat --pid="$PID" -d > emulator-diagnostics/app-logcat.txt
             if grep -E "FATAL EXCEPTION|Fatal signal|Process: com.davemega.hub" emulator-diagnostics/app-logcat.txt; then
               echo "Application crash detected in app-scoped emulator logcat"
               exit 1
             fi
-            adb exec-out screencap -p > emulator-diagnostics/launch-screen.png
-            printf 'INSTALL=PASS\nLAUNCH=PASS\nPROCESS_ID=%s\n' "$PID" > emulator-diagnostics/result.txt
+            grep -q "GLB loaded and GPU resources submitted" emulator-diagnostics/app-logcat.txt
+            adb shell run-as com.davemega.hub cat shared_prefs/renderer_diagnostics.xml > emulator-diagnostics/renderer-preferences.xml
+            grep -q "frame submitted" emulator-diagnostics/renderer-preferences.xml
+            adb exec-out screencap -p > emulator-diagnostics/avatar-studio-screen.png
+            printf 'INSTALL=PASS\nLAUNCH=PASS\nAVATAR_STUDIO=OPENED\nGLB_LOAD=PASS\nRENDER_FRAME=SUBMITTED\nPROCESS_ID=%s\n' "$PID" > emulator-diagnostics/result.txt
       - uses: actions/upload-artifact@v7
         if: always()
         with:
