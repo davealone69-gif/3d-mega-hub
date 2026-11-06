@@ -95,6 +95,7 @@ jobs:
   emulator-launch:
     name: Android emulator install and launch smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v6
