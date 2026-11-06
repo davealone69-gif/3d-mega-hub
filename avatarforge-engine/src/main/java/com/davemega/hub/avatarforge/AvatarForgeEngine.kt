@@ -2,6 +2,8 @@ package com.davemega.hub.avatarforge
 
 import android.content.Context
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runInterruptible
 
@@ -118,26 +120,43 @@ object AvatarForgeEngine {
         val directory = File(appContext.filesDir, "avatars")
         check(directory.isDirectory || directory.mkdirs()) { "Could not create the private avatar library directory" }
         val destination = File(directory, outputName)
-        check(destination.createNewFile()) { "Avatar output already exists: $outputName" }
+        check(!destination.exists()) { "Avatar output already exists: $outputName" }
+        val temporaryOutput = File.createTempFile("avatar-${spec.seed}-", ".glb.part", directory)
 
         val stats = try {
             NativeMethods.generate(
                 ints = spec.packInts(),
                 floats = spec.packFloats(),
                 prompt = safePrompt,
-                outputPath = destination.absolutePath,
+                outputPath = temporaryOutput.absolutePath,
                 memoryBudgetBytes = budget,
                 adultModeConfirmed = spec.adultModeConfirmed,
                 cancellationToken = NativeCancellationToken(),
             ).also { result ->
                 check(result.size == 10) { "AvatarForge returned ${result.size} result fields; expected 10" }
-                check(destination.isFile && destination.length() > 0L) {
+                check(result.all { it >= 0L }) { "AvatarForge returned a negative statistic." }
+                check(temporaryOutput.isFile && temporaryOutput.length() > 0L) {
                     "AvatarForge reported success but no non-empty GLB was written"
                 }
+                GlbValidator.validate(temporaryOutput)
+                check(result[0] in 1..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid vertex count." }
+                check(result[1] in 1..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid index count." }
+                check(result[2] in 1..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid triangle count." }
+                check(result[3] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid submesh count." }
+                check(result[4] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid joint count." }
+                check(result[5] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid blendshape count." }
+                check(result[9] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid prompt-match count." }
             }
         } catch (failure: Throwable) {
-            destination.delete()
+            temporaryOutput.delete()
             throw failure
+        }
+
+        try {
+            Files.move(temporaryOutput.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+        } catch (failure: Exception) {
+            temporaryOutput.delete()
+            throw IllegalStateException("Could not atomically publish the validated avatar GLB.", failure)
         }
 
         AvatarGenerationResult(
