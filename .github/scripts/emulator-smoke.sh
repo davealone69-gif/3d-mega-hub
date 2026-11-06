@@ -22,21 +22,13 @@ fi
 
 adb install -r "$APK"
 adb shell am force-stop com.davemega.hub
-adb shell am start -W -n com.davemega.hub/.MainActivity
+adb shell am start -W -n com.davemega.hub/.MainActivity --ez com.davemega.hub.extra.OPEN_AVATAR_STUDIO true
 sleep 5
 adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | grep -q "com.davemega.hub"
 PID="$(adb shell pidof -s com.davemega.hub | tr -d '\r')"
 test -n "$PID"
 
-# Select the Avatar tab using the active emulator's physical display metrics.
-DISPLAY_SIZE="$(adb shell wm size | awk -F': ' '/Physical size/ { print $2; exit }' | tr -d '\r')"
-SCREEN_W="${DISPLAY_SIZE%x*}"
-SCREEN_H="${DISPLAY_SIZE#*x}"
-DENSITY="$(adb shell wm density | awk -F': ' '/Physical density/ { print $2; exit }' | tr -d '\r')"
-test -n "$SCREEN_W" && test -n "$SCREEN_H" && test -n "$DENSITY"
-AVATAR_X=$((SCREEN_W * 3 / 10))
-AVATAR_Y=$((SCREEN_H - (64 * DENSITY / 160)))
-adb shell input tap "$AVATAR_X" "$AVATAR_Y"
+# Avatar Studio is opened by a deterministic launch extra; no coordinate taps required.
 
 # Wait for actual GLB load and a real Filament frame, not just Activity launch.
 GLB_LOADED=0
