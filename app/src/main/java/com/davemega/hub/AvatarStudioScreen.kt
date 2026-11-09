@@ -97,7 +97,15 @@ fun AvatarStudioScreen(
                 diagnosticLog += "Generating with the real native engine on this device..."
                 val result = AvatarForgeEngine.generate(
                     context = context,
-                    spec = AvatarSpec(seed = 1337, prompt = diagnosticPrompt),
+                    spec = AvatarSpec(
+                        sex = Sex.FEMALE,
+                        build = Build.ATHLETIC,
+                        hairStyle = HairStyle.MEDIUM,
+                        outfit = Outfit.TSHIRT,
+                        seed = 1337,
+                        heightM = 1.75f,
+                        prompt = diagnosticPrompt
+                    ),
                     prompt = diagnosticPrompt,
                     outputName = "diagnostic-seed-1337-${System.currentTimeMillis()}.glb"
                 )
