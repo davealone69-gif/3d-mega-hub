@@ -96,3 +96,59 @@ jobs:
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon lintDebug --stacktrace
+
+  avatarforge-render-smoke:
+    name: AvatarForge GLES GLB render smoke (instrumented)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "emulator platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
+          accept-android-sdk-licenses: true
+      - name: Update Android Emulator to current SDK tools
+        run: sdkmanager --install "emulator"
+      - name: Run real imported-GLB AvatarForge GLES renderer test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swangle -memory 4096 -no-snapshot -wipe-data
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            chmod +x ./gradlew
+            if ./gradlew --no-daemon :app:connectedDebugAndroidTest --stacktrace; then
+              TEST_STATUS=0
+            else
+              TEST_STATUS=$?
+            fi
+            mkdir -p avatarforge-render-smoke-evidence
+            adb logcat -d -v threadtime > avatarforge-render-smoke-evidence/logcat.txt || true
+            adb shell dumpsys activity activities > avatarforge-render-smoke-evidence/activities.txt || true
+            adb shell run-as com.davemega.hub cat shared_prefs/avatarforge_renderer_smoke.xml > avatarforge-render-smoke-evidence/renderer-state.xml 2>&1 || true
+            adb exec-out screencap -p > avatarforge-render-smoke-evidence/final-screen.png || true
+            adb pull /sdcard/Android/data/com.davemega.hub/files/avatarforge-renderer-smoke.png avatarforge-render-smoke-evidence/avatarforge-viewport.png || true
+            if [ "$TEST_STATUS" -ne 0 ]; then
+              echo "FAIL: instrumented AvatarForge GLES render test failed."
+              exit "$TEST_STATUS"
+            fi
+            PID="$(adb shell pidof -s com.davemega.hub | tr -d '\\r')"
+            test -n "$PID"
+            adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | grep -q "com.davemega.hub"
+            echo "PASS: instrumented test verified AvatarForge GLES 3.1+, submitted model triangles, and non-blank viewport pixels. App PID=$PID"
+      - name: Upload AvatarForge renderer evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: avatarforge-gles-render-smoke-evidence
+          path: avatarforge-render-smoke-evidence/
+          if-no-files-found: warn
+          retention-days: 14
