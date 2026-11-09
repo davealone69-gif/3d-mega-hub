@@ -358,10 +358,12 @@ Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeGetVerificati
     char details[1024];
     std::snprintf(details, sizeof(details),
         " framePresented=%d presentedFrames=%d boundsInFrustum=%d allDepthCornersInRange=%d "
-        "firstOutsideCorner=%d outsideCorners=%d viewDepth=[%.6f,%.6f] clip=[%.6f,%.6f] "
+        "firstOutsideCorner=%d outsideCorners=%d firstOutsideView=(%.6f,%.6f,%.6f) "
+        "viewDepth=[%.6f,%.6f] clip=[%.6f,%.6f] "
         "readbackValid=%d readbackNonBlackPixels=%d readbackSize=%dx%d glError=0x%x eglError=0x%x",
         rs.framePresented ? 1 : 0, rs.presentedFrames, rs.boundsInFrustum ? 1 : 0,
         rs.boundsAllCornersInDepthRange ? 1 : 0, rs.firstOutsideCorner, rs.outsideCorners,
+        rs.firstOutsideViewX, rs.firstOutsideViewY, rs.firstOutsideViewZ,
         rs.minViewDepth, rs.maxViewDepth, rs.nearPlane, rs.farPlane,
         rs.readbackValid ? 1 : 0, rs.readbackNonBlackPixels,
         rs.readbackWidth, rs.readbackHeight, rs.glError, rs.eglError);
