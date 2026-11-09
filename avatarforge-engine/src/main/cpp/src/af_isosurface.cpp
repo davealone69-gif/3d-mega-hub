@@ -129,10 +129,13 @@ void sampleField(DenseGrid& grid, const std::function<float(const Vec3&)>& field
             const int xEnd = mini(grid.nx, x0 + bs);
             const int yEnd = mini(grid.ny, y0 + bs);
             const int zEnd = mini(grid.nz, z0 + bs);
-            if (!skipInterior) {
-                for (int z = z0; z < zEnd; ++z) {
-                    for (int y = y0; y < yEnd; ++y) {
-                        for (int x = x0; x < xEnd; ++x) {
+            for (int z = z0; z < zEnd; ++z) {
+                for (int y = y0; y < yEnd; ++y) {
+                    for (int x = x0; x < xEnd; ++x) {
+                        // Even a skipped block must publish its low boundary planes: those
+                        // samples are shared by cells in the preceding blocks. Its interior
+                        // remains at the grid's positive outside fill value.
+                        if (!skipInterior || x == x0 || y == y0 || z == z0) {
                             grid.values[grid.index(x, y, z)] = evaluate(x, y, z);
                         }
                     }
