@@ -85,6 +85,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var modelLoadToken = 0
     private var diagnosticModelReady = false
     private var pendingPixelDiagnostic: ((FilamentPixelDiagnostic) -> Unit)? = null
+    private var pendingPixelDiagnosticForceSave = false
     private var pixelCopyInFlight = false
     private var cameraFrustumPassed = false
     private var cameraFrustumDetail = "Camera bounds have not been evaluated."
@@ -513,7 +514,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         return activeCamera.getFrustum().intersects(bounds)
     }
 
-    fun captureDiagnostic(callback: (FilamentPixelDiagnostic) -> Unit) {
+    fun captureDiagnostic(forceSave: Boolean = false, callback: (FilamentPixelDiagnostic) -> Unit) {
         if (!running || !surfaceView.holder.surface.isValid) {
             callback(
                 FilamentPixelDiagnostic(
@@ -545,12 +546,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             return
         }
         pendingPixelDiagnostic = callback
+        pendingPixelDiagnosticForceSave = forceSave
         if (filamentAsset != null && pendingAsset == null && lastStatus.startsWith("GLB loaded")) {
             diagnosticModelReady = true
         }
         Handler(Looper.getMainLooper()).postDelayed({
             if (pendingPixelDiagnostic === callback) {
                 pendingPixelDiagnostic = null
+                pendingPixelDiagnosticForceSave = false
                 callback(
                     FilamentPixelDiagnostic(
                         frameSubmitted = false,
@@ -575,6 +578,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         val height = surfaceView.height
         if (width <= 0 || height <= 0 || !surfaceView.holder.surface.isValid) {
             pendingPixelDiagnostic = null
+            pendingPixelDiagnosticForceSave = false
             callback(
                 FilamentPixelDiagnostic(
                     frameSubmitted = true,
@@ -591,10 +595,12 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         }
 
         pixelCopyInFlight = true
+        val forceSave = pendingPixelDiagnosticForceSave
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(surfaceView, bitmap, { copyResult ->
             pixelCopyInFlight = false
             pendingPixelDiagnostic = null
+            pendingPixelDiagnosticForceSave = false
             if (copyResult != PixelCopy.SUCCESS) {
                 bitmap.recycle()
                 callback(
@@ -623,14 +629,15 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             }
 
             var savedPath: String? = null
-            if (visiblePixels < 5000) {
+            if (forceSave || visiblePixels < 5000) {
                 try {
                     val directory = context.getExternalFilesDir(null)
                         ?: error("App-specific external storage is unavailable.")
                     check(directory.isDirectory || directory.mkdirs()) {
                         "Could not create app-specific external storage at ${directory.absolutePath}."
                     }
-                    val screenshot = File(directory, "failed_render.png")
+                    val screenshotName = if (forceSave) "diagnostic_capture.png" else "failed_render.png"
+                    val screenshot = File(directory, screenshotName)
                     FileOutputStream(screenshot).use { output ->
                         check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
                             "Bitmap PNG compression failed."
