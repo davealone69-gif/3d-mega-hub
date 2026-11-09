@@ -38,8 +38,15 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 - Earlier exact revision `34201cb16154958ae2379be6ce485856806d4bbc`: Android unit tests, lint, debug APK build and R8/minification all passed.
 - Earlier exact revision `877f73d10756cd9a61a99724aaa37b1e63a6df0f`: signed preview APK and AAB built; signature verification and SHA-256 provenance passed. The ephemeral preview key is not a production signing identity.
 - The earlier emulator smoke failed in its shell harness before APK installation. It did **not** establish an app crash. The harness has been replaced with a single Bash script that checks Avatar Studio, GLB load and an OpenGL ES frame.
-- Current hardening HEAD and corrected emulator smoke are pending fresh CI evidence.
+- Current hardening HEAD includes the generated-avatar native AABB refresh, JNI post-skinning mesh validation, Filament camera-frustum check, and debug PixelCopy diagnostic dialog. Exact source commit: `989ec56858de322aa4e515852aeaf67faceb312c`.
+- CI for that exact commit, fresh APK artifact, generated-avatar pixel capture and Samsung runtime verification are still pending/unverified.
 - Production release signing is **BLOCKED** until a user-owned production keystore is configured through protected CI secrets. Never substitute the debug key or a one-run preview key.
+
+## Generated-avatar diagnostic implementation
+
+The debug Avatar Studio includes **Run generated-avatar diagnostic**. It generates seed 1337 with the fixed adult prompt, validates the CPU-deformed native mesh (positions, skin weights and joint indices), loads the generated GLB into the Hub's Filament viewer, checks the camera frustum and captures a completed frame using Android PixelCopy. If fewer than 5,000 qualifying pixels are counted, it writes `failed_render.png` to app-specific external storage and prints the exact path in the diagnostic log.
+
+The Hub viewer remains Filament gltfio. AvatarForge's standalone custom GLES `af_gl.cpp` is not linked into this Hub module. The Hub applies its animation pose before camera framing and rendering; it does not ship two competing renderer backends.
 
 ## Existing older debug build
 
