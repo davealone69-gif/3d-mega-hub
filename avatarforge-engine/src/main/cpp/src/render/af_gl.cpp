@@ -113,6 +113,7 @@ public:
     float clipTime() const override { return clipTime_; }
     void waitIdle() override { glFinish(); }
     RendererStats stats() const override { return stats_; }
+    std::vector<uint8_t> readbackPixels() const override { return verificationPixels_; }
     RendererInfo info() const override { return info_; }
 
 private:
@@ -180,6 +181,7 @@ private:
     RendererOptions activeTargetOptions_{};  /* last target set that completed successfully */
     RendererInfo info_{};
     RendererStats stats_{};
+    std::vector<uint8_t> verificationPixels_;
     af_engine* engine_ = nullptr;
     CameraState camera_{};
     FrameScene scene_{};
@@ -1184,6 +1186,14 @@ void GlRenderer::drawComposite() {
 }
 
 void GlRenderer::renderFrame(float deltaSeconds) {
+    stats_.framePresented = false;
+    stats_.readbackValid = false;
+    stats_.readbackNonBlackPixels = 0;
+    stats_.readbackWidth = 0;
+    stats_.readbackHeight = 0;
+    stats_.glError = 0;
+    stats_.eglError = 0;
+    verificationPixels_.clear();
     if (contextLost_ || display_ == EGL_NO_DISPLAY) return;
     if (targetsDirty_) {
         targetsDirty_ = false;
@@ -1225,20 +1235,95 @@ void GlRenderer::renderFrame(float deltaSeconds) {
         if (!resize(w, h)) return;
     }
 
-    updateScene(deltaSeconds);
+    /* Deform first: updateScene derives camera bounds and clipping planes from the live mesh. */
     updateAnimation(deltaSeconds);
+    updateScene(deltaSeconds);
     ensureGeometryBuffers();
+
+    stats_.nearPlane = scene_.nearPlane;
+    stats_.farPlane = scene_.farPlane;
+    stats_.minViewDepth = std::numeric_limits<float>::infinity();
+    stats_.maxViewDepth = -std::numeric_limits<float>::infinity();
+    int outsidePlane[6] = {0, 0, 0, 0, 0, 0};
+    if (scene_.hasModel) {
+        for (int corner = 0; corner < 8; ++corner) {
+            const float x = (corner & 1) ? scene_.modelMax[0] : scene_.modelMin[0];
+            const float y = (corner & 2) ? scene_.modelMax[1] : scene_.modelMin[1];
+            const float z = (corner & 4) ? scene_.modelMax[2] : scene_.modelMin[2];
+            const float* v = scene_.camera.view;
+            const float vx = v[0]*x + v[4]*y + v[8]*z + v[12];
+            const float vy = v[1]*x + v[5]*y + v[9]*z + v[13];
+            const float vz = v[2]*x + v[6]*y + v[10]*z + v[14];
+            const float depth = -vz;
+            stats_.minViewDepth = std::min(stats_.minViewDepth, depth);
+            stats_.maxViewDepth = std::max(stats_.maxViewDepth, depth);
+            const float* m = scene_.camera.viewProj;
+            const float cx = m[0]*x + m[4]*y + m[8]*z + m[12];
+            const float cy = m[1]*x + m[5]*y + m[9]*z + m[13];
+            const float cz = m[2]*x + m[6]*y + m[10]*z + m[14];
+            const float cw = m[3]*x + m[7]*y + m[11]*z + m[15];
+            if (cx < -cw) ++outsidePlane[0];
+            if (cx >  cw) ++outsidePlane[1];
+            if (cy < -cw) ++outsidePlane[2];
+            if (cy >  cw) ++outsidePlane[3];
+            if (cz < -cw) ++outsidePlane[4];
+            if (cz >  cw) ++outsidePlane[5];
+            (void)vx; (void)vy;
+        }
+        bool rejectedByPlane = false;
+        for (int count : outsidePlane) rejectedByPlane = rejectedByPlane || count == 8;
+        const bool depthOverlap = stats_.maxViewDepth >= scene_.nearPlane &&
+                                  stats_.minViewDepth <= scene_.farPlane;
+        stats_.boundsInFrustum = !rejectedByPlane && depthOverlap &&
+                                 std::isfinite(stats_.minViewDepth) &&
+                                 std::isfinite(stats_.maxViewDepth);
+    } else {
+        stats_.boundsInFrustum = false;
+    }
 
     drawShadowPass();
     drawForwardPass();
     drawBloom();
     drawComposite();
 
-    if (!eglSwapBuffers(display_, surface_)) {
-        /* A lost context cannot be recovered by this backend: report it and stop drawing rather
-           than rendering into nothing. AvatarEngine.health() surfaces the flag. */
-        const EGLint err = eglGetError();
-        if (err == EGL_CONTEXT_LOST || err == EGL_BAD_SURFACE) contextLost_ = true;
+    /* Deterministic test readback happens from the final default framebuffer, before presentation. */
+    if (options_.verifyFramePixels) {
+        glFinish();
+        GLenum drawError = GL_NO_ERROR;
+        for (GLenum err = glGetError(); err != GL_NO_ERROR; err = glGetError()) {
+            if (drawError == GL_NO_ERROR) drawError = err;
+        }
+        stats_.glError = static_cast<int>(drawError);
+        if (drawError == GL_NO_ERROR && surfaceWidth_ > 0 && surfaceHeight_ > 0) {
+            const size_t pixelCount = static_cast<size_t>(surfaceWidth_) * static_cast<size_t>(surfaceHeight_);
+            verificationPixels_.resize(pixelCount * 4u);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glReadPixels(0, 0, surfaceWidth_, surfaceHeight_, GL_RGBA, GL_UNSIGNED_BYTE,
+                         verificationPixels_.data());
+            const GLenum readError = glGetError();
+            if (readError == GL_NO_ERROR) {
+                int visible = 0;
+                for (size_t i = 0; i < pixelCount; ++i) {
+                    const uint8_t* px = &verificationPixels_[i * 4u];
+                    if (px[0] > 10 || px[1] > 10 || px[2] > 10) ++visible;
+                }
+                stats_.readbackValid = true;
+                stats_.readbackNonBlackPixels = visible;
+                stats_.readbackWidth = surfaceWidth_;
+                stats_.readbackHeight = surfaceHeight_;
+            } else {
+                stats_.glError = static_cast<int>(readError);
+                verificationPixels_.clear();
+            }
+        }
+    }
+
+    const EGLBoolean swapped = eglSwapBuffers(display_, surface_);
+    if (swapped != EGL_TRUE) {
+        stats_.eglError = static_cast<int>(eglGetError());
+        if (stats_.eglError == EGL_CONTEXT_LOST || stats_.eglError == EGL_BAD_SURFACE) contextLost_ = true;
+    } else {
+        stats_.framePresented = stats_.glError == 0;
     }
 
     stats_.drawCalls = drawCalls_;
