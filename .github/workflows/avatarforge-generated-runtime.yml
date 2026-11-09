@@ -41,6 +41,9 @@ jobs:
           sdkmanager "emulator" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
           yes | sdkmanager --licenses
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
