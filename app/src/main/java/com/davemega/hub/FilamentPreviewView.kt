@@ -50,6 +50,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var assetLoader: AssetLoader? = null
     private var resourceLoader: ResourceLoader? = null
     private var filamentAsset: FilamentAsset? = null
+    private var pendingAsset: FilamentAsset? = null
+    private var pendingAssetUri: Uri? = null
+    private var lastReportedLoadProgress = -1
     private var animator: Animator? = null
     private var animationCount = 0
     private var animationStartNanos = 0L
@@ -81,6 +84,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             val activeView = view
             if (activeRenderer != null && activeSwapChain != null && activeView != null) {
                 try {
+                    updatePendingAssetLoad()
                     val activeAnimator = animator
                     if (activeAnimator != null && animationCount > 0) {
                         val duration = activeAnimator.getAnimationDuration(0)
@@ -145,8 +149,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     }
 
     private fun persistCheckpoint(value: String) {
+        // Checkpoints are diagnostic breadcrumbs, never a reason to block the UI/render thread.
         context.getSharedPreferences(DIAGNOSTICS_PREFS, Context.MODE_PRIVATE)
-            .edit().putString(LAST_CHECKPOINT, value).commit()
+            .edit().putString(LAST_CHECKPOINT, value).apply()
         reportStatus(value)
         Log.i(TAG, "Renderer checkpoint: $value")
     }
@@ -339,11 +344,17 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         }
     }
 
+    /**
+     * Parses the GLB on the UI/Filament owner thread, but never synchronously decodes and uploads
+     * all textures here. ResourceLoader.loadResources() blocks until texture decoding completes
+     * and caused a measured 45-second main-thread stall on the emulator. asyncBeginLoad +
+     * asyncUpdateLoad amortizes that work across frames.
+     */
     private fun loadModelBytes(bytes: ByteArray, uri: Uri?) {
         val loader = checkNotNull(assetLoader) { "glTF asset loader is unavailable" }
         val resources = checkNotNull(resourceLoader) { "glTF resource loader is unavailable" }
-        val activeScene = checkNotNull(scene) { "Filament scene is unavailable" }
 
+        destroyPendingAsset()
         destroyCurrentAsset()
         val newAsset = loader.createAsset(ByteBuffer.wrap(bytes))
             ?: error("Filament gltfio could not parse this file as glTF 2.0 / GLB")
@@ -351,29 +362,73 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             require(newAsset.resourceUris.isEmpty()) {
                 "This viewer currently accepts self-contained GLB files only; the selected asset references external resources"
             }
-            resources.loadResources(newAsset)
-            newAsset.releaseSourceData()
-            activeScene.addEntities(newAsset.entities)
-            animator = newAsset.instance.animator
-            animationCount = animator?.animationCount ?: 0
-            animationStartNanos = System.nanoTime()
-            frameCamera(newAsset.boundingBox)
-            filamentAsset = newAsset
-            val label = uri?.lastPathSegment ?: BUNDLED_MODEL
-            reportStatus("GLB loaded and GPU resources submitted: $label · ${newAsset.entities.size} nodes · $animationCount animation(s)")
+            check(resources.asyncBeginLoad(newAsset)) {
+                "Filament could not start asynchronous GLB resource loading"
+            }
+            pendingAsset = newAsset
+            pendingAssetUri = uri
+            lastReportedLoadProgress = -1
+            reportStatus("GLB parsed; loading textures and GPU resources asynchronously")
         } catch (failure: Exception) {
-            animator = null
-            animationCount = 0
-            activeScene.removeEntities(newAsset.entities)
             loader.destroyAsset(newAsset)
             throw failure
         } catch (failure: LinkageError) {
-            animator = null
-            animationCount = 0
-            activeScene.removeEntities(newAsset.entities)
             loader.destroyAsset(newAsset)
             throw failure
         }
+    }
+
+    private fun updatePendingAssetLoad() {
+        val pending = pendingAsset ?: return
+        val resources = resourceLoader ?: return
+        try {
+            resources.asyncUpdateLoad()
+            val progress = resources.asyncGetLoadProgress().coerceIn(0.0f, 1.0f)
+            val bucket = (progress * 10.0f).toInt()
+            if (bucket > lastReportedLoadProgress && bucket < 10) {
+                lastReportedLoadProgress = bucket
+                reportStatus("Loading GLB resources · ${bucket * 10}%")
+            }
+            if (progress < 1.0f) return
+
+            // asyncUpdateLoad performs the final main-thread upload work. Only publish the asset
+            // to the scene after the loader reports 100% completion.
+            resources.asyncUpdateLoad()
+            pending.releaseSourceData()
+            val activeScene = checkNotNull(scene) { "Filament scene is unavailable" }
+            activeScene.addEntities(pending.entities)
+            animator = pending.instance.animator
+            animationCount = animator?.animationCount ?: 0
+            animationStartNanos = System.nanoTime()
+            frameCamera(pending.boundingBox)
+            filamentAsset = pending
+            pendingAsset = null
+            val label = pendingAssetUri?.lastPathSegment ?: BUNDLED_MODEL
+            pendingAssetUri = null
+            lastReportedLoadProgress = -1
+            reportStatus("GLB loaded and GPU resources submitted: $label · ${pending.entities.size} nodes · $animationCount animation(s)")
+        } catch (failure: Exception) {
+            Log.e(TAG, "Asynchronous GLB resource load failed", failure)
+            destroyPendingAsset()
+            reportStatus("GLB resource load failed: ${failure.message ?: failure.javaClass.simpleName}")
+        } catch (failure: LinkageError) {
+            Log.e(TAG, "Asynchronous GLB native resource load failed", failure)
+            destroyPendingAsset()
+            reportStatus("GLB native resource load failed: ${failure.message ?: failure.javaClass.simpleName}")
+        }
+    }
+
+    private fun destroyPendingAsset() {
+        val pending = pendingAsset ?: return
+        resourceLoader?.let { resources ->
+            safelyDestroy("pending glTF resource load") { resources.asyncCancelLoad() }
+        }
+        assetLoader?.let { loader ->
+            safelyDestroy("pending glTF asset") { loader.destroyAsset(pending) }
+        }
+        pendingAsset = null
+        pendingAssetUri = null
+        lastReportedLoadProgress = -1
     }
 
     private fun frameCamera(bounds: com.google.android.filament.Box) {
@@ -393,6 +448,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     }
 
     private fun destroyCurrentAsset() {
+        destroyPendingAsset()
         val current = filamentAsset ?: return
         scene?.removeEntities(current.entities)
         assetLoader?.let { loader -> safelyDestroy("glTF asset") { loader.destroyAsset(current) } }
