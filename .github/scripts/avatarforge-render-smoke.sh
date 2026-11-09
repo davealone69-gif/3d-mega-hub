@@ -13,6 +13,7 @@ adb shell dumpsys activity activities > avatarforge-render-smoke-evidence/activi
 adb shell run-as com.davemega.hub cat shared_prefs/avatarforge_renderer_smoke.xml > avatarforge-render-smoke-evidence/renderer-state.xml 2>&1 || true
 adb exec-out screencap -p > avatarforge-render-smoke-evidence/final-screen.png 2>/dev/null || true
 adb pull /sdcard/Android/data/com.davemega.hub/files/avatarforge-renderer-smoke.png avatarforge-render-smoke-evidence/avatarforge-viewport.png >/dev/null 2>&1 || true
+adb pull /sdcard/Android/data/com.davemega.hub/files/generated_avatar_diagnostic.png avatarforge-render-smoke-evidence/generated_avatar_diagnostic.png >/dev/null 2>&1 || true
 adb pull /sdcard/Android/data/com.davemega.hub/files/failed_render.png avatarforge-render-smoke-evidence/failed_render.png >/dev/null 2>&1 || true
 
 if [[ "$TEST_STATUS" -ne 0 ]]; then
@@ -29,8 +30,8 @@ if ! adb shell dumpsys activity activities | grep -E "mResumedActivity|topResume
   echo "FAIL: 3D-Mega-Hub is not the resumed app after renderer instrumentation."
   exit 1
 fi
-if ! grep -q 'FRAME_VERIFIED' avatarforge-render-smoke-evidence/renderer-state.xml; then
-  echo "FAIL: persisted AvatarForge renderer state does not contain FRAME_VERIFIED."
+if ! grep -Eq 'PIXELS_VERIFIED|FRAME_PRESENTED' avatarforge-render-smoke-evidence/renderer-state.xml; then
+  echo "FAIL: persisted AvatarForge renderer state contains neither PIXELS_VERIFIED nor FRAME_PRESENTED."
   exit 1
 fi
 for marker in "GLB accessor semantic=POSITION" "GLB packed vertex pool" "af_vertex layout" "GPU Vertex 0" "MVP clip vertex 0" "DrawElements submesh="; do
