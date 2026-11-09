@@ -1250,22 +1250,10 @@ int32_t af_engine_validate_deformed_mesh(const af_engine* engine,
     const int jointCount = engine->rig.jointCount();
     if (engine->verts.empty() || jointCount <= 0) return static_cast<int32_t>(AF_ERR_NOT_READY);
 
-    for (size_t i = 0; i < engine->verts.size(); ++i) {
-        const af_vertex& vertex = engine->verts[i];
-        bool valid = std::isfinite(vertex.pos[0]) &&
-                     std::isfinite(vertex.pos[1]) &&
-                     std::isfinite(vertex.pos[2]);
-        float weightSum = 0.0f;
-        for (int influence = 0; influence < 4; ++influence) {
-            const float weight = vertex.weights[influence];
-            valid = valid && std::isfinite(weight) && weight >= 0.0f && weight <= 1.0001f;
-            if (std::isfinite(weight)) weightSum += weight;
-            if (weight > 1.0e-6f && vertex.joints[influence] >= jointCount) valid = false;
-        }
-        valid = valid && std::isfinite(weightSum) && std::fabs(weightSum - 1.0f) <= 0.02f;
-        if (valid) continue;
-
-        *out_bad_vertex = static_cast<int32_t>(i);
+    auto failVertex = [&](size_t index) {
+        const size_t safeIndex = std::min(index, engine->verts.size() - 1);
+        const af_vertex& vertex = engine->verts[safeIndex];
+        *out_bad_vertex = static_cast<int32_t>(safeIndex);
         if (out_position) {
             out_position[0] = vertex.pos[0];
             out_position[1] = vertex.pos[1];
@@ -1282,6 +1270,55 @@ int32_t af_engine_validate_deformed_mesh(const af_engine* engine,
             }
         }
         return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    };
+
+    for (size_t i = 0; i < engine->verts.size(); ++i) {
+        const af_vertex& vertex = engine->verts[i];
+        bool valid = std::isfinite(vertex.pos[0]) &&
+                     std::isfinite(vertex.pos[1]) &&
+                     std::isfinite(vertex.pos[2]);
+        float weightSum = 0.0f;
+        for (int influence = 0; influence < 4; ++influence) {
+            const float weight = vertex.weights[influence];
+            valid = valid && std::isfinite(weight) && weight >= 0.0f && weight <= 1.0001f;
+            if (std::isfinite(weight)) weightSum += weight;
+            if (weight > 1.0e-6f && vertex.joints[influence] >= jointCount) valid = false;
+        }
+        valid = valid && std::isfinite(weightSum) && std::fabs(weightSum - 1.0f) <= 0.02f;
+        if (!valid) return failVertex(i);
+    }
+
+    /* Verify that the refreshed per-submesh AABBs actually contain the post-skinning positions. */
+    for (const af_submesh& submesh : engine->submeshes) {
+        const bool validRange =
+            submesh.vertex_offset >= 0 && submesh.vertex_count > 0 &&
+            static_cast<size_t>(submesh.vertex_offset) < engine->verts.size() &&
+            static_cast<size_t>(submesh.vertex_count) <=
+                engine->verts.size() - static_cast<size_t>(submesh.vertex_offset);
+        if (!validRange) {
+            const size_t first = submesh.vertex_offset >= 0
+                ? static_cast<size_t>(submesh.vertex_offset) : 0;
+            return failVertex(first);
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            if (!std::isfinite(submesh.bounds_min[axis]) ||
+                !std::isfinite(submesh.bounds_max[axis]) ||
+                submesh.bounds_min[axis] > submesh.bounds_max[axis]) {
+                return failVertex(static_cast<size_t>(submesh.vertex_offset));
+            }
+        }
+        const size_t first = static_cast<size_t>(submesh.vertex_offset);
+        const size_t last = first + static_cast<size_t>(submesh.vertex_count);
+        constexpr float kBoundsTolerance = 1.0e-4f;
+        for (size_t i = first; i < last; ++i) {
+            const af_vertex& vertex = engine->verts[i];
+            for (int axis = 0; axis < 3; ++axis) {
+                if (vertex.pos[axis] < submesh.bounds_min[axis] - kBoundsTolerance ||
+                    vertex.pos[axis] > submesh.bounds_max[axis] + kBoundsTolerance) {
+                    return failVertex(i);
+                }
+            }
+        }
     }
     return static_cast<int32_t>(AF_OK);
 }
