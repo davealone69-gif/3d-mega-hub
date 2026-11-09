@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <new>
 #if defined(__ANDROID__)
 #include <android/bitmap.h>
 #include <android/imagedecoder.h>
