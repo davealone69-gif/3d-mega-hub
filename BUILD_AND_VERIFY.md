@@ -86,3 +86,58 @@ Record the exact commit SHA, Gradle task outcomes, emulator API/device, instrume
 - Physical Samsung SM-S921B import/render and repeated teardown: verified/unverified.
 
 Do not call the renderer fixed or the release green until the required evidence exists.
+
+## Generated-avatar runtime verification
+
+The dedicated instrumentation test generates the avatar directly through the native AvatarForge engine. It does not export/import GLB and does not use the built-in sample model. The same `af_engine*` handle is validated and attached to the GLES renderer.
+
+Exact reproduction input:
+
+- Prompt: `Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans`
+- Seed: `1337`
+- Expected output: 407,090 triangles, 304,405 vertices, 71 joints, 52 blendshapes and 1.75 m height.
+
+The test treats these as acceptance assertions. It does not rewrite generated counts to match expectations. Prompt parser output is retained in the native diagnostic report.
+
+### Run locally
+
+Use an API 35 emulator with x86_64 support (the native build includes x86_64 and arm64-v8a):
+
+```bash
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+./gradlew :app:connectedDebugAndroidTest --stacktrace
+```
+
+The focused test can be run with:
+
+```bash
+./gradlew :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest \
+  --stacktrace
+```
+
+### Runtime assertions
+
+- `af_engine_validate_deformed_mesh` checks every post-skin vertex position, all four finite/non-negative weights, weight sum >= 0.99, all four joint references, and metric height bounds.
+- CPU deformation refreshes each submesh's indexed bounds before the renderer builds the camera.
+- GLES updates animation/deformation before camera and frustum calculations.
+- The renderer transforms all eight model AABB corners through the actual view and view-projection matrices and records view-space depth against the camera's actual near/far planes.
+- A frame is reported presented only after `glFinish()` in verification mode and a successful `eglSwapBuffers()`. Draw-call counts alone are not accepted.
+- PixelCopy captures the actual SurfaceView after the successful-presentation result.
+- Pixels count as visible when any RGB channel is greater than 10. The required threshold is strictly greater than 5,000 pixels.
+- If PixelCopy fails or returns an effectively black image, the test uses the GLES renderer's actual pre-swap default-framebuffer `glReadPixels()` capture. The chosen capture method and both pixel counts are reported separately.
+
+On a failed visibility assertion, the test writes `failed_render.png` to `context.getExternalFilesDir(null)` and includes the absolute path in the assertion message. The CI workflow attempts to collect that file alongside the Android instrumentation reports.
+
+### Physical-device verification
+
+The emulator workflow is not physical-device verification. To verify the target Samsung device, install the debug app and test APK for the matching ABI, then run:
+
+```bash
+./gradlew :app:connectedDebugAndroidTest --stacktrace
+```
+
+The device must be connected through ADB for this command. Record the device model, Android/API version, renderer backend, actual generated counts, frame-presentation result, PixelCopy result, GL readback count and screenshot path.
+
+Do not mark the generated-avatar issue fixed until the instrumentation test passes and the rendered pixels are visible on the target physical device. An emulator pass is useful evidence but remains separate from handset verification.
+
