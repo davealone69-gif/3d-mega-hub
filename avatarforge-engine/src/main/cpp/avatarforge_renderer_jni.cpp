@@ -254,11 +254,17 @@ Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerat
     options.quality = af::QualityPreset::MEDIUM;
     options.msaaSamples = 2;
     options.enableBloom = false;
+    options.groundPlane = false; // Pixel threshold must measure the avatar, not a studio floor.
     options.verifyFramePixels = true;
     std::string rendererError;
     session->renderer = af::Renderer::create(session->window, options, &rendererError);
     if (!session->renderer) {
         throwState(env, "Generated-avatar GLES renderer creation failed: " + rendererError);
+        return 0;
+    }
+    const af::RendererInfo rendererInfo = session->renderer->info();
+    if (rendererInfo.backend != "gles31") {
+        throwState(env, "Generated-avatar test requires GLES 3.1, got backend=" + rendererInfo.backend);
         return 0;
     }
     if (!session->renderer->resize(width, height)) {
@@ -307,6 +313,7 @@ Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerat
         " resolved_build=" + std::to_string(resolved.build) +
         " resolved_hair=" + std::to_string(resolved.hair_style) +
         " resolved_outfit=" + std::to_string(resolved.outfit) +
+        " renderer_backend=" + rendererInfo.backend +
         " height_m=" + std::to_string(generatedHeight) +
         " " + meshReport;
     return reinterpret_cast<jlong>(session.release());
