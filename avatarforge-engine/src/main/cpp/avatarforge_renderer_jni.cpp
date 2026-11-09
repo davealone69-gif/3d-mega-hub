@@ -331,6 +331,7 @@ Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerat
         " resolved_outfit=" + std::to_string(resolved.outfit) +
         " renderer_backend=" + rendererInfo.backend +
         " height_m=" + std::to_string(generatedHeight) +
+        " blendshapes=" + std::to_string(engineStats.blendshape_count) +
         " " + meshReport;
     return reinterpret_cast<jlong>(session.release());
 }
