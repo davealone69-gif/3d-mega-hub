@@ -67,6 +67,8 @@ fun AvatarStudioScreen(
         if (isDebuggable) {
             OutlinedButton(
                 onClick = {
+                    val diagnosticPrefs = context.getSharedPreferences("avatarforge_renderer_smoke", Context.MODE_PRIVATE)
+                    diagnosticPrefs.edit().clear().putString("status", "GENERATING").commit()
                     generationJob = scope.launch {
                         val diagnosticPrompt = "Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans"
                         pixelDiagnosticPath = null
@@ -88,12 +90,18 @@ fun AvatarStudioScreen(
                             )
                             check(result.deformedMeshValidated) { "Native deformed-mesh validation was not confirmed." }
                             pixelDiagnosticPath = result.file.absolutePath
+                            diagnosticPrefs.edit()
+                                .putString("generation_report", "seed=1337 vertices=${result.vertexCount} triangles=${result.triangleCount} joints=${result.jointCount} blendshapes=${result.blendshapeCount} bytes=${result.glbBytes} deformed_mesh_validated=${result.deformedMeshValidated}")
+                                .commit()
                             onGenerated(Uri.fromFile(result.file), result.file.name)
                             generationStatus = "Native generation and deformed-mesh validation passed. Waiting for successful GLES swaps and PixelCopy visibility proof."
                         } catch (cancelled: CancellationException) {
+                            diagnosticPrefs.edit().putString("status", "FAILED").putString("error", "Diagnostic cancelled").commit()
                             generationStatus = "Generated-avatar GLES diagnostic cancelled."
                         } catch (failure: Exception) {
-                            generationStatus = "Generated-avatar GLES diagnostic failed: ${failure.message ?: failure.javaClass.simpleName}"
+                            val message = failure.message ?: failure.javaClass.simpleName
+                            diagnosticPrefs.edit().putString("status", "FAILED").putString("error", "Generation failed: $message").commit()
+                            generationStatus = "Generated-avatar GLES diagnostic failed: $message"
                         } finally {
                             generationJob = null
                         }

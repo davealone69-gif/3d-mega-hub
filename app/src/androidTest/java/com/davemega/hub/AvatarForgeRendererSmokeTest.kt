@@ -48,6 +48,63 @@ class AvatarForgeRendererSmokeTest {
         verifyImportedGlbThroughTheApp(glb)
     }
 
+    @Test
+    fun generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val device = UiDevice.getInstance(instrumentation)
+        context.getSharedPreferences("mega_hub", 0).edit()
+            .remove("avatar_uri")
+            .remove("avatar_name")
+            .commit()
+        val prefs = context.getSharedPreferences("avatarforge_renderer_smoke", 0)
+        prefs.edit().clear().commit()
+
+        val launch = Intent(context, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            .putExtra(EXTRA_OPEN_AVATAR_STUDIO, true)
+        val activity = instrumentation.startActivitySync(launch)
+        assertNotNull("MainActivity did not launch for the generated-avatar diagnostic", activity)
+
+        val button = By.text("Run generated-avatar GLES diagnostic")
+        assertTrue("Debug-only generated-avatar diagnostic button is missing",
+            device.wait(Until.hasObject(button), 20_000))
+        device.findObject(button).click()
+
+        val deadline = SystemClock.elapsedRealtime() + 300_000L
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val status = prefs.getString("status", "")
+            if (status == "PIXELS_VERIFIED" || status == "FAILED") break
+            SystemClock.sleep(500L)
+        }
+
+        val status = prefs.getString("status", "")
+        assertTrue(
+            "Generated-avatar in-app GLES diagnostic did not verify visible geometry. status=$status error=${prefs.getString("error", "")} generation=${prefs.getString("generation_report", "")}",
+            status == "PIXELS_VERIFIED"
+        )
+        val report = prefs.getString("generation_report", "") ?: ""
+        assertTrue("Seed-1337 native generation report is missing or validation failed: $report",
+            report.contains("seed=1337") && report.contains("deformed_mesh_validated=true"))
+        val apiVersion = prefs.getString("api_version", "") ?: ""
+        assertTrue("Generated avatar did not render through OpenGL ES 3.1+: $apiVersion",
+            apiVersion.matches(Regex("OpenGL ES 3\\.[1-9].*")))
+        assertTrue("Generated avatar had fewer than three successful EGL swaps",
+            prefs.getInt("presented_frames", 0) >= 3)
+        assertTrue("Generated avatar produced no triangles", prefs.getInt("triangles", 0) > 0)
+        assertTrue("Generated avatar bounds were outside the frustum",
+            prefs.getBoolean("bounds_in_frustum", false))
+        assertTrue("Generated avatar reported a GLES error", prefs.getInt("gl_error", -1) == 0)
+        assertTrue("Generated avatar reported an EGL error", prefs.getInt("egl_error", -1) == 0)
+        assertTrue("Generated avatar did not produce more than 5,000 geometry pixels",
+            prefs.getInt("pixel_count", 0) > 5_000)
+
+        val screenshotPath = prefs.getString("screenshot_path", "") ?: ""
+        val screenshot = File(screenshotPath)
+        assertTrue("Generated-avatar diagnostic screenshot is missing: $screenshotPath",
+            screenshot.isFile && screenshot.length() > 0L)
+    }
+
     private fun writeRequiredWebpFixture(file: File) {
         val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
         val webpBytes = try {

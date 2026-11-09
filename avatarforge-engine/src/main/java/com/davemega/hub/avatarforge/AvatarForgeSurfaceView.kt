@@ -233,11 +233,15 @@ class AvatarForgeSurfaceView(
                 return@post
             }
 
+            val bitmapReleased = AtomicBoolean(false)
+            fun recycleBitmap() {
+                if (bitmapReleased.compareAndSet(false, true)) bitmap.recycle()
+            }
             val timeout = Runnable {
                 if (pixelCopyActiveAttempt.compareAndSet(attempt, 0) &&
                     pixelCopyPending.compareAndSet(true, false)) {
                     pixelCopyComplete.set(true)
-                    bitmap.recycle()
+                    recycleBitmap()
                     val message = "FAILED: PixelCopy callback timed out after ${PIXEL_COPY_TIMEOUT_MS / 1000L}s"
                     recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
                         presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
@@ -252,14 +256,14 @@ class AvatarForgeSurfaceView(
                        complete a newer request or overwrite its diagnostic result. */
                     if (pixelCopyActiveAttempt.get() != attempt ||
                         !pixelCopyPending.compareAndSet(true, false)) {
-                        bitmap.recycle()
+                        recycleBitmap()
                         return@request
                     }
                     mainHandler.removeCallbacks(timeout)
                     pixelCopyActiveAttempt.compareAndSet(attempt, 0)
 
                     if (copyResult != PixelCopy.SUCCESS) {
-                        bitmap.recycle()
+                        recycleBitmap()
                         if (attempt >= MAX_PIXEL_COPY_ATTEMPTS) {
                             pixelCopyComplete.set(true)
                             val message = "FAILED: PixelCopy returned result=$copyResult after $attempt attempts"
@@ -306,7 +310,7 @@ class AvatarForgeSurfaceView(
                             }
                         }
                     }.isSuccess
-                    bitmap.recycle()
+                    recycleBitmap()
                     pixelCopyComplete.set(true)
                     val screenshot = if (saved) outputFile!!.absolutePath else "UNAVAILABLE"
                     val message = if (passed) {
@@ -325,7 +329,7 @@ class AvatarForgeSurfaceView(
                 pixelCopyActiveAttempt.compareAndSet(attempt, 0)
                 pixelCopyPending.set(false)
                 pixelCopyComplete.set(true)
-                bitmap.recycle()
+                recycleBitmap()
                 val message = "FAILED: PixelCopy request threw ${failure.message ?: failure.javaClass.simpleName}"
                 recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
                     presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
