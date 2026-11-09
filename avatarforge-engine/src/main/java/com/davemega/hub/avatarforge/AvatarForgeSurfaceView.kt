@@ -13,6 +13,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.abs
 import kotlin.math.max
 
 /** One render worker owns the AvatarForge engine, renderer and ANativeWindow lifetime. */
@@ -232,8 +233,27 @@ class AvatarForgeSurfaceView(
 
                     val pixels = IntArray(captureWidth * captureHeight)
                     bitmap.getPixels(pixels, 0, captureWidth, 0, 0, captureWidth, captureHeight)
+                    /* The clear colour is not model geometry. Estimate the actual surface
+                       background from its four corners, then count pixels that differ from it. */
+                    val cornerPixels = intArrayOf(
+                        pixels[0],
+                        pixels[captureWidth - 1],
+                        pixels[(captureHeight - 1) * captureWidth],
+                        pixels[pixels.lastIndex]
+                    )
+                    fun medianChannel(channel: (Int) -> Int): Int {
+                        val values = cornerPixels.map(channel).sorted()
+                        return (values[1] + values[2]) / 2
+                    }
+                    val backgroundRed = medianChannel(Color::red)
+                    val backgroundGreen = medianChannel(Color::green)
+                    val backgroundBlue = medianChannel(Color::blue)
                     val visiblePixels = pixels.count { pixel ->
-                        Color.red(pixel) > 10 || Color.green(pixel) > 10 || Color.blue(pixel) > 10
+                        val redDelta = abs(Color.red(pixel) - backgroundRed)
+                        val greenDelta = abs(Color.green(pixel) - backgroundGreen)
+                        val blueDelta = abs(Color.blue(pixel) - backgroundBlue)
+                        redDelta + greenDelta + blueDelta >= 48 &&
+                            maxOf(redDelta, greenDelta, blueDelta) >= 16
                     }
                     val passed = visiblePixels >= MIN_VISIBLE_PIXELS
                     val outputName = if (passed) "generated_avatar_diagnostic.png" else "failed_render.png"
@@ -249,9 +269,9 @@ class AvatarForgeSurfaceView(
                     pixelCopyComplete.set(true)
                     val screenshot = if (saved) outputFile!!.absolutePath else "UNAVAILABLE"
                     val message = if (passed) {
-                        "REAL + VERIFIED: PixelCopy saw $visiblePixels non-black pixels after $presentedFrames successful EGL swaps; screenshot=$screenshot"
+                        "REAL + VERIFIED: PixelCopy saw $visiblePixels geometry pixels (background RGB=$backgroundRed,$backgroundGreen,$backgroundBlue) after $presentedFrames successful EGL swaps; screenshot=$screenshot"
                     } else {
-                        "FAILED: PixelCopy saw only $visiblePixels non-black pixels (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot"
+                        "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot"
                     }
                     recordSmokeResult(if (passed) "PIXELS_VERIFIED" else "FAILED",
                         apiVersion, frames, drawCalls, triangles, presentedFrames, boundsInFrustum,

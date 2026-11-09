@@ -69,6 +69,7 @@ fun AvatarStudioScreen(
                 onClick = {
                     generationJob = scope.launch {
                         val diagnosticPrompt = "Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans"
+                        pixelDiagnosticPath = null
                         generationStatus = "Generating deterministic seed-1337 avatar; validating deformed vertices and indexed submesh bounds before export."
                         try {
                             val result = AvatarForgeEngine.generate(
