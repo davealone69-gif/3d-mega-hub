@@ -1,9 +1,13 @@
 package com.davemega.hub
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
 import android.net.Uri
 import android.util.Log
 import android.view.Choreographer
+import android.view.PixelCopy
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -27,10 +31,24 @@ import com.google.android.filament.gltfio.UbershaderProvider
 import com.davemega.hub.avatarforge.GlbValidator
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 import kotlin.math.max
+import kotlin.math.sqrt
+import kotlin.math.tan
+
+data class FilamentPixelDiagnostic(
+    val frameSubmitted: Boolean,
+    val cameraFrustumPassed: Boolean,
+    val cameraFrustumDetail: String,
+    val width: Int,
+    val height: Int,
+    val pixelsAboveThreshold: Int,
+    val screenshotPath: String?,
+    val error: String? = null,
+)
 
 /** Filament gltfio viewer. GLES is primary; Vulkan is an optional fallback. */
 class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolder.Callback {
@@ -65,6 +83,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var modelUri: Uri? = null
     private var hasModelRequest = false
     private var modelLoadToken = 0
+    private var diagnosticModelReady = false
+    private var pendingPixelDiagnostic: ((FilamentPixelDiagnostic) -> Unit)? = null
+    private var pixelCopyInFlight = false
+    private var cameraFrustumPassed = false
+    private var cameraFrustumDetail = "Camera bounds have not been evaluated."
 
     private data class RendererSession(
         val engine: Engine,
@@ -97,6 +120,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     if (activeRenderer.beginFrame(activeSwapChain, frameTimeNanos)) {
                         activeRenderer.render(activeView)
                         activeRenderer.endFrame()
+                        if (pendingPixelDiagnostic != null && diagnosticModelReady && !pixelCopyInFlight) {
+                            captureSubmittedFramePixels()
+                        }
                         if (lastFrameTime == 0L) {
                             lastFrameTime = frameTimeNanos
                             val backendName = activeBackend?.displayName() ?: "unknown backend"
@@ -134,6 +160,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         if (hasModelRequest && modelUri == uri) return
         hasModelRequest = true
         modelUri = uri
+        diagnosticModelReady = false
         val token = ++modelLoadToken
         if (engine == null) {
             reportStatus(if (uri == null) "Bundled sample GLB queued until renderer startup" else "Selected GLB queued until renderer startup")
@@ -406,6 +433,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             val label = pendingAssetUri?.lastPathSegment ?: BUNDLED_MODEL
             pendingAssetUri = null
             lastReportedLoadProgress = -1
+            diagnosticModelReady = true
             reportStatus("GLB loaded and GPU resources submitted: $label · ${pending.entities.size} nodes · $animationCount animation(s)")
         } catch (failure: Exception) {
             Log.e(TAG, "Asynchronous GLB resource load failed", failure)
@@ -435,16 +463,190 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         val activeCamera = camera ?: return
         val center = bounds.center
         val half = bounds.halfExtent
-        val radius = max(half[0], max(half[1], half[2])).takeIf { it.isFinite() && it > 0.01f } ?: 0.9f
-        val distance = (radius * 3.2f).coerceIn(1.0f, 80.0f)
+        val hx = kotlin.math.abs(half[0])
+        val hy = kotlin.math.abs(half[1])
+        val hz = kotlin.math.abs(half[2])
+        val radius = sqrt(hx * hx + hy * hy + hz * hz)
+        require(center.all { it.isFinite() } && radius.isFinite() && radius > 0.01f) {
+            "GLB bounds are non-finite or empty; refusing to frame an invalid avatar."
+        }
+
         val width = surfaceView.width.coerceAtLeast(1)
         val height = surfaceView.height.coerceAtLeast(1)
-        activeCamera.setProjection(45.0, width.toDouble() / height.toDouble(), 0.03, max(1000.0, distance.toDouble() * 20.0), Camera.Fov.VERTICAL)
+        val aspect = width.toDouble() / height.toDouble()
+        val nearPlane = 0.03
+        val farPlane = 1000.0
+        val tanHalfVerticalFov = tan(Math.toRadians(22.5))
+        val limitingAspect = aspect.coerceAtMost(1.0)
+        val distance = (radius.toDouble() * 1.20 / (tanHalfVerticalFov * limitingAspect)).coerceIn(1.0, 80.0)
+        activeCamera.setProjection(45.0, aspect, nearPlane, farPlane, Camera.Fov.VERTICAL)
         activeCamera.lookAt(
-            center[0].toDouble(), (center[1] + radius * 0.12f).toDouble(), (center[2] + distance).toDouble(),
+            center[0].toDouble(), center[1].toDouble(), center[2].toDouble() + distance,
             center[0].toDouble(), center[1].toDouble(), center[2].toDouble(),
             0.0, 1.0, 0.0
         )
+        cameraFrustumPassed = checkFrustumIntersection(
+            radius = radius.toDouble(),
+            distance = distance,
+            aspect = aspect,
+            nearPlane = nearPlane,
+            farPlane = farPlane
+        )
+        cameraFrustumDetail =
+            "AABB bounding sphere radius=$radius m; camera distance=$distance m; zNear=$nearPlane m; zFar=$farPlane m; " +
+                "aspect=$aspect; " + if (cameraFrustumPassed) {
+                    "AABB intersects and fits inside the configured view frustum"
+                } else {
+                    "FAILED: AABB outside configured view frustum"
+                }
+        reportStatus(cameraFrustumDetail)
+    }
+
+    private fun checkFrustumIntersection(
+        radius: Double,
+        distance: Double,
+        aspect: Double,
+        nearPlane: Double,
+        farPlane: Double
+    ): Boolean {
+        val halfVertical = distance * tan(Math.toRadians(22.5))
+        val halfHorizontal = halfVertical * aspect
+        val nearestDepth = distance - radius
+        val farthestDepth = distance + radius
+        return radius <= halfVertical &&
+            radius <= halfHorizontal &&
+            nearestDepth > nearPlane &&
+            farthestDepth < farPlane
+    }
+
+    fun captureDiagnostic(callback: (FilamentPixelDiagnostic) -> Unit) {
+        if (!running || !surfaceView.holder.surface.isValid) {
+            callback(
+                FilamentPixelDiagnostic(
+                    frameSubmitted = false,
+                    cameraFrustumPassed = cameraFrustumPassed,
+                    cameraFrustumDetail = cameraFrustumDetail,
+                    width = surfaceView.width,
+                    height = surfaceView.height,
+                    pixelsAboveThreshold = 0,
+                    screenshotPath = null,
+                    error = "Filament renderer or Android surface is not running."
+                )
+            )
+            return
+        }
+        if (pendingPixelDiagnostic != null || pixelCopyInFlight) {
+            callback(
+                FilamentPixelDiagnostic(
+                    frameSubmitted = false,
+                    cameraFrustumPassed = cameraFrustumPassed,
+                    cameraFrustumDetail = cameraFrustumDetail,
+                    width = surfaceView.width,
+                    height = surfaceView.height,
+                    pixelsAboveThreshold = 0,
+                    screenshotPath = null,
+                    error = "A pixel diagnostic capture is already in progress."
+                )
+            )
+            return
+        }
+        pendingPixelDiagnostic = callback
+        if (filamentAsset != null && pendingAsset == null && lastStatus.startsWith("GLB loaded")) {
+            diagnosticModelReady = true
+        }
+        reportStatus("Diagnostic armed; waiting for a completed Filament frame for PixelCopy.")
+    }
+
+    private fun captureSubmittedFramePixels() {
+        if (pixelCopyInFlight) return
+        val callback = pendingPixelDiagnostic ?: return
+        val width = surfaceView.width
+        val height = surfaceView.height
+        if (width <= 0 || height <= 0 || !surfaceView.holder.surface.isValid) {
+            pendingPixelDiagnostic = null
+            callback(
+                FilamentPixelDiagnostic(
+                    frameSubmitted = true,
+                    cameraFrustumPassed = cameraFrustumPassed,
+                    cameraFrustumDetail = cameraFrustumDetail,
+                    width = width,
+                    height = height,
+                    pixelsAboveThreshold = 0,
+                    screenshotPath = null,
+                    error = "Frame completed but the PixelCopy source surface is invalid."
+                )
+            )
+            return
+        }
+
+        pixelCopyInFlight = true
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        PixelCopy.request(surfaceView, bitmap, { copyResult ->
+            pixelCopyInFlight = false
+            pendingPixelDiagnostic = null
+            if (copyResult != PixelCopy.SUCCESS) {
+                bitmap.recycle()
+                callback(
+                    FilamentPixelDiagnostic(
+                        frameSubmitted = true,
+                        cameraFrustumPassed = cameraFrustumPassed,
+                        cameraFrustumDetail = cameraFrustumDetail,
+                        width = width,
+                        height = height,
+                        pixelsAboveThreshold = 0,
+                        screenshotPath = null,
+                        error = "PixelCopy failed with result=$copyResult."
+                    )
+                )
+                return@request
+            }
+
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            var visiblePixels = 0
+            for (pixel in pixels) {
+                val red = (pixel ushr 16) and 0xff
+                val green = (pixel ushr 8) and 0xff
+                val blue = pixel and 0xff
+                if (red > 10 || green > 10 || blue > 10) visiblePixels++
+            }
+
+            var savedPath: String? = null
+            if (visiblePixels < 5000) {
+                try {
+                    val directory = context.getExternalFilesDir(null)
+                        ?: error("App-specific external storage is unavailable.")
+                    check(directory.isDirectory || directory.mkdirs()) {
+                        "Could not create app-specific external storage at ${directory.absolutePath}."
+                    }
+                    val screenshot = File(directory, "failed_render.png")
+                    FileOutputStream(screenshot).use { output ->
+                        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                            "Bitmap PNG compression failed."
+                        }
+                        output.flush()
+                    }
+                    savedPath = screenshot.absolutePath
+                } catch (failure: Exception) {
+                    Log.e(TAG, "Could not save failed renderer screenshot", failure)
+                }
+            }
+            bitmap.recycle()
+            callback(
+                FilamentPixelDiagnostic(
+                    frameSubmitted = true,
+                    cameraFrustumPassed = cameraFrustumPassed,
+                    cameraFrustumDetail = cameraFrustumDetail,
+                    width = width,
+                    height = height,
+                    pixelsAboveThreshold = visiblePixels,
+                    screenshotPath = savedPath,
+                    error = if (visiblePixels < 5000 && savedPath == null) {
+                        "Fewer than 5000 qualifying pixels; screenshot could not be saved."
+                    } else null
+                )
+            )
+        }, Handler(Looper.getMainLooper()))
     }
 
     private fun destroyCurrentAsset() {
