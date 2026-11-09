@@ -6,6 +6,7 @@
 #include "render/af_render.h"
 
 #include <memory>
+#include <new>
 #include <string>
 
 namespace {
@@ -44,7 +45,7 @@ void throwState(JNIEnv* env, const std::string& message) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_davemega_hub_avatarforge_AvatarForgeNativeRenderer_nativeCreate(
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height) {
     if (!surface || !glbPath || width <= 0 || height <= 0) {
         throwState(env, "AvatarForge renderer requires a Surface, GLB path and non-zero size");
@@ -109,7 +110,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeNativeRenderer_nativeCreate(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_davemega_hub_avatarforge_AvatarForgeNativeRenderer_nativeResize(
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResize(
     JNIEnv*, jobject, jlong handle, jint width, jint height) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer || width <= 0 || height <= 0) return;
@@ -119,14 +120,14 @@ Java_com_davemega_hub_avatarforge_AvatarForgeNativeRenderer_nativeResize(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_davemega_hub_avatarforge_AvatarForgeNativeRenderer_nativeRender(
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeRender(
     JNIEnv*, jobject, jlong handle, jfloat deltaSeconds) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (session && session->renderer) session->renderer->renderFrame(deltaSeconds);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_davemega_hub_avatarforge_AvatarForgeNativeRenderer_nativeDestroy(
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeDestroy(
     JNIEnv*, jobject, jlong handle) {
     delete reinterpret_cast<NativeAvatarSession*>(handle);
 }
