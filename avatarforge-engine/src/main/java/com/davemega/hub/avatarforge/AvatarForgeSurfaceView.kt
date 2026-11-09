@@ -1,20 +1,32 @@
 package com.davemega.hub.avatarforge
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
+import android.view.PixelCopy
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 
 /** One render worker owns the AvatarForge engine, renderer and ANativeWindow lifetime. */
 class AvatarForgeSurfaceView(
     context: Context,
     private val glbFile: File,
+    private val verifyVisiblePixels: Boolean = false,
     private val onStatus: (String) -> Unit
 ) : SurfaceView(context), SurfaceHolder.Callback {
     private val running = AtomicBoolean(false)
+    private val pixelCopyPending = AtomicBoolean(false)
+    private val pixelCopyComplete = AtomicBoolean(false)
+    private val pixelCopyAttempts = AtomicInteger(0)
+    private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var surfaceReady = false
     @Volatile private var surfaceWidth = 0
     @Volatile private var surfaceHeight = 0
@@ -79,21 +91,35 @@ class AvatarForgeSurfaceView(
                     val now = System.nanoTime()
                     val delta = ((now - lastFrame).toDouble() / 1_000_000_000.0).coerceIn(0.001, 0.1).toFloat()
                     lastFrame = now
-                    nativeRender(nativeHandle, delta)
+                    val presentedThisFrame = nativeRender(nativeHandle, delta)
+                    val stats = nativeGetStats(nativeHandle)
+                    check(stats.size == 9) { "AvatarForge returned ${stats.size} renderer statistics; expected 9." }
+                    val frames = stats[0]
+                    val drawCalls = stats[1]
+                    val triangles = stats[2]
+                    val framePresented = stats[3] == 1
+                    val presentedFrames = stats[4]
+                    val boundsInFrustum = stats[5] == 1
+                    val outsideCorners = stats[6]
+                    val glError = stats[7]
+                    val eglError = stats[8]
                     if (!reportedFrame) {
-                        val stats = nativeGetStats(nativeHandle)
-                        check(stats.size == 3) { "AvatarForge returned incomplete renderer statistics." }
-                        val frames = stats[0]
-                        val drawCalls = stats[1]
-                        val triangles = stats[2]
-                        if (frames >= 3 && drawCalls > 0 && triangles > 0) {
+                        if (presentedThisFrame && framePresented && presentedFrames >= 3 && drawCalls > 0 && triangles > 0) {
                             reportedFrame = true
-                            recordSmokeResult("FRAME_VERIFIED", apiVersion, frames, drawCalls, triangles)
-                            Log.i(TAG, "FRAME_VERIFIED api=$apiVersion frames=$frames draws=$drawCalls triangles=$triangles")
-                            onStatus("AvatarForge GLES frame verified · $frames frames · $drawCalls draw calls · $triangles triangles")
+                            recordSmokeResult("FRAME_PRESENTED", apiVersion, frames, drawCalls, triangles,
+                                presentedFrames, boundsInFrustum, outsideCorners, glError, eglError)
+                            Log.i(TAG, "FRAME_PRESENTED api=$apiVersion frames=$frames presented=$presentedFrames draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum")
+                            onStatus("EGL frame presented · $presentedFrames successful swaps · $drawCalls draw calls · $triangles triangles")
                         } else if (System.nanoTime() - frameWaitStarted > 5_000_000_000L) {
-                            error("AvatarForge produced no drawable model frame within 5 seconds (frames=$frames, draws=$drawCalls, triangles=$triangles)")
+                            error("No drawable EGL-presented model frame within 5 seconds " +
+                                "(frames=$frames presented=$presentedFrames framePresented=$framePresented " +
+                                "draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
+                                "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)})")
                         }
+                    }
+                    if (verifyVisiblePixels && presentedThisFrame && presentedFrames >= 3 && !pixelCopyComplete.get()) {
+                        requestVisiblePixelCopy(apiVersion, frames, drawCalls, triangles, presentedFrames,
+                            boundsInFrustum, outsideCorners, glError, eglError)
                     }
                     val remaining = 16_666_667L - (System.nanoTime() - now)
                     if (remaining > 0L) Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
@@ -121,6 +147,13 @@ class AvatarForgeSurfaceView(
         frames: Int = 0,
         drawCalls: Int = 0,
         triangles: Int = 0,
+        presentedFrames: Int = 0,
+        boundsInFrustum: Boolean = false,
+        outsideCorners: Int = 0,
+        glError: Int = 0,
+        eglError: Int = 0,
+        pixelCount: Int = 0,
+        screenshotPath: String = "",
         error: String = ""
     ) {
         context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE).edit()
@@ -129,8 +162,113 @@ class AvatarForgeSurfaceView(
             .putInt("frames", frames)
             .putInt("draw_calls", drawCalls)
             .putInt("triangles", triangles)
+            .putInt("presented_frames", presentedFrames)
+            .putBoolean("bounds_in_frustum", boundsInFrustum)
+            .putInt("outside_corners", outsideCorners)
+            .putInt("gl_error", glError)
+            .putInt("egl_error", eglError)
+            .putInt("pixel_count", pixelCount)
+            .putString("screenshot_path", screenshotPath)
             .putString("error", error)
             .commit()
+    }
+
+    private fun requestVisiblePixelCopy(
+        apiVersion: String,
+        frames: Int,
+        drawCalls: Int,
+        triangles: Int,
+        presentedFrames: Int,
+        boundsInFrustum: Boolean,
+        outsideCorners: Int,
+        glError: Int,
+        eglError: Int
+    ) {
+        if (!verifyVisiblePixels || pixelCopyComplete.get() ||
+            !pixelCopyPending.compareAndSet(false, true)) return
+        val attempt = pixelCopyAttempts.incrementAndGet()
+        mainHandler.post {
+            val captureWidth = width
+            val captureHeight = height
+            if (captureWidth <= 0 || captureHeight <= 0 ||
+                captureWidth.toLong() * captureHeight.toLong() > Int.MAX_VALUE.toLong()) {
+                pixelCopyPending.set(false)
+                if (attempt >= 3) {
+                    pixelCopyComplete.set(true)
+                    val failure = "FAILED: PixelCopy has invalid SurfaceView dimensions after 3 attempts"
+                    recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
+                        presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = failure)
+                    onStatus(failure)
+                }
+                return@post
+            }
+            val bitmap = runCatching {
+                Bitmap.createBitmap(captureWidth, captureHeight, Bitmap.Config.ARGB_8888)
+            }.getOrElse { failure ->
+                pixelCopyPending.set(false)
+                pixelCopyComplete.set(true)
+                val message = "FAILED: could not allocate PixelCopy bitmap: ${failure.message}"
+                recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
+                    presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
+                onStatus(message)
+                return@post
+            }
+            try {
+                PixelCopy.request(this, bitmap, { copyResult ->
+                    pixelCopyPending.set(false)
+                    if (copyResult != PixelCopy.SUCCESS) {
+                        bitmap.recycle()
+                        if (attempt >= 3) {
+                            pixelCopyComplete.set(true)
+                            val message = "FAILED: PixelCopy returned result=$copyResult after $attempt attempts"
+                            recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
+                                presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
+                            onStatus(message)
+                        } else {
+                            onStatus("PixelCopy attempt $attempt failed (result=$copyResult); retrying after next presented frame")
+                        }
+                        return@request
+                    }
+
+                    val pixels = IntArray(captureWidth * captureHeight)
+                    bitmap.getPixels(pixels, 0, captureWidth, 0, 0, captureWidth, captureHeight)
+                    val visiblePixels = pixels.count { pixel ->
+                        Color.red(pixel) > 10 || Color.green(pixel) > 10 || Color.blue(pixel) > 10
+                    }
+                    val passed = visiblePixels >= MIN_VISIBLE_PIXELS
+                    val outputName = if (passed) "generated_avatar_diagnostic.png" else "failed_render.png"
+                    val outputFile = context.getExternalFilesDir(null)?.let { File(it, outputName) }
+                    val saved = outputFile != null && runCatching {
+                        FileOutputStream(outputFile).use { stream ->
+                            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
+                                "Bitmap PNG compression failed"
+                            }
+                        }
+                    }.isSuccess
+                    bitmap.recycle()
+                    pixelCopyComplete.set(true)
+                    val screenshot = if (saved) outputFile!!.absolutePath else "UNAVAILABLE"
+                    val message = if (passed) {
+                        "REAL + VERIFIED: PixelCopy saw $visiblePixels non-black pixels after $presentedFrames successful EGL swaps; screenshot=$screenshot"
+                    } else {
+                        "FAILED: PixelCopy saw only $visiblePixels non-black pixels (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot"
+                    }
+                    recordSmokeResult(if (passed) "PIXELS_VERIFIED" else "FAILED",
+                        apiVersion, frames, drawCalls, triangles, presentedFrames, boundsInFrustum,
+                        outsideCorners, glError, eglError, visiblePixels, screenshot,
+                        if (passed) "" else message)
+                    onStatus(message)
+                }, mainHandler)
+            } catch (failure: Throwable) {
+                pixelCopyPending.set(false)
+                pixelCopyComplete.set(true)
+                bitmap.recycle()
+                val message = "FAILED: PixelCopy request threw ${failure.message ?: failure.javaClass.simpleName}"
+                recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
+                    presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
+                onStatus(message)
+            }
+        }
     }
 
     private fun stopRenderer() {
@@ -150,7 +288,7 @@ class AvatarForgeSurfaceView(
 
     private external fun nativeCreate(surface: android.view.Surface, glbPath: String, width: Int, height: Int): Long
     private external fun nativeResize(handle: Long, width: Int, height: Int)
-    private external fun nativeRender(handle: Long, deltaSeconds: Float)
+    private external fun nativeRender(handle: Long, deltaSeconds: Float): Boolean
     private external fun nativeGetInfo(handle: Long): String
     private external fun nativeGetStats(handle: Long): IntArray
     private external fun nativeDestroy(handle: Long)
@@ -158,6 +296,7 @@ class AvatarForgeSurfaceView(
     companion object {
         private const val TAG = "AvatarForge"
         private const val SMOKE_PREFS = "avatarforge_renderer_smoke"
+        private const val MIN_VISIBLE_PIXELS = 5_000
         init { System.loadLibrary("mega_hub_avatarforge") }
     }
 }

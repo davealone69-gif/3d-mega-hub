@@ -166,7 +166,7 @@ class AvatarForgeRendererSmokeTest {
         val prefs = context.getSharedPreferences("avatarforge_renderer_smoke", 0)
         val deadline = SystemClock.elapsedRealtime() + 90_000L
         while (SystemClock.elapsedRealtime() < deadline) {
-            if (prefs.getString("status", "") == "FRAME_VERIFIED" ||
+            if (prefs.getString("status", "") == "FRAME_PRESENTED" ||
                 prefs.getString("status", "") == "FAILED") break
             SystemClock.sleep(500L)
         }
@@ -174,13 +174,16 @@ class AvatarForgeRendererSmokeTest {
         val status = prefs.getString("status", "")
         assertTrue(
             "AvatarForge native GLES renderer did not verify a real frame for ${glb.name}. status=$status error=${prefs.getString("error", "")} api=${prefs.getString("api_version", "")}",
-            status == "FRAME_VERIFIED"
+            status == "FRAME_PRESENTED"
         )
         val apiVersion = prefs.getString("api_version", "") ?: ""
         assertTrue("Renderer did not report OpenGL ES 3.1 or newer: $apiVersion", apiVersion.matches(Regex("OpenGL ES 3\\.[1-9].*")))
-        assertTrue("Renderer reported no submitted frames", prefs.getInt("frames", 0) >= 3)
+        assertTrue("Renderer reported fewer than three successful EGL swaps", prefs.getInt("presented_frames", 0) >= 3)
         assertTrue("Renderer reported no draw calls", prefs.getInt("draw_calls", 0) > 0)
         assertTrue("Renderer reported no model triangles", prefs.getInt("triangles", 0) > 0)
+        assertTrue("Model bounds were outside the camera frustum", prefs.getBoolean("bounds_in_frustum", false))
+        assertTrue("Renderer reported a GLES error", prefs.getInt("gl_error", -1) == 0)
+        assertTrue("Renderer reported an EGL presentation error", prefs.getInt("egl_error", -1) == 0)
 
         val viewport = device.findObject(By.clazz(AvatarForgeSurfaceView::class.java.name))
         assertNotNull("AvatarForge viewport disappeared after rendering", viewport)

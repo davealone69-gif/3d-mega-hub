@@ -1,5 +1,6 @@
 package com.davemega.hub
 
+import android.content.pm.ApplicationInfo
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -28,8 +29,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.davemega.hub.avatarforge.AvatarForgeEngine
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
-import java.io.File
 import com.davemega.hub.avatarforge.AvatarSpec
+import com.davemega.hub.avatarforge.Build
+import com.davemega.hub.avatarforge.HairStyle
+import com.davemega.hub.avatarforge.Outfit
+import com.davemega.hub.avatarforge.Sex
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -47,16 +52,58 @@ fun AvatarStudioScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val engineHealth = remember { AvatarForgeEngine.health() }
+    val isDebuggable = remember { (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 }
+    var pixelDiagnosticPath by remember { mutableStateOf<String?>(null) }
     var generationPrompt by remember {
         mutableStateOf("Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans")
     }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
-    var rendererStatus by remember { mutableStateOf("Waiting for Filament surface.") }
+    var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
     var generationJob by remember { mutableStateOf<Job?>(null) }
     val generating = generationJob?.isActive == true
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Avatar studio", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        if (isDebuggable) {
+            OutlinedButton(
+                onClick = {
+                    generationJob = scope.launch {
+                        val diagnosticPrompt = "Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans"
+                        generationStatus = "Generating deterministic seed-1337 avatar; validating deformed vertices and indexed submesh bounds before export."
+                        try {
+                            val result = AvatarForgeEngine.generate(
+                                context = context,
+                                spec = AvatarSpec(
+                                    sex = Sex.FEMALE,
+                                    build = Build.ATHLETIC,
+                                    hairStyle = HairStyle.MEDIUM,
+                                    outfit = Outfit.JEANS_JACKET,
+                                    seed = 1337,
+                                    heightM = 1.75f,
+                                    prompt = diagnosticPrompt
+                                ),
+                                prompt = diagnosticPrompt,
+                                outputName = "diagnostic-seed-1337-${System.currentTimeMillis()}.glb"
+                            )
+                            check(result.deformedMeshValidated) { "Native deformed-mesh validation was not confirmed." }
+                            pixelDiagnosticPath = result.file.absolutePath
+                            onGenerated(Uri.fromFile(result.file), result.file.name)
+                            generationStatus = "Native generation and deformed-mesh validation passed. Waiting for successful GLES swaps and PixelCopy visibility proof."
+                        } catch (cancelled: CancellationException) {
+                            generationStatus = "Generated-avatar GLES diagnostic cancelled."
+                        } catch (failure: Exception) {
+                            generationStatus = "Generated-avatar GLES diagnostic failed: ${failure.message ?: failure.javaClass.simpleName}"
+                        } finally {
+                            generationJob = null
+                        }
+                    }
+                },
+                enabled = engineHealth.usable && !generating && !isImporting,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (generating) "Diagnostic running…" else "Run generated-avatar GLES diagnostic")
+            }
+        }
         Text("Imported GLBs use the AvatarForge engine and its native GLES renderer. The bundled sample remains on the existing viewer until it is imported into the engine.")
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -67,7 +114,7 @@ fun AvatarStudioScreen(
                     if (importedGlb != null && importedGlb.isFile) {
                         AndroidView(
                             factory = { viewContext ->
-                                AvatarForgeSurfaceView(viewContext, importedGlb) { status ->
+                                AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = pixelDiagnosticPath == importedGlb.absolutePath) { status ->
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                                         rendererStatus = status
                                     }
@@ -124,6 +171,7 @@ fun AvatarStudioScreen(
                         generationJob = scope.launch {
                             generationStatus = "Running native generation on this device. Resource and thermal gates are checked before work begins."
                             try {
+                                pixelDiagnosticPath = null
                                 val result = AvatarForgeEngine.generate(
                                     context = context,
                                     spec = AvatarSpec(prompt = generationPrompt.trim()),
@@ -131,7 +179,7 @@ fun AvatarStudioScreen(
                                 )
                                 onGenerated(Uri.fromFile(result.file), result.file.name)
                                 val warning = result.promptMatchWarning?.let { " · WARNING: $it" }.orEmpty()
-                                generationStatus = "Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB$warning"
+                                generationStatus = "Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB · deformed mesh validated=${result.deformedMeshValidated}$warning"
                             } catch (cancelled: CancellationException) {
                                 generationStatus = "Generation cancelled."
                             } catch (failure: Exception) {

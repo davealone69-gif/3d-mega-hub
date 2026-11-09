@@ -402,11 +402,13 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResize(
     session->renderer->resize(width, height);
 }
 
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeRender(
     JNIEnv*, jobject, jlong handle, jfloat deltaSeconds) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
-    if (session && session->renderer) session->renderer->renderFrame(deltaSeconds);
+    if (!session || !session->renderer) return JNI_FALSE;
+    session->renderer->renderFrame(deltaSeconds);
+    return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -425,13 +427,19 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetStats(
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return nullptr;
     const af::RendererStats stats = session->renderer->stats();
-    const jint values[3] = {
+    const jint values[9] = {
         static_cast<jint>(stats.frames),
         static_cast<jint>(stats.drawCalls),
-        static_cast<jint>(stats.triangles)
+        static_cast<jint>(stats.triangles),
+        stats.framePresented ? 1 : 0,
+        static_cast<jint>(stats.presentedFrames),
+        stats.boundsInFrustum ? 1 : 0,
+        static_cast<jint>(stats.outsideCorners),
+        static_cast<jint>(stats.glError),
+        static_cast<jint>(stats.eglError)
     };
-    jintArray result = env->NewIntArray(3);
-    if (result) env->SetIntArrayRegion(result, 0, 3, values);
+    jintArray result = env->NewIntArray(9);
+    if (result) env->SetIntArrayRegion(result, 0, 9, values);
     return result;
 }
 
