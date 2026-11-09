@@ -1,6 +1,7 @@
 package com.davemega.hub.avatarforge
 
 import android.content.Context
+import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import java.io.File
@@ -25,16 +26,19 @@ class AvatarForgeSurfaceView(
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        Log.i(TAG, "surfaceCreated valid=${holder.surface.isValid}")
         surfaceReady = true
         startRenderer(holder)
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        Log.i(TAG, "surfaceChanged format=$format size=${width}x${height}")
         surfaceWidth = width
         surfaceHeight = height
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
+        Log.i(TAG, "surfaceDestroyed")
         surfaceReady = false
         stopRenderer()
     }
@@ -49,6 +53,7 @@ class AvatarForgeSurfaceView(
                 while (running.get() && surfaceReady && (surfaceWidth <= 0 || surfaceHeight <= 0)) Thread.sleep(10)
                 if (!running.get() || !surfaceReady) return@Thread
                 check(glbFile.isFile && glbFile.length() > 0L) { "Selected GLB is not available in app storage." }
+                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight}")
                 nativeHandle = nativeCreate(surfaceHolder.surface, glbFile.absolutePath, max(1, surfaceWidth), max(1, surfaceHeight))
                 check(nativeHandle != 0L) { "AvatarForge native renderer returned a null session." }
                 val rendererInfo = nativeGetInfo(nativeHandle)
@@ -84,6 +89,7 @@ class AvatarForgeSurfaceView(
                         if (frames >= 3 && drawCalls > 0 && triangles > 0) {
                             reportedFrame = true
                             recordSmokeResult("FRAME_VERIFIED", apiVersion, frames, drawCalls, triangles)
+                            Log.i(TAG, "FRAME_VERIFIED api=$apiVersion frames=$frames draws=$drawCalls triangles=$triangles")
                             onStatus("AvatarForge GLES frame verified · $frames frames · $drawCalls draw calls · $triangles triangles")
                         } else if (System.nanoTime() - frameWaitStarted > 5_000_000_000L) {
                             error("AvatarForge produced no drawable model frame within 5 seconds (frames=$frames, draws=$drawCalls, triangles=$triangles)")
@@ -95,6 +101,7 @@ class AvatarForgeSurfaceView(
             } catch (failure: Throwable) {
                 val message = failure.message ?: failure.javaClass.simpleName
                 recordSmokeResult("FAILED", error = message)
+                Log.e(TAG, "Renderer failed: $message", failure)
                 onStatus("AvatarForge renderer failed: $message")
             } finally {
                 if (nativeHandle != 0L) runCatching { nativeDestroy(nativeHandle) }
@@ -149,6 +156,7 @@ class AvatarForgeSurfaceView(
     private external fun nativeDestroy(handle: Long)
 
     companion object {
+        private const val TAG = "AvatarForge"
         private const val SMOKE_PREFS = "avatarforge_renderer_smoke"
         init { System.loadLibrary("mega_hub_avatarforge") }
     }
