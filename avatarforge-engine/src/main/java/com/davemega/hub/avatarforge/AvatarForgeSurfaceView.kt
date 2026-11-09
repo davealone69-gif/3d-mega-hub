@@ -65,7 +65,35 @@ class AvatarForgeSurfaceView(
         stopRenderer()
     }
 
+    private fun stopRenderer() {
+        val worker = renderThread ?: return
+        if (worker === Thread.currentThread()) return
+        try {
+            worker.join(5_000L)
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        if (!worker.isAlive && renderThread === worker) {
+            renderThread = null
+        } else if (worker.isAlive) {
+            Log.e(TAG, "GLES render thread did not stop within 5 seconds; refusing to start a duplicate")
+        }
+    }
+
     private fun startRenderer(surfaceHolder: SurfaceHolder) {
+        val previous = renderThread
+        if (previous != null && previous.isAlive) {
+            try {
+                previous.join(5_000L)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            if (previous.isAlive) {
+                onStatus("Previous AvatarForge GLES renderer is still shutting down; refusing a duplicate render thread.")
+                return
+            }
+            if (renderThread === previous) renderThread = null
+        }
         if (!running.compareAndSet(false, true)) return
         val worker = Thread({
             var nativeHandle = 0L
@@ -144,6 +172,7 @@ class AvatarForgeSurfaceView(
                 if (nativeHandle != 0L) runCatching { nativeDestroy(nativeHandle) }
                     .onFailure { onStatus("AvatarForge cleanup failed: ${it.message}") }
                 running.set(false)
+                if (renderThread === Thread.currentThread()) renderThread = null
                 onStatus(if (surfaceReady) "AvatarForge renderer stopped." else "AvatarForge surface released.")
             }
         }, "AvatarForge-GLES-Render")
