@@ -554,6 +554,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             if (pendingPixelDiagnostic === callback) {
                 pendingPixelDiagnostic = null
                 pendingPixelDiagnosticForceSave = false
+                pixelCopyInFlight = false
                 callback(
                     FilamentPixelDiagnostic(
                         frameSubmitted = false,
@@ -599,6 +600,10 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         PixelCopy.request(surfaceView, bitmap, { copyResult ->
             pixelCopyInFlight = false
+            if (pendingPixelDiagnostic !== callback) {
+                bitmap.recycle()
+                return@request
+            }
             pendingPixelDiagnostic = null
             pendingPixelDiagnosticForceSave = false
             if (copyResult != PixelCopy.SUCCESS) {
