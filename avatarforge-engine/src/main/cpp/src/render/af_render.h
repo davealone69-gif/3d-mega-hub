@@ -45,6 +45,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "../../include/afcore.h"
 
@@ -81,6 +82,7 @@ struct RendererOptions {
     float environmentIntensity = 0.65f;
     float shadowSoftness       = 1.0f;   /* PCF radius in texels                               */
     bool  groundPlane          = true;   /* draws the contact-shadow plane under the figure    */
+    bool  verifyFramePixels    = false;  /* diagnostic readback; enabled only by runtime tests */
 };
 
 struct CameraState {
@@ -108,6 +110,12 @@ struct RendererStats {
     uint64_t textureBytes = 0;
     int   qualityLevel   = 2;      /* effective QualityPreset after automatic stepping        */
     int   frames         = 0;
+    bool  framePresented = false; /* true only after a successful EGL swap / backend present */
+    bool  boundsInFrustum = false;
+    float minViewDepth = 0.0f, maxViewDepth = 0.0f, nearPlane = 0.0f, farPlane = 0.0f;
+    bool  readbackValid = false;
+    int   readbackNonBlackPixels = 0, readbackWidth = 0, readbackHeight = 0;
+    int   glError = 0, eglError = 0;
 };
 
 struct RendererInfo {
@@ -181,6 +189,9 @@ public:
     virtual void waitIdle() = 0;
 
     virtual RendererStats stats() const = 0;
+    /* GLES verification pixels are RGBA8 from the presented default framebuffer. Backends that
+       do not expose CPU readback return an empty vector without changing their render contract. */
+    virtual std::vector<uint8_t> readbackPixels() const { return {}; }
     virtual RendererInfo info() const = 0;
 };
 
