@@ -44,6 +44,7 @@ class AvatarForgeSurfaceView(
         val worker = Thread({
             var nativeHandle = 0L
             try {
+                recordSmokeResult("STARTING")
                 onStatus("Starting AvatarForge GLES renderer and importing ${glbFile.name}…")
                 while (running.get() && surfaceReady && (surfaceWidth <= 0 || surfaceHeight <= 0)) Thread.sleep(10)
                 if (!running.get() || !surfaceReady) return@Thread
@@ -54,7 +55,9 @@ class AvatarForgeSurfaceView(
                 check(rendererInfo.startsWith("gles31|")) {
                     "Unexpected AvatarForge backend information: $rendererInfo"
                 }
-                onStatus("AvatarForge GLES renderer active · ${rendererInfo.substringAfter('|').substringBefore('|')} · ${glbFile.name}")
+                val apiVersion = rendererInfo.substringAfter('|').substringBefore('|')
+                recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion)
+                onStatus("AvatarForge GLES renderer active · $apiVersion · ${glbFile.name}")
                 var lastFrame = System.nanoTime()
                 var lastWidth = surfaceWidth
                 var lastHeight = surfaceHeight
@@ -80,6 +83,7 @@ class AvatarForgeSurfaceView(
                         val triangles = stats[2]
                         if (frames >= 3 && drawCalls > 0 && triangles > 0) {
                             reportedFrame = true
+                            recordSmokeResult("FRAME_VERIFIED", apiVersion, frames, drawCalls, triangles)
                             onStatus("AvatarForge GLES frame verified · $frames frames · $drawCalls draw calls · $triangles triangles")
                         } else if (System.nanoTime() - frameWaitStarted > 5_000_000_000L) {
                             error("AvatarForge produced no drawable model frame within 5 seconds (frames=$frames, draws=$drawCalls, triangles=$triangles)")
@@ -89,7 +93,9 @@ class AvatarForgeSurfaceView(
                     if (remaining > 0L) Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
                 }
             } catch (failure: Throwable) {
-                onStatus("AvatarForge renderer failed: ${failure.message ?: failure.javaClass.simpleName}")
+                val message = failure.message ?: failure.javaClass.simpleName
+                recordSmokeResult("FAILED", error = message)
+                onStatus("AvatarForge renderer failed: $message")
             } finally {
                 if (nativeHandle != 0L) runCatching { nativeDestroy(nativeHandle) }
                     .onFailure { onStatus("AvatarForge cleanup failed: ${it.message}") }
@@ -100,6 +106,24 @@ class AvatarForgeSurfaceView(
         worker.priority = Thread.NORM_PRIORITY
         renderThread = worker
         worker.start()
+    }
+
+    private fun recordSmokeResult(
+        status: String,
+        apiVersion: String = "",
+        frames: Int = 0,
+        drawCalls: Int = 0,
+        triangles: Int = 0,
+        error: String = ""
+    ) {
+        context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE).edit()
+            .putString("status", status)
+            .putString("api_version", apiVersion)
+            .putInt("frames", frames)
+            .putInt("draw_calls", drawCalls)
+            .putInt("triangles", triangles)
+            .putString("error", error)
+            .commit()
     }
 
     private fun stopRenderer() {
@@ -125,6 +149,7 @@ class AvatarForgeSurfaceView(
     private external fun nativeDestroy(handle: Long)
 
     companion object {
+        private const val SMOKE_PREFS = "avatarforge_renderer_smoke"
         init { System.loadLibrary("mega_hub_avatarforge") }
     }
 }
