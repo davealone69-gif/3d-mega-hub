@@ -159,6 +159,7 @@ private:
     EnvironmentParams env_{};
     ShGlobal sh_{};
     bool meshDirty_ = true;
+    bool indexDirty_ = true;
     int highlightRegion_ = -1;
     bool skeletonVisible_ = false;
     bool flatShading_ = false;
@@ -482,6 +483,18 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     if (!createContext(window, error)) return false;
     if (!createPrograms(error)) return false;
 
+    // Attribute pointers capture the currently bound array buffer in the VAO. Create every
+    // backing buffer before configuring the VAOs; creating these later leaves attribute 0 bound
+    // to buffer 0 and produces frames containing only the post-process background.
+    glGenBuffers(1, &vertexVbo_);
+    glGenBuffers(1, &indexIbo_);
+    glGenBuffers(1, &groundVbo_);
+    glGenBuffers(1, &lineVbo_);
+    if (!vertexVbo_ || !indexIbo_ || !groundVbo_ || !lineVbo_) {
+        *error = "OpenGL ES could not allocate the renderer's vertex/index buffers";
+        return false;
+    }
+
     glGenVertexArrays(1, &avatarVao_);
     glGenVertexArrays(1, &groundVao_);
     glGenVertexArrays(1, &emptyVao_);
@@ -526,12 +539,10 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
 
     const float quad[12] = {-1.0f, 0.0f, -1.0f, 1.0f, 0.0f, -1.0f,
                             -1.0f, 0.0f,  1.0f, 1.0f, 0.0f,  1.0f};
-    glGenBuffers(1, &groundVbo_);
     glBindBuffer(GL_ARRAY_BUFFER, groundVbo_);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
 
     lineCapacity_ = GLint64(4096 * 28);
-    glGenBuffers(1, &lineVbo_);
     glBindBuffer(GL_ARRAY_BUFFER, lineVbo_);
     glBufferData(GL_ARRAY_BUFFER, lineCapacity_, nullptr, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -581,12 +592,22 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
  *  Geometry and atlas
  * ============================================================================================ */
 void GlRenderer::ensureGeometryBuffers() {
-    if (!engine_) return;
+    if (!engine_) {
+        vertexCount_ = 0;
+        indexCount_ = 0;
+        return;
+    }
     const int32_t vcount = af_engine_vertex_count(engine_);
     const int32_t icount = af_engine_index_count(engine_);
     const af_vertex* verts = af_engine_vertices(engine_);
     const uint32_t* indices = af_engine_indices(engine_);
-    if (vcount <= 0 || !verts) return;
+    if (vcount <= 0 || !verts) {
+        vertexCount_ = 0;
+        indexCount_ = 0;
+        meshDirty_ = false;
+        indexDirty_ = false;
+        return;
+    }
 
     const GLint64 vbytes = GLint64(vcount) * VertexLayout::stride;
     if (vertexVbo_ == 0) glGenBuffers(1, &vertexVbo_);
@@ -610,13 +631,16 @@ void GlRenderer::ensureGeometryBuffers() {
             indexCapacity_ = ibytes + ibytes / 4;
             indexCount_ = 0;
         }
-        if (indexCount_ != icount) {
+        if (indexDirty_ || indexCount_ != icount) {
             glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, GLsizeiptr(ibytes), indices);
             indexCount_ = icount;
         }
+    } else {
+        indexCount_ = 0;
     }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     meshDirty_ = false;
+    indexDirty_ = false;
 }
 
 void GlRenderer::uploadAtlas(std::string* error) {
@@ -912,15 +936,23 @@ void GlRenderer::drawForwardPass() {
 
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
-        for (int i = 0; i < n; ++i) {
-            glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
-                              sizeof(MaterialUbo));
-            const int offset = submeshes[i].index_offset;
-            glDrawElements(GL_TRIANGLES, submeshes[i].index_count, GL_UNSIGNED_INT,
-                           reinterpret_cast<const void*>(size_t(offset) * sizeof(uint32_t)));
-            ++drawCalls_;
+        int submittedIndices = 0;
+        if (submeshes && n > 0) {
+            for (int i = 0; i < n; ++i) {
+                const int offset = submeshes[i].index_offset;
+                const int count = submeshes[i].index_count;
+                if (offset < 0 || count <= 0 || offset > indexCount_ || count > indexCount_ - offset) {
+                    continue; // Never submit a submesh range outside the uploaded index buffer.
+                }
+                glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
+                                  sizeof(MaterialUbo));
+                glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT,
+                               reinterpret_cast<const void*>(size_t(offset) * sizeof(uint32_t)));
+                ++drawCalls_;
+                submittedIndices += count;
+            }
         }
-        triangles_ = indexCount_ / 3;
+        triangles_ = submittedIndices / 3;
     }
 
     /* ---- skeleton overlay ---- */
@@ -1081,6 +1113,7 @@ void GlRenderer::setOptions(const RendererOptions& options) {
 void GlRenderer::attachEngine(af_engine* engine) {
     engine_ = engine;
     meshDirty_ = true;
+    indexDirty_ = true;
     atlasUploaded_ = false;
     if (engine_ && context_ != EGL_NO_CONTEXT) {
         std::string error;
@@ -1089,7 +1122,7 @@ void GlRenderer::attachEngine(af_engine* engine) {
     }
 }
 
-void GlRenderer::invalidateMesh() { meshDirty_ = true; }
+void GlRenderer::invalidateMesh() { meshDirty_ = true; indexDirty_ = true; }
 
 bool GlRenderer::resize(int width, int height) {
     if (context_ == EGL_NO_CONTEXT || width <= 0 || height <= 0) return false;
