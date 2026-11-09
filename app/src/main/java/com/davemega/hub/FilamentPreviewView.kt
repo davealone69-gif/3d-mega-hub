@@ -496,38 +496,21 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             center[0].toDouble(), center[1].toDouble(), center[2].toDouble(),
             0.0, 1.0, 0.0
         )
-        cameraFrustumPassed = checkFrustumIntersection(
-            radius = radius.toDouble(),
-            distance = distance,
-            aspect = aspect,
-            nearPlane = nearPlane,
-            farPlane = farPlane
-        )
+        cameraFrustumPassed = checkFrustumIntersection(bounds)
+        val viewMatrix = activeCamera.getViewMatrix(null).contentToString()
+        val cullingProjectionMatrix = activeCamera.getCullingProjectionMatrix(null).contentToString()
+        val zNear = activeCamera.near
+        val zFar = activeCamera.cullingFar
         cameraFrustumDetail =
-            "AABB bounding sphere radius=$radius m; camera distance=$distance m; zNear=$nearPlane m; zFar=$farPlane m; " +
-                "aspect=$aspect; " + if (cameraFrustumPassed) {
-                    "AABB intersects and fits inside the configured view frustum"
-                } else {
-                    "FAILED: AABB outside configured view frustum"
-                }
+            "AABB bounding sphere radius=$radius m; camera distance=$distance m; zNear=$zNear m; zFar=$zFar m; " +
+                "viewMatrix=$viewMatrix; cullingProjectionMatrix=$cullingProjectionMatrix; " +
+                if (cameraFrustumPassed) "PASS: Filament frustum intersects the loaded AABB" else "FAILED: AABB outside frustum"
         reportStatus(cameraFrustumDetail)
     }
 
-    private fun checkFrustumIntersection(
-        radius: Double,
-        distance: Double,
-        aspect: Double,
-        nearPlane: Double,
-        farPlane: Double
-    ): Boolean {
-        val halfVertical = distance * tan(Math.toRadians(22.5))
-        val halfHorizontal = halfVertical * aspect
-        val nearestDepth = distance - radius
-        val farthestDepth = distance + radius
-        return radius <= halfVertical &&
-            radius <= halfHorizontal &&
-            nearestDepth > nearPlane &&
-            farthestDepth < farPlane
+    private fun checkFrustumIntersection(bounds: com.google.android.filament.Box): Boolean {
+        val activeCamera = camera ?: return false
+        return activeCamera.frustum.intersects(bounds)
     }
 
     fun captureDiagnostic(callback: (FilamentPixelDiagnostic) -> Unit) {
