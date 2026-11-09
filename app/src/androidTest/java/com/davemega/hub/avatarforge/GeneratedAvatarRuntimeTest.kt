@@ -99,6 +99,9 @@ class GeneratedAvatarRuntimeTest {
             assertEquals("Generated ARKit blendshape count differs", 52, stats[11])
             assertTrue("No successfully presented frames were recorded: ${nativeGetVerificationReport(handle)}", stats[12] > 0)
             assertTrue("Not all eight AABB corners are within the camera depth interval: ${nativeGetVerificationReport(handle)}", stats[13] == 1)
+            assertEquals("Camera-fit bounds must keep all eight model AABB corners inside the clip volume",
+                0, stats[15])
+            assertEquals("No AABB corner should be reported outside the clip volume", -1, stats[14])
             assertTrue("Deformed AABB does not intersect the actual camera frustum: ${nativeGetVerificationReport(handle)}",
                 stats[5] == 1)
             assertTrue("GL framebuffer readback failed: ${nativeGetVerificationReport(handle)}", stats[6] == 1)
