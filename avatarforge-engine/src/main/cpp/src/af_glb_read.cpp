@@ -25,8 +25,8 @@
 #define AF_IMPORT_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AvatarForge", __VA_ARGS__)
 #define AF_IMPORT_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "AvatarForge", __VA_ARGS__)
 #else
-#define AF_IMPORT_LOGI(...) do { std::fprintf(stderr, "[AvatarForge] "); std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\\n"); } while (0)
-#define AF_IMPORT_LOGW(...) do { std::fprintf(stderr, "[AvatarForge][WARN] "); std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\\n"); } while (0)
+#define AF_IMPORT_LOGI(...) do { std::fprintf(stderr, "[AvatarForge] "); std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
+#define AF_IMPORT_LOGW(...) do { std::fprintf(stderr, "[AvatarForge][WARN] "); std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
 #endif
 
 namespace af {
