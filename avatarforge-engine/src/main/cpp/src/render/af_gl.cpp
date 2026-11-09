@@ -32,9 +32,12 @@
 #include <EGL/eglext.h>            /* EGL_OPENGL_ES3_BIT_KHR */
 #include <GLES3/gl31.h>
 #include <android/native_window.h>
+#include <android/log.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -43,6 +46,29 @@
 
 namespace af {
 namespace {
+
+#define AF_GL_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AvatarForge", __VA_ARGS__)
+#define AF_GL_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "AvatarForge", __VA_ARGS__)
+#define AF_GL_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AvatarForge", __VA_ARGS__)
+
+void logVertexAttribute(GLuint index, GLint expectedComponents, size_t expectedOffset) {
+    GLint enabled = 0, size = 0, type = 0, normalized = 0, stride = 0, buffer = 0;
+    void* pointer = nullptr;
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_ENABLED, &enabled);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_SIZE, &size);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_TYPE, &type);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_NORMALIZED, &normalized);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_STRIDE, &stride);
+    glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &buffer);
+    glGetVertexAttribPointerv(index, GL_VERTEX_ATTRIB_ARRAY_POINTER, &pointer);
+    AF_GL_LOGI("VAO attr%u enabled=%d size=%d type=0x%x normalized=%d stride=%d buffer=%d offset=%zu expected(size=%d type=GL_FLOAT stride=%zu offset=%zu)",
+               index, enabled, size, type, normalized, stride, buffer,
+               reinterpret_cast<uintptr_t>(pointer), expectedComponents, sizeof(af_vertex), expectedOffset);
+    if (!enabled || size != expectedComponents || type != GL_FLOAT || stride != sizeof(af_vertex) ||
+        reinterpret_cast<uintptr_t>(pointer) != expectedOffset || buffer == 0) {
+        AF_GL_LOGE("VAO attribute %u does not match af_vertex layout", index);
+    }
+}
 
 bool compileShader(GLenum type, const char* source, const char* label, GLuint* out, std::string* error) {
     const GLuint shader = glCreateShader(type);
@@ -177,6 +203,9 @@ private:
     bool targetsDirty_ = false;
     bool contextLost_ = false;
     bool geometryValid_ = false;
+    bool vertexDumpLogged_ = false;
+    bool cameraDumpLogged_ = false;
+    bool drawDumpLogged_ = false;
 };
 
 /* ============================================================================================
@@ -501,24 +530,45 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     glGenVertexArrays(1, &emptyVao_);
     glGenVertexArrays(1, &lineVao_);
 
-    /* Avatar VAO: the engine's interleaved af_vertex, stride 88. */
+    /* Avatar VAO: exact canonical af_vertex layout. The forward shader consumes locations 0..4.
+       JOINTS/WEIGHTS at byte offsets 64/72 are CPU-side data today; no shader inputs 5/6 exist. */
+    static_assert(sizeof(af_vertex) == 88, "GLES vertex stride must remain 88 bytes");
+    static_assert(offsetof(af_vertex, pos) == 0 && offsetof(af_vertex, normal) == 12 &&
+                  offsetof(af_vertex, tangent) == 24 && offsetof(af_vertex, uv) == 40 &&
+                  offsetof(af_vertex, color) == 48 && offsetof(af_vertex, joints) == 64 &&
+                  offsetof(af_vertex, weights) == 72, "af_vertex field offsets changed");
     glBindVertexArray(avatarVao_);
     glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, VertexLayout::stride,
-                          reinterpret_cast<const void*>(size_t(VertexLayout::posOffset)));
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
+                          reinterpret_cast<const void*>(offsetof(af_vertex, pos)));
+    logVertexAttribute(0, 3, offsetof(af_vertex, pos));
     glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, VertexLayout::stride,
-                          reinterpret_cast<const void*>(size_t(VertexLayout::normalOffset)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
+                          reinterpret_cast<const void*>(offsetof(af_vertex, normal)));
+    logVertexAttribute(1, 3, offsetof(af_vertex, normal));
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, VertexLayout::stride,
-                          reinterpret_cast<const void*>(size_t(VertexLayout::tangentOffset)));
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
+                          reinterpret_cast<const void*>(offsetof(af_vertex, tangent)));
+    logVertexAttribute(2, 4, offsetof(af_vertex, tangent));
     glEnableVertexAttribArray(3);
-    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, VertexLayout::stride,
-                          reinterpret_cast<const void*>(size_t(VertexLayout::uvOffset)));
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
+                          reinterpret_cast<const void*>(offsetof(af_vertex, uv)));
+    logVertexAttribute(3, 2, offsetof(af_vertex, uv));
     glEnableVertexAttribArray(4);
-    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, VertexLayout::stride,
-                          reinterpret_cast<const void*>(size_t(VertexLayout::colorOffset)));
+    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
+                          reinterpret_cast<const void*>(offsetof(af_vertex, color)));
+    logVertexAttribute(4, 4, offsetof(af_vertex, color));
+    const char* attributeNames[5] = {"aPos", "aNormal", "aTangent", "aUv", "aColor"};
+    for (GLint i = 0; i < 5; ++i) {
+        const GLint shaderLocation = glGetAttribLocation(forwardProgram_, attributeNames[i]);
+        AF_GL_LOGI("Shader input %s -> location %d (expected %d)", attributeNames[i], shaderLocation, i);
+        if (shaderLocation != i) AF_GL_LOGE("Shader input location mismatch for %s", attributeNames[i]);
+    }
+    AF_GL_LOGI("af_vertex layout: size=%zu pos=0 normal=12 tangent=24 uv=40 color=48 joints=64 weights=72; locations 5/6 intentionally unused (CPU skinning path)",
+               sizeof(af_vertex));
+    const GLenum vaoSetupError = glGetError();
+    if (vaoSetupError != GL_NO_ERROR) AF_GL_LOGE("VAO setup GL error=0x%x", vaoSetupError);
     glBindVertexArray(0);
 
     /* Ground VAO: positions only. */
@@ -673,6 +723,19 @@ void GlRenderer::ensureGeometryBuffers() {
         vertexCount_ = 0;   /* force a full upload below */
     }
     if (meshDirty_ || vertexCount_ != vcount) {
+        if (!vertexDumpLogged_) {
+            AF_GL_LOGI("GPU upload: vertices=%d bytes=%lld stride=%zu expectedBytes=%lld",
+                       vcount, static_cast<long long>(vbytes), sizeof(af_vertex),
+                       static_cast<long long>(GLint64(vcount) * 88));
+            const int dumpCount = vcount < 5 ? vcount : 5;
+            for (int i = 0; i < dumpCount; ++i) {
+                const af_vertex& v = verts[i];
+                AF_GL_LOGI("GPU Vertex %d: POS(%.7g,%.7g,%.7g) | NORM(%.7g,%.7g,%.7g) | UV(%.7g,%.7g) | COLOR(%.5g,%.5g,%.5g,%.5g)",
+                           i, v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2],
+                           v.uv[0], v.uv[1], v.color[0], v.color[1], v.color[2], v.color[3]);
+            }
+            vertexDumpLogged_ = true;
+        }
         glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(vbytes), verts);
         vertexCount_ = vcount;
     }
@@ -845,6 +908,31 @@ void GlRenderer::updateScene(float deltaSeconds) {
     /* depthZeroToOne = false: GL clip space, which is also why the ES dialect of the shaders has
        AF_CLIP_Y = +1 and rescales the shadow lookup's z. */
     buildCameraUbo(&scene_, camera_, options_, env_, sh_, surfaceWidth_, surfaceHeight_, false);
+    if (!cameraDumpLogged_) {
+        bool matrixFinite = true;
+        for (int i = 0; i < 16; ++i) matrixFinite = matrixFinite && std::isfinite(scene_.camera.viewProj[i]);
+        AF_GL_LOGI("MVP/viewProj finite=%d target=(%.7g,%.7g,%.7g) distance=%.7g fov=%.7g viewport=%dx%d",
+                   matrixFinite ? 1 : 0, camera_.targetX, camera_.targetY, camera_.targetZ,
+                   camera_.distance, camera_.fovDeg, surfaceWidth_, surfaceHeight_);
+        if (!matrixFinite) AF_GL_LOGE("Camera view-projection matrix contains NaN/Infinity");
+        const af_vertex* cameraVerts = engine_ ? af_engine_vertices(engine_) : nullptr;
+        const int32_t cameraVertexCount = engine_ ? af_engine_vertex_count(engine_) : 0;
+        const int dumpCount = cameraVertexCount < 5 ? cameraVertexCount : 5;
+        for (int i = 0; cameraVerts && i < dumpCount; ++i) {
+            const float* m = scene_.camera.viewProj; // column-major, column vectors
+            const af_vertex& v = cameraVerts[i];
+            const float x = v.pos[0], y = v.pos[1], z = v.pos[2];
+            const float cx = m[0]*x + m[4]*y + m[8]*z + m[12];
+            const float cy = m[1]*x + m[5]*y + m[9]*z + m[13];
+            const float cz = m[2]*x + m[6]*y + m[10]*z + m[14];
+            const float cw = m[3]*x + m[7]*y + m[11]*z + m[15];
+            AF_GL_LOGI("MVP clip vertex %d: (%.7g,%.7g,%.7g,%.7g) finite=%d nonzeroW=%d",
+                       i, cx, cy, cz, cw,
+                       (std::isfinite(cx) && std::isfinite(cy) && std::isfinite(cz) && std::isfinite(cw)) ? 1 : 0,
+                       (std::isfinite(cw) && std::fabs(cw) > 1.0e-7f) ? 1 : 0);
+        }
+        cameraDumpLogged_ = true;
+    }
     scene_.camera.envFlags[3] = flatShading_ ? 1.0f : 0.0f;
     scene_.camera.uiParams[0] = float(highlightRegion_);
     scene_.camera.uiParams[1] = highlightRegion_ >= 0 ? 1.0f : 0.0f;
@@ -1004,6 +1092,12 @@ void GlRenderer::drawForwardPass() {
             glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
                               sizeof(MaterialUbo));
             const size_t byteOffset = static_cast<size_t>(sm.index_offset) * sizeof(uint32_t);
+            if (!drawDumpLogged_) {
+                AF_GL_LOGI("DrawElements submesh=%d mode=TRIANGLES count=%d indexType=UNSIGNED_INT indexOffset=%d byteOffset=%zu vertexRange=[%d,%d)",
+                           i, sm.index_count, sm.index_offset, byteOffset, sm.vertex_offset,
+                           sm.vertex_offset + sm.vertex_count);
+                drawDumpLogged_ = true;
+            }
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sm.index_count), GL_UNSIGNED_INT,
                            reinterpret_cast<const void*>(byteOffset));
             ++drawCalls_;
@@ -1170,6 +1264,9 @@ void GlRenderer::attachEngine(af_engine* engine) {
     engine_ = engine;
     meshDirty_ = true;
     atlasUploaded_ = false;
+    vertexDumpLogged_ = false;
+    cameraDumpLogged_ = false;
+    drawDumpLogged_ = false;
     if (engine_ && context_ != EGL_NO_CONTEXT) {
         std::string error;
         uploadAtlas(&error);
