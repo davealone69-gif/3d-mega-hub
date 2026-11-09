@@ -33,6 +33,23 @@ target_include_directories(afcore
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(afcore PRIVATE ${AF_KERNEL_FLAGS} -Wall -Wextra)
 target_link_libraries(afcore PRIVATE z)
+
+# AvatarForge custom renderer, copied from the canonical engine source.
+# GLES is forced by the Hub runtime on the target Samsung profile; Vulkan remains
+# compiled as an optional backend but is not selected by default.
+if(ANDROID)
+    add_library(afrender SHARED
+        src/render/af_render.cpp
+        src/render/af_render_capi.cpp
+        src/render/af_gl.cpp
+        src/render/af_vk.cpp
+        src/render/af_shaders.cpp)
+    target_include_directories(afrender
+        PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
+    target_compile_options(afrender PRIVATE ${AF_OPT_FLAGS} -Wall -Wextra)
+    target_link_libraries(afrender PUBLIC afcore PRIVATE vulkan EGL GLESv3 android log)
+endif()
 set_target_properties(afcore PROPERTIES VERSION "" SOVERSION "" PREFIX "lib")
 
 if(ANDROID)
