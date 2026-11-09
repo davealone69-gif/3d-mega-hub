@@ -13,7 +13,7 @@
 
 - **AvatarForge generation:** isolated `:avatarforge-engine` Android library, JNI bridge and C++ generation kernel. Avatar Studio exposes prompt generation, cancellation, resource/thermal checks, native-result validation and atomic publication of validated GLBs.
 - **3D viewer:** the bundled sample uses the separate Filament preview. Imported and generated self-contained GLBs use `AvatarForgeSurfaceView` and the integrated native AvatarForge renderer.
-- **Graphics backend:** the imported/generated avatar path explicitly forces native GLES. Vulkan code is not selected for this phone-first route.
+- **Graphics backend:** the imported/generated avatar path explicitly forces native GLES. Skinned GLBs apply the initial rest pose and refresh bounds before camera framing; Vulkan code is not selected for this phone-first route.
 - **Avatar imports:** selected GLBs are copied into app-private storage, size-limited and structurally validated before use. The viewer rejects external-resource `.gltf` files.
 - **Local AI:** Ollama remains an external service, not an embedded LLM. Plain HTTP is restricted to loopback; remote endpoints require HTTPS.
 - **Voice:** Android TextToSpeech output is connected. Viseme extraction and avatar lip-sync are not connected.

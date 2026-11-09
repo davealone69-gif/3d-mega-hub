@@ -124,7 +124,7 @@ The focused test can be run with:
 - GLES updates animation/deformation before camera and frustum calculations.
 - The renderer transforms all eight model AABB corners through the actual view and view-projection matrices and records view-space depth against the camera's actual near/far planes.
 - A frame is reported presented only after `glFinish()` in verification mode and a successful `eglSwapBuffers()`. Draw-call counts alone are not accepted.
-- PixelCopy captures the actual SurfaceView after the successful-presentation result.
+- PixelCopy captures the actual SurfaceView only after at least three successful EGL swaps, non-zero avatar triangles, and in-frustum bounds. PixelCopy and native glReadPixels estimate the clear colour from the four framebuffer corners and count geometry pixels that differ from that background (RGB delta sum >=48 and maximum channel delta >=16); the dark blue-grey clear colour cannot pass as avatar geometry.
 - Pixels count as visible when any RGB channel is greater than 10. The required threshold is strictly greater than 5,000 pixels.
 - If PixelCopy fails or returns an effectively black image, the test uses the GLES renderer's actual pre-swap default-framebuffer `glReadPixels()` capture. The chosen capture method and both pixel counts are reported separately.
 

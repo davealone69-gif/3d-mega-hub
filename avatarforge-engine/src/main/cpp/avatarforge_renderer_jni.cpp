@@ -96,6 +96,19 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
         return 0;
     }
 
+    /* Apply the initial skin pose before reading submesh bounds for camera framing.
+       Static GLBs have no joints and keep their original import path. */
+    if (af_engine_joint_count(session->engine) > 0) {
+        const int32_t poseResult = af_engine_apply_clip(session->engine, AF_CLIP_REST, 0.0f);
+        if (poseResult != AF_OK) {
+            const char* poseError = af_engine_last_error(session->engine);
+            throwState(env, "Applying initial AF_CLIP_REST before GLES camera framing failed (" +
+                            std::to_string(poseResult) + "): " +
+                            (poseError ? poseError : ""));
+            return 0;
+        }
+    }
+
     af::RendererOptions options{};
     options.preferVulkan = false; // Target handset uses the GLES backend.
     options.quality = af::QualityPreset::MEDIUM;
