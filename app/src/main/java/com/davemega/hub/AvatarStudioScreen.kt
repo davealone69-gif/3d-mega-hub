@@ -7,6 +7,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -14,9 +17,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -50,7 +55,71 @@ fun AvatarStudioScreen(
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
     var rendererStatus by remember { mutableStateOf("Waiting for Filament surface.") }
     var generationJob by remember { mutableStateOf<Job?>(null) }
+    var previewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
+    var showDiagnosticDialog by remember { mutableStateOf(false) }
+    var diagnosticRunning by remember { mutableStateOf(false) }
+    val diagnosticLog = remember { mutableStateListOf<String>() }
     val generating = generationJob?.isActive == true
+
+    fun startGeneratedAvatarDiagnostic() {
+        if (diagnosticRunning || generating || isImporting) return
+        diagnosticRunning = true
+        diagnosticLog.clear()
+        showDiagnosticDialog = true
+        scope.launch {
+            val diagnosticPrompt = "Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans"
+            try {
+                diagnosticLog += "START: AvatarForge generated-avatar diagnostic"
+                diagnosticLog += "Seed: 1337"
+                diagnosticLog += "Prompt: $diagnosticPrompt"
+                diagnosticLog += "Generating with the real native engine on this device..."
+                val result = AvatarForgeEngine.generate(
+                    context = context,
+                    spec = AvatarSpec(seed = 1337, prompt = diagnosticPrompt),
+                    prompt = diagnosticPrompt,
+                    outputName = "diagnostic-seed-1337-${System.currentTimeMillis()}.glb"
+                )
+                check(result.deformedMeshValidated) {
+                    "Native post-skinning vertex validation did not pass."
+                }
+                diagnosticLog += "PASS: native deformed mesh validation"
+                diagnosticLog += "Vertices: ${result.vertexCount}; triangles: ${result.triangleCount}; joints: ${result.jointCount}; blendshapes: ${result.blendshapeCount}"
+                diagnosticLog += "GLB: ${result.file.absolutePath} (${result.glbBytes} bytes)"
+                val generatedUri = Uri.fromFile(result.file)
+                onGenerated(generatedUri, result.file.name)
+                val activePreview = previewView
+                    ?: error("The 3D viewport has not created its Filament preview surface.")
+                activePreview.setModel(generatedUri)
+                diagnosticLog += "Loading generated GLB into the 3D-Mega-Hub Filament renderer..."
+                activePreview.captureDiagnostic { pixelResult ->
+                    diagnosticLog += if (pixelResult.frameSubmitted) {
+                        "PASS: Filament beginFrame/render/endFrame completed before PixelCopy."
+                    } else {
+                        "FAIL: no completed Filament frame was confirmed."
+                    }
+                    diagnosticLog += if (pixelResult.cameraFrustumPassed) {
+                        "PASS: ${pixelResult.cameraFrustumDetail}"
+                    } else {
+                        "FAIL: ${pixelResult.cameraFrustumDetail}"
+                    }
+                    diagnosticLog += "PixelCopy: ${pixelResult.width}x${pixelResult.height}; qualifying pixels (R>10 OR G>10 OR B>10): ${pixelResult.pixelsAboveThreshold}"
+                    pixelResult.screenshotPath?.let { diagnosticLog += "FAILED RENDER SCREENSHOT: $it" }
+                    pixelResult.error?.let { diagnosticLog += "ERROR: $it" }
+                    if (pixelResult.error == null && pixelResult.frameSubmitted &&
+                        pixelResult.cameraFrustumPassed && pixelResult.pixelsAboveThreshold >= 5000
+                    ) {
+                        diagnosticLog += "DIAGNOSTIC RESULT: PASS. Pixel threshold reached; physical visual inspection is still required."
+                    } else {
+                        diagnosticLog += "DIAGNOSTIC RESULT: FAIL/PARTIAL. Inspect the log and screenshot before changing renderer code."
+                    }
+                    diagnosticRunning = false
+                }
+            } catch (failure: Exception) {
+                diagnosticLog += "DIAGNOSTIC FAILED: ${failure.message ?: failure.javaClass.simpleName}"
+                diagnosticRunning = false
+            }
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Avatar studio", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -62,11 +131,15 @@ fun AvatarStudioScreen(
                 AndroidView(
                     factory = { viewContext ->
                         FilamentPreviewView(viewContext).apply {
+                            previewView = this
                             setStatusListener { rendererStatus = it }
                             setModel(avatarUri)
                         }
                     },
-                    update = { view -> view.setModel(avatarUri) },
+                    update = { view ->
+                        previewView = view
+                        view.setModel(avatarUri)
+                    },
                     modifier = Modifier.fillMaxWidth().height(420.dp)
                 )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
@@ -134,7 +207,45 @@ fun AvatarStudioScreen(
                     }
                 }
                 Text(generationStatus, style = MaterialTheme.typography.bodySmall)
+                if (BuildConfig.DEBUG) {
+                    OutlinedButton(
+                        onClick = { startGeneratedAvatarDiagnostic() },
+                        enabled = !diagnosticRunning && !generating && !isImporting,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (diagnosticRunning) "Running diagnostic…" else "Run generated-avatar diagnostic")
+                    }
+                }
             }
         }
+    }
+
+    if (BuildConfig.DEBUG && showDiagnosticDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!diagnosticRunning) showDiagnosticDialog = false },
+            title = { Text("Generated-avatar diagnostics") },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth().height(300.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    diagnosticLog.forEach { line ->
+                        Text(line, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (diagnosticRunning) CircularProgressIndicator()
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { startGeneratedAvatarDiagnostic() },
+                    enabled = !diagnosticRunning && !generating && !isImporting
+                ) { Text("Run again") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiagnosticDialog = false }, enabled = !diagnosticRunning) {
+                    Text("Close")
+                }
+            }
+        )
     }
 }
