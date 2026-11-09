@@ -70,8 +70,9 @@ For the imported-GLB AvatarForge GLES path, run the instrumentation smoke test a
 | Filament surface dimensions | **REAL + VERIFIED (code change)** | Swap-chain creation waits for a valid, non-zero surface size and uses actual pixel dimensions. Emulator lifecycle/render verification is still pending. |
 | Filament tangent generation / tangent-independent material | **UNVERIFIED** | No runtime tangent generation or proven compatible fallback material has been implemented. Test a GLB that needs tangent-space normal mapping and a no-TANGENT control asset through the Filament gltfio path before selecting the fix. |
 | Filament teardown threading and pending callbacks | **UNVERIFIED** | Dedicated engine-owner-thread teardown and callback-drain/cancellation have not been implemented or stress-tested. Verify engine creation, frame callbacks, surface detach, and destruction are serialized on the same owner thread. |
-| Native GLES (AvatarForge) shattered / sparse mesh | **BLOCKED** | Pending C++ investigation. Verify EGL depth-buffer attributes and depth-test state; confirm index component type is preserved end-to-end and draw calls use the matching GL index type; isolate winding/culling with a controlled culling-off diagnostic; inspect vertex/index bounds and texture upload state. Do not treat Filament changes as a fix for this path. |
-| Native GLES crash during renderer interaction / destruction | **BLOCKED** | Pending native lifecycle/threading audit. Prove render worker is stopped and joined before EGL surface/context/native-window destruction; serialize `eglMakeCurrent`, renderer teardown and context destruction; inspect JNI ownership and repeated create/destroy/reload paths. Capture symbolized native crash evidence. |
+| Native GLES geometry upload/draw diagnostics | **PARTIAL** | Buffer allocation/upload errors are checked, failed uploads are retried, and failed avatar draws are counted as failed rather than successful. Emulator runtime evidence is pending. |
+| Native GLES visible geometry / black-screen outcome | **UNVERIFIED** | Indexed bounds refresh and camera ordering are wired, but there is no passing current emulator pixel capture or Samsung SM-S921B visible-pixel evidence yet. |
+| Native GLES repeated create/destroy lifecycle | **UNVERIFIED** | The renderer has a dedicated worker and ordered teardown in source; repeated physical-device lifecycle stress has not been run. |
 
 **Path separation:** imported local GLBs currently use `AvatarForgeSurfaceView` and the custom native GLES renderer. The Filament preview is a separate route. A fix or screenshot for one route is not evidence for the other.
 
@@ -118,7 +119,7 @@ The focused test can be run with:
 
 ### Runtime assertions
 
-- `af_engine_validate_deformed_mesh` checks every post-skin vertex position, all four finite/non-negative weights, weight sum >= 0.99, all four joint references, and metric height bounds.
+- `af_engine_validate_deformed_mesh` checks every post-skin vertex position, all four finite/non-negative weights, weight sum >= 0.99, all four joint references, metric height bounds, every submesh index range and every indexed deformed vertex against its refreshed AABB.
 - CPU deformation refreshes each submesh's indexed bounds before the renderer builds the camera.
 - GLES updates animation/deformation before camera and frustum calculations.
 - The renderer transforms all eight model AABB corners through the actual view and view-projection matrices and records view-space depth against the camera's actual near/far planes.

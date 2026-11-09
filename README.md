@@ -4,16 +4,16 @@
 
 ## Current working branch
 
-- Branch: [`fix/mega-hub-candidate-hardening`](https://github.com/davealone69-gif/3d-mega-hub/tree/fix/mega-hub-candidate-hardening)
-- Review PR: [#8](https://github.com/davealone69-gif/3d-mega-hub/pull/8)
-- Current hardening base: `7ba8526850ef85a3288c4984a82775ac08c77a65`
+- Branch: [`integration/avatarforge-renderer-port`](https://github.com/davealone69-gif/3d-mega-hub/tree/integration/avatarforge-renderer-port)
+- Review PR: [#9](https://github.com/davealone69-gif/3d-mega-hub/pull/9)
+- Integration base before current hardening: `f45c15a73c42b9240b6b6f325fe18d4df61fb630`
 - `main` remains unchanged. Earlier candidate PR #7 is left open and untouched.
 
 ## What is wired in source
 
 - **AvatarForge generation:** isolated `:avatarforge-engine` Android library, JNI bridge and C++ generation kernel. Avatar Studio exposes prompt generation, cancellation, resource/thermal checks, native-result validation and atomic publication of validated GLBs.
-- **3D viewer:** Filament gltfio loads the bundled GLB fixture and self-contained imported/generated GLBs. It frames the camera from asset bounds and plays the first animation when present.
-- **Graphics backend:** OpenGL ES is primary. Vulkan remains an optional fallback only after a complete GLES session fails.
+- **3D viewer:** the bundled sample uses the separate Filament preview. Imported and generated self-contained GLBs use `AvatarForgeSurfaceView` and the integrated native AvatarForge renderer.
+- **Graphics backend:** the imported/generated avatar path explicitly forces native GLES. Vulkan code is not selected for this phone-first route.
 - **Avatar imports:** selected GLBs are copied into app-private storage, size-limited and structurally validated before use. The viewer rejects external-resource `.gltf` files.
 - **Local AI:** Ollama remains an external service, not an embedded LLM. Plain HTTP is restricted to loopback; remote endpoints require HTTPS.
 - **Voice:** Android TextToSpeech output is connected. Viseme extraction and avatar lip-sync are not connected.
@@ -35,10 +35,9 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 
 ## Verification
 
-- Earlier exact revision `34201cb16154958ae2379be6ce485856806d4bbc`: Android unit tests, lint, debug APK build and R8/minification all passed.
-- Earlier exact revision `877f73d10756cd9a61a99724aaa37b1e63a6df0f`: signed preview APK and AAB built; signature verification and SHA-256 provenance passed. The ephemeral preview key is not a production signing identity.
-- The earlier emulator smoke failed in its shell harness before APK installation. It did **not** establish an app crash. The harness has been replaced with a single Bash script that checks Avatar Studio, GLB load and an OpenGL ES frame.
-- Current hardening HEAD and corrected emulator smoke are pending fresh CI evidence.
+- Parent integration commit `f45c15a73c42b9240b6b6f325fe18d4df61fb630`: unit tests, lint, native sampling regression, debug APK build and R8/minification passed. The GLES emulator smoke timed out while booting the `swangle` emulator; the generated-runtime workflow stopped before tests because it attempted to install the invalid SDK package `tools`.
+- The current integration update restores Android WebP decoding, resolves the actual `EXT_texture_webp` image source with core-source fallback, checks/retries GLES geometry uploads, and registers host GLB-extension regression tests.
+- CI for the updated source is pending. Samsung SM-S921B visible-pixel/runtime verification remains **UNVERIFIED**.
 - Production release signing is **BLOCKED** until a user-owned production keystore is configured through protected CI secrets. Never substitute the debug key or a one-run preview key.
 
 ## Existing older debug build

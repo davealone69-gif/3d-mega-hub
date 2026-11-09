@@ -289,6 +289,20 @@ Java_com_davemega_hub_avatarforge_NativeMethods_generate(
         throwEngineFailure(env, "af_engine_run_all", result, engine.get());
         return nullptr;
     }
+    result = af_engine_apply_clip(engine.get(), AF_CLIP_REST, 0.0f);
+    if (result != AF_OK) {
+        throwEngineFailure(env, "af_engine_apply_clip(AF_CLIP_REST)", result, engine.get());
+        return nullptr;
+    }
+    char meshReport[2048] = {};
+    result = af_engine_validate_deformed_mesh(
+        engine.get(), meshReport, static_cast<int32_t>(sizeof(meshReport)));
+    if (result != AF_OK) {
+        throwJava(env, "java/lang/IllegalStateException",
+                  meshReport[0] ? meshReport : "Deformed mesh validation failed");
+        return nullptr;
+    }
+
     result = af_engine_export_glb(engine.get(), path.c_str());
     if (result != AF_OK) {
         throwEngineFailure(env, "af_engine_export_glb", result, engine.get());
@@ -313,6 +327,7 @@ Java_com_davemega_hub_avatarforge_NativeMethods_generate(
         static_cast<jlong>(stats.geometry_bytes),
         static_cast<jlong>(stats.peak_field_bytes),
         static_cast<jlong>(promptMatched),
+        static_cast<jlong>(1),  // Post-skinning vertices and indexed submesh bounds passed validation.
     };
     jlongArray out = env->NewLongArray(static_cast<jsize>(sizeof(values) / sizeof(values[0])));
     if (out != nullptr) env->SetLongArrayRegion(out, 0, static_cast<jsize>(sizeof(values) / sizeof(values[0])), values);

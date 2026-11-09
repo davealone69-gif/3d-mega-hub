@@ -17,9 +17,10 @@
 
 ## Phase 2: real model viewer
 
-- [x] Filament startup with OpenGL ES primary and Vulkan fallback.
-- [x] gltfio loader for bundled sample and self-contained GLB assets.
-- [x] Bounds-based camera framing and first glTF animation playback.
+- [x] Keep the Filament preview route separate for the bundled sample model.
+- [x] Imported/generated GLBs use the integrated AvatarForge native GLES renderer; Vulkan is explicitly disabled on this route.
+- [x] CPU deformation refreshes indexed submesh bounds before camera/frustum calculations.
+- [ ] Verify visible imported/generated avatar pixels and repeat surface lifecycle on the Samsung SM-S921B.
 - [ ] Combined CI and R8/minification pass.
 - [ ] On Samsung SM-S921B, verify visible model pixels, materials, animation, camera controls, attach/detach, repeated open/close, memory pressure and sustained thermal behavior.
 - [ ] Add viewer lifecycle and malformed-file regression tests.

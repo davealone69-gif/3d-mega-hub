@@ -960,26 +960,45 @@ namespace {
    Submeshes share the complete vertex buffer, so bounds must follow their index ranges. */
 void refreshSubmeshBounds(af_engine* e) {
     if (!e) return;
+    const size_t indexCount = e->indices.size();
+    const size_t vertexCount = e->verts.size();
     for (af_submesh& sm : e->submeshes) {
-        Vec3 mn(1e30f, 1e30f, 1e30f), mx(-1e30f, -1e30f, -1e30f);
+        const auto clearBounds = [&sm]() {
+            sm.bounds_min[0] = sm.bounds_min[1] = sm.bounds_min[2] = 0.0f;
+            sm.bounds_max[0] = sm.bounds_max[1] = sm.bounds_max[2] = 0.0f;
+        };
+        if (sm.index_offset < 0 || sm.index_count <= 0 ||
+            static_cast<size_t>(sm.index_offset) > indexCount ||
+            static_cast<size_t>(sm.index_count) > indexCount - static_cast<size_t>(sm.index_offset)) {
+            clearBounds();
+            continue;
+        }
+
+        Vec3 mn(1.0e30f, 1.0e30f, 1.0e30f);
+        Vec3 mx(-1.0e30f, -1.0e30f, -1.0e30f);
         bool found = false;
-        const int64_t begin = std::max<int64_t>(0, sm.index_offset);
-        const int64_t end = std::min<int64_t>(static_cast<int64_t>(e->indices.size()),
-                                              begin + std::max<int32_t>(0, sm.index_count));
-        for (int64_t i = begin; i < end; ++i) {
-            const uint32_t vertexIndex = e->indices[static_cast<size_t>(i)];
-            if (vertexIndex >= e->verts.size()) continue;
+        const size_t begin = static_cast<size_t>(sm.index_offset);
+        const size_t end = begin + static_cast<size_t>(sm.index_count);
+        for (size_t i = begin; i < end; ++i) {
+            const uint32_t vertexIndex = e->indices[i];
+            if (vertexIndex >= vertexCount) continue;
             const af_vertex& v = e->verts[vertexIndex];
-            const Vec3 p(v.pos[0], v.pos[1], v.pos[2]);
-            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
-            mn.x = std::min(mn.x, p.x); mn.y = std::min(mn.y, p.y); mn.z = std::min(mn.z, p.z);
-            mx.x = std::max(mx.x, p.x); mx.y = std::max(mx.y, p.y); mx.z = std::max(mx.z, p.z);
+            const Vec3 position(v.pos[0], v.pos[1], v.pos[2]);
+            if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z)) continue;
+            mn.x = std::min(mn.x, position.x);
+            mn.y = std::min(mn.y, position.y);
+            mn.z = std::min(mn.z, position.z);
+            mx.x = std::max(mx.x, position.x);
+            mx.y = std::max(mx.y, position.y);
+            mx.z = std::max(mx.z, position.z);
             found = true;
         }
-        if (found) {
-            sm.bounds_min[0] = mn.x; sm.bounds_min[1] = mn.y; sm.bounds_min[2] = mn.z;
-            sm.bounds_max[0] = mx.x; sm.bounds_max[1] = mx.y; sm.bounds_max[2] = mx.z;
+        if (!found) {
+            clearBounds();
+            continue;
         }
+        sm.bounds_min[0] = mn.x; sm.bounds_min[1] = mn.y; sm.bounds_min[2] = mn.z;
+        sm.bounds_max[0] = mx.x; sm.bounds_max[1] = mx.y; sm.bounds_max[2] = mx.z;
     }
 }
 
@@ -1597,6 +1616,7 @@ int32_t af_engine_validate_deformed_mesh(const af_engine* engine, char* out_repo
     float boundsMin[3] = {INFINITY, INFINITY, INFINITY};
     float boundsMax[3] = {-INFINITY, -INFINITY, -INFINITY};
     int32_t firstBad = -1;
+    int32_t firstBadSubmesh = -1;
     const char* reason = "";
     float badPos[3] = {0, 0, 0};
     float badWeights[4] = {0, 0, 0, 0};
@@ -1632,15 +1652,84 @@ int32_t af_engine_validate_deformed_mesh(const af_engine* engine, char* out_repo
         }
     }
 
+    if (firstBad < 0 && reason[0] == '\0') {
+        const size_t indexCount = engine->indices.size();
+        const size_t indexedVertexCount = engine->verts.size();
+        bool anyIndexedSubmesh = false;
+        for (size_t submeshIndex = 0; submeshIndex < engine->submeshes.size(); ++submeshIndex) {
+            const af_submesh& sm = engine->submeshes[submeshIndex];
+            if (sm.index_offset < 0 || sm.index_count < 0 ||
+                static_cast<size_t>(sm.index_offset) > indexCount ||
+                static_cast<size_t>(sm.index_count) > indexCount - static_cast<size_t>(sm.index_offset)) {
+                firstBadSubmesh = static_cast<int32_t>(submeshIndex);
+                reason = "invalid_submesh_index_range";
+                break;
+            }
+            if (sm.index_count == 0) continue;
+            anyIndexedSubmesh = true;
+            if ((sm.index_count % 3) != 0) {
+                firstBadSubmesh = static_cast<int32_t>(submeshIndex);
+                reason = "submesh_index_count_not_triangles";
+                break;
+            }
+            const int64_t vertexEnd = static_cast<int64_t>(sm.vertex_offset) +
+                                      static_cast<int64_t>(sm.vertex_count);
+            if (sm.vertex_offset < 0 || sm.vertex_count <= 0 ||
+                vertexEnd > static_cast<int64_t>(indexedVertexCount)) {
+                firstBadSubmesh = static_cast<int32_t>(submeshIndex);
+                reason = "invalid_submesh_vertex_range";
+                break;
+            }
+
+            float subMin[3] = {INFINITY, INFINITY, INFINITY};
+            float subMax[3] = {-INFINITY, -INFINITY, -INFINITY};
+            const size_t begin = static_cast<size_t>(sm.index_offset);
+            const size_t end = begin + static_cast<size_t>(sm.index_count);
+            for (size_t offset = begin; offset < end; ++offset) {
+                const uint32_t vertexIndex = engine->indices[offset];
+                if (vertexIndex >= indexedVertexCount ||
+                    vertexIndex < static_cast<uint32_t>(sm.vertex_offset) ||
+                    static_cast<int64_t>(vertexIndex) >= vertexEnd) {
+                    firstBadSubmesh = static_cast<int32_t>(submeshIndex);
+                    reason = "submesh_index_outside_vertex_range";
+                    break;
+                }
+                const af_vertex& vertex = vertices[vertexIndex];
+                for (int axis = 0; axis < 3; ++axis) {
+                    subMin[axis] = std::min(subMin[axis], vertex.pos[axis]);
+                    subMax[axis] = std::max(subMax[axis], vertex.pos[axis]);
+                }
+            }
+            if (firstBadSubmesh >= 0) break;
+
+            constexpr float kBoundsTolerance = 1.0e-4f;
+            for (int axis = 0; axis < 3; ++axis) {
+                if (!std::isfinite(sm.bounds_min[axis]) || !std::isfinite(sm.bounds_max[axis]) ||
+                    sm.bounds_min[axis] > sm.bounds_max[axis] ||
+                    sm.bounds_min[axis] > subMin[axis] + kBoundsTolerance ||
+                    sm.bounds_max[axis] < subMax[axis] - kBoundsTolerance) {
+                    firstBadSubmesh = static_cast<int32_t>(submeshIndex);
+                    reason = "submesh_bounds_do_not_contain_deformed_vertices";
+                    break;
+                }
+            }
+            if (firstBadSubmesh >= 0) break;
+        }
+        if (!anyIndexedSubmesh && firstBadSubmesh < 0) {
+            firstBadSubmesh = 0;
+            reason = "no_indexed_submeshes";
+        }
+    }
+
     const float height = std::isfinite(boundsMin[1]) && std::isfinite(boundsMax[1])
         ? boundsMax[1] - boundsMin[1] : 0.0f;
     const bool boundsValid = std::isfinite(height) && height >= 0.5f && height <= 3.0f;
     if (firstBad < 0 && !boundsValid) reason = "height_out_of_range";
-    const bool valid = vertexCount > 0 && jointCount > 0 && firstBad < 0 && boundsValid;
+    const bool valid = vertexCount > 0 && jointCount > 0 && firstBad < 0 && firstBadSubmesh < 0 && boundsValid;
     if (out_report && capacity > 0) {
         std::snprintf(out_report, static_cast<size_t>(capacity),
-            "valid=%d reason=%s vertex=%d vertices=%d triangles=%d joints=%d height_m=%.6f bounds_min=(%.6f,%.6f,%.6f) bounds_max=(%.6f,%.6f,%.6f) POS=(%.6f,%.6f,%.6f) WEIGHTS=(%.6f,%.6f,%.6f,%.6f) JOINTS=(%u,%u,%u,%u)",
-            valid ? 1 : 0, reason, firstBad, vertexCount, triangleCount, jointCount, height,
+            "valid=%d reason=%s vertex=%d submesh=%d vertices=%d triangles=%d joints=%d height_m=%.6f bounds_min=(%.6f,%.6f,%.6f) bounds_max=(%.6f,%.6f,%.6f) POS=(%.6f,%.6f,%.6f) WEIGHTS=(%.6f,%.6f,%.6f,%.6f) JOINTS=(%u,%u,%u,%u)",
+            valid ? 1 : 0, reason, firstBad, firstBadSubmesh, vertexCount, triangleCount, jointCount, height,
             boundsMin[0], boundsMin[1], boundsMin[2], boundsMax[0], boundsMax[1], boundsMax[2],
             badPos[0], badPos[1], badPos[2], badWeights[0], badWeights[1], badWeights[2], badWeights[3],
             static_cast<unsigned>(badJoints[0]), static_cast<unsigned>(badJoints[1]),
