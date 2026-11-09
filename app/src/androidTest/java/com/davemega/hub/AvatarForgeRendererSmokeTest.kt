@@ -193,6 +193,17 @@ class AvatarForgeRendererSmokeTest {
         val crop = Rect(bounds).apply { intersect(0, 0, image.width, image.height) }
         assertTrue("AvatarForge viewport lies outside the captured screen: $crop", crop.width() > 0 && crop.height() > 0)
 
+        if (glb.name.contains("webp-extension")) {
+            val texturedCenter = image.getPixel(crop.centerX(), crop.centerY())
+            val red = (texturedCenter shr 16) and 0xff
+            val green = (texturedCenter shr 8) and 0xff
+            val blue = texturedCenter and 0xff
+            assertTrue(
+                "Required WebP texture was not visible at the center of the rendered triangle: RGB=($red,$green,$blue)",
+                red > green + 20 && blue > green + 20 && red > 40 && blue > 40
+            )
+        }
+
         // Persist evidence before assertions so a failing run still carries the exact viewport.
         val externalDirectory = requireNotNull(context.getExternalFilesDir(null)) {
             "App external files directory is unavailable"
