@@ -37,7 +37,7 @@ jobs:
 
       - name: Install pinned Android components
         run: |
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
+          sdkmanager "emulator" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;26.1.10909125" "cmake;3.22.1"
           yes | sdkmanager --licenses
 
       - name: Set up Gradle
@@ -50,7 +50,7 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_6
-          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -camera-back none
+          emulator-options: -memory 4096 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -camera-back none
           disable-animations: true
           script: |
             set +e
