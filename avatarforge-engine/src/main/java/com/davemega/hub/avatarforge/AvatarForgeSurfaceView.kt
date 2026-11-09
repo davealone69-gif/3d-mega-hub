@@ -87,8 +87,7 @@ class AvatarForgeSurfaceView(
         running.set(false)
         val worker = renderThread
         if (worker != null && worker !== Thread.currentThread()) {
-            worker.join(2_000)
-            if (worker.isAlive) onStatus("Waiting for AvatarForge GPU shutdown…")
+            worker.join() // Never allow a new surface session to overlap a live native renderer
         }
         renderThread = null
     }
