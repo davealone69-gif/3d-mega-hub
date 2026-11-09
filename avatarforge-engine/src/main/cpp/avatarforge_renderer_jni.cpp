@@ -7,10 +7,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <memory>
 #include <limits>
 #include <new>
 #include <string>
+#include <vector>
 
 namespace {
 struct NativeAvatarSession {
