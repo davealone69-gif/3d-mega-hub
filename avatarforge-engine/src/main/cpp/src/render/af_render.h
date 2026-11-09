@@ -112,6 +112,8 @@ struct RendererStats {
     int   frames         = 0;
     bool  framePresented = false; /* true only after a successful EGL swap / backend present */
     bool  boundsInFrustum = false;
+    bool  boundsAllCornersInDepthRange = false;
+    int   firstOutsideCorner = -1, outsideCorners = 0, presentedFrames = 0;
     float minViewDepth = 0.0f, maxViewDepth = 0.0f, nearPlane = 0.0f, farPlane = 0.0f;
     bool  readbackValid = false;
     int   readbackNonBlackPixels = 0, readbackWidth = 0, readbackHeight = 0;
