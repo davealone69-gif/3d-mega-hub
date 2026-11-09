@@ -5,6 +5,8 @@
 #include "afcore.h"
 #include "render/af_render.h"
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <new>
 #include <string>
