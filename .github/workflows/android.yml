@@ -15,6 +15,18 @@ permissions:
   contents: read
 
 jobs:
+  native-regression:
+    name: Native C++ sampling regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Configure host native tests
+        run: cmake -S avatarforge-engine/src/main/cpp -B build/native-tests -DBUILD_TESTING=ON -DAF_OPT_FLAGS=-O1
+      - name: Build native regression target
+        run: cmake --build build/native-tests --parallel 2
+      - name: Run native regression tests
+        run: ctest --test-dir build/native-tests --output-on-failure
+
   unit-tests:
     name: Unit tests
     runs-on: ubuntu-latest
