@@ -142,8 +142,8 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     camera.targetZ = cz;
     camera.fovDeg = 32.0f;
     camera.distance = radius / std::sin(limitingHalfAngle) * 1.15f;
-    camera.nearClip = std::max(0.00001f, radius * 0.001f);
-    camera.farClip = std::max(100.0f, camera.distance + radius * 4.0f);
+    // buildCameraUbo derives near/far from the imported model bounds each frame.
+    // Keep clipping-plane policy in one place instead of maintaining a second camera contract.
     session->renderer->setCamera(camera);
     return reinterpret_cast<jlong>(session.release());
 }
