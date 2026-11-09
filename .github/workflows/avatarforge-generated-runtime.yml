@@ -57,7 +57,7 @@ jobs:
           disable-animations: true
           script: |
             set +e
-            ./gradlew :app:connectedDebugAndroidTest --stacktrace
+            ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace
             test_status=$?
             mkdir -p artifacts/avatarforge
             adb pull /sdcard/Android/data/com.davemega.hub/files/failed_render.png artifacts/avatarforge/failed_render.png || true

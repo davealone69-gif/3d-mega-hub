@@ -5,7 +5,7 @@ mkdir -p avatarforge-render-smoke-evidence
 chmod +x ./gradlew
 
 TEST_STATUS=0
-./gradlew --no-daemon :app:connectedDebugAndroidTest --stacktrace || TEST_STATUS=$?
+./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.AvatarForgeRendererSmokeTest --stacktrace || TEST_STATUS=$?
 
 adb logcat -d -v threadtime > avatarforge-render-smoke-evidence/logcat.txt 2>&1 || true
 adb logcat -d -v threadtime -s AvatarForge:V > avatarforge-render-smoke-evidence/avatarforge-logcat.txt 2>&1 || true
