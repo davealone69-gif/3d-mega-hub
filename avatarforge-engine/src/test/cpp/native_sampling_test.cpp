@@ -24,22 +24,26 @@ std::vector<float> sample(int threads, int blockSize) {
 
 int main() {
     const std::vector<float> reference = sample(1, 1);
-    const std::vector<float> parallel = sample(8, 1);
-    const std::vector<float> blocked = sample(8, 8);
+    require(!reference.empty(), "reference grid is empty");
 
-    require(reference.size() == parallel.size(), "parallel sample count differs");
-    require(reference.size() == blocked.size(), "blocked sample count differs");
+    // Repeat to exercise scheduling variation and expose intermittent overlapping writes.
+    for (int iteration = 0; iteration < 40; ++iteration) {
+        const std::vector<float> parallel = sample(8, 1);
+        const std::vector<float> blocked = sample(8, 8);
+        require(reference.size() == parallel.size(), "parallel sample count differs");
+        require(reference.size() == blocked.size(), "blocked sample count differs");
 
-    for (size_t i = 0; i < reference.size(); ++i) {
-        require(std::isfinite(reference[i]), "reference contains a non-finite sample");
-        require(std::isfinite(parallel[i]), "parallel contains a non-finite sample");
-        require(std::isfinite(blocked[i]), "blocked contains a non-finite sample");
-        require((reference[i] < 0.0f) == (parallel[i] < 0.0f),
-                "parallel sampling changed a sample's sign");
-        require((reference[i] < 0.0f) == (blocked[i] < 0.0f),
-                "block skipping or shared-boundary ownership changed a sample's sign");
+        for (size_t i = 0; i < reference.size(); ++i) {
+            require(std::isfinite(reference[i]), "reference contains a non-finite sample");
+            require(std::isfinite(parallel[i]), "parallel contains a non-finite sample");
+            require(std::isfinite(blocked[i]), "blocked contains a non-finite sample");
+            require((reference[i] < 0.0f) == (parallel[i] < 0.0f),
+                    "parallel sampling changed a sample's sign");
+            require((reference[i] < 0.0f) == (blocked[i] < 0.0f),
+                    "block skipping or shared-boundary ownership changed a sample's sign");
+        }
     }
 
-    std::puts("PASS: single-thread, parallel, and block-skipped sampling agree");
+    std::puts("PASS: 40 repeated single-thread, parallel, and block-skipped sampling comparisons");
     return 0;
 }
