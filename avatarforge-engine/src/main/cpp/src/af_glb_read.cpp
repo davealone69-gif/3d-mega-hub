@@ -20,6 +20,14 @@
 
 #include <cstdio>
 #include <cstring>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define AF_IMPORT_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AvatarForge", __VA_ARGS__)
+#define AF_IMPORT_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "AvatarForge", __VA_ARGS__)
+#else
+#define AF_IMPORT_LOGI(...) do { std::fprintf(stderr, "[AvatarForge] "); std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\\n"); } while (0)
+#define AF_IMPORT_LOGW(...) do { std::fprintf(stderr, "[AvatarForge][WARN] "); std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\\n"); } while (0)
+#endif
 
 namespace af {
 namespace {
@@ -379,6 +387,12 @@ bool validateVertexAttributeAccessor(const json::Json& doc, const json::Json& pr
     const std::string type = acc["type"].stringOr("");
     const int component = acc["componentType"].asInt(0);
     const bool normalized = acc["normalized"].asBool(false);
+    size_t accessorCount = 0, accessorByteOffset = 0;
+    acc["count"].asIndex(&accessorCount);
+    acc["byteOffset"].asIndex(&accessorByteOffset);
+    AF_IMPORT_LOGI("GLB accessor semantic=%s index=%d componentType=%d type=%s normalized=%d count=%zu bufferView=%d byteOffset=%zu",
+                   name, index, component, type.c_str(), normalized ? 1 : 0, accessorCount,
+                   acc["bufferView"].asInt(-1), accessorByteOffset);
     bool valid = false;
     if (std::strcmp(name, "POSITION") == 0) {
         valid = type == "VEC3" && component == 5126 && !normalized;
@@ -585,7 +599,13 @@ int buildPrimitive(const uint8_t* bin, size_t binSize, const json::Json& doc, co
         for (size_t i = 0; i < vertexCount; ++i) {
             for (int c = 0; c < 4; ++c) {
                 const float j = scratch[i * 4 + static_cast<size_t>(c)];
-                (*pool)[i].joints[c] = static_cast<uint16_t>(j < 0.0f ? 0.0f : (j > 65535.0f ? 65535.0f : j));
+                // JOINTS_0 is validated as unnormalised UNSIGNED_BYTE/UNSIGNED_SHORT.
+                // Reject impossible values instead of silently clamping corrupt importer data.
+                if (!(j >= 0.0f && j <= 65535.0f)) {
+                    if (error) *error = "glTF: JOINTS_0 value is outside uint16 range";
+                    return AF_ERR_INVALID_ARG;
+                }
+                (*pool)[i].joints[c] = static_cast<uint16_t>(j);
             }
         }
     }
@@ -606,6 +626,19 @@ int buildPrimitive(const uint8_t* bin, size_t binSize, const json::Json& doc, co
                 for (int c = 0; c < 4; ++c) (*pool)[i].weights[c] *= inv;
             }
         }
+    }
+
+    const size_t debugVertexCount = vertexCount < 5 ? vertexCount : 5;
+    AF_IMPORT_LOGI("GLB packed vertex pool: count=%zu stride=%zu (expected 88 bytes); source accessors converted to canonical float/u16 fields",
+                   vertexCount, sizeof(af_vertex));
+    for (size_t i = 0; i < debugVertexCount; ++i) {
+        const af_vertex& v = (*pool)[i];
+        AF_IMPORT_LOGI("GLB Vertex %zu: POS(%.7g,%.7g,%.7g) | NORM(%.7g,%.7g,%.7g) | UV(%.7g,%.7g) | COLOR(%.5g,%.5g,%.5g,%.5g) | JOINTS(%u,%u,%u,%u) | WEIGHTS(%.5g,%.5g,%.5g,%.5g)",
+                       i, v.pos[0], v.pos[1], v.pos[2], v.normal[0], v.normal[1], v.normal[2],
+                       v.uv[0], v.uv[1], v.color[0], v.color[1], v.color[2], v.color[3],
+                       static_cast<unsigned>(v.joints[0]), static_cast<unsigned>(v.joints[1]),
+                       static_cast<unsigned>(v.joints[2]), static_cast<unsigned>(v.joints[3]),
+                       v.weights[0], v.weights[1], v.weights[2], v.weights[3]);
     }
 
     if (prim.find("indices") && prim["indices"].isNumber()) {
