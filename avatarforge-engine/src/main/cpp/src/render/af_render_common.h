@@ -245,6 +245,8 @@ struct FrameScene {
     float modelMin[3] = {0, 0, 0};
     float modelMax[3] = {0, 0, 0};
     bool hasModel = false;
+    float nearPlane = 0.05f;
+    float farPlane = 60.0f;
     PostUbo post;
     int screenWidth = 1;
     int screenHeight = 1;
@@ -303,6 +305,8 @@ inline void buildCameraUbo(FrameScene* scene, const CameraState& cam, const Rend
             zFar = std::max(zNear + 1.0f, centreDistance + radius + padding);
         }
     }
+    scene->nearPlane = zNear;
+    scene->farPlane = zFar;
     const float safeFov = std::isfinite(cam.fovDeg) ? std::clamp(cam.fovDeg, 10.0f, 120.0f) : 32.0f;
     /* Column-major matrices and column vectors: clip = Projection * View * Position. */
     const Mat4 proj = matPerspective(safeFov, aspect, zNear, zFar, depthZeroToOne);
