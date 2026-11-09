@@ -53,10 +53,15 @@ endif()
 set_target_properties(afcore PROPERTIES VERSION "" SOVERSION "" PREFIX "lib")
 
 if(ANDROID)
-    add_library(mega_hub_avatarforge SHARED avatarforge_jni.cpp)
-    target_include_directories(mega_hub_avatarforge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_library(mega_hub_avatarforge SHARED
+        avatarforge_jni.cpp
+        avatarforge_renderer_jni.cpp)
+    target_include_directories(mega_hub_avatarforge PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
     target_compile_options(mega_hub_avatarforge PRIVATE -O2 -Wall -Wextra)
-    target_link_libraries(mega_hub_avatarforge PRIVATE afcore)
+    target_link_libraries(mega_hub_avatarforge PRIVATE afcore afrender android log)
 endif()
 
 # Host-side native regression test. Kept out of Android NDK builds.
