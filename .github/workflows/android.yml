@@ -120,7 +120,8 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_2
-          emulator-options: -no-window -no-audio -no-boot-anim -gpu swangle -memory 4096 -no-snapshot -wipe-data
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 4096 -no-snapshot -wipe-data
+          emulator-boot-timeout: 600
           disable-animations: true
           script: bash .github/scripts/avatarforge-render-smoke.sh
       - name: Upload AvatarForge renderer evidence

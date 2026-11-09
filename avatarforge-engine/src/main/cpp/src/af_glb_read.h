@@ -17,12 +17,16 @@
  *               WEIGHTS_0); indices of u8/u16/u32; node hierarchies with matrix or TRS; skins with
  *               inverse bind matrices; animation samplers with LINEAR/STEP/CUBICSPLINE keyframes;
  *               materials with the metallic-roughness parameters and base-colour/emissive factors;
- *               embedded images in PNG (decoded to RGBA8).
+ *               embedded images in PNG and WebP (decoded to RGBA8). WebP, and JPEG, go through
+ *               Android's platform decoder (AImageDecoder, API 30+); PNG uses the portable decoder.
  *
- *   REJECTED    glTF extensions of any kind (the file is reported as unsupported: an extension can
- *               change the meaning of everything else, and guessing would be worse than refusing);
- *               JPEG images (reported per-image, import continues - the model is still usable
- *               without its albedo map, and the caller is told exactly which image and why);
+ *   REJECTED    glTF extensions other than EXT_texture_webp (an extension can change the meaning of
+ *               everything else, and guessing would be worse than refusing). EXT_texture_webp is
+ *               accepted only when each WebP texture's source declares image/webp and its bytes are
+ *               RIFF/WEBP. If a required WebP cannot be decoded the import fails, because the
+ *               document's own declaration says the model needs it. A non-required image that fails
+ *               to decode is reported per-image and the import continues, so the caller can say
+ *               exactly which image and why;
  *               Draco/meshopt compression; non-glTF JSON.
  *
  * Robustness contract: `importGlb` NEVER crashes or reads out of bounds on malformed input. Every
@@ -82,7 +86,7 @@ struct ImportedTexture {
     std::string name;
     int width = 0;
     int height = 0;
-    std::vector<uint8_t> rgba;   /* tight RGBA8, decoded from the embedded PNG */
+    std::vector<uint8_t> rgba;   /* tight RGBA8, decoded from a supported embedded image */
 };
 
 struct ImportedNode {

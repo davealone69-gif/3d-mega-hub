@@ -208,6 +208,7 @@ private:
     bool vertexDumpLogged_ = false;
     bool cameraDumpLogged_ = false;
     bool drawDumpLogged_ = false;
+    GLenum lastDrawError_ = GL_NO_ERROR;
 };
 
 /* ============================================================================================
@@ -663,7 +664,7 @@ void GlRenderer::ensureGeometryBuffers() {
         meshDirty_ = false;
         std::fprintf(stderr, "[AvatarForge] GLES geometry rejected: %s\n", reason);
     };
-    if (!meshDirty_ && vertexCount_ == vcount && indexCount_ == icount) return;
+    if (!meshDirty_ && geometryValid_ && vertexCount_ == vcount && indexCount_ == icount) return;
     if (vcount <= 0 || icount <= 0 || !verts || !indices) {
         rejectGeometry("missing vertices or triangle indices");
         return;
@@ -720,8 +721,19 @@ void GlRenderer::ensureGeometryBuffers() {
     const GLint64 vbytes = GLint64(vcount) * VertexLayout::stride;
     glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
     if (vbytes > vertexCapacity_) {
-        glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(vbytes + vbytes / 4), nullptr, GL_DYNAMIC_DRAW);
-        vertexCapacity_ = vbytes + vbytes / 4;
+        const GLint64 capacity = vbytes + vbytes / 4;
+        for (int drain = 0; drain < 16 && glGetError() != GL_NO_ERROR; ++drain) {}
+        glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(capacity), nullptr, GL_DYNAMIC_DRAW);
+        const GLenum allocError = glGetError();
+        if (allocError != GL_NO_ERROR) {
+            geometryValid_ = false;
+            meshDirty_ = true;
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            AF_GL_LOGE("Vertex buffer allocation failed: error=0x%x bytes=%lld",
+                       static_cast<unsigned int>(allocError), static_cast<long long>(capacity));
+            return;
+        }
+        vertexCapacity_ = capacity;
         vertexCount_ = 0;   /* force a full upload below */
     }
     if (meshDirty_ || vertexCount_ != vcount) {
@@ -738,21 +750,57 @@ void GlRenderer::ensureGeometryBuffers() {
             }
             vertexDumpLogged_ = true;
         }
+        for (int drain = 0; drain < 16 && glGetError() != GL_NO_ERROR; ++drain) {}
         glBufferSubData(GL_ARRAY_BUFFER, 0, GLsizeiptr(vbytes), verts);
+        const GLenum uploadError = glGetError();
+        if (uploadError != GL_NO_ERROR) {
+            geometryValid_ = false;
+            meshDirty_ = true;
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            AF_GL_LOGE("Vertex upload failed: error=0x%x bytes=%lld sourceVerts=%d",
+                       static_cast<unsigned int>(uploadError), static_cast<long long>(vbytes), vcount);
+            return;
+        }
         vertexCount_ = vcount;
     }
 
     if (icount > 0 && indices) {
         const GLint64 ibytes = GLint64(icount) * sizeof(uint32_t);
         if (indexIbo_ == 0) glGenBuffers(1, &indexIbo_);
+        if (indexIbo_ == 0) {
+            geometryValid_ = false;
+            meshDirty_ = true;
+            AF_GL_LOGE("Index buffer allocation failed: glGenBuffers returned 0");
+            return;
+        }
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexIbo_);
         if (ibytes > indexCapacity_) {
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(ibytes + ibytes / 4), nullptr, GL_STATIC_DRAW);
-            indexCapacity_ = ibytes + ibytes / 4;
+            const GLint64 capacity = ibytes + ibytes / 4;
+            for (int drain = 0; drain < 16 && glGetError() != GL_NO_ERROR; ++drain) {}
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(capacity), nullptr, GL_STATIC_DRAW);
+            const GLenum allocError = glGetError();
+            if (allocError != GL_NO_ERROR) {
+                geometryValid_ = false;
+                meshDirty_ = true;
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+                AF_GL_LOGE("Index buffer allocation failed: error=0x%x bytes=%lld",
+                           static_cast<unsigned int>(allocError), static_cast<long long>(capacity));
+                return;
+            }
+            indexCapacity_ = capacity;
             indexCount_ = 0;
         }
         if (meshDirty_ || indexCount_ != icount) {
+            for (int drain = 0; drain < 16 && glGetError() != GL_NO_ERROR; ++drain) {}
             glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, GLsizeiptr(ibytes), indices);
+            const GLenum uploadError = glGetError();
+            if (uploadError != GL_NO_ERROR) {
+                geometryValid_ = false;
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+                AF_GL_LOGE("Index upload failed: error=0x%x bytes=%lld sourceIndices=%d",
+                           static_cast<unsigned int>(uploadError), static_cast<long long>(ibytes), icount);
+                return;
+            }
             indexCount_ = icount;
         }
     }
@@ -1066,7 +1114,16 @@ void GlRenderer::drawForwardPass() {
     }
 
     /* ---- the avatar: one draw per submesh so each gets its own material block ---- */
-    if (engine_ && geometryValid_ && vertexCount_ > 0 && indexCount_ > 0) {
+    const bool avatarDrawable = engine_ && geometryValid_ && vertexCount_ > 0 && indexCount_ > 0;
+    if (!avatarDrawable && stats_.frames % 120 == 0) {
+        AF_GL_LOGW("Avatar draw skipped: engine=%d geometryValid=%d uploadedVerts=%d uploadedIndices=%d "
+                   "engineVerts=%d engineIndices=%d sceneHasModel=%d",
+                   engine_ ? 1 : 0, geometryValid_ ? 1 : 0, vertexCount_, indexCount_,
+                   engine_ ? af_engine_vertex_count(engine_) : 0,
+                   engine_ ? af_engine_index_count(engine_) : 0,
+                   scene_.hasModel ? 1 : 0);
+    }
+    if (avatarDrawable) {
         glUseProgram(forwardProgram_);
         glBindVertexArray(avatarVao_);
         glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
@@ -1100,11 +1157,37 @@ void GlRenderer::drawForwardPass() {
                            sm.vertex_offset + sm.vertex_count);
                 drawDumpLogged_ = true;
             }
+            GLenum preDrawError = GL_NO_ERROR;
+            for (int drain = 0; drain < 16; ++drain) {
+                const GLenum pending = glGetError();
+                if (pending == GL_NO_ERROR) break;
+                if (preDrawError == GL_NO_ERROR) preDrawError = pending;
+            }
+            if (preDrawError != GL_NO_ERROR) {
+                if (preDrawError != lastDrawError_ || stats_.frames % 120 == 0) {
+                    AF_GL_LOGE("GLES state error before avatar draw: error=0x%x submesh=%d frame=%llu",
+                               static_cast<unsigned int>(preDrawError), i,
+                               static_cast<unsigned long long>(stats_.frames));
+                }
+                lastDrawError_ = preDrawError;
+                continue;
+            }
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sm.index_count), GL_UNSIGNED_INT,
                            reinterpret_cast<const void*>(byteOffset));
+            const GLenum drawError = glGetError();
+            if (drawError != GL_NO_ERROR) {
+                if (drawError != lastDrawError_ || stats_.frames % 120 == 0) {
+                    AF_GL_LOGE("glDrawElements failed: error=0x%x submesh=%d count=%d offset=%d vao=%d",
+                               static_cast<unsigned int>(drawError), i, sm.index_count, sm.index_offset,
+                               static_cast<int>(avatarVao_));
+                }
+                lastDrawError_ = drawError;
+                continue;
+            }
+            lastDrawError_ = GL_NO_ERROR;
             ++drawCalls_;
+            triangles_ += sm.index_count / 3;
         }
-        triangles_ = indexCount_ / 3;
     }
 
     /* ---- skeleton overlay ---- */
