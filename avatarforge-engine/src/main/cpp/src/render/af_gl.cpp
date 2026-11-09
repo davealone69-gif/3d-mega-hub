@@ -233,9 +233,9 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
     uboAlignment_ = uint32_t(align > 0 ? align : 256);
 
     /* Floating-point colour attachments: ES 3.2 has them in core, ES 3.0/3.1 need the extension. */
+    const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
     bool floatColour = (major > 3 || (major == 3 && minor >= 2));
     if (!floatColour) {
-        const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
         floatColour = ext && std::strstr(ext, "GL_EXT_color_buffer_float") != nullptr;
     }
     hdrInternalFormat_ = floatColour ? GL_RGBA16F : GL_RGBA8;
