@@ -62,7 +62,7 @@ Checked against GitHub repository metadata, source files and workflow results on
 
 ## Important limitation
 
-No donor code has been copied into Mega Hub by this snapshot. No local Gradle build was run in this audit session. No physical-device test was performed.
+At the time of this historical snapshot, no donor code had been copied into Mega Hub. The 2026-11-10 integration update below records the later targeted AvatarForge engine changes. No local Gradle build was run in the original audit session and no physical-device test was performed.
 
 
 ## 2026-11-10 generated-avatar integration update
