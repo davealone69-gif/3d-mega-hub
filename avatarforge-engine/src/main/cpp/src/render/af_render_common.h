@@ -272,7 +272,7 @@ inline void buildCameraUbo(FrameScene* scene, const CameraState& cam, const Rend
     const float yaw = cam.yawDeg * 3.14159265358979f / 180.0f;
     const float pitch = cam.pitchDeg * 3.14159265358979f / 180.0f;
     const float dist = cam.distance < 0.3f ? 0.3f : cam.distance;
-    const float tx = 0.0f, ty = cam.targetY, tz = 0.0f;
+    const float tx = cam.targetX, ty = cam.targetY, tz = cam.targetZ;
     const Vec3 eye{
         tx + dist * std::cos(pitch) * std::sin(yaw),
         ty + dist * std::sin(pitch),
