@@ -32,6 +32,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.davemega.hub.avatarforge.AvatarForgeEngine
 import com.davemega.hub.avatarforge.AvatarSpec
+import com.davemega.hub.avatarforge.Build
+import com.davemega.hub.avatarforge.HairStyle
+import com.davemega.hub.avatarforge.Outfit
+import com.davemega.hub.avatarforge.Sex
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
