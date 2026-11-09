@@ -79,11 +79,11 @@ class AvatarForgeRendererSmokeTest {
             binary.putFloat(0.0f)
             binary.putFloat(-1.0f)
         }
-        floatArrayOf(0.0f, 0.0f, 1.0f, 0.0f, 0.5f, 1.0f).forEach(binary::putFloat)
+        floatArrayOf(0.0f, 0.0f, 1.0f, 0.0f, 0.5f, 1.0f).forEach { binary.putFloat(it) }
         // Reverse winding for the AvatarForge viewer's -Z-facing camera.
-        binary.putShort(0)
-        binary.putShort(2)
-        binary.putShort(1)
+        binary.putShort(0.toShort())
+        binary.putShort(2.toShort())
+        binary.putShort(1.toShort())
         binary.position(imageOffset)
         binary.put(webpBytes)
 
