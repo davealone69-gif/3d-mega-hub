@@ -956,6 +956,33 @@ int32_t af_engine_dirty_mask(af_engine* engine) {
  * ============================================================================================ */
 namespace {
 
+/* Refresh each material submesh's bounds from its actual indexed vertices after CPU skinning.
+   Submeshes share the complete vertex buffer, so bounds must follow their index ranges. */
+void refreshSubmeshBounds(af_engine* e) {
+    if (!e) return;
+    for (af_submesh& sm : e->submeshes) {
+        Vec3 mn(1e30f, 1e30f, 1e30f), mx(-1e30f, -1e30f, -1e30f);
+        bool found = false;
+        const int64_t begin = std::max<int64_t>(0, sm.index_offset);
+        const int64_t end = std::min<int64_t>(static_cast<int64_t>(e->indices.size()),
+                                              begin + std::max<int32_t>(0, sm.index_count));
+        for (int64_t i = begin; i < end; ++i) {
+            const uint32_t vertexIndex = e->indices[static_cast<size_t>(i)];
+            if (vertexIndex >= e->verts.size()) continue;
+            const af_vertex& v = e->verts[vertexIndex];
+            const Vec3 p(v.pos[0], v.pos[1], v.pos[2]);
+            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+            mn.x = std::min(mn.x, p.x); mn.y = std::min(mn.y, p.y); mn.z = std::min(mn.z, p.z);
+            mx.x = std::max(mx.x, p.x); mx.y = std::max(mx.y, p.y); mx.z = std::max(mx.z, p.z);
+            found = true;
+        }
+        if (found) {
+            sm.bounds_min[0] = mn.x; sm.bounds_min[1] = mn.y; sm.bounds_min[2] = mn.z;
+            sm.bounds_max[0] = mx.x; sm.bounds_max[1] = mx.y; sm.bounds_max[2] = mx.z;
+        }
+    }
+}
+
 /* Applies the current pose + blendshape weights and refreshes the renderable vertex buffer. */
 int32_t applyCurrentPose(af_engine* e) {
     if (e->rig.jointCount() == 0) return static_cast<int32_t>(AF_ERR_NOT_READY);
@@ -1001,6 +1028,7 @@ int32_t applyCurrentPose(af_engine* e) {
         e->verts[i].normal[1] = e->mesh.normals[i].y;
         e->verts[i].normal[2] = e->mesh.normals[i].z;
     }
+    refreshSubmeshBounds(e);
     updateStats(e);
     return static_cast<int32_t>(AF_OK);
 }
@@ -1559,5 +1587,66 @@ const char* af_engine_last_error(const af_engine* engine) {
 const char* af_engine_version(void) { return AF_ENGINE_VERSION; }
 
 const char* af_engine_region_name(int32_t region) { return regionLabel(region); }
+
+int32_t af_engine_validate_deformed_mesh(const af_engine* engine, char* out_report, int32_t capacity) {
+    if (!engine) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    const af_vertex* vertices = af_engine_vertices(engine);
+    const int32_t vertexCount = af_engine_vertex_count(engine);
+    const int32_t jointCount = af_engine_joint_count(engine);
+    const int32_t triangleCount = af_engine_index_count(engine) / 3;
+    float boundsMin[3] = {INFINITY, INFINITY, INFINITY};
+    float boundsMax[3] = {-INFINITY, -INFINITY, -INFINITY};
+    int32_t firstBad = -1;
+    const char* reason = "";
+    float badPos[3] = {0, 0, 0};
+    float badWeights[4] = {0, 0, 0, 0};
+    uint16_t badJoints[4] = {0, 0, 0, 0};
+
+    if (!vertices || vertexCount <= 0 || jointCount <= 0) {
+        reason = "missing_geometry_or_skeleton";
+    } else {
+        for (int32_t i = 0; i < vertexCount; ++i) {
+            const af_vertex& v = vertices[i];
+            const float sum = v.weights[0] + v.weights[1] + v.weights[2] + v.weights[3];
+            const bool posFinite = std::isfinite(v.pos[0]) && std::isfinite(v.pos[1]) && std::isfinite(v.pos[2]);
+            bool weightsValid = std::isfinite(sum) && sum >= 0.99f;
+            bool jointsValid = true;
+            for (int k = 0; k < 4; ++k) {
+                weightsValid = weightsValid && std::isfinite(v.weights[k]) && v.weights[k] >= 0.0f;
+                jointsValid = jointsValid && static_cast<int32_t>(v.joints[k]) < jointCount;
+            }
+            if (!posFinite || !weightsValid || !jointsValid) {
+                if (firstBad < 0) {
+                    firstBad = i;
+                    reason = !posFinite ? "non_finite_position" : (!weightsValid ? "invalid_skin_weights" : "joint_index_out_of_range");
+                    for (int k = 0; k < 3; ++k) badPos[k] = v.pos[k];
+                    for (int k = 0; k < 4; ++k) { badWeights[k] = v.weights[k]; badJoints[k] = v.joints[k]; }
+                }
+            }
+            if (posFinite) {
+                for (int k = 0; k < 3; ++k) {
+                    boundsMin[k] = std::min(boundsMin[k], v.pos[k]);
+                    boundsMax[k] = std::max(boundsMax[k], v.pos[k]);
+                }
+            }
+        }
+    }
+
+    const float height = std::isfinite(boundsMin[1]) && std::isfinite(boundsMax[1])
+        ? boundsMax[1] - boundsMin[1] : 0.0f;
+    const bool boundsValid = std::isfinite(height) && height >= 0.5f && height <= 3.0f;
+    if (firstBad < 0 && !boundsValid) reason = "height_out_of_range";
+    const bool valid = vertexCount > 0 && jointCount > 0 && firstBad < 0 && boundsValid;
+    if (out_report && capacity > 0) {
+        std::snprintf(out_report, static_cast<size_t>(capacity),
+            "valid=%d reason=%s vertex=%d vertices=%d triangles=%d joints=%d height_m=%.6f bounds_min=(%.6f,%.6f,%.6f) bounds_max=(%.6f,%.6f,%.6f) POS=(%.6f,%.6f,%.6f) WEIGHTS=(%.6f,%.6f,%.6f,%.6f) JOINTS=(%u,%u,%u,%u)",
+            valid ? 1 : 0, reason, firstBad, vertexCount, triangleCount, jointCount, height,
+            boundsMin[0], boundsMin[1], boundsMin[2], boundsMax[0], boundsMax[1], boundsMax[2],
+            badPos[0], badPos[1], badPos[2], badWeights[0], badWeights[1], badWeights[2], badWeights[3],
+            static_cast<unsigned>(badJoints[0]), static_cast<unsigned>(badJoints[1]),
+            static_cast<unsigned>(badJoints[2]), static_cast<unsigned>(badJoints[3]));
+    }
+    return valid ? static_cast<int32_t>(AF_OK) : static_cast<int32_t>(AF_ERR_INTERNAL);
+}
 
 } /* extern "C" */
