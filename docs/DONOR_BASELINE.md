@@ -65,7 +65,7 @@ Checked against GitHub repository metadata, source files and workflow results on
 At the time of this historical snapshot, no donor code had been copied into Mega Hub. The 2026-11-10 integration update below records the later targeted AvatarForge engine changes. No local Gradle build was run in the original audit session and no physical-device test was performed.
 
 
-## 2026-11-10 generated-avatar integration update (current source commit `7012c684c160a96dc9c88a1a58fc196f9d2f8374`)
+## 2026-11-10 generated-avatar integration update (current source commit `56226026b5b9e17680825bc2b2ca972413f38fa4`)
 
 The active Hub hardening branch now contains a targeted native-engine update in
 `avatarforge-engine/src/main/cpp`:
