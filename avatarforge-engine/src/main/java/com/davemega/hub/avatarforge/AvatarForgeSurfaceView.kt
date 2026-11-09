@@ -50,10 +50,16 @@ class AvatarForgeSurfaceView(
                 check(glbFile.isFile && glbFile.length() > 0L) { "Selected GLB is not available in app storage." }
                 nativeHandle = nativeCreate(surfaceHolder.surface, glbFile.absolutePath, max(1, surfaceWidth), max(1, surfaceHeight))
                 check(nativeHandle != 0L) { "AvatarForge native renderer returned a null session." }
-                onStatus("AvatarForge GLES renderer active · ${glbFile.name}")
+                val rendererInfo = nativeGetInfo(nativeHandle)
+                check(rendererInfo.startsWith("gles31|")) {
+                    "Unexpected AvatarForge backend information: $rendererInfo"
+                }
+                onStatus("AvatarForge GLES renderer active · ${rendererInfo.substringAfter('|').substringBefore('|')} · ${glbFile.name}")
                 var lastFrame = System.nanoTime()
                 var lastWidth = surfaceWidth
                 var lastHeight = surfaceHeight
+                var reportedFrame = false
+                val frameWaitStarted = System.nanoTime()
                 while (running.get() && surfaceReady) {
                     val width = surfaceWidth
                     val height = surfaceHeight
@@ -66,6 +72,19 @@ class AvatarForgeSurfaceView(
                     val delta = ((now - lastFrame).toDouble() / 1_000_000_000.0).coerceIn(0.001, 0.1).toFloat()
                     lastFrame = now
                     nativeRender(nativeHandle, delta)
+                    if (!reportedFrame) {
+                        val stats = nativeGetStats(nativeHandle)
+                        check(stats.size == 3) { "AvatarForge returned incomplete renderer statistics." }
+                        val frames = stats[0]
+                        val drawCalls = stats[1]
+                        val triangles = stats[2]
+                        if (frames >= 3 && drawCalls > 0 && triangles > 0) {
+                            reportedFrame = true
+                            onStatus("AvatarForge GLES frame verified · $frames frames · $drawCalls draw calls · $triangles triangles")
+                        } else if (System.nanoTime() - frameWaitStarted > 5_000_000_000L) {
+                            error("AvatarForge produced no drawable model frame within 5 seconds (frames=$frames, draws=$drawCalls, triangles=$triangles)")
+                        }
+                    }
                     val remaining = 16_666_667L - (System.nanoTime() - now)
                     if (remaining > 0L) Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
                 }
@@ -101,6 +120,8 @@ class AvatarForgeSurfaceView(
     private external fun nativeCreate(surface: android.view.Surface, glbPath: String, width: Int, height: Int): Long
     private external fun nativeResize(handle: Long, width: Int, height: Int)
     private external fun nativeRender(handle: Long, deltaSeconds: Float)
+    private external fun nativeGetInfo(handle: Long): String
+    private external fun nativeGetStats(handle: Long): IntArray
     private external fun nativeDestroy(handle: Long)
 
     companion object {
