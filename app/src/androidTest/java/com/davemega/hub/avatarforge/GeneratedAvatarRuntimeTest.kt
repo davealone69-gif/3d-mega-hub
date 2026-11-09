@@ -119,28 +119,28 @@ class GeneratedAvatarRuntimeTest {
             }
             assertTrue("PixelCopy callback timed out", copyLatch.await(15, TimeUnit.SECONDS))
 
-            var pixelCopyNonBlack = 0
+            var pixelCopyGeometryPixels = 0
             if (pixelCopyResult.get() == PixelCopy.SUCCESS) {
-                pixelCopyNonBlack = countNonBlack(bitmap)
+                pixelCopyGeometryPixels = countGeometryPixels(bitmap)
             }
 
-            var acceptedCapture = if (pixelCopyResult.get() == PixelCopy.SUCCESS && pixelCopyNonBlack > 5000) {
+            var acceptedCapture = if (pixelCopyResult.get() == PixelCopy.SUCCESS && pixelCopyGeometryPixels > 5000) {
                 "PixelCopy"
             } else {
                 "none"
             }
-            var acceptedPixelCount = if (acceptedCapture == "PixelCopy") pixelCopyNonBlack else 0
-            var glReadbackNonBlack = 0
+            var acceptedPixelCount = if (acceptedCapture == "PixelCopy") pixelCopyGeometryPixels else 0
+            var glReadbackGeometryPixels = 0
             if (acceptedCapture == "none") {
                 val rgba = nativeGetReadbackPixels(handle)
                 if (rgba != null && rgba.size == surfaceWidth * surfaceHeight * 4) {
                     val fallback = bitmapFromGlRgba(rgba, surfaceWidth, surfaceHeight)
                     capturedBitmap?.recycle()
                     capturedBitmap = fallback
-                    glReadbackNonBlack = countNonBlack(fallback)
-                    if (glReadbackNonBlack > 5000) {
+                    glReadbackGeometryPixels = countGeometryPixels(fallback)
+                    if (glReadbackGeometryPixels > 5000) {
                         acceptedCapture = "glReadPixels"
-                        acceptedPixelCount = glReadbackNonBlack
+                        acceptedPixelCount = glReadbackGeometryPixels
                     } else {
                         acceptedCapture = "PixelCopy+glReadPixels-below-threshold"
                     }
@@ -148,17 +148,17 @@ class GeneratedAvatarRuntimeTest {
                     acceptedCapture = "PixelCopy-failed+glReadPixels-unavailable"
                 }
             } else {
-                glReadbackNonBlack = stats[7]
+                glReadbackGeometryPixels = stats[7]
             }
 
             val report = nativeGetVerificationReport(handle)
             val totalPixels = surfaceWidth * surfaceHeight
             val acceptedPixelPercent = if (totalPixels > 0) acceptedPixelCount * 100.0f / totalPixels else 0.0f
             val diagnostics = "capture=$acceptedCapture pixelCopyResult=${pixelCopyResult.get()} " +
-                "pixelCopyNonBlack=$pixelCopyNonBlack acceptedNonBlack=$acceptedPixelCount " +
+                "pixelCopyGeometryPixels=$pixelCopyGeometryPixels acceptedGeometryPixels=$acceptedPixelCount " +
                 "acceptedPercent=${acceptedPixelPercent}% bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=$totalPixels " +
                 "frameCount=${stats[0]} successfulPresentedFrames=${stats[12]} drawCalls=${stats[1]} triangles=${stats[2]} " +
-                "vertices=${stats[3]} glReadbackNonBlack=$glReadbackNonBlack " +
+                "vertices=${stats[3]} glReadbackGeometryPixels=$glReadbackGeometryPixels " +
                 "joints=${stats[10]} blendshapes=${stats[11]} $report"
 
             if (acceptedPixelCount <= 5000) {
@@ -224,11 +224,24 @@ class GeneratedAvatarRuntimeTest {
         }
     }
 
-    private fun countNonBlack(bitmap: Bitmap): Int {
-        val pixels = IntArray(bitmap.width * bitmap.height)
-        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+    private fun countGeometryPixels(bitmap: Bitmap): Int {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        val corners = intArrayOf(pixels[0], pixels[width - 1], pixels[(height - 1) * width], pixels[pixels.lastIndex])
+        fun median(channel: (Int) -> Int): Int {
+            val values = corners.map(channel).sorted()
+            return (values[1] + values[2]) / 2
+        }
+        val backgroundR = median(Color::red)
+        val backgroundG = median(Color::green)
+        val backgroundB = median(Color::blue)
         return pixels.count { color ->
-            Color.red(color) > 10 || Color.green(color) > 10 || Color.blue(color) > 10
+            val dr = kotlin.math.abs(Color.red(color) - backgroundR)
+            val dg = kotlin.math.abs(Color.green(color) - backgroundG)
+            val db = kotlin.math.abs(Color.blue(color) - backgroundB)
+            dr + dg + db >= 48 && maxOf(dr, dg, db) >= 16
         }
     }
 

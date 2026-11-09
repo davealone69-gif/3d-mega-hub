@@ -1401,10 +1401,35 @@ void GlRenderer::renderFrame(float deltaSeconds) {
                          verificationPixels_.data());
             const GLenum readError = glGetError();
             if (readError == GL_NO_ERROR) {
+                /* Count geometry against the sampled clear colour, not against pure black.
+                   The renderer's dark blue-grey clear colour is itself above RGB 10. */
+                const size_t cornerIndices[4] = {
+                    0u,
+                    static_cast<size_t>(surfaceWidth_ - 1),
+                    static_cast<size_t>(surfaceHeight_ - 1) * static_cast<size_t>(surfaceWidth_),
+                    pixelCount - 1u
+                };
+                uint8_t cornerR[4], cornerG[4], cornerB[4];
+                for (int corner = 0; corner < 4; ++corner) {
+                    const uint8_t* px = &verificationPixels_[cornerIndices[corner] * 4u];
+                    cornerR[corner] = px[0];
+                    cornerG[corner] = px[1];
+                    cornerB[corner] = px[2];
+                }
+                std::sort(cornerR, cornerR + 4);
+                std::sort(cornerG, cornerG + 4);
+                std::sort(cornerB, cornerB + 4);
+                const int backgroundR = (static_cast<int>(cornerR[1]) + cornerR[2]) / 2;
+                const int backgroundG = (static_cast<int>(cornerG[1]) + cornerG[2]) / 2;
+                const int backgroundB = (static_cast<int>(cornerB[1]) + cornerB[2]) / 2;
                 int visible = 0;
                 for (size_t i = 0; i < pixelCount; ++i) {
                     const uint8_t* px = &verificationPixels_[i * 4u];
-                    if (px[0] > 10 || px[1] > 10 || px[2] > 10) ++visible;
+                    const int dr = px[0] > backgroundR ? px[0] - backgroundR : backgroundR - px[0];
+                    const int dg = px[1] > backgroundG ? px[1] - backgroundG : backgroundG - px[1];
+                    const int db = px[2] > backgroundB ? px[2] - backgroundB : backgroundB - px[2];
+                    const int maxDelta = std::max(dr, std::max(dg, db));
+                    if (dr + dg + db >= 48 && maxDelta >= 16) ++visible;
                 }
                 stats_.readbackValid = true;
                 stats_.readbackNonBlackPixels = visible;
