@@ -192,6 +192,10 @@ private object NativeMethods {
     ): LongArray
 }
 
-internal class NativeCancellationToken {
-    fun shouldCancel(): Boolean = Thread.currentThread().isInterrupted
+internal class NativeCancellationToken(
+    private val ownerThread: Thread = Thread.currentThread(),
+) {
+    // JNI may poll this method from attached native worker threads. Check the
+    // coroutine caller's thread, not the temporary Java Thread wrapper for a worker.
+    fun shouldCancel(): Boolean = ownerThread.isInterrupted
 }
