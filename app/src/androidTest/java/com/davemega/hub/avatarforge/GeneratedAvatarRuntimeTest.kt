@@ -44,6 +44,7 @@ class GeneratedAvatarRuntimeTest {
         var surfaceHeight = 0
         var handle = 0L
         var capturedBitmap: Bitmap? = null
+        var failureScreenshotPath: String? = null
         var pixelCopyResult = AtomicInteger(Int.MIN_VALUE)
 
         try {
@@ -146,9 +147,49 @@ class GeneratedAvatarRuntimeTest {
                 FileOutputStream(screenshot).use { stream ->
                     requireNotNull(capturedBitmap).compress(Bitmap.CompressFormat.PNG, 100, stream)
                 }
+                failureScreenshotPath = screenshot.absolutePath
                 throw AssertionError("Generated avatar is not visibly rendered. $diagnostics screenshot=${screenshot.absolutePath}")
             }
             assertTrue("Visible pixel threshold not met. $diagnostics", acceptedPixelCount > 5000)
+        } catch (failure: Throwable) {
+            val view = surfaceView
+            if (failureScreenshotPath == null && view != null && view.width > 0 && view.height > 0) {
+                if (capturedBitmap == null) {
+                    val failureBitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+                    val failureCopy = CountDownLatch(1)
+                    val failureCopyResult = AtomicInteger(Int.MIN_VALUE)
+                    instrumentation.runOnMainSync {
+                        PixelCopy.request(view, failureBitmap, { result ->
+                            failureCopyResult.set(result)
+                            failureCopy.countDown()
+                        }, Handler(Looper.getMainLooper()))
+                    }
+                    if (failureCopy.await(5, TimeUnit.SECONDS) && failureCopyResult.get() == PixelCopy.SUCCESS) {
+                        capturedBitmap = failureBitmap
+                    } else {
+                        failureBitmap.recycle()
+                    }
+                }
+                if (capturedBitmap == null && handle != 0L) {
+                    val rgba = runCatching { nativeGetReadbackPixels(handle) }.getOrNull()
+                    if (rgba != null && rgba.size == view.width * view.height * 4) {
+                        capturedBitmap = bitmapFromGlRgba(rgba, view.width, view.height)
+                    }
+                }
+                capturedBitmap?.let { image ->
+                    val outputDir = context.getExternalFilesDir(null)
+                    if (outputDir != null) {
+                        val screenshot = File(outputDir, "failed_render.png")
+                        runCatching {
+                            FileOutputStream(screenshot).use { stream ->
+                                image.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                            }
+                        }.onSuccess { failureScreenshotPath = screenshot.absolutePath }
+                    }
+                }
+            }
+            val suffix = failureScreenshotPath?.let { " failed_render.png=$it" } ?: " failed_render.png=UNAVAILABLE"
+            throw AssertionError("${failure.message ?: failure.javaClass.simpleName}.$suffix", failure)
         } finally {
             if (handle != 0L) {
                 runCatching { nativeDestroyGenerated(handle) }
