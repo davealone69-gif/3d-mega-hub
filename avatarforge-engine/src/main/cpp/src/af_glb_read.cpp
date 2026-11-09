@@ -56,9 +56,9 @@ bool decodePlatformImage(const uint8_t* data, size_t size, DecodedImage* out, st
     struct DecoderApi {
         void* library = dlopen("libjnigraphics.so", RTLD_NOW | RTLD_LOCAL);
         using Create = int (*)(const void*, size_t, AImageDecoder**);
-        using GetHeader = const AImageDecoderHeaderInfo* (*)(AImageDecoder*);
+        using GetHeader = const AImageDecoderHeaderInfo* (*)(const AImageDecoder*);
         using GetDimension = int32_t (*)(const AImageDecoderHeaderInfo*);
-        using SetFormat = int32_t (*)(AImageDecoder*, AndroidBitmapFormat);
+        using SetFormat = int32_t (*)(AImageDecoder*, int32_t);
         using SetUnpremultiplied = int32_t (*)(AImageDecoder*, bool);
         using GetStride = size_t (*)(AImageDecoder*);
         using Decode = int (*)(AImageDecoder*, void*, size_t, size_t);
@@ -106,7 +106,7 @@ bool decodePlatformImage(const uint8_t* data, size_t size, DecodedImage* out, st
         if (error) *error = "decoded image dimensions are outside the supported 1..8192 range";
         return false;
     }
-    if (api.setFormat(decoder, ANDROID_BITMAP_FORMAT_RGBA_8888) != ANDROID_IMAGE_DECODER_SUCCESS ||
+    if (api.setFormat(decoder, static_cast<int32_t>(ANDROID_BITMAP_FORMAT_RGBA_8888)) != ANDROID_IMAGE_DECODER_SUCCESS ||
         api.setUnpremultiplied(decoder, true) != ANDROID_IMAGE_DECODER_SUCCESS) {
         if (error) *error = "AImageDecoder could not select straight-alpha RGBA8888 output";
         return false;
@@ -1021,6 +1021,30 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         return AF_ERR_UNSUPPORTED;
     }
 
+    const json::Json& images = doc["images"];
+    std::vector<bool> webpImageRequired(images.size(), false);
+    bool hasWebpTextureExtension = false;
+    for (const auto& texture : doc["textures"].items()) {
+        const json::Json& webp = texture["extensions"]["EXT_texture_webp"];
+        if (webp.isNull()) continue;
+        hasWebpTextureExtension = true;
+        const int sourceIndex = webp["source"].asInt(-1);
+        if (sourceIndex < 0 || static_cast<size_t>(sourceIndex) >= images.size()) {
+            if (error) *error = "GLB: EXT_texture_webp references an invalid image source";
+            return AF_ERR_INVALID_ARG;
+        }
+        const json::Json& image = images.at(static_cast<size_t>(sourceIndex));
+        if (image["mimeType"].stringOr("") != "image/webp") {
+            if (error) *error = "GLB: EXT_texture_webp source image must declare mimeType image/webp";
+            return AF_ERR_INVALID_ARG;
+        }
+        webpImageRequired[static_cast<size_t>(sourceIndex)] = true;
+    }
+    if (requiredWebpExtension && !hasWebpTextureExtension) {
+        if (error) *error = "GLB: declares EXT_texture_webp as required but no texture uses the extension";
+        return AF_ERR_INVALID_ARG;
+    }
+
     /* ---- nodes and the scene ---- */
     const json::Json& nodesJson = doc["nodes"];
     out->nodes.resize(nodesJson.size());
@@ -1122,7 +1146,6 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
     }
 
     /* ---- textures (images decoded to RGBA8; the texture list is parallel to images) ---- */
-    const json::Json& images = doc["images"];
     for (size_t i = 0; i < images.size(); ++i) {
         const json::Json& img = images.at(i);
         ImportedTexture tex;
@@ -1151,6 +1174,10 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         const uint8_t* bytes = binChunk ? binChunk + bvOffset : nullptr;
         std::string reason;
         DecodedImage decoded;
+        if (webpImageRequired[i] && (!bytes || !looksLikeWebp(bytes, bvLength))) {
+            if (error) *error = "GLB: EXT_texture_webp source image does not contain a valid RIFF/WebP payload";
+            return AF_ERR_INVALID_ARG;
+        }
         if (!bytes) {
             reason = "no binary chunk";
         } else if (looksLikePng(bytes, bvLength)) {
@@ -1162,7 +1189,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
             if (!decodePlatformImage(bytes, bvLength, &decoded, &reason)) {
                 const bool webpImage = looksLikeWebp(bytes, bvLength);
                 out->warnings.push_back({webpImage ? "WebP decode failed" : "JPEG decode failed", reason});
-                if (webpImage && requiredWebpExtension) {
+                if (webpImage && webpImageRequired[i] && requiredWebpExtension) {
                     if (error) *error = "GLB requires EXT_texture_webp but the embedded WebP image could not be decoded: " + reason;
                     return AF_ERR_UNSUPPORTED;
                 }
@@ -1170,10 +1197,6 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         } else {
             reason = "unrecognised image bytes";
             out->warnings.push_back({"image format", reason});
-            if (requiredWebpExtension) {
-                if (error) *error = "GLB requires EXT_texture_webp but an embedded image is not a supported WebP payload";
-                return AF_ERR_UNSUPPORTED;
-            }
         }
         if (!decoded.rgba.empty()) {
             tex.width = decoded.width;
