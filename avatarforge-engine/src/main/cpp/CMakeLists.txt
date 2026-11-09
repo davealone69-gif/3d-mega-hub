@@ -35,7 +35,7 @@ target_compile_options(afcore PRIVATE ${AF_KERNEL_FLAGS} -Wall -Wextra)
 target_link_libraries(afcore PRIVATE z)
 if(ANDROID)
     # AImageDecoder is API 30+; symbols are resolved dynamically to preserve minSdk 26.
-    target_link_libraries(afcore PRIVATE dl)
+    target_link_libraries(afcore PRIVATE dl log)
 endif()
 
 # AvatarForge custom renderer, copied from the canonical engine source.
