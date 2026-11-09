@@ -323,6 +323,14 @@ const af_material* af_engine_materials(const af_engine* engine);
 /* Rest-pose (bind) copies, needed for skinning on the GPU and for export. */
 const af_vertex* af_engine_vertices_rest(const af_engine* engine);
 
+/* Validates the post-skinning vertex buffer. On failure, out_bad_vertex and the optional
+   position/weights/joints arrays identify the first invalid vertex. */
+int32_t af_engine_validate_deformed_mesh(const af_engine* engine,
+                                         int32_t* out_bad_vertex,
+                                         float out_position[3],
+                                         float out_weights[4],
+                                         uint16_t out_joints[4]);
+
 /* ------------------------------------------------------------------ skeleton access ----- */
 int32_t af_engine_joint_count(const af_engine* engine);
 int32_t af_engine_joint_info(const af_engine* engine, int32_t joint, af_joint_info* out);
