@@ -5,7 +5,8 @@
 - [x] Establish the Android host and record donor provenance.
 - [x] Keep the AvatarForge generation core isolated in `:avatarforge-engine`.
 - [x] Keep the Filament renderer as a separate replaceable viewer.
-- [ ] Refresh the AvatarForge donor pin after the current donor fixes are pushed and reviewed.
+- [x] Refresh the Mega Hub native module with the post-skinning AABB refresh and vertex/weight/joint validator; source changes are committed on the current hardening branch.
+- [ ] Record a reviewed donor pin and provenance comparison against the exact AvatarForge donor commit before merge.
 
 ## Phase 1: Android host and engine module
 
@@ -21,9 +22,12 @@
 - [x] gltfio loader for bundled sample and self-contained GLB assets.
 - [x] Bounds-based camera framing and first glTF animation playback.
 - [ ] Combined CI and R8/minification pass.
+- [x] Add generated-avatar camera-frustum diagnostics and a post-frame PixelCopy pixel counter to the debug-only Avatar Studio diagnostic dialog; this is source implementation, not device verification.
 - [ ] On Samsung SM-S921B, verify visible model pixels, materials, animation, camera controls, attach/detach, repeated open/close, memory pressure and sustained thermal behavior.
 - [ ] Add viewer lifecycle and malformed-file regression tests.
 - [ ] Add camera orbit/zoom controls after stable rendering is confirmed.
+
+The Hub uses Filament gltfio for its Android viewer. Its frame loop evaluates animation before rendering, and its initial animated pose is applied before camera framing. AvatarForge's standalone custom GLES `af_gl.cpp` is not linked into this Hub module; importing that second renderer would create a competing renderer rather than improve the selected Filament path.
 
 A submitted frame or successful gltfio resource upload is not proof that model pixels are visible.
 
