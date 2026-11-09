@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - fix/mega-hub-candidate-hardening
       - integration/avatarforge-renderer-port
   workflow_dispatch:
 
