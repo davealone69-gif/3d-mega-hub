@@ -26,7 +26,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -62,8 +61,7 @@ public:
     bool asIndex(size_t* out) const {
         if (type_ != Number) return false;
         const double v = number_;
-        if (v < 0.0 || v > 9.007199254740992e15 ||
-            v > static_cast<double>(std::numeric_limits<size_t>::max())) return false;
+        if (v < 0.0 || v > 9.007199254740992e15) return false;
         const double r = static_cast<double>(static_cast<uint64_t>(v + 0.5));
         if (r != v) return false;
         *out = static_cast<size_t>(v);

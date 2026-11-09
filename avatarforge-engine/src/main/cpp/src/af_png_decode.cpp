@@ -15,8 +15,6 @@
 #include "af_png_decode.h"
 
 #include <cstring>
-#include <limits>
-#include <zlib.h>
 
 namespace af {
 namespace {
@@ -105,19 +103,10 @@ const uint16_t DIST_BASE[30] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97,
 const uint8_t DIST_EXTRA[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
                                 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
 
-bool inflateRaw(const uint8_t* data, size_t size, size_t maxOutput,
-                std::vector<uint8_t>* out, std::string* error) {
+bool inflateRaw(const uint8_t* data, size_t size, std::vector<uint8_t>* out, std::string* error) {
     BitReader in{data, size};
-    std::vector<uint8_t> window;  /* reserve the exact dimension-derived bound to avoid geometric growth */
-    window.reserve(maxOutput);
-    auto append = [&](uint8_t value) -> bool {
-        if (window.size() >= maxOutput) {
-            if (error) *error = "deflate: decompressed output exceeds the PNG-derived bound";
-            return false;
-        }
-        window.push_back(value);
-        return true;
-    };
+    std::vector<uint8_t> window;  /* grows with output; LZ77 back-references address it directly */
+    window.reserve(size * 4 + 1024);
 
     bool last = false;
     while (!last) {
@@ -141,7 +130,7 @@ bool inflateRaw(const uint8_t* data, size_t size, size_t maxOutput,
                     if (error) *error = "deflate: truncated stored block";
                     return false;
                 }
-                if (!append(static_cast<uint8_t>(b))) return false;
+                window.push_back(static_cast<uint8_t>(b));
             }
             continue;
         }
@@ -254,7 +243,7 @@ bool inflateRaw(const uint8_t* data, size_t size, size_t maxOutput,
                 return false;
             }
             if (sym < 256) {
-                if (!append(static_cast<uint8_t>(sym))) return false;
+                window.push_back(static_cast<uint8_t>(sym));
                 continue;
             }
             if (sym == 256) break; /* end of block */
@@ -276,10 +265,7 @@ bool inflateRaw(const uint8_t* data, size_t size, size_t maxOutput,
             }
             /* Back-reference; may overlap the write position, which is how runs are encoded. */
             const size_t from = window.size() - static_cast<size_t>(distance);
-            for (int i = 0; i < length; ++i) {
-                const uint8_t value = window[from + static_cast<size_t>(i)];
-                if (!append(value)) return false;
-            }
+            for (int i = 0; i < length; ++i) window.push_back(window[from + static_cast<size_t>(i)]);
         }
     }
     in.alignByte();
@@ -287,8 +273,7 @@ bool inflateRaw(const uint8_t* data, size_t size, size_t maxOutput,
     return true;
 }
 
-bool inflateZlib(const uint8_t* data, size_t size, size_t expectedOutput,
-                 std::vector<uint8_t>* out, std::string* error) {
+bool inflateZlib(const uint8_t* data, size_t size, std::vector<uint8_t>* out, std::string* error) {
     if (size < 6) {
         if (error) *error = "zlib: stream shorter than a header";
         return false;
@@ -306,23 +291,21 @@ bool inflateZlib(const uint8_t* data, size_t size, size_t expectedOutput,
         if (error) *error = "zlib: preset dictionaries are not supported";
         return false;
     }
-    /* The zlib trailer is mandatory: its final four bytes carry Adler-32. */
-    if (size < 6) {
-        if (error) *error = "zlib: missing Adler-32 trailer";
-        return false;
-    }
-    if (!inflateRaw(data + 2, size - 6, expectedOutput, out, error)) return false;
-    if (out->size() != expectedOutput) {
-        if (error) *error = "zlib: decompressed length does not match the PNG scanline bound";
-        return false;
-    }
-    {
+    if (!inflateRaw(data + 2, size - 2, out, error)) return false;
+    /* Adler-32 over the output, when the trailer is present. A truncated trailer is tolerated
+       (some writers omit it); a wrong one is a hard failure, because the texture would be
+       silently corrupt. */
+    if (size >= 6) {
         const uint8_t* tail = data + size - 4;
         uint32_t want = (static_cast<uint32_t>(tail[0]) << 24) | (static_cast<uint32_t>(tail[1]) << 16) |
                         (static_cast<uint32_t>(tail[2]) << 8) | tail[3];
-        const uLong got = adler32(1L, reinterpret_cast<const Bytef*>(out->data()),
-                                  static_cast<uInt>(out->size()));
-        if (want != static_cast<uint32_t>(got)) {
+        uint32_t a = 1, b = 0;
+        for (uint8_t v : *out) {
+            a = (a + v) % 65521;
+            b = (b + a) % 65521;
+        }
+        const uint32_t got = (b << 16) | a;
+        if (want != got) {
             if (error) *error = "zlib: adler32 mismatch";
             return false;
         }
@@ -357,7 +340,7 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
     if (error) error->clear();
     if (out) {
         out->width = out->height = 0;
-        std::vector<uint8_t>().swap(out->rgba);
+        out->rgba.clear();
     }
     if (!data || !out) {
         if (error) *error = "png: null input";
@@ -371,46 +354,25 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
     int width = 0, height = 0, bitDepth = 0, colorType = 0, interlace = 0;
     std::vector<uint8_t> palette;      /* RGB triples */
     std::vector<uint8_t> paletteAlpha;
-    std::vector<uint8_t> transparency; /* grayscale/RGB tRNS sample keys */
     std::vector<uint8_t> idat;
 
     size_t pos = 8;
-    bool sawIhdr = false, sawIend = false, sawIdat = false, sawTrns = false, idatEnded = false;
-    constexpr size_t MAX_COMPRESSED_BYTES = 64u * 1024u * 1024u;
-    while (pos <= size && size - pos >= 12 && !sawIend) {
+    bool sawIhdr = false, sawIend = false;
+    while (pos + 8 <= size && !sawIend) {
         const uint32_t len = readU32(data + pos);
         const char* type = reinterpret_cast<const char*>(data + pos + 4);
-        if (len > 0x7FFFFFFFu || static_cast<size_t>(len) > size - pos - 12) {
+        if (len > 0x7FFFFFFFu || pos + 12 + static_cast<size_t>(len) > size) {
             if (error) *error = "png: chunk length past end of file";
             return false;
         }
-        const size_t chunkEnd = pos + 12 + static_cast<size_t>(len);
         const uint8_t* body = data + pos + 8;
-        const uint32_t wantCrc = readU32(body + len);
-        const uLong gotCrc = crc32(0L, reinterpret_cast<const Bytef*>(data + pos + 4),
-                                   static_cast<uInt>(static_cast<size_t>(len) + 4u));
-        if (wantCrc != static_cast<uint32_t>(gotCrc)) {
-            if (error) *error = "png: chunk CRC mismatch";
-            return false;
-        }
-        if (!sawIhdr && std::memcmp(type, "IHDR", 4) != 0) {
-            if (error) *error = "png: IHDR must be the first chunk";
-            return false;
-        }
-        if (sawIdat && std::memcmp(type, "IDAT", 4) != 0) idatEnded = true;
         if (std::memcmp(type, "IHDR", 4) == 0) {
             if (len != 13) {
                 if (error) *error = "png: malformed IHDR";
                 return false;
             }
-            const uint32_t rawWidth = readU32(body);
-            const uint32_t rawHeight = readU32(body + 4);
-            if (rawWidth == 0 || rawHeight == 0 || rawWidth > 16384 || rawHeight > 16384) {
-                if (error) *error = "png: unreasonable dimensions";
-                return false;
-            }
-            width = static_cast<int>(rawWidth);
-            height = static_cast<int>(rawHeight);
+            width = static_cast<int>(readU32(body));
+            height = static_cast<int>(readU32(body + 4));
             bitDepth = body[8];
             colorType = body[9];
             if (body[10] != 0 || body[11] != 0) {
@@ -418,11 +380,11 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
                 return false;
             }
             interlace = body[12];
-            if (sawIhdr) {
-                if (error) *error = "png: duplicate IHDR";
+            sawIhdr = true;
+            if (width <= 0 || height <= 0 || width > 16384 || height > 16384) {
+                if (error) *error = "png: unreasonable dimensions";
                 return false;
             }
-            sawIhdr = true;
             if (interlace != 0) {
                 if (error) *error = "png: Adam7 interlacing is not supported";
                 return false;
@@ -438,38 +400,12 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
                 return false;
             }
         } else if (std::memcmp(type, "PLTE", 4) == 0) {
-            if (sawIdat || len == 0 || len > 768 || (len % 3) != 0) {
-                if (error) *error = "png: invalid PLTE placement or length";
-                return false;
-            }
             palette.assign(body, body + len);
         } else if (std::memcmp(type, "tRNS", 4) == 0) {
-            if (sawIdat || sawTrns) {
-                if (error) *error = "png: duplicate or misplaced tRNS chunk";
-                return false;
-            }
-            if (colorType == 3 && len > 0 && len <= 256) {
-                paletteAlpha.assign(body, body + len);
-            } else if ((colorType == 0 && len == 2) || (colorType == 2 && len == 6)) {
-                transparency.assign(body, body + len);
-            } else {
-                if (error) *error = "png: invalid tRNS length or colour type";
-                return false;
-            }
-            sawTrns = true;
+            if (colorType == 3) paletteAlpha.assign(body, body + len);
         } else if (std::memcmp(type, "IDAT", 4) == 0) {
-            if (idatEnded || idat.size() > MAX_COMPRESSED_BYTES ||
-                static_cast<size_t>(len) > MAX_COMPRESSED_BYTES - idat.size()) {
-                if (error) *error = "png: non-contiguous or oversized IDAT data";
-                return false;
-            }
-            sawIdat = true;
             idat.insert(idat.end(), body, body + len);
         } else if (std::memcmp(type, "IEND", 4) == 0) {
-            if (len != 0 || !sawIdat) {
-                if (error) *error = "png: invalid IEND";
-                return false;
-            }
             sawIend = true;
         } else if (!(type[0] & 0x20)) {
             /* Unknown *critical* chunk: the decoder cannot know what it changes. */
@@ -478,20 +414,10 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
             }
             return false;
         }
-        pos = chunkEnd;
-    }
-    if (!sawIend || pos != size) {
-        if (error) *error = "png: missing IEND or trailing/incomplete chunk data";
-        return false;
+        pos += 12 + static_cast<size_t>(len);
     }
     if (!sawIhdr || idat.empty()) {
         if (error) *error = "png: missing IHDR or IDAT";
-        return false;
-    }
-    if (colorType == 3 &&
-        (palette.empty() || palette.size() % 3 != 0 || palette.size() / 3 > (size_t{1} << bitDepth) ||
-         paletteAlpha.size() > palette.size() / 3)) {
-        if (error) *error = "png: indexed palette or transparency table is invalid";
         return false;
     }
 
@@ -507,48 +433,19 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
             return false;
     }
 
-    /* Derive every allocation from validated dimensions before starting inflation. */
-    constexpr size_t MAX_PIXELS = 16u * 1024u * 1024u;
-    constexpr size_t MAX_PEAK_BYTES = 256u * 1024u * 1024u;
-    const size_t w = static_cast<size_t>(width), h = static_cast<size_t>(height);
-    if (w > std::numeric_limits<size_t>::max() / h) {
-        if (error) *error = "png: pixel count overflows";
-        return false;
-    }
-    const size_t pixelCount = w * h;
-    if (pixelCount > MAX_PIXELS) {
-        if (error) *error = "png: pixel count exceeds the decoder limit";
-        return false;
-    }
-    const size_t bitsPerPixel = static_cast<size_t>(channels) * static_cast<size_t>(bitDepth);
-    if (w > (std::numeric_limits<size_t>::max() - 7u) / bitsPerPixel) {
-        if (error) *error = "png: scanline size overflows";
-        return false;
-    }
-    const size_t rowBytes = (w * bitsPerPixel + 7u) / 8u;
-    if (rowBytes == std::numeric_limits<size_t>::max() ||
-        h > std::numeric_limits<size_t>::max() / (rowBytes + 1u)) {
-        if (error) *error = "png: decompressed size overflows";
-        return false;
-    }
-    const size_t expected = (rowBytes + 1u) * h;
-    if (rowBytes > std::numeric_limits<size_t>::max() / h ||
-        pixelCount > std::numeric_limits<size_t>::max() / 4u) {
-        if (error) *error = "png: output allocation size overflows";
-        return false;
-    }
-    const size_t pixelBytes = rowBytes * h;
-    const size_t rgbaBytes = pixelCount * 4u;
-    const size_t compressedBytes = idat.size();
-    if (expected > MAX_PEAK_BYTES || pixelBytes > MAX_PEAK_BYTES - expected ||
-        rgbaBytes > MAX_PEAK_BYTES - expected - pixelBytes ||
-        compressedBytes > MAX_PEAK_BYTES - expected - pixelBytes - rgbaBytes) {
-        if (error) *error = "png: peak decoded memory exceeds the decoder limit";
-        return false;
-    }
-    const size_t bpp = (bitsPerPixel + 7u) / 8u;
     std::vector<uint8_t> raw;
-    if (!inflateZlib(idat.data(), idat.size(), expected, &raw, error)) return false;
+    if (!inflateZlib(idat.data(), idat.size(), &raw, error)) return false;
+
+    /* Bytes per pixel used for the filter's "left" neighbour: ceil(bits per pixel / 8), never
+       less than 1. */
+    const int bitsPerPixel = channels * bitDepth;
+    const size_t bpp = static_cast<size_t>((bitsPerPixel + 7) / 8);
+    const size_t rowBytes = (static_cast<size_t>(width) * static_cast<size_t>(bitsPerPixel) + 7) / 8;
+    const size_t expected = (rowBytes + 1) * static_cast<size_t>(height);
+    if (raw.size() < expected) {
+        if (error) *error = "png: image data shorter than the header says";
+        return false;
+    }
 
     /* Unfilter in place into a contiguous pixel buffer. */
     std::vector<uint8_t> pixels(rowBytes * static_cast<size_t>(height));
@@ -580,22 +477,17 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
     /* Expand to RGBA8. */
     out->width = width;
     out->height = height;
-    out->rgba.assign(rgbaBytes, 255);
+    out->rgba.assign(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 255);
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     auto sample = [&](size_t index, int channel, bool sixteen) -> uint8_t {
         if (bitDepth == 8) return pixels[index * static_cast<size_t>(channels) + static_cast<size_t>(channel)];
         if (sixteen) return pixels[index * static_cast<size_t>(channels) * 2 + static_cast<size_t>(channel) * 2];
-        /* Packed samples restart at each row; row padding is not part of the pixel stream. */
-        const size_t y = index / static_cast<size_t>(width);
-        const size_t x = index % static_cast<size_t>(width);
-        const size_t bitPos = x * static_cast<size_t>(bitDepth);
-        const uint8_t byte = pixels[y * rowBytes + bitPos / 8];
+        /* sub-byte depths (only for grey / palette) */
+        const size_t bitPos = index * static_cast<size_t>(bitDepth);
+        const uint8_t byte = pixels[bitPos / 8];
         const int shift = 8 - bitDepth - static_cast<int>(bitPos % 8);
         const int mask = (1 << bitDepth) - 1;
         return static_cast<uint8_t>((byte >> shift) & mask);
-    };
-    auto sample16 = [&](size_t index, int channel) -> uint16_t {
-        const size_t at = (index * static_cast<size_t>(channels) + static_cast<size_t>(channel)) * 2;
-        return static_cast<uint16_t>((static_cast<uint16_t>(pixels[at]) << 8) | pixels[at + 1]);
     };
 
     const bool sixteen = (bitDepth == 16);
@@ -610,11 +502,9 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
             if (bitDepth == 8) {
                 idx = pixels[i];
             } else {
-                const size_t y = i / static_cast<size_t>(width);
-                const size_t x = i % static_cast<size_t>(width);
-                const size_t bitPos = x * static_cast<size_t>(bitDepth);
+                const size_t bitPos = i * static_cast<size_t>(bitDepth);
                 const int shift = 8 - bitDepth - static_cast<int>(bitPos % 8);
-                idx = (pixels[y * rowBytes + bitPos / 8] >> shift) & ((1 << bitDepth) - 1);
+                idx = (pixels[bitPos / 8] >> shift) & ((1 << bitDepth) - 1);
             }
             if (static_cast<size_t>(idx) >= entries) {
                 if (error) *error = "png: palette index out of range";
@@ -632,36 +522,19 @@ bool decodePng(const uint8_t* data, size_t size, DecodedImage* out, std::string*
     for (size_t i = 0; i < pixelCount; ++i) {
         switch (colorType) {
             case 0: {
-                const uint16_t rawGray = sixteen ? sample16(i, 0) : sample(i, 0, false);
-                const uint8_t g = sixteen ? static_cast<uint8_t>(rawGray >> 8)
-                    : bitDepth == 8 ? static_cast<uint8_t>(rawGray)
-                    : static_cast<uint8_t>(rawGray * 255u / ((1u << bitDepth) - 1u));
+                const uint8_t g = sample(i, 0, sixteen);
                 out->rgba[i * 4 + 0] = g;
                 out->rgba[i * 4 + 1] = g;
                 out->rgba[i * 4 + 2] = g;
-                bool transparent = false;
-                if (transparency.size() == 2) {
-                    const uint16_t key = static_cast<uint16_t>((static_cast<uint16_t>(transparency[0]) << 8) | transparency[1]);
-                    transparent = rawGray == key;
-                }
-                out->rgba[i * 4 + 3] = transparent ? 0 : 255;
+                out->rgba[i * 4 + 3] = 255;
                 break;
             }
-            case 2: {
-                bool transparent = transparency.size() == 6;
-                for (int c = 0; c < 3; ++c) {
-                    out->rgba[i * 4 + static_cast<size_t>(c)] = sample(i, c, sixteen);
-                    if (transparent) {
-                        const size_t keyAt = static_cast<size_t>(c) * 2;
-                        const uint16_t key = static_cast<uint16_t>((static_cast<uint16_t>(transparency[keyAt]) << 8) |
-                                                                   transparency[keyAt + 1]);
-                        const uint16_t value = sixteen ? sample16(i, c) : sample(i, c, false);
-                        if (value != key) transparent = false;
-                    }
-                }
-                out->rgba[i * 4 + 3] = transparent ? 0 : 255;
+            case 2:
+                out->rgba[i * 4 + 0] = sample(i, 0, sixteen);
+                out->rgba[i * 4 + 1] = sample(i, 1, sixteen);
+                out->rgba[i * 4 + 2] = sample(i, 2, sixteen);
+                out->rgba[i * 4 + 3] = 255;
                 break;
-            }
             case 4: {
                 const uint8_t g = sample(i, 0, sixteen);
                 out->rgba[i * 4 + 0] = g;

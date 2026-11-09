@@ -161,7 +161,6 @@ struct af_engine {
 
     uint64_t budgetBytes = 1536ull * 1024ull * 1024ull;
     uint64_t peakFieldBytes = 0;
-    int atlasResolution = 2048;
     uint32_t dirty = DIRTY_ALL;
     bool geometryReady = false;
     std::string lastError;
@@ -542,7 +541,6 @@ int32_t af_engine_reset(af_engine* engine, const af_spec* spec) {
         engine->dirty = DIRTY_ALL;
         engine->stage = AF_STAGE_IDLE;
         engine->peakFieldBytes = 0;
-        engine->atlasResolution = 2048;
         for (int i = 0; i < AF_TEX_COUNT; ++i) {
             engine->texValid[i] = false;
             engine->texViews[i] = af_texture{};
@@ -557,14 +555,7 @@ int32_t af_engine_reset(af_engine* engine, const af_spec* spec) {
 int32_t af_engine_set_memory_budget(af_engine* engine, uint64_t bytes) {
     if (!engine) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
     if (bytes < 64ull * 1024ull * 1024ull) return static_cast<int32_t>(AF_ERR_INVALID_ARG);   /* below the floor */
-    if (engine->budgetBytes != bytes) {
-        engine->budgetBytes = bytes;
-        if (engine->geometryReady) {
-            /* Rebuild from anatomy rather than re-unwrapping an already seam-split mesh. */
-            engine->dirty = DIRTY_ALL;
-            engine->geometryReady = false;
-        }
-    }
+    engine->budgetBytes = bytes;
     return static_cast<int32_t>(AF_OK);
 }
 
@@ -615,9 +606,6 @@ int32_t af_engine_analyze_images(af_engine* engine, const af_image* images, int3
         if (!images || image_count <= 0) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
         engine->stage = AF_STAGE_ANALYZE_INPUTS;
         engine->analysisCount = 0;
-        /* Failed images are skipped, so original input indices cannot index the compact analysis
-           array. Retain this map for later role selection. */
-        int32_t analysisIndex[4] = {-1, -1, -1, -1};
         int32_t produced = 0;
         for (int32_t i = 0; i < image_count && i < 4; ++i) {
             if (engine->cancelled()) return static_cast<int32_t>(AF_ERR_CANCELLED);
@@ -628,7 +616,6 @@ int32_t af_engine_analyze_images(af_engine* engine, const af_image* images, int3
                 engine->log(AF_LOG_WARN, "reference image could not be analysed (empty or unreadable)");
                 continue;
             }
-            analysisIndex[i] = engine->analysisCount;
             engine->analyses[engine->analysisCount++] = a;
             if (out_analyses && produced < max_analyses) out_analyses[produced] = a;
             ++produced;
@@ -640,13 +627,8 @@ int32_t af_engine_analyze_images(af_engine* engine, const af_image* images, int3
         const af_image_analysis* identity = &engine->analyses[0];
         const af_image_analysis* clothing = nullptr;
         for (int32_t i = 0; i < image_count && i < 4; ++i) {
-            if (analysisIndex[i] < 0) continue;
-            if (images[i].role == AF_IMAGE_CLOTHING) {
-                clothing = &engine->analyses[analysisIndex[i]];
-            }
-            if (images[i].role == AF_IMAGE_IDENTITY) {
-                identity = &engine->analyses[analysisIndex[i]];
-            }
+            if (images[i].role == AF_IMAGE_CLOTHING) clothing = &engine->analyses[std::min<int32_t>(i, engine->analysisCount - 1)];
+            if (images[i].role == AF_IMAGE_IDENTITY) identity = &engine->analyses[std::min<int32_t>(i, engine->analysisCount - 1)];
         }
         float confidence = 0.0f;
         specFromAnalysis(*identity, clothing, &engine->spec, &confidence);
@@ -760,20 +742,9 @@ int32_t af_engine_unwrap_uv(af_engine* engine) {
         if (!engine->geometryReady) return static_cast<int32_t>(AF_ERR_NOT_READY);
         engine->stage = AF_STAGE_UV_UNWRAP;
         engine->progress(AF_STAGE_UV_UNWRAP, 0.2f, "charting and packing the atlas");
-        /* A previous bake is stale once UVs change. Release it before selecting the next atlas
-           so the budget calculation reflects peak, not additive, texture memory. */
-        engine->textures = TextureSet();
-        engine->layout = UVLayout();
-        refreshTextures(engine);
-        const int resolution = atlasResolutionForBudget(engine->budgetBytes, engine->peakFieldBytes);
-        if (resolution == 0) {
-            engine->lastError = "UV unwrap: memory budget cannot fit even a 256x256 texture atlas";
-            return static_cast<int32_t>(AF_ERR_BUDGET_EXCEEDED);
-        }
-        engine->atlasResolution = resolution;
         const float t0 = nowMs();
         UVLayout layout;
-        if (!unwrapAtlas(&engine->mesh, resolution, resolution, &layout)) {
+        if (!unwrapAtlas(&engine->mesh, 2048, 2048, &layout)) {
             engine->lastError = "UV unwrap failed";
             return static_cast<int32_t>(AF_ERR_INTERNAL);
         }
@@ -782,9 +753,8 @@ int32_t af_engine_unwrap_uv(af_engine* engine) {
         engine->tUv = nowMs() - t0;
         engine->dirty = DIRTY_ALL & ~(DIRTY_METRICS | DIRTY_GEOMETRY | DIRTY_UV);
         char buf[160];
-        std::snprintf(buf, sizeof(buf), "%zu charts, %dx%d, coverage %.2f, %.0f texels/m, %.0f ms",
-                      layout.charts.size(), layout.texWidth, layout.texHeight, layout.coverage,
-                      layout.texelsPerMeter, engine->tUv);
+        std::snprintf(buf, sizeof(buf), "%zu charts, coverage %.2f, %.0f texels/m, %.0f ms",
+                      layout.charts.size(), layout.coverage, layout.texelsPerMeter, engine->tUv);
         engine->log(AF_LOG_INFO, buf);
         rebuildVertexBuffers(engine, false);
         rebuildVertexBuffers(engine, true);
@@ -799,9 +769,9 @@ int32_t af_engine_bake_textures(af_engine* engine) {
         engine->stage = AF_STAGE_BAKE_TEXTURES;
         engine->progress(AF_STAGE_BAKE_TEXTURES, 0.1f, "baking PBR maps");
         BakeOptions bo;
-        bo.width = engine->atlasResolution;
-        bo.height = engine->atlasResolution;
-        const uint64_t need = atlasBakeWorkspaceBytes(bo.width);
+        bo.width = 2048;
+        bo.height = 2048;
+        const uint64_t need = static_cast<uint64_t>(bo.width) * bo.height * 17ull;
         const int32_t budget = ensureBudget(engine, need, "texture bake");
         if (budget != AF_OK) return budget;
         const float t0 = nowMs();
@@ -1103,9 +1073,7 @@ int32_t af_engine_apply_pose(af_engine* engine, const af_pose* pose) {
 }
 
 float af_engine_clip_duration(const af_engine* engine, int32_t clip) {
-    /* Duration is immutable clip-library metadata; it does not read engine state. Accept a null
-       handle so callers can populate animation controls while a renderer owns the engine lease. */
-    (void)engine;
+    if (!engine) return 0.0f;
     if (clip == AF_CLIP_REST) return 0.0f;   /* the bind pose has no timeline */
     const int idx = clipIndexForId(clip);
     if (idx < 0) return 0.0f;
@@ -1357,11 +1325,6 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
     std::vector<uint32_t> poolBase(asset.pools.size(), 0);
     size_t total = 0;
     for (size_t i = 0; i < asset.pools.size(); ++i) {
-        if (total > static_cast<size_t>(INT32_MAX) ||
-            asset.pools[i].size() > static_cast<size_t>(INT32_MAX) - total) {
-            e->lastError = "import: total vertex count exceeds the engine's signed 32-bit range";
-            return static_cast<int32_t>(AF_ERR_UNSUPPORTED);
-        }
         poolBase[i] = static_cast<uint32_t>(total);
         total += asset.pools[i].size();
     }
@@ -1383,11 +1346,6 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
     std::vector<Range> ranges;
     ranges.reserve(asset.primitives.size());
     for (const auto& prim : asset.primitives) {
-        if (indices.size() > static_cast<size_t>(INT32_MAX) ||
-            prim.indices.size() > static_cast<size_t>(INT32_MAX) - indices.size()) {
-            e->lastError = "import: total index count exceeds the engine's signed 32-bit range";
-            return static_cast<int32_t>(AF_ERR_UNSUPPORTED);
-        }
         if (prim.pool < 0 || static_cast<size_t>(prim.pool) >= asset.pools.size()) {
             e->lastError = "import: primitive references a missing vertex pool";
             return static_cast<int32_t>(AF_ERR_INVALID_ARG);
@@ -1469,35 +1427,12 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
         submeshes.push_back(sm);
     }
 
-    /* Prepare the remaining allocations before mutating the live engine, so a bad_alloc during
-       staging cannot leave the previous model partially replaced. */
-    std::vector<af_vertex> vertsRest = verts;
-    TextureSet importedTextures;
-    for (size_t i = 0; i < asset.textures.size(); ++i) {
-        const ImportedTexture& t = asset.textures[i];
-        if (t.rgba.empty() || t.width <= 0 || t.height <= 0) continue;
-        bool used = false;
-        for (const auto& m : asset.materials) {
-            if (m.baseColorTexture == static_cast<int>(i)) { used = true; break; }
-        }
-        if (!used) continue;
-        importedTextures.width = t.width;
-        importedTextures.height = t.height;
-        importedTextures.baseColor = t.rgba;
-        break;
-    }
-
     /* ---- swap in ---- */
     e->verts.swap(verts);
-    e->vertsRest.swap(vertsRest); /* imported geometry is already in its bind pose */
+    e->vertsRest = e->verts;      /* imported geometry is already in its bind pose */
     e->indices.swap(indices);
     e->submeshes.swap(submeshes);
     e->materials.swap(materials);
-    e->textures = std::move(importedTextures);
-    for (int i = 0; i < AF_TEX_COUNT; ++i) {
-        e->texViews[i] = af_texture{};
-        e->texValid[i] = false;
-    }
 
     /* The generated state that no longer describes this geometry. Cleared rather than left stale:
        a rig built for a different mesh would skin the new one with nonsense weights. */
@@ -1520,8 +1455,21 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
     e->peakFieldBytes = 0;
     e->tFit = e->tGeometry = e->tUv = e->tTex = e->tRig = 0.0;
 
-    /* Only adopt an embedded base-colour texture that was decoded and referenced by a material;
-       every old generated/imported texture slot was invalidated at the swap above. */
+    /* Textures: base colour only, and only when the file embedded one that decoded. The other
+       slots keep the generated set if there is one - they belong to the engine's own bake. */
+    for (size_t i = 0; i < asset.textures.size(); ++i) {
+        const ImportedTexture& t = asset.textures[i];
+        if (t.rgba.empty() || t.width <= 0) continue;
+        bool used = false;
+        for (const auto& m : asset.materials) {
+            if (m.baseColorTexture == static_cast<int>(i)) { used = true; break; }
+        }
+        if (!used) continue;
+        e->textures.width = t.width;
+        e->textures.height = t.height;
+        e->textures.baseColor = t.rgba;
+        break;
+    }
     if (e->textures.width > 0 && !e->textures.baseColor.empty()) {
         af_texture tex{};
         tex.width = e->textures.width;

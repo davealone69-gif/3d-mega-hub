@@ -20,9 +20,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <limits>
 #include <cstdio>
-#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -79,26 +77,27 @@ void sampleField(DenseGrid& grid, const std::function<float(const Vec3&)>& field
                  int blockSize, const std::function<bool()>& cancel,
                  const std::function<void(float)>& progress, const std::vector<LocalCut>& cuts) {
     const int bs = maxi(1, blockSize);
-    if (grid.nx <= 0 || grid.ny <= 0 || grid.nz <= 0) {
-        if (progress) progress(1.0f);
-        return;
-    }
-
     const int bx = (grid.nx + bs - 1) / bs;
     const int by = (grid.ny + bs - 1) / bs;
     const int bz = (grid.nz + bs - 1) / bs;
     const int totalBlocks = bx * by * bz;
-    std::atomic<int> finished{0};
-    std::mutex progressMutex;
-    float lastProgress = 0.0f;
 
-    auto evaluate = [&](int x, int y, int z) -> float {
+    std::vector<uint8_t> done(static_cast<size_t>(grid.nx) * grid.ny * grid.nz, 0);
+    std::atomic<int> finished{0};
+
+    /* Evaluates one grid sample (with cut rules) and stores it. Returns its value. */
+    auto evaluateSample = [&](int x, int y, int z) -> float {
+        const size_t idx = grid.index(x, y, z);
+        if (done[idx]) return grid.values[idx];
         const Vec3 p = grid.position(x, y, z);
-        return applyCuts(cuts, p, field(p), grid.cell);
+        const float v = applyCuts(cuts, p, field(p), grid.cell);
+        grid.values[idx] = v;
+        done[idx] = 1;
+        return v;
     };
 
-    parallelFor(totalBlocks, threads, [&](int first, int last) {
-        for (int block = first; block < last; ++block) {
+    parallelFor(totalBlocks, threads, [&](int i0, int i1) {
+        for (int block = i0; block < i1; ++block) {
             if (cancel && cancel()) return;
             const int bzi = block / (bx * by);
             const int rem = block % (bx * by);
@@ -109,54 +108,35 @@ void sampleField(DenseGrid& grid, const std::function<float(const Vec3&)>& field
             const int y1 = mini(grid.ny - 1, y0 + bs);
             const int z1 = mini(grid.nz - 1, z0 + bs);
 
-            bool skipInterior = false;
             if (bs > 1 && x1 > x0 && y1 > y0 && z1 > z0) {
-                // Evaluate corners locally. Adjacent blocks may evaluate the same corner,
-                // but only the block owning a sample index writes grid.values for that index.
-                const int corners[8][3] = {
-                    {x0, y0, z0}, {x1, y0, z0}, {x0, y1, z0}, {x1, y1, z0},
-                    {x0, y0, z1}, {x1, y0, z1}, {x0, y1, z1}, {x1, y1, z1}
-                };
+                /* Block skip: evaluate the eight corner samples (they are shared with the
+                   neighbouring blocks and must be stored regardless), then decide whether the
+                   interior can possibly contain the isosurface. The threshold is the block
+                   diagonal, so a feature thinner than a block can never be skipped. */
                 float minCorner = 1e30f;
-                for (const auto& corner : corners) {
-                    minCorner = minf(minCorner, evaluate(corner[0], corner[1], corner[2]));
+                int corners[8][3] = {{x0, y0, z0}, {x1, y0, z0}, {x0, y1, z0}, {x1, y1, z0},
+                                     {x0, y0, z1}, {x1, y0, z1}, {x0, y1, z1}, {x1, y1, z1}};
+                for (int k = 0; k < 8; ++k) {
+                    minCorner = minf(minCorner, evaluateSample(corners[k][0], corners[k][1], corners[k][2]));
                 }
-                const float diagonal = static_cast<float>(bs) * grid.cell * 1.7320508f;
-                skipInterior = minCorner > diagonal * 0.95f;
-            }
-
-            // Half-open ownership ranges prevent neighbouring blocks from writing shared
-            // boundary samples. The final block owns the grid's terminal sample plane.
-            const int xEnd = mini(grid.nx, x0 + bs);
-            const int yEnd = mini(grid.ny, y0 + bs);
-            const int zEnd = mini(grid.nz, z0 + bs);
-            for (int z = z0; z < zEnd; ++z) {
-                for (int y = y0; y < yEnd; ++y) {
-                    for (int x = x0; x < xEnd; ++x) {
-                        // Even a skipped block must publish its low boundary planes: those
-                        // samples are shared by cells in the preceding blocks. Its interior
-                        // remains at the grid's positive outside fill value.
-                        if (!skipInterior || x == x0 || y == y0 || z == z0) {
-                            grid.values[grid.index(x, y, z)] = evaluate(x, y, z);
-                        }
-                    }
+                const float diag = static_cast<float>(bs) * grid.cell * 1.7320508f;
+                if (minCorner > diag * 0.95f) {
+                    const int f = ++finished;
+                    if (progress && (f & 31) == 0) progress(static_cast<float>(f) / static_cast<float>(maxi(1, totalBlocks)));
+                    continue;
                 }
             }
 
-            const int done = ++finished;
-            if (progress && (done & 31) == 0) {
-                std::lock_guard<std::mutex> lock(progressMutex);
-                const float current = static_cast<float>(finished.load(std::memory_order_relaxed)) /
-                                      static_cast<float>(maxi(1, totalBlocks));
-                if (current > lastProgress) {
-                    lastProgress = current;
-                    progress(current);
+            for (int z = z0; z <= z1; ++z) {
+                for (int y = y0; y <= y1; ++y) {
+                    for (int x = x0; x <= x1; ++x) evaluateSample(x, y, z);
                 }
             }
+            const int f = ++finished;
+            if (progress && (f & 31) == 0) progress(static_cast<float>(f) / static_cast<float>(maxi(1, totalBlocks)));
         }
-    }, cancel);
-
-    if (progress && !(cancel && cancel())) progress(1.0f);
+    });
+    if (progress) progress(1.0f);
 }
 
 /* ================================================================== extraction ============== */

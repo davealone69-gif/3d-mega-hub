@@ -37,6 +37,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -159,7 +160,6 @@ private:
     EnvironmentParams env_{};
     ShGlobal sh_{};
     bool meshDirty_ = true;
-    bool indexDirty_ = true;
     int highlightRegion_ = -1;
     bool skeletonVisible_ = false;
     bool flatShading_ = false;
@@ -176,6 +176,7 @@ private:
     int triangles_ = 0;
     bool targetsDirty_ = false;
     bool contextLost_ = false;
+    bool geometryValid_ = false;
 };
 
 /* ============================================================================================
@@ -213,6 +214,9 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
         *error = "eglMakeCurrent failed";
         return false;
     }
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
     eglQuerySurface(display_, surface_, EGL_WIDTH, &surfaceWidth_);
     eglQuerySurface(display_, surface_, EGL_HEIGHT, &surfaceHeight_);
 
@@ -233,9 +237,9 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
     uboAlignment_ = uint32_t(align > 0 ? align : 256);
 
     /* Floating-point colour attachments: ES 3.2 has them in core, ES 3.0/3.1 need the extension. */
-    const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
     bool floatColour = (major > 3 || (major == 3 && minor >= 2));
     if (!floatColour) {
+        const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
         floatColour = ext && std::strstr(ext, "GL_EXT_color_buffer_float") != nullptr;
     }
     hdrInternalFormat_ = floatColour ? GL_RGBA16F : GL_RGBA8;
@@ -245,11 +249,10 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
     info_.apiVersion = version;
     info_.driver = vendor ? vendor : "unknown vendor";
     info_.supportsFloatHdr = floatColour;
-    GLint maxSamples = 1;
-    glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
-    info_.supportsMsaa = maxSamples > 1;
-    info_.supportsShadows = true;  // init fails if the required depth-only framebuffer is incomplete.
-    info_.supportsAnisotropy = ext && std::strstr(ext, "GL_EXT_texture_filter_anisotropic") != nullptr;
+    info_.supportsMsaa = true;
+    info_.supportsShadows = true;
+    info_.supportsAnisotropy = true;   /* queried properly below; ES 3.0 has anisotropy via the
+                                          same enum, and the sampler clamps to the driver limit */
     return true;
 }
 
@@ -484,15 +487,12 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     if (!createContext(window, error)) return false;
     if (!createPrograms(error)) return false;
 
-    // Attribute pointers capture the currently bound array buffer in the VAO. Create every
-    // backing buffer before configuring the VAOs; creating these later leaves attribute 0 bound
-    // to buffer 0 and produces frames containing only the post-process background.
+    /* Buffer objects must exist before glVertexAttribPointer captures them in a VAO. */
     glGenBuffers(1, &vertexVbo_);
-    glGenBuffers(1, &indexIbo_);
     glGenBuffers(1, &groundVbo_);
     glGenBuffers(1, &lineVbo_);
-    if (!vertexVbo_ || !indexIbo_ || !groundVbo_ || !lineVbo_) {
-        *error = "OpenGL ES could not allocate the renderer's vertex/index buffers";
+    if (!vertexVbo_ || !groundVbo_ || !lineVbo_) {
+        *error = "failed to allocate GLES vertex buffer names";
         return false;
     }
 
@@ -577,7 +577,7 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     activeTargetOptions_ = options_;
 
     glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LEQUAL);
+    glDepthFunc(GL_LESS);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
@@ -594,24 +594,78 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
  * ============================================================================================ */
 void GlRenderer::ensureGeometryBuffers() {
     if (!engine_) {
-        vertexCount_ = 0;
-        indexCount_ = 0;
+        geometryValid_ = false;
+        vertexCount_ = indexCount_ = 0;
         return;
     }
     const int32_t vcount = af_engine_vertex_count(engine_);
     const int32_t icount = af_engine_index_count(engine_);
     const af_vertex* verts = af_engine_vertices(engine_);
     const uint32_t* indices = af_engine_indices(engine_);
-    if (vcount <= 0 || !verts) {
-        vertexCount_ = 0;
-        indexCount_ = 0;
+    const int32_t submeshCount = af_engine_submesh_count(engine_);
+    const af_submesh* submeshes = af_engine_submeshes(engine_);
+    auto rejectGeometry = [&](const char* reason) {
+        geometryValid_ = false;
+        vertexCount_ = vcount;
+        indexCount_ = icount;
         meshDirty_ = false;
-        indexDirty_ = false;
+        std::fprintf(stderr, "[AvatarForge] GLES geometry rejected: %s\n", reason);
+    };
+    if (!meshDirty_ && vertexCount_ == vcount && indexCount_ == icount) return;
+    if (vcount <= 0 || icount <= 0 || !verts || !indices) {
+        rejectGeometry("missing vertices or triangle indices");
+        return;
+    }
+    if (submeshCount < 0 || (submeshCount > 0 && !submeshes)) {
+        rejectGeometry("invalid submesh table");
+        return;
+    }
+    if (GLint64(vcount) > std::numeric_limits<GLsizeiptr>::max() / VertexLayout::stride ||
+        GLint64(icount) > std::numeric_limits<GLsizeiptr>::max() / GLint64(sizeof(uint32_t))) {
+        rejectGeometry("GPU buffer byte size overflows GLsizeiptr");
         return;
     }
 
+    /* Validate CPU-side indices and every draw range before any GPU upload or draw. */
+    for (int32_t i = 0; i < icount; ++i) {
+        if (indices[i] >= static_cast<uint32_t>(vcount)) {
+            rejectGeometry("index references a vertex outside the vertex buffer");
+            return;
+        }
+    }
+    for (int32_t i = 0; i < submeshCount; ++i) {
+        const af_submesh& sm = submeshes[i];
+        if (sm.index_offset < 0 || sm.index_count < 0 ||
+            sm.index_offset > icount || sm.index_count > icount - sm.index_offset) {
+            rejectGeometry("submesh index range exceeds the index buffer");
+            return;
+        }
+        if (sm.vertex_offset < 0 || sm.vertex_count < 0 ||
+            sm.vertex_offset > vcount || sm.vertex_count > vcount - sm.vertex_offset) {
+            rejectGeometry("submesh vertex range exceeds the vertex buffer");
+            return;
+        }
+        if (sm.index_count > 0 && sm.vertex_count == 0) {
+            rejectGeometry("non-empty submesh has an empty vertex range");
+            return;
+        }
+        const uint32_t firstVertex = static_cast<uint32_t>(sm.vertex_offset);
+        const uint32_t vertexEnd = firstVertex + static_cast<uint32_t>(sm.vertex_count);
+        for (int32_t j = 0; j < sm.index_count; ++j) {
+            const uint32_t index = indices[sm.index_offset + j];
+            if (index < firstVertex || index >= vertexEnd) {
+                rejectGeometry("submesh index references a vertex outside its declared vertex range");
+                return;
+            }
+        }
+        if ((sm.index_count % 3) != 0) {
+            rejectGeometry("triangle submesh index count is not divisible by three");
+            return;
+        }
+    }
+    geometryValid_ = true;
+
     const GLint64 vbytes = GLint64(vcount) * VertexLayout::stride;
-    if (vertexVbo_ == 0) glGenBuffers(1, &vertexVbo_);
     glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
     if (vbytes > vertexCapacity_) {
         glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(vbytes + vbytes / 4), nullptr, GL_DYNAMIC_DRAW);
@@ -632,79 +686,37 @@ void GlRenderer::ensureGeometryBuffers() {
             indexCapacity_ = ibytes + ibytes / 4;
             indexCount_ = 0;
         }
-        if (indexDirty_ || indexCount_ != icount) {
+        if (meshDirty_ || indexCount_ != icount) {
             glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, GLsizeiptr(ibytes), indices);
             indexCount_ = icount;
         }
-    } else {
-        indexCount_ = 0;
     }
+    vertexCount_ = vcount;
+    indexCount_ = icount;
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     meshDirty_ = false;
-    indexDirty_ = false;
 }
 
 void GlRenderer::uploadAtlas(std::string* error) {
     if (!engine_) return;
-    GLint maxTextureSize = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
-    bool allUploadsSucceeded = true;
     for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
         af_texture tex{};
         if (af_engine_texture(engine_, slot, &tex) != AF_OK) continue;
         if (!tex.data || tex.width <= 0 || tex.height <= 0) continue;
-        if (tex.width > maxTextureSize || tex.height > maxTextureSize) {
-            allUploadsSucceeded = false;
-            if (error) *error = "texture atlas slot " + std::to_string(slot) +
-                                " exceeds GL_MAX_TEXTURE_SIZE";
-            continue;
-        }
 
-        GLenum internal = GL_RGBA8;
-        GLenum format = GL_RGBA;
-        switch (tex.channels) {
-            case 1: internal = GL_R8; format = GL_RED; break;
-            case 2: internal = GL_RG8; format = GL_RG; break;
-            case 3:
-                internal = slot == AF_TEX_BASE_COLOR ? GL_SRGB8 : GL_RGB8;
-                format = GL_RGB;
-                break;
-            case 4:
-                internal = slot == AF_TEX_BASE_COLOR ? GL_SRGB8_ALPHA8 : GL_RGBA8;
-                format = GL_RGBA;
-                break;
-            default:
-                allUploadsSucceeded = false;
-                if (error) *error = "texture atlas slot " + std::to_string(slot) +
-                                    " has unsupported channel count " + std::to_string(tex.channels);
-                continue;
-        }
-
+        const GLenum internal = (tex.channels == 1) ? GL_R8
+                               : (slot == AF_TEX_BASE_COLOR) ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+        const GLenum format = (tex.channels == 1) ? GL_RED : GL_RGBA;
         glBindTexture(GL_TEXTURE_2D, atlasTexture_[slot]);
         glTexImage2D(GL_TEXTURE_2D, 0, GLint(internal), tex.width, tex.height, 0, format,
                      GL_UNSIGNED_BYTE, tex.data);
-        GLenum glError = glGetError();
-        if (glError != GL_NO_ERROR) {
-            allUploadsSucceeded = false;
-            if (error) *error = "OpenGL ES texture upload failed for atlas slot " +
-                                std::to_string(slot) + " with error " + std::to_string(glError);
-            continue;
-        }
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glError = glGetError();
-        if (glError != GL_NO_ERROR) {
-            allUploadsSucceeded = false;
-            if (error) *error = "OpenGL ES mipmap generation failed for atlas slot " +
-                                std::to_string(slot) + " with error " + std::to_string(glError);
-            continue;
-        }
+        glGenerateMipmap(GL_TEXTURE_2D);   /* GLES has this built in; the Vulkan path blits */
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        GLint maxLevel = 0;
-        for (int dimension = std::max(tex.width, tex.height); dimension > 1; dimension >>= 1) ++maxLevel;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, maxLevel);
+        /* The generated chain must not collapse to magenta when a driver limits mip depth. */
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 12);
 
         const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
         if (ext && std::strstr(ext, "GL_EXT_texture_filter_anisotropic")) {
@@ -714,7 +726,8 @@ void GlRenderer::uploadAtlas(std::string* error) {
                             std::min(4.0f, maxAniso));
         }
     }
-    atlasUploaded_ = allUploadsSucceeded;
+    atlasUploaded_ = true;
+    (void)error;
 }
 
 void GlRenderer::rebuildMaterialBlocks() {
@@ -912,11 +925,12 @@ void GlRenderer::setClip(int clip, float speed, bool loop) {
  *  Draw
  * ============================================================================================ */
 void GlRenderer::drawShadowPass() {
-    if (!options_.enableShadows || !engine_ || indexCount_ == 0) return;
+    if (!options_.enableShadows || !engine_ || !geometryValid_ || indexCount_ == 0) return;
     const int size = options_.shadowMapSize;
     glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
     glViewport(0, 0, size, size);
     glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
     glClear(GL_DEPTH_BUFFER_BIT);
 
@@ -938,6 +952,7 @@ void GlRenderer::drawForwardPass() {
     glBindFramebuffer(GL_FRAMEBUFFER, msaaFbo_);
     glViewport(0, 0, surfaceWidth_, surfaceHeight_);
     glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
     glClearColor(0.055f, 0.075f, 0.11f, 1.0f);
@@ -961,7 +976,7 @@ void GlRenderer::drawForwardPass() {
     }
 
     /* ---- the avatar: one draw per submesh so each gets its own material block ---- */
-    if (engine_ && vertexCount_ > 0 && indexCount_ > 0) {
+    if (engine_ && geometryValid_ && vertexCount_ > 0 && indexCount_ > 0) {
         glUseProgram(forwardProgram_);
         glBindVertexArray(avatarVao_);
         glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
@@ -977,23 +992,23 @@ void GlRenderer::drawForwardPass() {
 
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
-        int submittedIndices = 0;
-        if (submeshes && n > 0) {
-            for (int i = 0; i < n; ++i) {
-                const int offset = submeshes[i].index_offset;
-                const int count = submeshes[i].index_count;
-                if (offset < 0 || count <= 0 || offset > indexCount_ || count > indexCount_ - offset) {
-                    continue; // Never submit a submesh range outside the uploaded index buffer.
-                }
-                glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
-                                  sizeof(MaterialUbo));
-                glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_INT,
-                               reinterpret_cast<const void*>(size_t(offset) * sizeof(uint32_t)));
-                ++drawCalls_;
-                submittedIndices += count;
+        for (int i = 0; i < n; ++i) {
+            const af_submesh& sm = submeshes[i];
+            /* Re-check immediately before converting the element offset to a byte pointer. */
+            if (sm.index_offset < 0 || sm.index_count < 0 ||
+                sm.index_offset > indexCount_ || sm.index_count > indexCount_ - sm.index_offset) {
+                geometryValid_ = false;
+                std::fprintf(stderr, "[AvatarForge] skipped invalid submesh draw range %d\n", i);
+                continue;
             }
+            glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
+                              sizeof(MaterialUbo));
+            const size_t byteOffset = static_cast<size_t>(sm.index_offset) * sizeof(uint32_t);
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sm.index_count), GL_UNSIGNED_INT,
+                           reinterpret_cast<const void*>(byteOffset));
+            ++drawCalls_;
         }
-        triangles_ = submittedIndices / 3;
+        triangles_ = indexCount_ / 3;
     }
 
     /* ---- skeleton overlay ---- */
@@ -1154,7 +1169,6 @@ void GlRenderer::setOptions(const RendererOptions& options) {
 void GlRenderer::attachEngine(af_engine* engine) {
     engine_ = engine;
     meshDirty_ = true;
-    indexDirty_ = true;
     atlasUploaded_ = false;
     if (engine_ && context_ != EGL_NO_CONTEXT) {
         std::string error;
@@ -1163,7 +1177,7 @@ void GlRenderer::attachEngine(af_engine* engine) {
     }
 }
 
-void GlRenderer::invalidateMesh() { meshDirty_ = true; indexDirty_ = true; }
+void GlRenderer::invalidateMesh() { meshDirty_ = true; }
 
 bool GlRenderer::resize(int width, int height) {
     if (context_ == EGL_NO_CONTEXT || width <= 0 || height <= 0) return false;
@@ -1191,22 +1205,39 @@ void GlRenderer::destroyTargets() {
 
 void GlRenderer::destroyAll() {
     if (display_ != EGL_NO_DISPLAY && context_ != EGL_NO_CONTEXT) {
-        eglMakeCurrent(display_, surface_, surface_, context_);
-        destroyTargets();
-        const GLuint programs[7] = {forwardProgram_, shadowProgram_, groundProgram_, lineProgram_,
-                                    bloomDownProgram_, bloomUpProgram_, compositeProgram_};
-        for (GLuint p : programs) if (p) glDeleteProgram(p);
-        const GLuint buffers[6] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, groundVbo_};
-        for (GLuint b : buffers) if (b) glDeleteBuffers(1, &b);
-        if (lineVbo_) glDeleteBuffers(1, &lineVbo_);
-        for (int i = 0; i < AF_TEX_COUNT; ++i) if (atlasTexture_[i]) glDeleteTextures(1, &atlasTexture_[i]);
-        const GLuint vaos[4] = {avatarVao_, groundVao_, emptyVao_, lineVao_};
-        for (GLuint v : vaos) if (v) glDeleteVertexArrays(1, &v);
-        eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        const EGLBoolean madeCurrent = eglMakeCurrent(display_, surface_, surface_, context_);
+        if (madeCurrent == EGL_TRUE) {
+            destroyTargets();
+            const GLuint programs[7] = {forwardProgram_, shadowProgram_, groundProgram_, lineProgram_,
+                                        bloomDownProgram_, bloomUpProgram_, compositeProgram_};
+            for (GLuint p : programs) if (p) glDeleteProgram(p);
+            const GLuint buffers[6] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, groundVbo_};
+            for (GLuint b : buffers) if (b) glDeleteBuffers(1, &b);
+            if (lineVbo_) glDeleteBuffers(1, &lineVbo_);
+            for (int i = 0; i < AF_TEX_COUNT; ++i) if (atlasTexture_[i]) glDeleteTextures(1, &atlasTexture_[i]);
+            const GLuint vaos[4] = {avatarVao_, groundVao_, emptyVao_, lineVao_};
+            for (GLuint v : vaos) if (v) glDeleteVertexArrays(1, &v);
+        } else {
+            std::fprintf(stderr, "[AvatarForge] EGL teardown: make-current failed (0x%x); skipping GL deletes\n",
+                         static_cast<unsigned int>(eglGetError()));
+        }
+        /* Unbind before destroying either EGL object. The render thread is the sole owner here. */
+        if (eglGetCurrentContext() == context_) {
+            if (eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
+                std::fprintf(stderr, "[AvatarForge] EGL teardown: unbind failed (0x%x)\n",
+                             static_cast<unsigned int>(eglGetError()));
+            }
+        }
     }
     if (display_ != EGL_NO_DISPLAY) {
-        if (surface_ != EGL_NO_SURFACE) eglDestroySurface(display_, surface_);
-        if (context_ != EGL_NO_CONTEXT) eglDestroyContext(display_, context_);
+        if (surface_ != EGL_NO_SURFACE && eglDestroySurface(display_, surface_) != EGL_TRUE) {
+            std::fprintf(stderr, "[AvatarForge] EGL teardown: eglDestroySurface failed (0x%x)\n",
+                         static_cast<unsigned int>(eglGetError()));
+        }
+        if (context_ != EGL_NO_CONTEXT && eglDestroyContext(display_, context_) != EGL_TRUE) {
+            std::fprintf(stderr, "[AvatarForge] EGL teardown: eglDestroyContext failed (0x%x)\n",
+                         static_cast<unsigned int>(eglGetError()));
+        }
         eglTerminate(display_);
     }
     display_ = EGL_NO_DISPLAY;

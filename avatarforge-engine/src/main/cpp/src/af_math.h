@@ -88,7 +88,7 @@ struct Vec3 {
     Vec3& operator-=(const Vec3& o) { x -= o.x; y -= o.y; z -= o.z; return *this; }
     Vec3& operator*=(float s) { x *= s; y *= s; z *= s; return *this; }
     Vec3& operator/=(float s) { x /= s; y /= s; z /= s; return *this; }
-
+    
     float dot(const Vec3& o) const { return x * o.x + y * o.y + z * o.z; }
     Vec3 cross(const Vec3& o) const { return {y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x}; }
     float lengthSq() const { return x * x + y * y + z * z; }

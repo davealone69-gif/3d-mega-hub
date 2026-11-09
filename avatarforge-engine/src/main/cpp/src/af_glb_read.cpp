@@ -18,16 +18,8 @@
 
 #include "af_json.h"
 
-#include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <limits>
-#include <new>
-#if defined(__ANDROID__)
-#include <android/bitmap.h>
-#include <android/imagedecoder.h>
-#include <dlfcn.h>
-#endif
 
 namespace af {
 namespace {
@@ -36,127 +28,10 @@ constexpr uint32_t GLB_MAGIC = 0x46546C67u;   /* 'glTF' little-endian */
 constexpr uint32_t CHUNK_JSON = 0x4E4F534Au;
 constexpr uint32_t CHUNK_BIN = 0x004E4942u;
 constexpr int MAX_NODE_DEPTH = 256;
-constexpr size_t MAX_ACCESSOR_FLOATS = 8u * 1024u * 1024u;
-constexpr size_t MAX_ACCESSOR_INDICES = 8u * 1024u * 1024u;
-constexpr size_t MAX_DECODED_IMAGE_BYTES = 64u * 1024u * 1024u;
-
-bool looksLikeWebp(const uint8_t* data, size_t size) {
-    return data && size >= 12 && std::memcmp(data, "RIFF", 4) == 0 &&
-           std::memcmp(data + 8, "WEBP", 4) == 0;
-}
-
-/* Android's platform decoder handles WebP/JPEG without shipping another codec. Resolve its
-   API-30 symbols dynamically so the engine still loads on the app's API-26 minimum devices. */
-bool decodePlatformImage(const uint8_t* data, size_t size, DecodedImage* out, std::string* error) {
-#if defined(__ANDROID__)
-    if (!data || size == 0 || !out) {
-        if (error) *error = "platform image decoder received empty input";
-        return false;
-    }
-    struct DecoderApi {
-        void* library = dlopen("libjnigraphics.so", RTLD_NOW | RTLD_LOCAL);
-        using Create = int (*)(const void*, size_t, AImageDecoder**);
-        using GetHeader = const AImageDecoderHeaderInfo* (*)(const AImageDecoder*);
-        using GetDimension = int32_t (*)(const AImageDecoderHeaderInfo*);
-        using SetFormat = int32_t (*)(AImageDecoder*, int32_t);
-        using SetUnpremultiplied = int32_t (*)(AImageDecoder*, bool);
-        using GetStride = size_t (*)(AImageDecoder*);
-        using Decode = int (*)(AImageDecoder*, void*, size_t, size_t);
-        using Delete = void (*)(AImageDecoder*);
-        Create create = library ? reinterpret_cast<Create>(dlsym(library, "AImageDecoder_createFromBuffer")) : nullptr;
-        GetHeader getHeader = library ? reinterpret_cast<GetHeader>(dlsym(library, "AImageDecoder_getHeaderInfo")) : nullptr;
-        GetDimension getWidth = library ? reinterpret_cast<GetDimension>(dlsym(library, "AImageDecoderHeaderInfo_getWidth")) : nullptr;
-        GetDimension getHeight = library ? reinterpret_cast<GetDimension>(dlsym(library, "AImageDecoderHeaderInfo_getHeight")) : nullptr;
-        SetFormat setFormat = library ? reinterpret_cast<SetFormat>(dlsym(library, "AImageDecoder_setAndroidBitmapFormat")) : nullptr;
-        SetUnpremultiplied setUnpremultiplied = library ? reinterpret_cast<SetUnpremultiplied>(dlsym(library, "AImageDecoder_setUnpremultipliedRequired")) : nullptr;
-        GetStride getStride = library ? reinterpret_cast<GetStride>(dlsym(library, "AImageDecoder_getMinimumStride")) : nullptr;
-        Decode decode = library ? reinterpret_cast<Decode>(dlsym(library, "AImageDecoder_decodeImage")) : nullptr;
-        Delete destroy = library ? reinterpret_cast<Delete>(dlsym(library, "AImageDecoder_delete")) : nullptr;
-        bool ready() const {
-            return create && getHeader && getWidth && getHeight && setFormat &&
-                   setUnpremultiplied && getStride && decode && destroy;
-        }
-    };
-    static const DecoderApi api;
-    if (!api.ready()) {
-        if (error) *error = "Android AImageDecoder API is unavailable (requires Android 11 / API 30 or newer)";
-        return false;
-    }
-
-    AImageDecoder* decoder = nullptr;
-    const int createResult = api.create(data, size, &decoder);
-    if (createResult != ANDROID_IMAGE_DECODER_SUCCESS || !decoder) {
-        if (error) *error = "AImageDecoder_createFromBuffer failed: " + std::to_string(createResult);
-        return false;
-    }
-    struct DecoderGuard {
-        AImageDecoder* value;
-        DecoderApi::Delete destroy;
-        ~DecoderGuard() { if (value && destroy) destroy(value); }
-    } guard{decoder, api.destroy};
-
-    const AImageDecoderHeaderInfo* header = api.getHeader(decoder);
-    if (!header) {
-        if (error) *error = "AImageDecoder returned no image header";
-        return false;
-    }
-    const int32_t width = api.getWidth(header);
-    const int32_t height = api.getHeight(header);
-    if (width <= 0 || height <= 0 || width > 8192 || height > 8192) {
-        if (error) *error = "decoded image dimensions are outside the supported 1..8192 range";
-        return false;
-    }
-    if (api.setFormat(decoder, static_cast<int32_t>(ANDROID_BITMAP_FORMAT_RGBA_8888)) != ANDROID_IMAGE_DECODER_SUCCESS ||
-        api.setUnpremultiplied(decoder, true) != ANDROID_IMAGE_DECODER_SUCCESS) {
-        if (error) *error = "AImageDecoder could not select straight-alpha RGBA8888 output";
-        return false;
-    }
-    const size_t stride = api.getStride(decoder);
-    const size_t rowBytes = static_cast<size_t>(width) * 4u;
-    if (stride < rowBytes || static_cast<size_t>(height) > SIZE_MAX / stride ||
-        stride * static_cast<size_t>(height) > MAX_DECODED_IMAGE_BYTES ||
-        static_cast<size_t>(height) > SIZE_MAX / rowBytes) {
-        if (error) *error = "decoded image exceeds the bounded RGBA memory limit";
-        return false;
-    }
-    try {
-        std::vector<uint8_t> decoded(stride * static_cast<size_t>(height));
-        const int decodeResult = api.decode(decoder, decoded.data(), stride, decoded.size());
-        if (decodeResult != ANDROID_IMAGE_DECODER_SUCCESS) {
-            if (error) *error = "AImageDecoder_decodeImage failed: " + std::to_string(decodeResult);
-            return false;
-        }
-        out->width = width;
-        out->height = height;
-        out->rgba.resize(rowBytes * static_cast<size_t>(height));
-        for (int32_t y = 0; y < height; ++y) {
-            std::memcpy(out->rgba.data() + static_cast<size_t>(y) * rowBytes,
-                        decoded.data() + static_cast<size_t>(y) * stride, rowBytes);
-        }
-        return true;
-    } catch (const std::bad_alloc&) {
-        if (error) *error = "not enough memory for decoded image";
-        out->width = 0;
-        out->height = 0;
-        out->rgba.clear();
-        return false;
-    }
-#else
-    (void)data; (void)size; (void)out;
-    if (error) *error = "platform image decoding is available only on Android API 30+";
-    return false;
-#endif
-}
 
 uint32_t rd32(const uint8_t* p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-}
-
-uint32_t readUnsignedLE(const uint8_t* p, int size) {
-    if (size == 1) return p[0];
-    if (size == 2) return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8);
-    return rd32(p);
 }
 
 int componentSize(int componentType) {
@@ -169,22 +44,6 @@ int componentSize(int componentType) {
         case 5126: return 4;  /* FLOAT */
         default: return 0;
     }
-}
-
-bool checkedAdd(size_t a, size_t b, size_t* out) {
-    if (!out || b > std::numeric_limits<size_t>::max() - a) return false;
-    *out = a + b;
-    return true;
-}
-
-bool checkedMul(size_t a, size_t b, size_t* out) {
-    if (!out || (a != 0 && b > std::numeric_limits<size_t>::max() / a)) return false;
-    *out = a * b;
-    return true;
-}
-
-bool checkedRange(size_t offset, size_t length, size_t limit) {
-    return offset <= limit && length <= limit - offset;
 }
 
 int typeComponents(const std::string& type) {
@@ -252,18 +111,15 @@ struct AccessorView {
 
 int resolveAccessor(const uint8_t* bin, size_t binSize, const json::Json& doc, int accessorIndex,
                     AccessorView* view, std::string* error) {
-    if (!view || accessorIndex < 0) {
-        if (error) *error = "glTF: accessor index out of range";
-        return AF_ERR_INVALID_ARG;
-    }
-    const json::Json& acc = doc["accessors"].atOrNull(static_cast<size_t>(accessorIndex));
-    if (acc.isNull()) {
+    const json::Json& accessors = doc["accessors"];
+    const json::Json& acc = accessors.atOrNull(static_cast<size_t>(accessorIndex < 0 ? 0 : accessorIndex));
+    if (accessorIndex < 0 || acc.isNull()) {
         if (error) *error = "glTF: accessor index out of range";
         return AF_ERR_INVALID_ARG;
     }
     size_t count = 0;
-    if (!acc["count"].asIndex(&count) || count == 0) {
-        if (error) *error = "glTF: accessor count must be a positive integer";
+    if (!acc["count"].asIndex(&count)) {
+        if (error) *error = "glTF: accessor without a valid count";
         return AF_ERR_INVALID_ARG;
     }
     const int componentType = acc["componentType"].asInt(0);
@@ -273,11 +129,7 @@ int resolveAccessor(const uint8_t* bin, size_t binSize, const json::Json& doc, i
         if (error) *error = "glTF: accessor with an unknown component type or element type";
         return AF_ERR_INVALID_ARG;
     }
-    size_t elementBytes = 0;
-    if (!checkedMul(static_cast<size_t>(csize), static_cast<size_t>(components), &elementBytes)) {
-        if (error) *error = "glTF: accessor element size overflows";
-        return AF_ERR_INVALID_ARG;
-    }
+    const size_t elementBytes = static_cast<size_t>(csize) * static_cast<size_t>(components);
 
     view->count = count;
     view->components = components;
@@ -286,98 +138,79 @@ int resolveAccessor(const uint8_t* bin, size_t binSize, const json::Json& doc, i
     view->stride = elementBytes;
     view->valid = true;
 
-    const json::Json& bvRef = acc["bufferView"];
-    if (!acc.find("bufferView")) {
-        if (!acc["sparse"].isObject()) {
-            if (error) *error = "glTF: accessor without a bufferView must have sparse data";
-            return AF_ERR_INVALID_ARG;
-        }
+    if (count == 0) {
+        view->base = bin;
+        return AF_OK;
+    }
+
+    const json::Json& bvJson = doc["bufferViews"].atOrNull(static_cast<size_t>(acc["bufferView"].asInt(0)));
+    if (bvJson.isNull()) {
+        /* Sparse-only accessor (all zeros outside the sparse patch) is legal. Callers that need
+           data must use sparse-aware copy; here we report a zero base and let the caller treat
+           the buffer as zeros. */
         view->base = nullptr;
         return AF_OK;
     }
-    if (!bvRef.isNumber()) {
-        if (error) *error = "glTF: accessor bufferView reference is not an integer";
-        return AF_ERR_INVALID_ARG;
-    }
-    const int bvIndex = bvRef.asInt(-1);
-    if (bvIndex < 0) {
-        if (error) *error = "glTF: accessor bufferView index is invalid";
-        return AF_ERR_INVALID_ARG;
-    }
-    const json::Json& bvJson = doc["bufferViews"].atOrNull(static_cast<size_t>(bvIndex));
-    if (bvJson.isNull()) {
-        if (error) *error = "glTF: accessor bufferView index out of range";
-        return AF_ERR_INVALID_ARG;
-    }
-
-    size_t bvOffset = 0, bvLength = 0;
-    if (!bvJson["byteOffset"].isNull() && !bvJson["byteOffset"].asIndex(&bvOffset)) {
-        if (error) *error = "glTF: bufferView has an invalid byteOffset";
-        return AF_ERR_INVALID_ARG;
-    }
-    if (!bvJson["byteLength"].asIndex(&bvLength) || !checkedRange(bvOffset, bvLength, binSize)) {
-        if (error) *error = "glTF: bufferView range exceeds the binary buffer";
-        return AF_ERR_INVALID_ARG;
-    }
-    size_t bufferIndex = 0;
-    if (!bvJson["buffer"].asIndex(&bufferIndex) || bufferIndex != 0) {
-        if (error) *error = "glTF: bufferView references an unavailable buffer";
-        return AF_ERR_UNSUPPORTED;
-    }
-
     size_t byteOffset = 0;
-    if (!acc["byteOffset"].isNull() && !acc["byteOffset"].asIndex(&byteOffset)) {
-        if (error) *error = "glTF: accessor has an invalid byteOffset";
+    acc["byteOffset"].asIndex(&byteOffset);
+    size_t bvOffset = 0, bvLength = 0;
+    bvJson["byteOffset"].asIndex(&bvOffset);
+    if (!bvJson["byteLength"].asIndex(&bvLength)) {
+        if (error) *error = "glTF: bufferView without a byteLength";
         return AF_ERR_INVALID_ARG;
     }
-    size_t stride = elementBytes;
-    if (bvJson.find("byteStride")) {
-        if (!bvJson["byteStride"].asIndex(&stride) || stride < 4 || stride > 252 || (stride % 4) != 0) {
-            if (error) *error = "glTF: byteStride must be a multiple of 4 in the range 4..252";
-            return AF_ERR_INVALID_ARG;
-        }
-        if (stride < elementBytes) {
-            if (error) *error = "glTF: byteStride smaller than the element size";
-            return AF_ERR_INVALID_ARG;
-        }
-    }
-
-    size_t lastOffset = 0, span = 0, absoluteStart = 0;
-    if (byteOffset > bvLength ||
-        !checkedMul(count - 1, stride, &lastOffset) ||
-        !checkedAdd(lastOffset, elementBytes, &span) ||
-        !checkedRange(byteOffset, span, bvLength) ||
-        !checkedAdd(bvOffset, byteOffset, &absoluteStart) ||
-        (absoluteStart % static_cast<size_t>(csize)) != 0 ||
-        !checkedRange(absoluteStart, span, binSize)) {
-        if (error) *error = "glTF: accessor offset/span overflows or exceeds its bufferView";
+    size_t bvStride = 0;
+    const bool hasExplicitStride = bvJson.find("byteStride") != nullptr;
+    if (hasExplicitStride && !bvJson["byteStride"].asIndex(&bvStride)) {
+        if (error) *error = "glTF: bufferView with an invalid byteStride";
         return AF_ERR_INVALID_ARG;
     }
-    if (!bin) {
-        if (error) *error = "glTF: accessor requires a missing binary chunk";
+    if (bvStride == 0) bvStride = elementBytes;
+    if (bvStride < elementBytes) {
+        if (error) *error = "glTF: byteStride smaller than the element size";
         return AF_ERR_INVALID_ARG;
     }
-    view->base = bin + absoluteStart;
-    view->stride = stride;
+    if ((byteOffset % static_cast<size_t>(csize)) != 0 ||
+        (static_cast<uint64_t>(bvOffset) % static_cast<uint64_t>(csize)) != 0) {
+        if (error) *error = "glTF: accessor byte offset is not aligned to its component type";
+        return AF_ERR_INVALID_ARG;
+    }
+    if (hasExplicitStride &&
+        (bvStride < 4 || bvStride > 252 || (bvStride % 4) != 0)) {
+        if (error) *error = "glTF: vertex byteStride must be 4-byte aligned and between 4 and 252";
+        return AF_ERR_INVALID_ARG;
+    }
+    /* Everything in 64-bit: count * stride overflows 32 bits at 4 G and a hostile file can claim
+       it. The addition cannot wrap because each term is bounded by size_t. */
+    const uint64_t start = static_cast<uint64_t>(bvOffset) + static_cast<uint64_t>(byteOffset);
+    const uint64_t span = static_cast<uint64_t>(count - 1) * static_cast<uint64_t>(bvStride) +
+                          static_cast<uint64_t>(elementBytes);
+    if (start > binSize || span > binSize || start + span > static_cast<uint64_t>(binSize)) {
+        if (error) *error = "glTF: accessor range exceeds the binary chunk";
+        return AF_ERR_INVALID_ARG;
+    }
+    if (static_cast<uint64_t>(bvOffset) > static_cast<uint64_t>(binSize) ||
+        static_cast<uint64_t>(bvLength) > static_cast<uint64_t>(binSize) - static_cast<uint64_t>(bvOffset) ||
+        start < static_cast<uint64_t>(bvOffset) ||
+        start + span > static_cast<uint64_t>(bvOffset) + static_cast<uint64_t>(bvLength)) {
+        if (error) *error = "glTF: accessor range exceeds its bufferView";
+        return AF_ERR_INVALID_ARG;
+    }
+    view->base = bin + start;
+    view->stride = bvStride;
     return AF_OK;
 }
 
 /* Reads element `i` as up to 16 floats. Bounds were proven by resolveAccessor(). */
-bool readElement(const AccessorView& view, size_t i, float* out, int outComponents) {
-    if (!out || i >= view.count || outComponents < 0 || outComponents > 16) return false;
+void readElement(const AccessorView& view, size_t i, float* out, int outComponents) {
     for (int c = 0; c < outComponents; ++c) out[c] = 0.0f;
-    if (!view.base) return true; /* sparse-only: zeros are the glTF default before applying the patch */
-    size_t elementOffset = 0;
-    if (!checkedMul(i, view.stride, &elementOffset)) return false;
+    if (!view.base) return;   /* sparse-only or empty: zeros, which is the glTF default */
+    const uint8_t* p = view.base + i * view.stride;
     const int n = view.components < outComponents ? view.components : outComponents;
-    const size_t csize = static_cast<size_t>(componentSize(view.componentType));
     for (int c = 0; c < n; ++c) {
-        size_t componentOffset = 0, readOffset = 0;
-        if (!checkedMul(static_cast<size_t>(c), csize, &componentOffset) ||
-            !checkedAdd(elementOffset, componentOffset, &readOffset)) return false;
-        out[c] = readComponent(view.base + readOffset, view.componentType, view.normalized);
+        out[c] = readComponent(p + static_cast<size_t>(c) * static_cast<size_t>(componentSize(view.componentType)),
+                               view.componentType, view.normalized);
     }
-    return true;
 }
 
 /* Applies an accessor's sparse patch over a dense float buffer of `count * components`. */
@@ -386,118 +219,79 @@ int applySparse(const uint8_t* bin, size_t binSize, const json::Json& doc, const
     const json::Json& sparse = acc["sparse"];
     if (sparse.isNull()) return AF_OK;
     size_t sparseCount = 0;
-    if (!sparse["count"].asIndex(&sparseCount) || sparseCount == 0 || sparseCount > count) {
-        if (error) *error = "glTF: sparse patch count is invalid";
+    if (!sparse["count"].asIndex(&sparseCount) || sparseCount == 0) return AF_OK;
+    if (sparseCount > count) {
+        if (error) *error = "glTF: sparse patch larger than its accessor";
         return AF_ERR_INVALID_ARG;
     }
-    if (!bin || !buffer || components <= 0) {
-        if (error) *error = "glTF: sparse patch has no valid data buffer";
-        return AF_ERR_INVALID_ARG;
-    }
-
-    auto resolveSparseView = [&](const json::Json& ref, size_t* offset, size_t* length) -> bool {
-        size_t index = 0;
-        if (!ref.asIndex(&index)) return false;
-        const json::Json& bv = doc["bufferViews"].atOrNull(index);
-        if (bv.isNull()) return false;
-        size_t bufferIndex = 0;
-        *offset = 0;
-        if (!bv["buffer"].asIndex(&bufferIndex) || bufferIndex != 0) return false;
-        if (!bv["byteOffset"].isNull() && !bv["byteOffset"].asIndex(offset)) return false;
-        if (!bv["byteLength"].asIndex(length) || !checkedRange(*offset, *length, binSize)) return false;
-        /* glTF sparse index/value bufferViews are tightly packed and may not declare a stride. */
-        if (bv.find("byteStride")) return false;
-        return true;
-    };
-
+    /* sparse.indices is not an accessor in the document: it is a bufferView plus a componentType,
+       so it gets its own bounds check rather than going through resolveAccessor(). */
     const int idxComponent = sparse["indices"]["componentType"].asInt(0);
     const int idxSize = componentSize(idxComponent);
-    if (idxComponent != 5121 && idxComponent != 5123 && idxComponent != 5125) {
-        if (error) *error = "glTF: sparse indices must use UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT";
+    if (idxSize == 0 || (idxSize == 4 && idxComponent == 5126)) {
+        if (error) *error = "glTF: sparse indices with an unsupported component type";
         return AF_ERR_INVALID_ARG;
     }
     size_t idxBvOffset = 0, idxBvLength = 0;
-    if (!resolveSparseView(sparse["indices"]["bufferView"], &idxBvOffset, &idxBvLength)) {
-        if (error) *error = "glTF: sparse indices reference an invalid bufferView";
+    const json::Json& idxBv = doc["bufferViews"].atOrNull(static_cast<size_t>(sparse["indices"]["bufferView"].asInt(-1)));
+    if (idxBv.isNull()) {
+        if (error) *error = "glTF: sparse indices reference a missing bufferView";
         return AF_ERR_INVALID_ARG;
     }
-    size_t idxByteOffset = 0, idxStart = 0, idxSpan = 0;
-    if ((!sparse["indices"]["byteOffset"].isNull() &&
-         !sparse["indices"]["byteOffset"].asIndex(&idxByteOffset)) ||
-        !checkedMul(sparseCount, static_cast<size_t>(idxSize), &idxSpan) ||
-        !checkedRange(idxByteOffset, idxSpan, idxBvLength) ||
-        !checkedAdd(idxBvOffset, idxByteOffset, &idxStart) ||
-        !checkedRange(idxStart, idxSpan, binSize)) {
-        if (error) *error = "glTF: sparse index offset/span overflows or exceeds its bufferView";
+    idxBv["byteOffset"].asIndex(&idxBvOffset);
+    idxBv["byteLength"].asIndex(&idxBvLength);
+    size_t idxByteOffset = 0;
+    sparse["indices"]["byteOffset"].asIndex(&idxByteOffset);
+    const uint64_t idxStart = static_cast<uint64_t>(idxBvOffset) + static_cast<uint64_t>(idxByteOffset);
+    const uint64_t idxSpan = static_cast<uint64_t>(sparseCount) * static_cast<uint64_t>(idxSize);
+    if (idxStart + idxSpan > static_cast<uint64_t>(binSize) || idxSpan > static_cast<uint64_t>(idxBvLength)) {
+        if (error) *error = "glTF: sparse index data exceeds the binary chunk";
         return AF_ERR_INVALID_ARG;
     }
     const uint8_t* idxBase = bin + idxStart;
 
     size_t valBvOffset = 0, valBvLength = 0;
-    if (!resolveSparseView(sparse["values"]["bufferView"], &valBvOffset, &valBvLength)) {
-        if (error) *error = "glTF: sparse values reference an invalid bufferView";
+    const json::Json& valBv = doc["bufferViews"].atOrNull(static_cast<size_t>(sparse["values"]["bufferView"].asInt(-1)));
+    if (valBv.isNull()) {
+        if (error) *error = "glTF: sparse values reference a missing bufferView";
         return AF_ERR_INVALID_ARG;
     }
-    size_t valByteOffset = 0, valStart = 0, valSpan = 0, valueComponents = 0;
-    if ((!sparse["values"]["byteOffset"].isNull() &&
-         !sparse["values"]["byteOffset"].asIndex(&valByteOffset)) ||
-        !checkedMul(sparseCount, static_cast<size_t>(components), &valueComponents) ||
-        !checkedMul(valueComponents, static_cast<size_t>(componentSize(static_cast<int>(acc["componentType"].asInt(0)))), &valSpan) ||
-        !checkedRange(valByteOffset, valSpan, valBvLength) ||
-        !checkedAdd(valBvOffset, valByteOffset, &valStart) ||
-        !checkedRange(valStart, valSpan, binSize)) {
-        if (error) *error = "glTF: sparse value offset/span overflows or exceeds its bufferView";
-        return AF_ERR_INVALID_ARG;
-    }
-    const int componentType = static_cast<int>(acc["componentType"].asInt(0));
-    const int csize = componentSize(componentType);
-    if (csize == 0) {
-        if (error) *error = "glTF: sparse values have an unsupported component type";
+    valBv["byteOffset"].asIndex(&valBvOffset);
+    valBv["byteLength"].asIndex(&valBvLength);
+    size_t valByteOffset = 0;
+    sparse["values"]["byteOffset"].asIndex(&valByteOffset);
+    const int csize = componentSize(static_cast<int>(acc["componentType"].asInt(0)));
+    const uint64_t valStart = static_cast<uint64_t>(valBvOffset) + static_cast<uint64_t>(valByteOffset);
+    const uint64_t valSpan = static_cast<uint64_t>(sparseCount) * static_cast<uint64_t>(components) *
+                             static_cast<uint64_t>(csize);
+    if (valStart + valSpan > static_cast<uint64_t>(binSize) || valSpan > static_cast<uint64_t>(valBvLength)) {
+        if (error) *error = "glTF: sparse value data exceeds the binary chunk";
         return AF_ERR_INVALID_ARG;
     }
     const uint8_t* valBase = bin + valStart;
+    const int componentType = static_cast<int>(acc["componentType"].asInt(0));
     const bool normalized = acc["normalized"].asBool(false);
     for (size_t i = 0; i < sparseCount; ++i) {
-        size_t target = 0, indexOffset = 0;
-        if (!checkedMul(i, static_cast<size_t>(idxSize), &indexOffset) ||
-            !checkedRange(indexOffset, static_cast<size_t>(idxSize), idxSpan)) {
-            if (error) *error = "glTF: sparse index read offset overflows";
-            return AF_ERR_INVALID_ARG;
-        }
-        if (idxSize == 1) target = idxBase[indexOffset];
+        size_t target = 0;
+        if (idxSize == 1) target = idxBase[i];
         else if (idxSize == 2) {
             uint16_t v;
-            std::memcpy(&v, idxBase + indexOffset, sizeof(v));
+            std::memcpy(&v, idxBase + i * 2, 2);
             target = v;
         } else {
             uint32_t v;
-            std::memcpy(&v, idxBase + indexOffset, sizeof(v));
+            std::memcpy(&v, idxBase + i * 4, 4);
             target = v;
         }
         if (target >= count) {
             if (error) *error = "glTF: sparse index beyond the accessor";
             return AF_ERR_INVALID_ARG;
         }
-        size_t targetBase = 0;
-        if (!checkedMul(target, static_cast<size_t>(components), &targetBase)) {
-            if (error) *error = "glTF: sparse destination index overflows";
-            return AF_ERR_INVALID_ARG;
-        }
-        size_t sourceBase = 0;
-        if (!checkedMul(i, static_cast<size_t>(components), &sourceBase) ||
-            !checkedMul(sourceBase, static_cast<size_t>(csize), &sourceBase)) {
-            if (error) *error = "glTF: sparse source index overflows";
-            return AF_ERR_INVALID_ARG;
-        }
         for (int c = 0; c < components; ++c) {
-            size_t sourceComponent = 0, targetComponent = 0, sourceOffset = 0;
-            if (!checkedMul(static_cast<size_t>(c), static_cast<size_t>(csize), &sourceComponent) ||
-                !checkedAdd(sourceBase, sourceComponent, &sourceOffset) ||
-                !checkedAdd(targetBase, static_cast<size_t>(c), &targetComponent)) {
-                if (error) *error = "glTF: sparse component offset overflows";
-                return AF_ERR_INVALID_ARG;
-            }
-            buffer[targetComponent] = readComponent(valBase + sourceOffset, componentType, normalized);
+            const uint8_t* p = valBase + (i * static_cast<size_t>(components) + static_cast<size_t>(c)) *
+                                            static_cast<size_t>(csize);
+            buffer[target * static_cast<size_t>(components) + static_cast<size_t>(c)] =
+                readComponent(p, componentType, normalized);
         }
     }
     return AF_OK;
@@ -514,154 +308,51 @@ int readAccessorFloats(const uint8_t* bin, size_t binSize, const json::Json& doc
     AccessorView view;
     const int rc = resolveAccessor(bin, binSize, doc, accessorIndex, &view, error);
     if (rc != AF_OK) return rc;
-    if (view.components != components) {
-        if (error) *error = "glTF: accessor component count does not match the requested attribute type";
+    if (view.components < components) {
+        if (error) *error = "glTF: accessor has fewer components than the attribute needs";
         return AF_ERR_INVALID_ARG;
     }
-    size_t floatCount = 0;
-    if (!checkedMul(view.count, static_cast<size_t>(components), &floatCount) ||
-        floatCount > out->max_size() || floatCount > MAX_ACCESSOR_FLOATS) {
-        if (error) *error = "glTF: accessor output allocation size overflows or exceeds the importer limit";
-        return AF_ERR_INVALID_ARG;
-    }
-    out->assign(floatCount, 0.0f);
+    out->assign(view.count * static_cast<size_t>(components), 0.0f);
     for (size_t i = 0; i < view.count; ++i) {
         float v[16];
-        if (!readElement(view, i, v, components)) {
-            if (error) *error = "glTF: accessor element offset overflows";
-            return AF_ERR_INVALID_ARG;
-        }
-        size_t destBase = 0;
-        if (!checkedMul(i, static_cast<size_t>(components), &destBase)) {
-            if (error) *error = "glTF: accessor destination offset overflows";
-            return AF_ERR_INVALID_ARG;
-        }
+        readElement(view, i, v, components);
         for (int c = 0; c < components; ++c) {
-            size_t dest = 0;
-            if (!checkedAdd(destBase, static_cast<size_t>(c), &dest) || dest >= out->size()) {
-                if (error) *error = "glTF: accessor destination span is invalid";
-                return AF_ERR_INVALID_ARG;
-            }
-            (*out)[dest] = v[c];
+            (*out)[i * static_cast<size_t>(components) + static_cast<size_t>(c)] = v[c];
         }
     }
     if (applySparse(bin, binSize, doc, acc, view.count, components, out->data(), error) != AF_OK) return AF_ERR_INVALID_ARG;
-    for (float value : *out) {
-        if (!std::isfinite(value)) {
-            if (error) *error = "glTF: accessor contains a non-finite value";
-            return AF_ERR_INVALID_ARG;
-        }
-    }
     *outCount = view.count;
     return AF_OK;
 }
 
-/* Decode index accessors as integer data end-to-end. Going through float loses UINT32 low bits
-   and can invoke undefined float-to-integer conversion for 0xffffffff. */
+/* Indices as u32, whatever their stored width. */
 int readIndices(const uint8_t* bin, size_t binSize, const json::Json& doc, int accessorIndex,
                 std::vector<uint32_t>* out, std::string* error) {
-    if (!out || accessorIndex < 0) return AF_ERR_INVALID_ARG;
-    const json::Json& accessor = doc["accessors"].atOrNull(static_cast<size_t>(accessorIndex));
-    if (accessor.isNull() || accessor["type"].stringOr("") != "SCALAR") {
-        if (error) *error = "glTF: index accessor must be an unsigned integer SCALAR";
+    const json::Json& accessor =
+        doc["accessors"].atOrNull(static_cast<size_t>(accessorIndex < 0 ? 0 : accessorIndex));
+    if (accessorIndex < 0 || accessor.isNull() || accessor["type"].stringOr("") != "SCALAR") {
+        if (error) *error = "glTF: indices must reference a valid SCALAR accessor";
         return AF_ERR_INVALID_ARG;
     }
-    AccessorView view;
-    const int rc = resolveAccessor(bin, binSize, doc, accessorIndex, &view, error);
+    const int indexType = accessor["componentType"].asInt(0);
+    if ((indexType != 5121 && indexType != 5123 && indexType != 5125) ||
+        accessor["normalized"].asBool(false)) {
+        if (error) *error = "glTF: indices must use non-normalized UNSIGNED_BYTE, UNSIGNED_SHORT or UNSIGNED_INT";
+        return AF_ERR_INVALID_ARG;
+    }
+    std::vector<float> raw;
+    size_t count = 0;
+    const int rc = readAccessorFloats(bin, binSize, doc, accessorIndex, 1, &raw, &count, error);
     if (rc != AF_OK) return rc;
-    const int valueType = view.componentType;
-    const int valueSize = componentSize(valueType);
-    if ((valueType != 5121 && valueType != 5123 && valueType != 5125) || view.normalized ||
-        view.components != 1 || view.stride != static_cast<size_t>(valueSize)) {
-        if (error) *error = "glTF: indices must be tightly packed unsigned scalar values";
-        return AF_ERR_INVALID_ARG;
+    out->resize(count);
+    for (size_t i = 0; i < count; ++i) {
+        const float v = raw[i];
+        if (v < 0.0f) {
+            if (error) *error = "glTF: negative index";
+            return AF_ERR_INVALID_ARG;
+        }
+        (*out)[i] = static_cast<uint32_t>(v);
     }
-    if (view.count > MAX_ACCESSOR_INDICES) {
-        if (error) *error = "glTF: index accessor exceeds the bounded importer limit";
-        return AF_ERR_UNSUPPORTED;
-    }
-    std::vector<uint32_t> decoded(view.count, 0);
-    if (view.base) {
-        for (size_t i = 0; i < view.count; ++i) {
-            size_t offset = 0, elementEnd = 0;
-            if (!checkedMul(i, view.stride, &offset) ||
-                !checkedAdd(offset, static_cast<size_t>(valueSize), &elementEnd)) {
-                if (error) *error = "glTF: index element offset overflows";
-                return AF_ERR_INVALID_ARG;
-            }
-            (void)elementEnd; /* resolveAccessor already proved every element is inside its bufferView. */
-            decoded[i] = readUnsignedLE(view.base + offset, valueSize);
-        }
-    }
-
-    const json::Json& sparse = accessor["sparse"];
-    if (!sparse.isNull()) {
-        if (!bin) {
-            if (error) *error = "glTF: sparse index accessor requires a binary chunk";
-            return AF_ERR_INVALID_ARG;
-        }
-        size_t sparseCount = 0;
-        if (!sparse["count"].asIndex(&sparseCount) || sparseCount == 0 || sparseCount > view.count) {
-            if (error) *error = "glTF: invalid sparse index accessor count";
-            return AF_ERR_INVALID_ARG;
-        }
-        const int sparseIndexType = sparse["indices"]["componentType"].asInt(0);
-        const int sparseIndexSize = componentSize(sparseIndexType);
-        if (sparseIndexType != 5121 && sparseIndexType != 5123 && sparseIndexType != 5125) {
-            if (error) *error = "glTF: sparse index positions use an unsupported component type";
-            return AF_ERR_INVALID_ARG;
-        }
-        size_t sparseIndexView = 0, sparseValueView = 0;
-        if (!sparse["indices"]["bufferView"].asIndex(&sparseIndexView) ||
-            !sparse["values"]["bufferView"].asIndex(&sparseValueView)) {
-            if (error) *error = "glTF: sparse index accessor has an invalid bufferView reference";
-            return AF_ERR_INVALID_ARG;
-        }
-        const json::Json& idxBv = doc["bufferViews"].atOrNull(sparseIndexView);
-        const json::Json& valBv = doc["bufferViews"].atOrNull(sparseValueView);
-        if (idxBv.isNull() || valBv.isNull() || idxBv.find("byteStride") || valBv.find("byteStride")) {
-            if (error) *error = "glTF: sparse index bufferViews are invalid";
-            return AF_ERR_INVALID_ARG;
-        }
-        size_t idxViewOffset = 0, idxViewLength = 0, valViewOffset = 0, valViewLength = 0;
-        size_t idxBuffer = 0, valBuffer = 0;
-        if ((!idxBv["byteOffset"].isNull() && !idxBv["byteOffset"].asIndex(&idxViewOffset)) ||
-            !idxBv["byteLength"].asIndex(&idxViewLength) ||
-            !idxBv["buffer"].asIndex(&idxBuffer) || idxBuffer != 0 ||
-            !checkedRange(idxViewOffset, idxViewLength, binSize) ||
-            (!valBv["byteOffset"].isNull() && !valBv["byteOffset"].asIndex(&valViewOffset)) ||
-            !valBv["byteLength"].asIndex(&valViewLength) ||
-            !valBv["buffer"].asIndex(&valBuffer) || valBuffer != 0 ||
-            !checkedRange(valViewOffset, valViewLength, binSize)) {
-            if (error) *error = "glTF: sparse index bufferView range is invalid";
-            return AF_ERR_INVALID_ARG;
-        }
-        size_t idxOffset = 0, valOffset = 0, idxSpan = 0, valSpan = 0;
-        size_t idxStart = 0, valStart = 0;
-        if ((!sparse["indices"]["byteOffset"].isNull() && !sparse["indices"]["byteOffset"].asIndex(&idxOffset)) ||
-            (!sparse["values"]["byteOffset"].isNull() && !sparse["values"]["byteOffset"].asIndex(&valOffset)) ||
-            !checkedMul(sparseCount, static_cast<size_t>(sparseIndexSize), &idxSpan) ||
-            !checkedMul(sparseCount, static_cast<size_t>(valueSize), &valSpan) ||
-            !checkedRange(idxOffset, idxSpan, idxViewLength) || !checkedRange(valOffset, valSpan, valViewLength) ||
-            !checkedAdd(idxViewOffset, idxOffset, &idxStart) || !checkedAdd(valViewOffset, valOffset, &valStart) ||
-            !checkedRange(idxStart, idxSpan, binSize) || !checkedRange(valStart, valSpan, binSize)) {
-            if (error) *error = "glTF: sparse index data offset/span overflows or exceeds its bufferView";
-            return AF_ERR_INVALID_ARG;
-        }
-        const uint8_t* idxBase = bin + idxStart;
-        const uint8_t* valBase = bin + valStart;
-        size_t previous = 0;
-        for (size_t i = 0; i < sparseCount; ++i) {
-            const size_t target = static_cast<size_t>(readUnsignedLE(idxBase + i * static_cast<size_t>(sparseIndexSize), sparseIndexSize));
-            if (target >= view.count || (i > 0 && target <= previous)) {
-                if (error) *error = "glTF: sparse index positions must be increasing and within the accessor";
-                return AF_ERR_INVALID_ARG;
-            }
-            previous = target;
-            decoded[target] = readUnsignedLE(valBase + i * static_cast<size_t>(valueSize), valueSize);
-        }
-    }
-    out->swap(decoded);
     return AF_OK;
 }
 
@@ -671,6 +362,53 @@ bool attribute(const json::Json& prim, const char* name, int* outIndex) {
     if (!a || !a->isNumber()) return false;
     *outIndex = a->asInt(-1);
     return *outIndex >= 0;
+}
+
+/* The importer expands source accessors into the renderer's canonical af_vertex layout. Validate
+   each glTF semantic before converting it so an incompatible component/type pair is never
+   silently interpreted as another attribute. */
+bool validateVertexAttributeAccessor(const json::Json& doc, const json::Json& prim,
+                                     const char* name, std::string* error) {
+    int index = -1;
+    if (!attribute(prim, name, &index)) return true;
+    const json::Json& acc = doc["accessors"].atOrNull(static_cast<size_t>(index));
+    if (acc.isNull()) {
+        if (error) *error = std::string("glTF: missing accessor for ") + name;
+        return false;
+    }
+    const std::string type = acc["type"].stringOr("");
+    const int component = acc["componentType"].asInt(0);
+    const bool normalized = acc["normalized"].asBool(false);
+    bool valid = false;
+    if (std::strcmp(name, "POSITION") == 0) {
+        valid = type == "VEC3" && component == 5126 && !normalized;
+    } else if (std::strcmp(name, "NORMAL") == 0) {
+        valid = type == "VEC3" &&
+                ((component == 5126 && !normalized) ||
+                 ((component == 5120 || component == 5122) && normalized));
+    } else if (std::strcmp(name, "TANGENT") == 0) {
+        valid = type == "VEC4" &&
+                ((component == 5126 && !normalized) ||
+                 ((component == 5120 || component == 5122) && normalized));
+    } else if (std::strcmp(name, "TEXCOORD_0") == 0) {
+        valid = type == "VEC2" &&
+                ((component == 5126 && !normalized) ||
+                 ((component == 5121 || component == 5123) && normalized));
+    } else if (std::strcmp(name, "COLOR_0") == 0) {
+        valid = (type == "VEC3" || type == "VEC4") &&
+                ((component == 5126 && !normalized) ||
+                 ((component == 5121 || component == 5123) && normalized));
+    } else if (std::strcmp(name, "JOINTS_0") == 0) {
+        valid = type == "VEC4" && (component == 5121 || component == 5123) && !normalized;
+    } else if (std::strcmp(name, "WEIGHTS_0") == 0) {
+        valid = type == "VEC4" &&
+                ((component == 5126 && !normalized) ||
+                 ((component == 5121 || component == 5123) && normalized));
+    }
+    if (!valid && error) {
+        *error = std::string("glTF: unsupported component type/normalization for ") + name;
+    }
+    return valid;
 }
 
 /* A primitive's attribute identity: the accessor index of every attribute it reads. Two primitives
@@ -699,12 +437,31 @@ AttributeKey attributeKey(const json::Json& prim) {
 int buildPrimitive(const uint8_t* bin, size_t binSize, const json::Json& doc, const json::Json& prim,
                    int meshIndex, const std::string& meshName, std::vector<af_vertex>* pool,
                    bool indicesOnly, ImportedPrimitive* out, std::string* error) {
+    const int primitiveMode = prim["mode"].asInt(4);
+    if (primitiveMode != 4) {
+        if (error) *error = "glTF: only TRIANGLES primitives (mode 4) are supported by this renderer";
+        return AF_ERR_UNSUPPORTED;
+    }
     int posIndex = -1;
     if (!attribute(prim, "POSITION", &posIndex)) {
         /* A primitive without positions has nothing to draw; the spec allows it (a points-cloud
            variant), the renderer does not. Skipping with a warning is handled by the caller. */
         out->meshName = meshName;
         return AF_ERR_UNSUPPORTED;
+    }
+    static const char* const attributeNames[] = {
+        "POSITION", "NORMAL", "TANGENT", "TEXCOORD_0", "COLOR_0", "JOINTS_0", "WEIGHTS_0"
+    };
+    for (const char* name : attributeNames) {
+        if (!validateVertexAttributeAccessor(doc, prim, name, error)) return AF_ERR_INVALID_ARG;
+    }
+    const json::Json& positionAccessor =
+        doc["accessors"].atOrNull(static_cast<size_t>(posIndex));
+    if (positionAccessor.isNull() || positionAccessor["type"].stringOr("") != "VEC3" ||
+        positionAccessor["componentType"].asInt(0) != 5126 ||
+        positionAccessor["normalized"].asBool(false)) {
+        if (error) *error = "glTF: POSITION must be a non-normalized FLOAT VEC3 accessor";
+        return AF_ERR_INVALID_ARG;
     }
     std::vector<float> positions;
     size_t vertexCount = 0;
@@ -797,28 +554,29 @@ int buildPrimitive(const uint8_t* bin, size_t binSize, const json::Json& doc, co
             (*pool)[i].uv[1] = scratch[i * 2 + 1];
         }
     }
-    {
-        int colorIndex = -1;
-        if (attribute(prim, "COLOR_0", &colorIndex)) {
-            const json::Json& colorAccessor = doc["accessors"].atOrNull(static_cast<size_t>(colorIndex));
-            const std::string colorType = colorAccessor["type"].stringOr("");
-            const int colorComponents = colorType == "VEC3" ? 3 : colorType == "VEC4" ? 4 : 0;
-            if (colorComponents == 0) {
-                if (error) *error = "glTF: COLOR_0 accessor must be VEC3 or VEC4";
-                return AF_ERR_INVALID_ARG;
-            }
-            size_t n = 0;
-            const int colorRc = readAccessorFloats(bin, binSize, doc, colorIndex, colorComponents, &scratch, &n, error);
-            if (colorRc != AF_OK) return colorRc;
-            if (n != vertexCount) {
-                if (error) *error = "glTF: COLOR_0 count differs from POSITION count";
-                return AF_ERR_INVALID_ARG;
-            }
-            for (size_t i = 0; i < vertexCount; ++i) {
-                for (int c = 0; c < colorComponents; ++c)
-                    (*pool)[i].color[c] = scratch[i * static_cast<size_t>(colorComponents) + static_cast<size_t>(c)];
-                if (colorComponents == 3) (*pool)[i].color[3] = 1.0f;
-            }
+    int colorIndex = -1;
+    if (attribute(prim, "COLOR_0", &colorIndex)) {
+        const json::Json& colorAccessor =
+            doc["accessors"].atOrNull(static_cast<size_t>(colorIndex));
+        const std::string colorType = colorAccessor["type"].stringOr("");
+        const int colorComponents = colorType == "VEC3" ? 3 : colorType == "VEC4" ? 4 : 0;
+        if (colorComponents == 0) {
+            if (error) *error = "glTF: COLOR_0 must be VEC3 or VEC4";
+            return AF_ERR_INVALID_ARG;
+        }
+        size_t colorCount = 0;
+        const int colorRc = readAccessorFloats(bin, binSize, doc, colorIndex, colorComponents,
+                                               &scratch, &colorCount, error);
+        if (colorRc != AF_OK) return colorRc;
+        if (colorCount != vertexCount) {
+            if (error) *error = "glTF: COLOR_0 count differs from POSITION count";
+            return AF_ERR_INVALID_ARG;
+        }
+        for (size_t i = 0; i < vertexCount; ++i) {
+            for (int c = 0; c < colorComponents; ++c)
+                (*pool)[i].color[c] = scratch[i * static_cast<size_t>(colorComponents) +
+                                               static_cast<size_t>(c)];
+            if (colorComponents == 3) (*pool)[i].color[3] = 1.0f;
         }
     }
     present = readVec("JOINTS_0", 4, &scratch);
@@ -924,17 +682,14 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
     const uint8_t* binChunk = nullptr;
     size_t binSize = 0;
     size_t pos = 12;
-    while (pos <= fileSize && fileSize - pos >= 8) {
+    while (pos + 8 <= fileSize) {
         const uint32_t chunkLen = rd32(data + pos);
         const uint32_t chunkType = rd32(data + pos + 4);
-        size_t payloadStart = 0, nextPos = 0;
-        if (!checkedAdd(pos, 8, &payloadStart) ||
-            !checkedRange(payloadStart, static_cast<size_t>(chunkLen), fileSize) ||
-            !checkedAdd(payloadStart, static_cast<size_t>(chunkLen), &nextPos)) {
-            if (error) *error = "GLB: chunk length overflows or exceeds the file";
+        if (pos + 8 + static_cast<size_t>(chunkLen) > fileSize) {
+            if (error) *error = "GLB: chunk length exceeds the file";
             return AF_ERR_INVALID_ARG;
         }
-        const uint8_t* payload = data + payloadStart;
+        const uint8_t* payload = data + pos + 8;
         if (chunkType == CHUNK_JSON && !jsonChunk) {
             jsonChunk = payload;
             jsonSize = chunkLen;
@@ -943,11 +698,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
             binSize = chunkLen;
         }
         /* Unknown chunk types must be skipped, per spec. */
-        pos = nextPos;
-    }
-    if (pos != fileSize) {
-        if (error) *error = "GLB: trailing bytes do not form a complete chunk header";
-        return AF_ERR_INVALID_ARG;
+        pos += 8 + static_cast<size_t>(chunkLen);
     }
     if (!jsonChunk) {
         if (error) *error = "GLB: no JSON chunk";
@@ -968,81 +719,16 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
     out->version = assetVersion;
     out->generator = doc["asset"]["generator"].stringOr("");
 
-    /* This importer currently supports only the single embedded GLB BIN buffer. Validate every
-       bufferView up front, including views used only by images or sparse data. */
-    const json::Json& buffersJson = doc["buffers"];
-    const json::Json& viewsJson = doc["bufferViews"];
-    size_t declaredBufferLength = 0;
-    if (viewsJson.size() > 0) {
-        if (buffersJson.size() != 1 || !binChunk) {
-            if (error) *error = "GLB: bufferViews require one embedded BIN buffer";
-            return AF_ERR_UNSUPPORTED;
-        }
-        const json::Json& bufferJson = buffersJson.at(0);
-        if (bufferJson.find("uri") || !bufferJson["byteLength"].asIndex(&declaredBufferLength) ||
-            declaredBufferLength > binSize || binSize - declaredBufferLength > 3) {
-            if (error) *error = "GLB: embedded buffer declaration is invalid or exceeds the BIN chunk";
-            return AF_ERR_INVALID_ARG;
-        }
-        for (size_t i = 0; i < viewsJson.size(); ++i) {
-            const json::Json& bv = viewsJson.at(i);
-            size_t bufferIndex = 0, offset = 0, length = 0;
-            if (!bv["buffer"].asIndex(&bufferIndex) || bufferIndex != 0 ||
-                (!bv["byteOffset"].isNull() && !bv["byteOffset"].asIndex(&offset)) ||
-                !bv["byteLength"].asIndex(&length) ||
-                !checkedRange(offset, length, declaredBufferLength)) {
-                if (error) *error = "GLB: bufferView has an invalid buffer index or out-of-range byte span";
-                return AF_ERR_INVALID_ARG;
-            }
-            if (bv.find("byteStride")) {
-                size_t stride = 0;
-                if (!bv["byteStride"].asIndex(&stride) || stride < 4 || stride > 252 || (stride % 4) != 0) {
-                    if (error) *error = "GLB: byteStride must be a multiple of 4 in the range 4..252";
-                    return AF_ERR_INVALID_ARG;
-                }
-            }
-        }
-    }
-
     /* Extensions: record them all. Any *required* extension is fatal, because the document's
        meaning may depend on it and this reader implements none of them. */
     for (const auto& e : doc["extensionsUsed"].items()) {
         if (e.isString()) out->extensionsUsed.push_back(e.asString());
     }
-    bool requiredWebpExtension = false;
     for (const auto& e : doc["extensionsRequired"].items()) {
-        if (!e.isString()) continue;
-        const std::string extension = e.asString();
-        if (extension == "EXT_texture_webp") {
-            requiredWebpExtension = true;
-            continue;
+        if (e.isString()) {
+            if (error) *error = "GLB: requires unsupported extension '" + e.asString() + "'";
+            return AF_ERR_UNSUPPORTED;
         }
-        if (error) *error = "GLB: requires unsupported extension '" + extension + "'";
-        return AF_ERR_UNSUPPORTED;
-    }
-
-    const json::Json& images = doc["images"];
-    std::vector<bool> webpImageRequired(images.size(), false);
-    bool hasWebpTextureExtension = false;
-    for (const auto& texture : doc["textures"].items()) {
-        const json::Json& webp = texture["extensions"]["EXT_texture_webp"];
-        if (webp.isNull()) continue;
-        hasWebpTextureExtension = true;
-        const int sourceIndex = webp["source"].asInt(-1);
-        if (sourceIndex < 0 || static_cast<size_t>(sourceIndex) >= images.size()) {
-            if (error) *error = "GLB: EXT_texture_webp references an invalid image source";
-            return AF_ERR_INVALID_ARG;
-        }
-        const json::Json& image = images.at(static_cast<size_t>(sourceIndex));
-        if (image["mimeType"].stringOr("") != "image/webp") {
-            if (error) *error = "GLB: EXT_texture_webp source image must declare mimeType image/webp";
-            return AF_ERR_INVALID_ARG;
-        }
-        webpImageRequired[static_cast<size_t>(sourceIndex)] = true;
-    }
-    if (requiredWebpExtension && !hasWebpTextureExtension) {
-        if (error) *error = "GLB: declares EXT_texture_webp as required but no texture uses the extension";
-        return AF_ERR_INVALID_ARG;
     }
 
     /* ---- nodes and the scene ---- */
@@ -1131,12 +817,9 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         auto texIndex = [&](const json::Json& texRef) -> int {
             const json::Json& tex = doc["textures"].atOrNull(static_cast<size_t>(texRef["index"].asInt(-1)));
             if (tex.isNull()) return -1;
-            const json::Json& webpSource = tex["extensions"]["EXT_texture_webp"]["source"];
-            const int webpIndex = webpSource.asInt(-1);
-            const int sourceIndex = webpIndex >= 0 ? webpIndex : tex["source"].asInt(-1);
-            const json::Json& src = doc["images"].atOrNull(static_cast<size_t>(sourceIndex < 0 ? 0 : sourceIndex));
-            if (sourceIndex < 0 || src.isNull()) return -1;
-            return sourceIndex;
+            const json::Json& src = doc["images"].atOrNull(static_cast<size_t>(tex["source"].asInt(-1)));
+            if (src.isNull()) return -1;
+            return tex["source"].asInt(-1);
         };
         mat.baseColorTexture = texIndex(pbr["baseColorTexture"]);
         mat.metallicRoughnessTexture = texIndex(pbr["metallicRoughnessTexture"]);
@@ -1146,6 +829,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
     }
 
     /* ---- textures (images decoded to RGBA8; the texture list is parallel to images) ---- */
+    const json::Json& images = doc["images"];
     for (size_t i = 0; i < images.size(); ++i) {
         const json::Json& img = images.at(i);
         ImportedTexture tex;
@@ -1166,7 +850,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         size_t bvOffset = 0, bvLength = 0;
         bv["byteOffset"].asIndex(&bvOffset);
         bv["byteLength"].asIndex(&bvLength);
-        if (!checkedRange(bvOffset, bvLength, binSize)) {
+        if (bvOffset + bvLength > binSize) {
             out->warnings.push_back({"image bufferView exceeds the binary chunk", "skipped"});
             out->textures.push_back(std::move(tex));
             continue;
@@ -1174,26 +858,15 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         const uint8_t* bytes = binChunk ? binChunk + bvOffset : nullptr;
         std::string reason;
         DecodedImage decoded;
-        if (webpImageRequired[i] && (!bytes || !looksLikeWebp(bytes, bvLength))) {
-            if (error) *error = "GLB: EXT_texture_webp source image does not contain a valid RIFF/WebP payload";
-            return AF_ERR_INVALID_ARG;
-        }
         if (!bytes) {
             reason = "no binary chunk";
         } else if (looksLikePng(bytes, bvLength)) {
             if (!decodePng(bytes, bvLength, &decoded, &reason)) {
                 out->warnings.push_back({"PNG decode failed", reason});
             }
-        } else if (looksLikeWebp(bytes, bvLength) ||
-                   (bvLength >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8)) {
-            if (!decodePlatformImage(bytes, bvLength, &decoded, &reason)) {
-                const bool webpImage = looksLikeWebp(bytes, bvLength);
-                out->warnings.push_back({webpImage ? "WebP decode failed" : "JPEG decode failed", reason});
-                if (webpImage && webpImageRequired[i] && requiredWebpExtension) {
-                    if (error) *error = "GLB requires EXT_texture_webp but the embedded WebP image could not be decoded: " + reason;
-                    return AF_ERR_UNSUPPORTED;
-                }
-            }
+        } else if (bvLength >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8) {
+            reason = "JPEG is not supported by this decoder";
+            out->warnings.push_back({"image is JPEG", reason});
         } else {
             reason = "unrecognised image bytes";
             out->warnings.push_back({"image format", reason});
@@ -1301,80 +974,45 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         for (const auto& ch : a["channels"].items()) {
             ImportedAnimationChannel chan;
             size_t nodeIndex = 0;
-            if (!ch["target"]["node"].asIndex(&nodeIndex) || nodeIndex >= out->nodes.size()) {
-                if (error) *error = "glTF: animation channel target node is missing or out of range";
-                return AF_ERR_INVALID_ARG;
-            }
+            if (!ch["target"]["node"].asIndex(&nodeIndex) || nodeIndex >= out->nodes.size()) continue;
             chan.node = static_cast<int>(nodeIndex);
             const std::string path = ch["target"]["path"].stringOr("");
             if (path == "translation") chan.path = 0;
             else if (path == "rotation") chan.path = 1;
             else if (path == "scale") chan.path = 2;
-            else {
-                if (path == "weights") continue; /* morph weights are outside this channel format */
-                if (error) *error = "glTF: unsupported animation target path";
-                return AF_ERR_UNSUPPORTED;
-            }
-            size_t samplerIndex = 0;
-            if (!ch["sampler"].asIndex(&samplerIndex)) {
-                if (error) *error = "glTF: animation channel has an invalid sampler index";
-                return AF_ERR_INVALID_ARG;
-            }
-            const json::Json& sampler = a["samplers"].atOrNull(samplerIndex);
-            if (sampler.isNull()) {
-                if (error) *error = "glTF: animation channel sampler is out of range";
-                return AF_ERR_INVALID_ARG;
-            }
+            else continue;   /* "weights" is not used by this engine's rig */
+            const json::Json& sampler = a["samplers"].atOrNull(static_cast<size_t>(ch["sampler"].asInt(-1)));
+            if (sampler.isNull()) continue;
             const std::string interp = sampler["interpolation"].stringOr("LINEAR");
-            if (interp != "LINEAR" && interp != "STEP" && interp != "CUBICSPLINE") {
-                if (error) *error = "glTF: unsupported animation interpolation";
-                return AF_ERR_UNSUPPORTED;
-            }
             chan.interpolation = (interp == "STEP") ? 1 : (interp == "CUBICSPLINE") ? 2 : 0;
 
             std::vector<float> times;
             size_t timeCount = 0;
-            const int inputRc = readAccessorFloats(binChunk, binSize, doc, sampler["input"].asInt(-1), 1, &times, &timeCount, error);
-            if (inputRc != AF_OK) return inputRc;
+            if (readAccessorFloats(binChunk, binSize, doc, sampler["input"].asInt(-1), 1, &times, &timeCount, error) != AF_OK) continue;
             std::vector<float> values;
             size_t valueCount = 0;
-            const int comps = chan.path == 1 ? 4 : 3; /* rotation is VEC4; translation/scale are VEC3 */
-            const int outputRc = readAccessorFloats(binChunk, binSize, doc, sampler["output"].asInt(-1), comps, &values, &valueCount, error);
-            if (outputRc != AF_OK) return outputRc;
-            if (timeCount == 0 || valueCount != timeCount *
-                    static_cast<size_t>(chan.interpolation == 2 ? 3 : 1)) {
-                if (error) *error = "glTF: animation sampler input/output key counts do not match target path";
-                return AF_ERR_INVALID_ARG;
-            }
-            for (size_t i = 0; i < times.size(); ++i) {
-                if (!std::isfinite(times[i]) || times[i] < 0.0f || (i > 0 && times[i] <= times[i - 1])) {
-                    if (error) *error = "glTF: animation input times must be finite, non-negative and strictly increasing";
-                    return AF_ERR_INVALID_ARG;
-                }
-            }
+            const int comps = 4;   /* vec4 covers translation, rotation and scale */
+            if (readAccessorFloats(binChunk, binSize, doc, sampler["output"].asInt(-1), comps, &values, &valueCount, error) != AF_OK) continue;
 
             chan.times.assign(times.begin(), times.end());
             if (chan.interpolation == 2) {
-                /* CUBICSPLINE stores in-tangent, value, out-tangent for each key. */
-                const size_t keys = timeCount;
+                /* CUBICSPLINE stores three vec4/vec3 values per key: in-tangent, value, out. */
+                const size_t keys = valueCount / 3;
                 chan.values.resize(keys);
                 chan.inTangents.resize(keys);
                 chan.outTangents.resize(keys);
                 for (size_t k = 0; k < keys; ++k) {
-                    auto readValue = [&](size_t index) {
-                        const size_t base = index * static_cast<size_t>(comps);
-                        return Vec4(values[base], values[base + 1], values[base + 2], comps == 4 ? values[base + 3] : 0.0f);
-                    };
-                    chan.inTangents[k] = readValue(k * 3 + 0);
-                    chan.values[k] = readValue(k * 3 + 1);
-                    chan.outTangents[k] = readValue(k * 3 + 2);
+                    chan.inTangents[k] = Vec4(values[(k * 3 + 0) * 4], values[(k * 3 + 0) * 4 + 1],
+                                              values[(k * 3 + 0) * 4 + 2], values[(k * 3 + 0) * 4 + 3]);
+                    chan.values[k] = Vec4(values[(k * 3 + 1) * 4], values[(k * 3 + 1) * 4 + 1],
+                                          values[(k * 3 + 1) * 4 + 2], values[(k * 3 + 1) * 4 + 3]);
+                    chan.outTangents[k] = Vec4(values[(k * 3 + 2) * 4], values[(k * 3 + 2) * 4 + 1],
+                                               values[(k * 3 + 2) * 4 + 2], values[(k * 3 + 2) * 4 + 3]);
                 }
             } else {
-                chan.values.resize(timeCount);
-                for (size_t k = 0; k < timeCount; ++k) {
-                    const size_t base = k * static_cast<size_t>(comps);
-                    chan.values[k] = Vec4(values[base], values[base + 1], values[base + 2],
-                                           comps == 4 ? values[base + 3] : 0.0f);
+                chan.values.resize(valueCount);
+                for (size_t k = 0; k < valueCount; ++k) {
+                    chan.values[k] = Vec4(values[k * 4], values[k * 4 + 1], values[k * 4 + 2], values[k * 4 + 3]);
                 }
             }
             if (!chan.times.empty()) anim.duration = chan.times.back() > anim.duration ? chan.times.back() : anim.duration;
@@ -1385,21 +1023,6 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
 
     /* ---- world transforms, with a cycle check ---- */
     if (!resolveWorldTransforms(out, error)) return AF_ERR_INVALID_ARG;
-
-    /* This engine currently flattens imported geometry into vertex pools and does not apply
-       per-node matrices at draw time. Refuse transformed mesh nodes rather than silently rendering
-       geometry in the wrong place. Identity transforms remain supported. */
-    for (const auto& node : out->nodes) {
-        if (node.mesh < 0) continue;
-        const Mat4& world = node.world;
-        for (size_t i = 0; i < 16; ++i) {
-            const float expected = (i == 0 || i == 5 || i == 10 || i == 15) ? 1.0f : 0.0f;
-            if (!std::isfinite(world.m[i]) || std::fabs(world.m[i] - expected) > 1e-5f) {
-                if (error) *error = "glTF: transformed mesh nodes are unsupported by the flattened engine importer";
-                return AF_ERR_UNSUPPORTED;
-            }
-        }
-    }
     return AF_OK;
 }
 
