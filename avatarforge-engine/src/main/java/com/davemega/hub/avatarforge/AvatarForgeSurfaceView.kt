@@ -44,7 +44,8 @@ class AvatarForgeSurfaceView(
         surfaceReady = true
         pixelCopyPending.set(false)
         pixelCopyComplete.set(false)
-        pixelCopyAttempts.set(0)
+        // Keep the attempt counter monotonic across Surface recreation so a late
+        // callback from the previous Surface cannot match a new request token.
         pixelCopyActiveAttempt.set(0)
         startRenderer(holder)
     }

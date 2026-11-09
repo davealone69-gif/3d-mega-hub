@@ -69,7 +69,9 @@ class AvatarForgeRendererSmokeTest {
         val button = By.text("Run generated-avatar GLES diagnostic")
         assertTrue("Debug-only generated-avatar diagnostic button is missing",
             device.wait(Until.hasObject(button), 20_000))
-        device.findObject(button).click()
+        val diagnosticButton = device.findObject(button)
+        assertNotNull("Generated-avatar diagnostic button disappeared", diagnosticButton)
+        diagnosticButton!!.click()
 
         val deadline = SystemClock.elapsedRealtime() + 300_000L
         while (SystemClock.elapsedRealtime() < deadline) {
