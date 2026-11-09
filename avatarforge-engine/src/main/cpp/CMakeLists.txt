@@ -39,3 +39,15 @@ add_library(mega_hub_avatarforge SHARED avatarforge_jni.cpp)
 target_include_directories(mega_hub_avatarforge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(mega_hub_avatarforge PRIVATE -O2 -Wall -Wextra)
 target_link_libraries(mega_hub_avatarforge PRIVATE afcore)
+
+# Host-side native regression test. Kept out of Android NDK builds.
+if(BUILD_TESTING AND NOT ANDROID)
+    find_package(Threads REQUIRED)
+    enable_testing()
+    add_executable(af_native_sampling_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/native_sampling_test.cpp)
+    target_include_directories(af_native_sampling_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(af_native_sampling_test PRIVATE afcore Threads::Threads)
+    add_test(NAME native_sampling_regression COMMAND af_native_sampling_test)
+endif()
