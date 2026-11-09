@@ -62,6 +62,19 @@ For the imported-GLB AvatarForge GLES path, run the instrumentation smoke test a
 - **Threading / teardown:** the custom AvatarForge renderer already owns its native engine, renderer and native-window lifetime on a dedicated render worker. The Filament preview still performs frame callbacks and teardown on the view's callback/UI thread. This patch does not claim to have moved the Filament engine onto a dedicated owner thread or proven ANR-free teardown. That requires a separate serialized Filament-thread lifecycle change and stress verification.
 - **Visibility:** a renderer frame or successful GPU upload is not proof of visible model pixels. Verify the captured model image and the user's actual GLB on the target phone.
 
+## Current issue ledger
+
+| Area | Status | Evidence / remaining gate |
+|---|---|---|
+| Filament exposure configuration | **REAL + VERIFIED (code change)** | Camera setup now uses Filament's photographic `setExposure(16.0f, 1.0f / 125.0f, 100.0f)` API. Emulator render verification is still pending. |
+| Filament surface dimensions | **REAL + VERIFIED (code change)** | Swap-chain creation waits for a valid, non-zero surface size and uses actual pixel dimensions. Emulator lifecycle/render verification is still pending. |
+| Filament tangent generation / tangent-independent material | **UNVERIFIED** | No runtime tangent generation or proven compatible fallback material has been implemented. Test a GLB that needs tangent-space normal mapping and a no-TANGENT control asset through the Filament gltfio path before selecting the fix. |
+| Filament teardown threading and pending callbacks | **UNVERIFIED** | Dedicated engine-owner-thread teardown and callback-drain/cancellation have not been implemented or stress-tested. Verify engine creation, frame callbacks, surface detach, and destruction are serialized on the same owner thread. |
+| Native GLES (AvatarForge) shattered / sparse mesh | **BLOCKED** | Pending C++ investigation. Verify EGL depth-buffer attributes and depth-test state; confirm index component type is preserved end-to-end and draw calls use the matching GL index type; isolate winding/culling with a controlled culling-off diagnostic; inspect vertex/index bounds and texture upload state. Do not treat Filament changes as a fix for this path. |
+| Native GLES crash during renderer interaction / destruction | **BLOCKED** | Pending native lifecycle/threading audit. Prove render worker is stopped and joined before EGL surface/context/native-window destruction; serialize `eglMakeCurrent`, renderer teardown and context destruction; inspect JNI ownership and repeated create/destroy/reload paths. Capture symbolized native crash evidence. |
+
+**Path separation:** imported local GLBs currently use `AvatarForgeSurfaceView` and the custom native GLES renderer. The Filament preview is a separate route. A fix or screenshot for one route is not evidence for the other.
+
 ## Acceptance evidence
 
 Record the exact commit SHA, Gradle task outcomes, emulator API/device, instrumentation XML, logcat, and screenshot. Mark each result separately:
