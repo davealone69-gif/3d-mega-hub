@@ -377,6 +377,10 @@ int32_t af_engine_import_glb(af_engine* engine, const char* absolute_path);
 int32_t af_engine_import_glb_from_memory(af_engine* engine, const uint8_t* bytes, size_t size);
 
 /* ------------------------------------------------------------------ diagnostics ---------- */
+/* Validates the live post-skin vertex buffer. The report is always populated when capacity > 0;
+   returns AF_OK only when every position, weight and joint reference plus the metric bounds pass. */
+int32_t af_engine_validate_deformed_mesh(const af_engine* engine, char* out_report, int32_t capacity);
+
 /* Last failure recorded on the handle ("" when the last call succeeded) and the engine version.
    Both are needed by an SDK that reports health without throwing. */
 const char* af_engine_last_error(const af_engine* engine);
