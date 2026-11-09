@@ -10,7 +10,7 @@
 
 ## Generated-avatar validation
 
-The native generator validates the live post-skinning mesh before GLB export. Validation covers finite positions, all four finite/non-negative skin weights, weight sum, all four joint references, metric height, submesh index ranges, vertex spans, and containment of every indexed deformed vertex by its refreshed AABB. Invalid geometry fails generation; it is not exported as a successful avatar.
+The native generator validates the live post-skinning mesh before GLB export. Runtime tests read the actual generated triangle, vertex, joint and blendshape counts from the engine report and compare them with renderer statistics; they do not assume fixed output counts. Validation covers finite positions, all four finite/non-negative skin weights, weight sum, all four joint references, metric height, submesh index ranges, vertex spans, and containment of every indexed deformed vertex by its refreshed AABB. Invalid geometry fails generation; it is not exported as a successful avatar.
 
 Debug builds expose **Run generated-avatar GLES diagnostic** in Avatar Studio. It:
 

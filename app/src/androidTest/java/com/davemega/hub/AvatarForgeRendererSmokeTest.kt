@@ -88,6 +88,14 @@ class AvatarForgeRendererSmokeTest {
         val report = prefs.getString("generation_report", "") ?: ""
         assertTrue("Seed-1337 native generation report is missing or validation failed: $report",
             report.contains("seed=1337") && report.contains("deformed_mesh_validated=true"))
+        fun generatedMetric(name: String): Long =
+            Regex("""\b${Regex.escape(name)}=(\d+)\b""")
+                .find(report)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0L
+        assertTrue("Generated avatar did not report live vertex count: $report", generatedMetric("vertices") > 0L)
+        assertTrue("Generated avatar did not report live triangle count: $report", generatedMetric("triangles") > 0L)
+        assertTrue("Generated avatar did not report live joint count: $report", generatedMetric("joints") > 0L)
+        assertTrue("Generated avatar did not report live blendshape count: $report", generatedMetric("blendshapes") > 0L)
+        assertTrue("Generated GLB output is empty: $report", generatedMetric("bytes") > 0L)
         val apiVersion = prefs.getString("api_version", "") ?: ""
         assertTrue("Generated avatar did not render through OpenGL ES 3.1+: $apiVersion",
             apiVersion.matches(Regex("OpenGL ES 3\\.[1-9].*")))
