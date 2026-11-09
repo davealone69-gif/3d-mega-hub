@@ -165,6 +165,32 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeRender(
     if (session && session->renderer) session->renderer->renderFrame(deltaSeconds);
 }
 
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetInfo(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return env->NewStringUTF("invalid|no renderer session");
+    const af::RendererInfo info = session->renderer->info();
+    const std::string value = info.backend + "|" + info.apiVersion + "|" + info.deviceName;
+    return env->NewStringUTF(value.c_str());
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetStats(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return nullptr;
+    const af::RendererStats stats = session->renderer->stats();
+    const jint values[3] = {
+        static_cast<jint>(stats.frames),
+        static_cast<jint>(stats.drawCalls),
+        static_cast<jint>(stats.triangles)
+    };
+    jintArray result = env->NewIntArray(3);
+    if (result) env->SetIntArrayRegion(result, 0, 3, values);
+    return result;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeDestroy(
     JNIEnv*, jobject, jlong handle) {
