@@ -1245,6 +1245,9 @@ void GlRenderer::renderFrame(float deltaSeconds) {
     stats_.minViewDepth = std::numeric_limits<float>::infinity();
     stats_.maxViewDepth = -std::numeric_limits<float>::infinity();
     int outsidePlane[6] = {0, 0, 0, 0, 0, 0};
+    stats_.outsideCorners = 0;
+    stats_.firstOutsideCorner = -1;
+    stats_.boundsAllCornersInDepthRange = scene_.hasModel;
     if (scene_.hasModel) {
         for (int corner = 0; corner < 8; ++corner) {
             const float x = (corner & 1) ? scene_.modelMax[0] : scene_.modelMin[0];
@@ -1255,6 +1258,8 @@ void GlRenderer::renderFrame(float deltaSeconds) {
             const float vy = v[1]*x + v[5]*y + v[9]*z + v[13];
             const float vz = v[2]*x + v[6]*y + v[10]*z + v[14];
             const float depth = -vz;
+            const bool depthInside = depth >= scene_.nearPlane && depth <= scene_.farPlane;
+            stats_.boundsAllCornersInDepthRange = stats_.boundsAllCornersInDepthRange && depthInside;
             stats_.minViewDepth = std::min(stats_.minViewDepth, depth);
             stats_.maxViewDepth = std::max(stats_.maxViewDepth, depth);
             const float* m = scene_.camera.viewProj;
@@ -1268,6 +1273,11 @@ void GlRenderer::renderFrame(float deltaSeconds) {
             if (cy >  cw) ++outsidePlane[3];
             if (cz < -cw) ++outsidePlane[4];
             if (cz >  cw) ++outsidePlane[5];
+            const bool cornerOutside = !depthInside || cx < -cw || cx > cw || cy < -cw || cy > cw || cz < -cw || cz > cw;
+            if (cornerOutside) {
+                if (stats_.firstOutsideCorner < 0) stats_.firstOutsideCorner = corner;
+                ++stats_.outsideCorners;
+            }
             (void)vx; (void)vy;
         }
         bool rejectedByPlane = false;
@@ -1279,6 +1289,7 @@ void GlRenderer::renderFrame(float deltaSeconds) {
                                  std::isfinite(stats_.maxViewDepth);
     } else {
         stats_.boundsInFrustum = false;
+        stats_.boundsAllCornersInDepthRange = false;
     }
 
     drawShadowPass();
@@ -1324,6 +1335,7 @@ void GlRenderer::renderFrame(float deltaSeconds) {
         if (stats_.eglError == EGL_CONTEXT_LOST || stats_.eglError == EGL_BAD_SURFACE) contextLost_ = true;
     } else {
         stats_.framePresented = stats_.glError == 0;
+        if (stats_.framePresented) ++stats_.presentedFrames;
     }
 
     stats_.drawCalls = drawCalls_;
