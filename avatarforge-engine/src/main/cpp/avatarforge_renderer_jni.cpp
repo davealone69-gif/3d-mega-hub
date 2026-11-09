@@ -106,6 +106,43 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     }
     session->renderer->attachEngine(session->engine);
     session->renderer->invalidateMesh();
+
+    // Fit the imported asset, not a hard-coded 1.75 m avatar. This handles tiny props,
+    // large scenes and GLBs whose origin is far from their actual geometry.
+    const int32_t submeshCount = af_engine_submesh_count(session->engine);
+    const af_submesh* submeshes = af_engine_submeshes(session->engine);
+    if (submeshCount <= 0 || !submeshes) {
+        throwState(env, "AvatarForge imported no renderable submeshes");
+        return 0;
+    }
+    float boundsMin[3] = { 1.0e30f, 1.0e30f, 1.0e30f };
+    float boundsMax[3] = { -1.0e30f, -1.0e30f, -1.0e30f };
+    for (int32_t i = 0; i < submeshCount; ++i) {
+        for (int axis = 0; axis < 3; ++axis) {
+            boundsMin[axis] = std::min(boundsMin[axis], submeshes[i].bounds_min[axis]);
+            boundsMax[axis] = std::max(boundsMax[axis], submeshes[i].bounds_max[axis]);
+        }
+    }
+    const float cx = 0.5f * (boundsMin[0] + boundsMax[0]);
+    const float cy = 0.5f * (boundsMin[1] + boundsMax[1]);
+    const float cz = 0.5f * (boundsMin[2] + boundsMax[2]);
+    const float dx = boundsMax[0] - boundsMin[0];
+    const float dy = boundsMax[1] - boundsMin[1];
+    const float dz = boundsMax[2] - boundsMin[2];
+    const float radius = std::max(0.0001f, 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz));
+    const float aspect = static_cast<float>(width) / static_cast<float>(height);
+    const float halfVertical = 32.0f * 3.14159265358979323846f / 360.0f;
+    const float halfHorizontal = std::atan(std::tan(halfVertical) * aspect);
+    const float limitingHalfAngle = std::max(0.01f, std::min(halfVertical, halfHorizontal));
+    af::CameraState camera{};
+    camera.targetX = cx;
+    camera.targetY = cy;
+    camera.targetZ = cz;
+    camera.fovDeg = 32.0f;
+    camera.distance = radius / std::sin(limitingHalfAngle) * 1.15f;
+    camera.nearClip = std::max(0.00001f, radius * 0.001f);
+    camera.farClip = std::max(100.0f, camera.distance + radius * 4.0f);
+    session->renderer->setCamera(camera);
     return reinterpret_cast<jlong>(session.release());
 }
 
