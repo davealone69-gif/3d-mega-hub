@@ -245,10 +245,11 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
     info_.apiVersion = version;
     info_.driver = vendor ? vendor : "unknown vendor";
     info_.supportsFloatHdr = floatColour;
-    info_.supportsMsaa = true;
-    info_.supportsShadows = true;
-    info_.supportsAnisotropy = true;   /* queried properly below; ES 3.0 has anisotropy via the
-                                          same enum, and the sampler clamps to the driver limit */
+    GLint maxSamples = 1;
+    glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+    info_.supportsMsaa = maxSamples > 1;
+    info_.supportsShadows = true;  // init fails if the required depth-only framebuffer is incomplete.
+    info_.supportsAnisotropy = ext && std::strstr(ext, "GL_EXT_texture_filter_anisotropic") != nullptr;
     return true;
 }
 
@@ -645,24 +646,65 @@ void GlRenderer::ensureGeometryBuffers() {
 
 void GlRenderer::uploadAtlas(std::string* error) {
     if (!engine_) return;
+    GLint maxTextureSize = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &maxTextureSize);
+    bool allUploadsSucceeded = true;
     for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
         af_texture tex{};
         if (af_engine_texture(engine_, slot, &tex) != AF_OK) continue;
         if (!tex.data || tex.width <= 0 || tex.height <= 0) continue;
+        if (tex.width > maxTextureSize || tex.height > maxTextureSize) {
+            allUploadsSucceeded = false;
+            if (error) *error = "texture atlas slot " + std::to_string(slot) +
+                                " exceeds GL_MAX_TEXTURE_SIZE";
+            continue;
+        }
 
-        const GLenum internal = (tex.channels == 1) ? GL_R8
-                               : (slot == AF_TEX_BASE_COLOR) ? GL_SRGB8_ALPHA8 : GL_RGBA8;
-        const GLenum format = (tex.channels == 1) ? GL_RED : GL_RGBA;
+        GLenum internal = GL_RGBA8;
+        GLenum format = GL_RGBA;
+        switch (tex.channels) {
+            case 1: internal = GL_R8; format = GL_RED; break;
+            case 2: internal = GL_RG8; format = GL_RG; break;
+            case 3:
+                internal = slot == AF_TEX_BASE_COLOR ? GL_SRGB8 : GL_RGB8;
+                format = GL_RGB;
+                break;
+            case 4:
+                internal = slot == AF_TEX_BASE_COLOR ? GL_SRGB8_ALPHA8 : GL_RGBA8;
+                format = GL_RGBA;
+                break;
+            default:
+                allUploadsSucceeded = false;
+                if (error) *error = "texture atlas slot " + std::to_string(slot) +
+                                    " has unsupported channel count " + std::to_string(tex.channels);
+                continue;
+        }
+
         glBindTexture(GL_TEXTURE_2D, atlasTexture_[slot]);
         glTexImage2D(GL_TEXTURE_2D, 0, GLint(internal), tex.width, tex.height, 0, format,
                      GL_UNSIGNED_BYTE, tex.data);
-        glGenerateMipmap(GL_TEXTURE_2D);   /* GLES has this built in; the Vulkan path blits */
+        GLenum glError = glGetError();
+        if (glError != GL_NO_ERROR) {
+            allUploadsSucceeded = false;
+            if (error) *error = "OpenGL ES texture upload failed for atlas slot " +
+                                std::to_string(slot) + " with error " + std::to_string(glError);
+            continue;
+        }
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glError = glGetError();
+        if (glError != GL_NO_ERROR) {
+            allUploadsSucceeded = false;
+            if (error) *error = "OpenGL ES mipmap generation failed for atlas slot " +
+                                std::to_string(slot) + " with error " + std::to_string(glError);
+            continue;
+        }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        /* The generated chain must not collapse to magenta when a driver limits mip depth. */
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 12);
+        GLint maxLevel = 0;
+        for (int dimension = std::max(tex.width, tex.height); dimension > 1; dimension >>= 1) ++maxLevel;
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, maxLevel);
 
         const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
         if (ext && std::strstr(ext, "GL_EXT_texture_filter_anisotropic")) {
@@ -672,8 +714,7 @@ void GlRenderer::uploadAtlas(std::string* error) {
                             std::min(4.0f, maxAniso));
         }
     }
-    atlasUploaded_ = true;
-    (void)error;
+    atlasUploaded_ = allUploadsSucceeded;
 }
 
 void GlRenderer::rebuildMaterialBlocks() {
