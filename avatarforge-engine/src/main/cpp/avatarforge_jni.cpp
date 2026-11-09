@@ -56,19 +56,45 @@ private:
 };
 
 struct CancelContext {
-    JNIEnv* env;
-    jobject token;
-    jmethodID method;
+    JavaVM* vm = nullptr;
+    JNIEnv* ownerEnv = nullptr;
+    jobject token = nullptr;  // Global reference: callback may run on native worker threads.
+    jmethodID method = nullptr;
+
+    ~CancelContext() {
+        if (ownerEnv != nullptr && token != nullptr) {
+            ownerEnv->DeleteGlobalRef(token);
+            token = nullptr;
+        }
+    }
 };
 
 int shouldCancel(void* user) {
     auto* context = static_cast<CancelContext*>(user);
-    if (context == nullptr || context->env == nullptr || context->token == nullptr || context->method == nullptr) {
-        return 0;
+    if (context == nullptr || context->vm == nullptr || context->token == nullptr || context->method == nullptr) {
+        return 1;
     }
-    const jboolean cancelled = context->env->CallBooleanMethod(context->token, context->method);
-    if (context->env->ExceptionCheck()) return 1;
-    return cancelled == JNI_TRUE ? 1 : 0;
+
+    // JNIEnv is thread-local. Never reuse the JNI environment from the Kotlin caller
+    // on a native worker thread.
+    JNIEnv* workerEnv = nullptr;
+    bool attachedHere = false;
+    const jint state = context->vm->GetEnv(reinterpret_cast<void**>(&workerEnv), JNI_VERSION_1_6);
+    if (state == JNI_EDETACHED) {
+        if (context->vm->AttachCurrentThread(&workerEnv, nullptr) != JNI_OK) return 1;
+        attachedHere = true;
+    } else if (state != JNI_OK || workerEnv == nullptr) {
+        return 1;
+    }
+
+    const jboolean cancelled = workerEnv->CallBooleanMethod(context->token, context->method);
+    const bool hadException = workerEnv->ExceptionCheck();
+    if (hadException) {
+        // Do not leave a pending Java exception on a native worker thread.
+        workerEnv->ExceptionClear();
+    }
+    if (attachedHere) context->vm->DetachCurrentThread();
+    return hadException || cancelled == JNI_TRUE ? 1 : 0;
 }
 
 bool containsMinorMarker(const char* prompt) {
@@ -208,7 +234,16 @@ Java_com_davemega_hub_avatarforge_NativeMethods_generate(
     env->DeleteLocalRef(tokenClass);
     if (cancelMethod == nullptr) return nullptr;
 
-    CancelContext cancelContext{env, cancellationToken, cancelMethod};
+    CancelContext cancelContext{};
+    cancelContext.ownerEnv = env;
+    cancelContext.method = cancelMethod;
+    if (env->GetJavaVM(&cancelContext.vm) != JNI_OK) {
+        throwJava(env, "java/lang/IllegalStateException", "Unable to obtain JavaVM for cancellation callbacks");
+        return nullptr;
+    }
+    cancelContext.token = env->NewGlobalRef(cancellationToken);
+    if (cancelContext.token == nullptr) return nullptr;
+
     af_callbacks callbacks{};
     callbacks.user = &cancelContext;
     callbacks.should_cancel = shouldCancel;
