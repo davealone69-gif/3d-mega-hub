@@ -260,8 +260,8 @@ inline void buildCameraUbo(FrameScene* scene, const CameraState& cam, const Rend
     const float aspect = float(width) / float(height > 0 ? height : 1);
     const float yaw = cam.yawDeg * 3.14159265358979f / 180.0f;
     const float pitch = cam.pitchDeg * 3.14159265358979f / 180.0f;
-    const float dist = cam.distance < 0.3f ? 0.3f : cam.distance;
-    const float tx = 0.0f, ty = cam.targetY, tz = 0.0f;
+    const float dist = cam.distance < 0.01f ? 0.01f : cam.distance;
+    const float tx = cam.targetX, ty = cam.targetY, tz = cam.targetZ;
     const Vec3 eye{
         tx + dist * std::cos(pitch) * std::sin(yaw),
         ty + dist * std::sin(pitch),
@@ -274,7 +274,9 @@ inline void buildCameraUbo(FrameScene* scene, const CameraState& cam, const Rend
     /* The only backend difference in the whole camera: Vulkan's clip space is [0,1] in depth with
        +Y down, GL's is [-1,1] with +Y up. The Y direction is reconciled in the vertex shader
        (AF_CLIP_Y) so a single projection formula serves both. */
-    const Mat4 proj = matPerspective(cam.fovDeg, aspect, 0.05f, 60.0f, depthZeroToOne);
+    const float nearClip = std::max(0.00001f, cam.nearClip);
+    const float farClip = std::max(nearClip + 0.1f, cam.farClip);
+    const Mat4 proj = matPerspective(cam.fovDeg, aspect, nearClip, farClip, depthZeroToOne);
     const Mat4 view = matLookAt(eyeArr, target, up);
     const Mat4 vp = matMul(proj, view);
 
@@ -404,11 +406,12 @@ inline void screenRay(const CameraState& cam, float ndcX, float ndcY, int width,
     const float aspect = float(width) / float(height > 0 ? height : 1);
     const float yaw = cam.yawDeg * 3.14159265358979f / 180.0f;
     const float pitch = cam.pitchDeg * 3.14159265358979f / 180.0f;
-    const float dist = cam.distance < 0.3f ? 0.3f : cam.distance;
-    const Vec3 eye{ dist * std::cos(pitch) * std::sin(yaw),
-                    cam.targetY + dist * std::sin(pitch),
-                    dist * std::cos(pitch) * std::cos(yaw) };
-    const Vec3 fwd = vnormalize(vsub(Vec3{0.0f, cam.targetY, 0.0f}, eye));
+    const float dist = cam.distance < 0.01f ? 0.01f : cam.distance;
+    const Vec3 target{cam.targetX, cam.targetY, cam.targetZ};
+    const Vec3 eye{ target.x + dist * std::cos(pitch) * std::sin(yaw),
+                    target.y + dist * std::sin(pitch),
+                    target.z + dist * std::cos(pitch) * std::cos(yaw) };
+    const Vec3 fwd = vnormalize(vsub(target, eye));
     const Vec3 right = vnormalize(vcross(fwd, Vec3{0, 1, 0}));
     const Vec3 up = vcross(right, fwd);
     const float tanHalf = std::tan(cam.fovDeg * 3.14159265358979f / 360.0f);
