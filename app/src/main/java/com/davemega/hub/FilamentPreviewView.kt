@@ -346,9 +346,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     /**
      * Parses the GLB on the UI/Filament owner thread, but never synchronously decodes and uploads
-     * all textures here. ResourceLoader.loadResources() blocks until texture decoding completes
-     * and caused a measured 45-second main-thread stall on the emulator. asyncBeginLoad +
-     * asyncUpdateLoad amortizes that work across frames.
+     * all textures here. ResourceLoader.loadResources() is synchronous and blocks until texture
+     * decoding completes. The emulator trace recorded a 45-second UI frame while this synchronous
+     * path was in use, so asyncBeginLoad + asyncUpdateLoad now spreads resource work across frames.
      */
     private fun loadModelBytes(bytes: ByteArray, uri: Uri?) {
         val loader = checkNotNull(assetLoader) { "glTF asset loader is unavailable" }
