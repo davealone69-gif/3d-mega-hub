@@ -115,6 +115,7 @@ struct RendererStats {
     bool  boundsAllCornersInDepthRange = false;
     int   firstOutsideCorner = -1, outsideCorners = 0, presentedFrames = 0;
     float minViewDepth = 0.0f, maxViewDepth = 0.0f, nearPlane = 0.0f, farPlane = 0.0f;
+    float firstOutsideViewX = 0.0f, firstOutsideViewY = 0.0f, firstOutsideViewZ = 0.0f;
     bool  readbackValid = false;
     int   readbackNonBlackPixels = 0, readbackWidth = 0, readbackHeight = 0;
     int   glError = 0, eglError = 0;
