@@ -42,6 +42,7 @@
 #include <functional>
 #include <memory>
 #include <new>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -987,6 +988,60 @@ int32_t af_engine_dirty_mask(af_engine* engine) {
 namespace {
 
 /* Applies the current pose + blendshape weights and refreshes the renderable vertex buffer. */
+/* Refresh each submesh AABB from the post-skinning ABI vertex span. The renderer's
+   camera and visibility decisions must never consume bind-pose bounds after deformation. */
+void refreshDeformedSubmeshBounds(af_engine* e) {
+    if (!e) return;
+    const size_t vertexCount = e->verts.size();
+    for (af_submesh& sm : e->submeshes) {
+        const bool validRange =
+            sm.vertex_offset >= 0 && sm.vertex_count >= 0 &&
+            static_cast<size_t>(sm.vertex_offset) <= vertexCount &&
+            static_cast<size_t>(sm.vertex_count) <=
+                vertexCount - static_cast<size_t>(sm.vertex_offset);
+        if (!validRange || sm.vertex_count == 0) {
+            sm.bounds_min[0] = sm.bounds_min[1] = sm.bounds_min[2] = 0.0f;
+            sm.bounds_max[0] = sm.bounds_max[1] = sm.bounds_max[2] = 0.0f;
+            continue;
+        }
+
+        const size_t first = static_cast<size_t>(sm.vertex_offset);
+        const size_t last = first + static_cast<size_t>(sm.vertex_count);
+        Vec3 mn(std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max(),
+                std::numeric_limits<float>::max());
+        Vec3 mx(std::numeric_limits<float>::lowest(),
+                std::numeric_limits<float>::lowest(),
+                std::numeric_limits<float>::lowest());
+        bool haveFiniteVertex = false;
+
+        for (size_t i = first; i < last; ++i) {
+            const af_vertex& vertex = e->verts[i];
+            const Vec3 p(vertex.pos[0], vertex.pos[1], vertex.pos[2]);
+            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+            mn.x = std::min(mn.x, p.x);
+            mn.y = std::min(mn.y, p.y);
+            mn.z = std::min(mn.z, p.z);
+            mx.x = std::max(mx.x, p.x);
+            mx.y = std::max(mx.y, p.y);
+            mx.z = std::max(mx.z, p.z);
+            haveFiniteVertex = true;
+        }
+
+        if (!haveFiniteVertex) {
+            sm.bounds_min[0] = sm.bounds_min[1] = sm.bounds_min[2] = 0.0f;
+            sm.bounds_max[0] = sm.bounds_max[1] = sm.bounds_max[2] = 0.0f;
+            continue;
+        }
+        sm.bounds_min[0] = mn.x;
+        sm.bounds_min[1] = mn.y;
+        sm.bounds_min[2] = mn.z;
+        sm.bounds_max[0] = mx.x;
+        sm.bounds_max[1] = mx.y;
+        sm.bounds_max[2] = mx.z;
+    }
+}
+
 int32_t applyCurrentPose(af_engine* e) {
     if (e->rig.jointCount() == 0) return static_cast<int32_t>(AF_ERR_NOT_READY);
     const int J = e->rig.jointCount();
@@ -1032,6 +1087,7 @@ int32_t applyCurrentPose(af_engine* e) {
         e->verts[i].normal[2] = e->mesh.normals[i].z;
     }
     updateStats(e);
+    refreshDeformedSubmeshBounds(e);
     return static_cast<int32_t>(AF_OK);
 }
 
@@ -1184,6 +1240,52 @@ int32_t af_engine_index_count(const af_engine* engine) {
 const af_vertex* af_engine_vertices(const af_engine* engine) {
     return (engine && !engine->verts.empty()) ? engine->verts.data() : nullptr;
 }
+int32_t af_engine_validate_deformed_mesh(const af_engine* engine,
+                                             int32_t* out_bad_vertex,
+                                             float out_position[3],
+                                             float out_weights[4],
+                                             uint16_t out_joints[4]) {
+    if (out_bad_vertex) *out_bad_vertex = -1;
+    if (!engine || !out_bad_vertex) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    const int jointCount = engine->rig.jointCount();
+    if (engine->verts.empty() || jointCount <= 0) return static_cast<int32_t>(AF_ERR_NOT_READY);
+
+    for (size_t i = 0; i < engine->verts.size(); ++i) {
+        const af_vertex& vertex = engine->verts[i];
+        bool valid = std::isfinite(vertex.pos[0]) &&
+                     std::isfinite(vertex.pos[1]) &&
+                     std::isfinite(vertex.pos[2]);
+        float weightSum = 0.0f;
+        for (int influence = 0; influence < 4; ++influence) {
+            const float weight = vertex.weights[influence];
+            valid = valid && std::isfinite(weight) && weight >= 0.0f && weight <= 1.0001f;
+            if (std::isfinite(weight)) weightSum += weight;
+            if (weight > 1.0e-6f && vertex.joints[influence] >= jointCount) valid = false;
+        }
+        valid = valid && std::isfinite(weightSum) && std::fabs(weightSum - 1.0f) <= 0.02f;
+        if (valid) continue;
+
+        *out_bad_vertex = static_cast<int32_t>(i);
+        if (out_position) {
+            out_position[0] = vertex.pos[0];
+            out_position[1] = vertex.pos[1];
+            out_position[2] = vertex.pos[2];
+        }
+        if (out_weights) {
+            for (int influence = 0; influence < 4; ++influence) {
+                out_weights[influence] = vertex.weights[influence];
+            }
+        }
+        if (out_joints) {
+            for (int influence = 0; influence < 4; ++influence) {
+                out_joints[influence] = vertex.joints[influence];
+            }
+        }
+        return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    }
+    return static_cast<int32_t>(AF_OK);
+}
+
 const af_vertex* af_engine_vertices_rest(const af_engine* engine) {
     return (engine && !engine->vertsRest.empty()) ? engine->vertsRest.data() : nullptr;
 }
