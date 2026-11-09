@@ -33,7 +33,7 @@ test -n "$PID"
 # Wait for actual GLB load and a real Filament frame, not just Activity launch.
 GLB_LOADED=0
 for attempt in $(seq 1 60); do
-  adb logcat --pid="$PID" -d > emulator-diagnostics/app-logcat.txt
+  adb logcat -b all -d > emulator-diagnostics/app-logcat.txt
   if grep -q "GLB loaded and GPU resources submitted" emulator-diagnostics/app-logcat.txt; then
     GLB_LOADED=1
     break
@@ -48,8 +48,21 @@ fi
 
 CURRENT_PID="$(adb shell pidof -s com.davemega.hub | tr -d '\r')"
 test "$CURRENT_PID" = "$PID"
+adb shell dumpsys activity lastanr > emulator-diagnostics/lastanr.txt 2>&1 || true
+
 if grep -E "FATAL EXCEPTION|Fatal signal|Process: com.davemega.hub" emulator-diagnostics/app-logcat.txt; then
-  echo "Application crash detected in app-scoped emulator logcat."
+  echo "Application crash detected in emulator logcat."
+  exit 1
+fi
+
+# A renderer smoke test must reject an ANR or a sustained UI stall, even if the GLB
+# eventually loads. The previous smoke script only checked for a late frame submission.
+if grep -E "ANR in com\.davemega\.hub|Input dispatching timed out|Skipped ([3-9][0-9]{2,}|[1-9][0-9]{3,}) frames|Davey! duration=([1-9][0-9]{4,})ms" emulator-diagnostics/app-logcat.txt; then
+  echo "ANR or sustained main-thread frame stall detected."
+  exit 1
+fi
+if grep -q "com\.davemega\.hub" emulator-diagnostics/lastanr.txt; then
+  echo "Android reports a previous ANR for 3D Mega Hub."
   exit 1
 fi
 
