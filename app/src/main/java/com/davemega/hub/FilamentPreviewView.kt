@@ -158,6 +158,17 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         if (engine != null) return
+        // SurfaceCreated can arrive before layout has assigned pixel dimensions. Do not create
+        // a Filament swap chain or projection using fabricated 1x1 dimensions.
+        if (surfaceView.width <= 0 || surfaceView.height <= 0) {
+            reportStatus("Waiting for non-zero viewport dimensions before creating the Filament swap chain.")
+            return
+        }
+        initializeFilament(holder)
+    }
+
+    private fun initializeFilament(holder: SurfaceHolder) {
+        if (engine != null || surfaceView.width <= 0 || surfaceView.height <= 0) return
         try {
             persistCheckpoint("Loading Filament native runtime")
             Filament.init()
@@ -236,9 +247,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                 "Filament camera was null"
             }
             candidateCamera = newCamera
-            val width = surfaceView.width.coerceAtLeast(1)
-            val height = surfaceView.height.coerceAtLeast(1)
+            // Dimensions are validated before session creation; use the real buffer size.
+            val width = surfaceView.width
+            val height = surfaceView.height
+            check(width > 0 && height > 0) { "Filament viewport has zero dimensions ($width x $height)" }
             newCamera.setProjection(45.0, width.toDouble() / height.toDouble(), 0.05, 1000.0, Camera.Fov.VERTICAL)
+            // Filament camera exposure uses photographic parameters, not a signed EV scalar.
+            // This neutral baseline avoids an accidental zero/negative exposure configuration.
+            newCamera.setExposure(16.0f, 1.0f / 125.0f, 100.0f)
             newCamera.lookAt(0.0, 1.0, 3.5, 0.0, 0.9, 0.0, 0.0, 1.0, 0.0)
             newView.camera = newCamera
             newView.scene = newScene
@@ -458,7 +474,15 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        if (width <= 0 || height <= 0) return
+        if (width <= 0 || height <= 0) {
+            reportStatus("Filament viewport dimensions are invalid: $width x $height")
+            return
+        }
+        // surfaceChanged is the first reliable point at which SurfaceView has its real size.
+        if (engine == null && holder.surface.isValid) {
+            initializeFilament(holder)
+            return
+        }
         view?.setViewport(Viewport(0, 0, width, height))
         camera?.setProjection(45.0, width.toDouble() / height.toDouble(), 0.03, 1000.0, Camera.Fov.VERTICAL)
     }
