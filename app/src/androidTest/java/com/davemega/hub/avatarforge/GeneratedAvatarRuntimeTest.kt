@@ -92,9 +92,11 @@ class GeneratedAvatarRuntimeTest {
                 framePresented.await(1, TimeUnit.SECONDS))
 
             val stats = nativeGetVerificationStats(handle)
-            assertEquals("Native verification stats must contain all fields", 12, stats.size)
+            assertEquals("Native verification stats must contain all fields", 16, stats.size)
             assertTrue("Renderer reported no draw calls: ${nativeGetVerificationReport(handle)}", stats[1] > 0)
             assertTrue("Renderer reported no triangles: ${nativeGetVerificationReport(handle)}", stats[2] > 0)
+            assertTrue("No successfully presented frames were recorded: ${nativeGetVerificationReport(handle)}", stats[12] > 0)
+            assertTrue("Not all eight AABB corners are within the camera depth interval: ${nativeGetVerificationReport(handle)}", stats[13] == 1)
             assertTrue("Deformed AABB does not intersect the actual camera frustum: ${nativeGetVerificationReport(handle)}",
                 stats[5] == 1)
             assertTrue("GL framebuffer readback failed: ${nativeGetVerificationReport(handle)}", stats[6] == 1)
@@ -132,10 +134,12 @@ class GeneratedAvatarRuntimeTest {
             }
 
             val report = nativeGetVerificationReport(handle)
+            val totalPixels = surfaceWidth * surfaceHeight
+            val acceptedPixelPercent = if (totalPixels > 0) acceptedPixelCount * 100.0f / totalPixels else 0.0f
             val diagnostics = "capture=$acceptedCapture pixelCopyResult=${pixelCopyResult.get()} " +
                 "pixelCopyNonBlack=$pixelCopyNonBlack acceptedNonBlack=$acceptedPixelCount " +
-                "bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=${surfaceWidth * surfaceHeight} " +
-                "frameCount=${stats[0]} drawCalls=${stats[1]} triangles=${stats[2]} " +
+                "acceptedPercent=${acceptedPixelPercent}% bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=$totalPixels " +
+                "frameCount=${stats[0]} successfulPresentedFrames=${stats[12]} drawCalls=${stats[1]} triangles=${stats[2]} " +
                 "vertices=${stats[3]} glReadbackNonBlack=${stats[7]} " +
                 "joints=${stats[10]} blendshapes=${stats[11]} $report"
 
