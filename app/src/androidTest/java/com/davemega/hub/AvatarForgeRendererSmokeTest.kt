@@ -2,6 +2,7 @@ package com.davemega.hub
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.Rect
 import android.net.Uri
 import android.os.SystemClock
@@ -11,8 +12,11 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,17 +26,125 @@ import org.junit.runner.RunWith
 class AvatarForgeRendererSmokeTest {
     @Test
     fun importedBundledGlbUsesAvatarForgeGlesAndProducesVisibleGeometry() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val context = instrumentation.targetContext
-        val device = UiDevice.getInstance(instrumentation)
-
-        val avatarDirectory = File(context.filesDir, "avatars")
-        assertTrue("Could not create app-private avatar test directory", avatarDirectory.isDirectory || avatarDirectory.mkdirs())
-        val glb = File(avatarDirectory, "avatarforge-renderer-smoke.glb")
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.filesDir, "avatars")
+        assertTrue("Could not create app-private avatar test directory", directory.isDirectory || directory.mkdirs())
+        val glb = File(directory, "avatarforge-renderer-smoke.glb")
         context.assets.open("models/female.glb").use { source ->
             FileOutputStream(glb).use { target -> source.copyTo(target) }
         }
         assertTrue("Bundled smoke GLB is empty", glb.length() > 0L)
+        verifyImportedGlbThroughTheApp(glb)
+    }
+
+    @Test
+    fun requiredWebpTextureExtensionIsDecodedAndRenderedByAvatarForge() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.filesDir, "avatars")
+        assertTrue("Could not create app-private avatar test directory", directory.isDirectory || directory.mkdirs())
+        val glb = File(directory, "avatarforge-webp-extension-smoke.glb")
+        writeRequiredWebpFixture(glb)
+        assertTrue("Generated WebP GLB fixture is empty", glb.length() > 0L)
+        verifyImportedGlbThroughTheApp(glb)
+    }
+
+    private fun writeRequiredWebpFixture(file: File) {
+        val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+        val webpBytes = try {
+            bitmap.eraseColor(Color.MAGENTA)
+            ByteArrayOutputStream().use { output ->
+                assertTrue(
+                    "Android platform could not encode the WebP fixture",
+                    bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, output)
+                )
+                output.toByteArray()
+            }
+        } finally {
+            bitmap.recycle()
+        }
+        assertTrue("WebP fixture encoder returned invalid bytes", webpBytes.size >= 12 &&
+            webpBytes[0] == 'R'.code.toByte() && webpBytes[8] == 'W'.code.toByte())
+
+        // POSITION(36) + NORMAL(36) + TEXCOORD_0(24) + indices(6) + 2-byte alignment.
+        val imageOffset = 104
+        val binarySize = (imageOffset + webpBytes.size + 3) and -4
+        val binary = ByteBuffer.allocate(binarySize).order(ByteOrder.LITTLE_ENDIAN)
+        floatArrayOf(
+            -0.82f, -0.82f, 0.0f,
+             0.82f, -0.82f, 0.0f,
+             0.00f,  0.82f, 0.0f
+        ).forEach(binary::putFloat)
+        repeat(3) {
+            binary.putFloat(0.0f)
+            binary.putFloat(0.0f)
+            binary.putFloat(-1.0f)
+        }
+        floatArrayOf(0.0f, 0.0f, 1.0f, 0.0f, 0.5f, 1.0f).forEach(binary::putFloat)
+        // Reverse winding for the AvatarForge viewer's -Z-facing camera.
+        binary.putShort(0)
+        binary.putShort(2)
+        binary.putShort(1)
+        binary.position(imageOffset)
+        binary.put(webpBytes)
+
+        val json = """
+            {
+              "asset":{"version":"2.0","generator":"AvatarForge Android WebP smoke fixture"},
+              "extensionsUsed":["EXT_texture_webp"],
+              "extensionsRequired":["EXT_texture_webp"],
+              "scene":0,
+              "scenes":[{"nodes":[0]}],
+              "nodes":[{"mesh":0}],
+              "meshes":[{"primitives":[{
+                "attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},
+                "indices":3,
+                "material":0
+              }]}],
+              "materials":[{"pbrMetallicRoughness":{
+                "baseColorFactor":[1,1,1,1],
+                "metallicFactor":0,
+                "roughnessFactor":1,
+                "baseColorTexture":{"index":0}
+              }}],
+              "textures":[{"extensions":{"EXT_texture_webp":{"source":0}}}],
+              "images":[{"mimeType":"image/webp","bufferView":4}],
+              "accessors":[
+                {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[-0.82,-0.82,0],"max":[0.82,0.82,0]},
+                {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
+                {"bufferView":2,"componentType":5126,"count":3,"type":"VEC2"},
+                {"bufferView":3,"componentType":5123,"count":3,"type":"SCALAR"}
+              ],
+              "bufferViews":[
+                {"buffer":0,"byteOffset":0,"byteLength":36},
+                {"buffer":0,"byteOffset":36,"byteLength":36},
+                {"buffer":0,"byteOffset":72,"byteLength":24},
+                {"buffer":0,"byteOffset":96,"byteLength":6},
+                {"buffer":0,"byteOffset":104,"byteLength":${webpBytes.size}}
+              ],
+              "buffers":[{"byteLength":$binarySize}]
+            }
+        """.trimIndent().toByteArray(Charsets.UTF_8)
+        val paddedJsonSize = (json.size + 3) and -4
+        val totalSize = 12 + 8 + paddedJsonSize + 8 + binarySize
+        val glb = ByteBuffer.allocate(totalSize).order(ByteOrder.LITTLE_ENDIAN)
+        glb.putInt(0x46546C67)
+        glb.putInt(2)
+        glb.putInt(totalSize)
+        glb.putInt(paddedJsonSize)
+        glb.putInt(0x4E4F534A)
+        glb.put(json)
+        repeat(paddedJsonSize - json.size) { glb.put(0x20) }
+        glb.putInt(binarySize)
+        glb.putInt(0x004E4942)
+        glb.put(binary.array())
+        file.writeBytes(glb.array())
+    }
+
+    private fun verifyImportedGlbThroughTheApp(glb: File) {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val device = UiDevice.getInstance(instrumentation)
+        assertTrue("GLB fixture is not readable", glb.isFile && glb.canRead() && glb.length() > 0L)
 
         context.getSharedPreferences("mega_hub", 0).edit()
             .putString("avatar_uri", Uri.fromFile(glb).toString())
@@ -61,7 +173,7 @@ class AvatarForgeRendererSmokeTest {
 
         val status = prefs.getString("status", "")
         assertTrue(
-            "AvatarForge native GLES renderer did not verify a real frame. status=$status error=${prefs.getString("error", "")} api=${prefs.getString("api_version", "")}",
+            "AvatarForge native GLES renderer did not verify a real frame for ${glb.name}. status=$status error=${prefs.getString("error", "")} api=${prefs.getString("api_version", "")}",
             status == "FRAME_VERIFIED"
         )
         val apiVersion = prefs.getString("api_version", "") ?: ""
@@ -78,9 +190,7 @@ class AvatarForgeRendererSmokeTest {
         val screenshot = device.takeScreenshot()
         assertNotNull("Could not capture emulator screen", screenshot)
         val image = screenshot!!
-        val crop = Rect(bounds).apply {
-            intersect(0, 0, image.width, image.height)
-        }
+        val crop = Rect(bounds).apply { intersect(0, 0, image.width, image.height) }
         assertTrue("AvatarForge viewport lies outside the captured screen: $crop", crop.width() > 0 && crop.height() > 0)
 
         // Persist evidence before assertions so a failing run still carries the exact viewport.
@@ -93,9 +203,8 @@ class AvatarForgeRendererSmokeTest {
         }
         assertTrue("Captured renderer screenshot is missing", output.isFile && output.length() > 0L)
 
-        // Derive a background reference from the four viewport corners. Then demand a spatially
-        // substantial region of pixels that differs from that background, not just shader dither
-        // or a non-uniform clear pass.
+        // Compare against a robust four-corner background estimate. A successful frame counter or
+        // post-process draw alone is not accepted as evidence of visible model geometry.
         val cornerSamples = ArrayList<Int>()
         val cornerSizeX = (crop.width() / 12).coerceAtLeast(1)
         val cornerSizeY = (crop.height() / 12).coerceAtLeast(1)
@@ -155,6 +264,5 @@ class AvatarForgeRendererSmokeTest {
             coverage >= 0.02f && centralChangedSamples >= 80 &&
                 maxChangedX - minChangedX >= 14 && maxChangedY - minChangedY >= 14
         )
-
     }
 }
