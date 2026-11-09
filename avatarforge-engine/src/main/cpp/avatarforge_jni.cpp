@@ -289,6 +289,34 @@ Java_com_davemega_hub_avatarforge_NativeMethods_generate(
         throwEngineFailure(env, "af_engine_run_all", result, engine.get());
         return nullptr;
     }
+
+    /* Force the generated rig through the CPU skinning path before export and validate the exact
+       post-deformation buffer that the renderer consumes. */
+    result = af_engine_apply_clip(engine.get(), AF_CLIP_REST, 0.0f);
+    if (result != AF_OK) {
+        throwEngineFailure(env, "af_engine_apply_clip(AF_CLIP_REST)", result, engine.get());
+        return nullptr;
+    }
+    int32_t badVertex = -1;
+    float badPosition[3] = {0.0f, 0.0f, 0.0f};
+    float badWeights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    uint16_t badJoints[4] = {0, 0, 0, 0};
+    result = af_engine_validate_deformed_mesh(
+        engine.get(), &badVertex, badPosition, badWeights, badJoints);
+    if (result != AF_OK) {
+        char diagnostic[512];
+        std::snprintf(
+            diagnostic, sizeof(diagnostic),
+            "FAILED at Vertex %d (POS: %.7g,%.7g,%.7g; WEIGHTS: %.7g,%.7g,%.7g,%.7g; JOINTS: %u,%u,%u,%u)",
+            badVertex,
+            badPosition[0], badPosition[1], badPosition[2],
+            badWeights[0], badWeights[1], badWeights[2], badWeights[3],
+            static_cast<unsigned>(badJoints[0]), static_cast<unsigned>(badJoints[1]),
+            static_cast<unsigned>(badJoints[2]), static_cast<unsigned>(badJoints[3]));
+        throwJava(env, "java/lang/IllegalStateException", diagnostic);
+        return nullptr;
+    }
+
     result = af_engine_export_glb(engine.get(), path.c_str());
     if (result != AF_OK) {
         throwEngineFailure(env, "af_engine_export_glb", result, engine.get());
@@ -313,6 +341,7 @@ Java_com_davemega_hub_avatarforge_NativeMethods_generate(
         static_cast<jlong>(stats.geometry_bytes),
         static_cast<jlong>(stats.peak_field_bytes),
         static_cast<jlong>(promptMatched),
+        static_cast<jlong>(1),  // CPU-deformed vertex/weight/joint validation passed.
     };
     jlongArray out = env->NewLongArray(static_cast<jsize>(sizeof(values) / sizeof(values[0])));
     if (out != nullptr) env->SetLongArrayRegion(out, 0, static_cast<jsize>(sizeof(values) / sizeof(values[0])), values);
