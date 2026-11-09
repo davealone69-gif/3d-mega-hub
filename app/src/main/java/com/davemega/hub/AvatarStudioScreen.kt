@@ -15,6 +15,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,6 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.davemega.hub.avatarforge.AvatarForgeEngine
+import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
+import java.io.File
 import com.davemega.hub.avatarforge.AvatarSpec
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -54,21 +57,37 @@ fun AvatarStudioScreen(
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Avatar studio", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("A real Filament glTF viewer with the AvatarForge generation kernel. The bundled sample loads automatically; import a self-contained GLB or generate a new avatar below.")
+        Text("Imported GLBs use the AvatarForge engine and its native GLES renderer. The bundled sample remains on the existing viewer until it is imported into the engine.")
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("3D viewport", style = MaterialTheme.typography.titleMedium)
-                AndroidView(
-                    factory = { viewContext ->
-                        FilamentPreviewView(viewContext).apply {
-                            setStatusListener { rendererStatus = it }
-                            setModel(avatarUri)
-                        }
-                    },
-                    update = { view -> view.setModel(avatarUri) },
-                    modifier = Modifier.fillMaxWidth().height(420.dp)
-                )
+                key(avatarUri) {
+                    val importedGlb = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)
+                    if (importedGlb != null && importedGlb.isFile) {
+                        AndroidView(
+                            factory = { viewContext ->
+                                AvatarForgeSurfaceView(viewContext, importedGlb) { status ->
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        rendererStatus = status
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().height(420.dp)
+                        )
+                    } else {
+                        AndroidView(
+                            factory = { viewContext ->
+                                FilamentPreviewView(viewContext).apply {
+                                    setStatusListener { rendererStatus = it }
+                                    setModel(avatarUri)
+                                }
+                            },
+                            update = { view -> view.setModel(avatarUri) },
+                            modifier = Modifier.fillMaxWidth().height(420.dp)
+                        )
+                    }
+                }
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
                 Text("Selected asset: $avatarName", style = MaterialTheme.typography.bodySmall)
                 if (importStatus.isNotBlank()) {
