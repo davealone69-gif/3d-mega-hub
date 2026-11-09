@@ -93,12 +93,17 @@ class GeneratedAvatarRuntimeTest {
             val stats = nativeGetVerificationStats(handle)
             assertEquals("Native verification stats must contain all fields", 16, stats.size)
             assertTrue("Renderer reported no draw calls: ${nativeGetVerificationReport(handle)}", stats[1] > 0)
-            assertTrue("Renderer reported no triangles: ${nativeGetVerificationReport(handle)}", stats[2] > 0)
+            assertEquals("Uploaded triangle count differs from generated engine geometry", 407090, stats[2])
+            assertEquals("Uploaded vertex count differs from generated engine geometry", 304405, stats[3])
+            assertEquals("Generated skeleton joint count differs", 71, stats[10])
+            assertEquals("Generated ARKit blendshape count differs", 52, stats[11])
             assertTrue("No successfully presented frames were recorded: ${nativeGetVerificationReport(handle)}", stats[12] > 0)
             assertTrue("Not all eight AABB corners are within the camera depth interval: ${nativeGetVerificationReport(handle)}", stats[13] == 1)
             assertTrue("Deformed AABB does not intersect the actual camera frustum: ${nativeGetVerificationReport(handle)}",
                 stats[5] == 1)
             assertTrue("GL framebuffer readback failed: ${nativeGetVerificationReport(handle)}", stats[6] == 1)
+            assertEquals("GL readback width differs from the live SurfaceView", surfaceWidth, stats[8])
+            assertEquals("GL readback height differs from the live SurfaceView", surfaceHeight, stats[9])
 
             val bitmap = Bitmap.createBitmap(surfaceWidth, surfaceHeight, Bitmap.Config.ARGB_8888)
             capturedBitmap = bitmap
@@ -116,20 +121,31 @@ class GeneratedAvatarRuntimeTest {
                 pixelCopyNonBlack = countNonBlack(bitmap)
             }
 
-            var acceptedCapture = "PixelCopy"
-            var acceptedPixelCount = pixelCopyNonBlack
-            if (pixelCopyResult.get() != PixelCopy.SUCCESS || pixelCopyNonBlack <= 5000) {
+            var acceptedCapture = if (pixelCopyResult.get() == PixelCopy.SUCCESS && pixelCopyNonBlack > 5000) {
+                "PixelCopy"
+            } else {
+                "none"
+            }
+            var acceptedPixelCount = if (acceptedCapture == "PixelCopy") pixelCopyNonBlack else 0
+            var glReadbackNonBlack = 0
+            if (acceptedCapture == "none") {
                 val rgba = nativeGetReadbackPixels(handle)
                 if (rgba != null && rgba.size == surfaceWidth * surfaceHeight * 4) {
                     val fallback = bitmapFromGlRgba(rgba, surfaceWidth, surfaceHeight)
-                    if (capturedBitmap !== fallback) capturedBitmap?.recycle()
+                    capturedBitmap?.recycle()
                     capturedBitmap = fallback
-                    val glPixels = countNonBlack(fallback)
-                    if (glPixels > 5000) {
+                    glReadbackNonBlack = countNonBlack(fallback)
+                    if (glReadbackNonBlack > 5000) {
                         acceptedCapture = "glReadPixels"
-                        acceptedPixelCount = glPixels
+                        acceptedPixelCount = glReadbackNonBlack
+                    } else {
+                        acceptedCapture = "PixelCopy+glReadPixels-below-threshold"
                     }
+                } else {
+                    acceptedCapture = "PixelCopy-failed+glReadPixels-unavailable"
                 }
+            } else {
+                glReadbackNonBlack = stats[7]
             }
 
             val report = nativeGetVerificationReport(handle)
@@ -139,7 +155,7 @@ class GeneratedAvatarRuntimeTest {
                 "pixelCopyNonBlack=$pixelCopyNonBlack acceptedNonBlack=$acceptedPixelCount " +
                 "acceptedPercent=${acceptedPixelPercent}% bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=$totalPixels " +
                 "frameCount=${stats[0]} successfulPresentedFrames=${stats[12]} drawCalls=${stats[1]} triangles=${stats[2]} " +
-                "vertices=${stats[3]} glReadbackNonBlack=${stats[7]} " +
+                "vertices=${stats[3]} glReadbackNonBlack=$glReadbackNonBlack " +
                 "joints=${stats[10]} blendshapes=${stats[11]} $report"
 
             if (acceptedPixelCount <= 5000) {
