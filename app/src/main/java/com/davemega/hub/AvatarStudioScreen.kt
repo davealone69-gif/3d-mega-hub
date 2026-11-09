@@ -61,6 +61,28 @@ fun AvatarStudioScreen(
     val diagnosticLog = remember { mutableStateListOf<String>() }
     val generating = generationJob?.isActive == true
 
+    fun captureCurrentScreenshot() {
+        if (diagnosticRunning) return
+        val activePreview = previewView
+        if (activePreview == null) {
+            diagnosticLog += "SCREENSHOT FAILED: the Filament preview surface is not available."
+            return
+        }
+        diagnosticRunning = true
+        diagnosticLog += "Manual screenshot requested for the currently displayed model."
+        activePreview.captureDiagnostic(forceSave = true) { result ->
+            diagnosticLog += if (result.frameSubmitted) {
+                "PASS: a completed Filament frame was captured."
+            } else {
+                "FAIL: no completed Filament frame was captured."
+            }
+            diagnosticLog += "PixelCopy: ${result.width}x${result.height}; qualifying pixels: ${result.pixelsAboveThreshold}"
+            result.screenshotPath?.let { diagnosticLog += "SCREENSHOT SAVED: $it" }
+            result.error?.let { diagnosticLog += "SCREENSHOT ERROR: $it" }
+            diagnosticRunning = false
+        }
+    }
+
     fun startGeneratedAvatarDiagnostic() {
         if (diagnosticRunning || generating || isImporting) return
         diagnosticRunning = true
@@ -236,10 +258,16 @@ fun AvatarStudioScreen(
                 }
             },
             confirmButton = {
-                TextButton(
-                    onClick = { startGeneratedAvatarDiagnostic() },
-                    enabled = !diagnosticRunning && !generating && !isImporting
-                ) { Text("Run again") }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = { captureCurrentScreenshot() },
+                        enabled = !diagnosticRunning
+                    ) { Text("Capture screenshot") }
+                    TextButton(
+                        onClick = { startGeneratedAvatarDiagnostic() },
+                        enabled = !diagnosticRunning && !generating && !isImporting
+                    ) { Text("Run again") }
+                }
             },
             dismissButton = {
                 TextButton(onClick = { showDiagnosticDialog = false }, enabled = !diagnosticRunning) {
