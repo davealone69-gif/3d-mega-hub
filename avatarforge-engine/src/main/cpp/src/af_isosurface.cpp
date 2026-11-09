@@ -90,6 +90,7 @@ void sampleField(DenseGrid& grid, const std::function<float(const Vec3&)>& field
     const int totalBlocks = bx * by * bz;
     std::atomic<int> finished{0};
     std::mutex progressMutex;
+    float lastProgress = 0.0f;
 
     auto evaluate = [&](int x, int y, int z) -> float {
         const Vec3 p = grid.position(x, y, z);
@@ -145,12 +146,17 @@ void sampleField(DenseGrid& grid, const std::function<float(const Vec3&)>& field
             const int done = ++finished;
             if (progress && (done & 31) == 0) {
                 std::lock_guard<std::mutex> lock(progressMutex);
-                progress(static_cast<float>(done) / static_cast<float>(maxi(1, totalBlocks)));
+                const float current = static_cast<float>(finished.load(std::memory_order_relaxed)) /
+                                      static_cast<float>(maxi(1, totalBlocks));
+                if (current > lastProgress) {
+                    lastProgress = current;
+                    progress(current);
+                }
             }
         }
     }, cancel);
 
-    if (progress) progress(1.0f);
+    if (progress && !(cancel && cancel())) progress(1.0f);
 }
 
 /* ================================================================== extraction ============== */
