@@ -33,7 +33,7 @@ class GeneratedAvatarRuntimeTest {
     private external fun nativeGetReadbackPixels(handle: Long): ByteArray?
     private external fun nativeDestroyGenerated(handle: Long)
 
-    @Test
+    @Test(timeout = 600000)
     fun generatedAvatarMustProduceVisiblePixels() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
