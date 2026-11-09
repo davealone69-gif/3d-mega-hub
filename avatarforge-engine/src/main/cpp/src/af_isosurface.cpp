@@ -22,6 +22,7 @@
 #include <cmath>
 #include <limits>
 #include <cstdio>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -77,39 +78,74 @@ inline float applyCuts(const std::vector<LocalCut>& cuts, const Vec3& p, float v
 void sampleField(DenseGrid& grid, const std::function<float(const Vec3&)>& field, int threads,
                  int blockSize, const std::function<bool()>& cancel,
                  const std::function<void(float)>& progress, const std::vector<LocalCut>& cuts) {
-    (void)blockSize; // Sampling is partitioned by unique sample index to guarantee single-writer ownership.
+    const int bs = maxi(1, blockSize);
     if (grid.nx <= 0 || grid.ny <= 0 || grid.nz <= 0) {
         if (progress) progress(1.0f);
         return;
     }
 
-    const size_t sampleCount = static_cast<size_t>(grid.nx) *
-                               static_cast<size_t>(grid.ny) *
-                               static_cast<size_t>(grid.nz);
-    auto evaluateRange = [&](size_t begin, size_t end) {
-        for (size_t idx = begin; idx < end; ++idx) {
-            // Poll cancellation periodically without allowing two workers to write the same
-            // grid element. Every linear index belongs to exactly one worker range.
-            if (((idx - begin) & 1023u) == 0u && cancel && cancel()) return;
-            const int x = static_cast<int>(idx % static_cast<size_t>(grid.nx));
-            const size_t yz = idx / static_cast<size_t>(grid.nx);
-            const int y = static_cast<int>(yz % static_cast<size_t>(grid.ny));
-            const int z = static_cast<int>(yz / static_cast<size_t>(grid.ny));
-            const Vec3 p = grid.position(x, y, z);
-            grid.values[idx] = applyCuts(cuts, p, field(p), grid.cell);
-        }
+    const int bx = (grid.nx + bs - 1) / bs;
+    const int by = (grid.ny + bs - 1) / bs;
+    const int bz = (grid.nz + bs - 1) / bs;
+    const int totalBlocks = bx * by * bz;
+    std::atomic<int> finished{0};
+    std::mutex progressMutex;
+
+    auto evaluate = [&](int x, int y, int z) -> float {
+        const Vec3 p = grid.position(x, y, z);
+        return applyCuts(cuts, p, field(p), grid.cell);
     };
 
-    if (sampleCount <= static_cast<size_t>(std::numeric_limits<int>::max())) {
-        parallelFor(static_cast<int>(sampleCount), threads,
-                    [&](int begin, int end) {
-                        evaluateRange(static_cast<size_t>(begin), static_cast<size_t>(end));
-                    });
-    } else {
-        // This path is intentionally serial: parallelFor accepts int ranges. Such a grid is
-        // already beyond a sensible mobile-device allocation, but keep indexing defined.
-        evaluateRange(0, sampleCount);
-    }
+    parallelFor(totalBlocks, threads, [&](int first, int last) {
+        for (int block = first; block < last; ++block) {
+            if (cancel && cancel()) return;
+            const int bzi = block / (bx * by);
+            const int rem = block % (bx * by);
+            const int byi = rem / bx;
+            const int bxi = rem % bx;
+            const int x0 = bxi * bs, y0 = byi * bs, z0 = bzi * bs;
+            const int x1 = mini(grid.nx - 1, x0 + bs);
+            const int y1 = mini(grid.ny - 1, y0 + bs);
+            const int z1 = mini(grid.nz - 1, z0 + bs);
+
+            bool skipInterior = false;
+            if (bs > 1 && x1 > x0 && y1 > y0 && z1 > z0) {
+                // Evaluate corners locally. Adjacent blocks may evaluate the same corner,
+                // but only the block owning a sample index writes grid.values for that index.
+                const int corners[8][3] = {
+                    {x0, y0, z0}, {x1, y0, z0}, {x0, y1, z0}, {x1, y1, z0},
+                    {x0, y0, z1}, {x1, y0, z1}, {x0, y1, z1}, {x1, y1, z1}
+                };
+                float minCorner = 1e30f;
+                for (const auto& corner : corners) {
+                    minCorner = minf(minCorner, evaluate(corner[0], corner[1], corner[2]));
+                }
+                const float diagonal = static_cast<float>(bs) * grid.cell * 1.7320508f;
+                skipInterior = minCorner > diagonal * 0.95f;
+            }
+
+            // Half-open ownership ranges prevent neighbouring blocks from writing shared
+            // boundary samples. The final block owns the grid's terminal sample plane.
+            const int xEnd = mini(grid.nx, x0 + bs);
+            const int yEnd = mini(grid.ny, y0 + bs);
+            const int zEnd = mini(grid.nz, z0 + bs);
+            if (!skipInterior) {
+                for (int z = z0; z < zEnd; ++z) {
+                    for (int y = y0; y < yEnd; ++y) {
+                        for (int x = x0; x < xEnd; ++x) {
+                            grid.values[grid.index(x, y, z)] = evaluate(x, y, z);
+                        }
+                    }
+                }
+            }
+
+            const int done = ++finished;
+            if (progress && (done & 31) == 0) {
+                std::lock_guard<std::mutex> lock(progressMutex);
+                progress(static_cast<float>(done) / static_cast<float>(maxi(1, totalBlocks)));
+            }
+        }
+    }, cancel);
 
     if (progress) progress(1.0f);
 }
