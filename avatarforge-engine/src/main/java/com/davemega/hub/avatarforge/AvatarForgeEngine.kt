@@ -29,6 +29,7 @@ data class AvatarGenerationResult(
     val peakFieldBytes: Long,
     val memoryBudgetBytes: Long,
     val promptMatchedAttributes: Int,
+    val deformedMeshValidated: Boolean,
 ) {
     val glbBytes: Long get() = file.length()
     val promptMatchWarning: String?
@@ -133,7 +134,7 @@ object AvatarForgeEngine {
                 adultModeConfirmed = spec.adultModeConfirmed,
                 cancellationToken = NativeCancellationToken(),
             ).also { result ->
-                check(result.size == 10) { "AvatarForge returned ${result.size} result fields; expected 10" }
+                check(result.size == 11) { "AvatarForge returned ${result.size} result fields; expected 11" }
                 check(result.all { it >= 0L }) { "AvatarForge returned a negative statistic." }
                 check(temporaryOutput.isFile && temporaryOutput.length() > 0L) {
                     "AvatarForge reported success but no non-empty GLB was written"
@@ -148,6 +149,7 @@ object AvatarForgeEngine {
                 check(result[4] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid joint count." }
                 check(result[5] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid blendshape count." }
                 check(result[9] in 0..Int.MAX_VALUE.toLong()) { "AvatarForge returned an invalid prompt-match count." }
+                check(result[10] == 1L) { "AvatarForge did not confirm post-skinning vertex validation." }
             }
         } catch (failure: Throwable) {
             temporaryOutput.delete()
@@ -174,6 +176,7 @@ object AvatarForgeEngine {
             peakFieldBytes = stats[8],
             memoryBudgetBytes = budget,
             promptMatchedAttributes = stats[9].toInt(),
+            deformedMeshValidated = stats[10] == 1L,
         )
     }
 }
