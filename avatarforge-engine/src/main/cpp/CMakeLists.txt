@@ -33,6 +33,10 @@ target_include_directories(afcore
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(afcore PRIVATE ${AF_KERNEL_FLAGS} -Wall -Wextra)
 target_link_libraries(afcore PRIVATE z)
+if(ANDROID)
+    # AImageDecoder is API 30+; symbols are resolved dynamically to preserve minSdk 26.
+    target_link_libraries(afcore PRIVATE dl)
+endif()
 
 # AvatarForge custom renderer, copied from the canonical engine source.
 # GLES is forced by the Hub runtime on the target Samsung profile; Vulkan remains
