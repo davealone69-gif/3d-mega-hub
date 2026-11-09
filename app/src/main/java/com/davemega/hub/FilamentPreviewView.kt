@@ -427,6 +427,17 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             animator = pending.instance.animator
             animationCount = animator?.animationCount ?: 0
             animationStartNanos = System.nanoTime()
+            /* Evaluate the first animated pose before deriving the camera framing for this asset.
+               Filament owns GPU skinning; the Hub does not call AvatarForge's separate af_gl.cpp. */
+            animator?.let { loadedAnimator ->
+                if (animationCount > 0) {
+                    val firstDuration = loadedAnimator.getAnimationDuration(0)
+                    if (firstDuration.isFinite() && firstDuration > 0f) {
+                        loadedAnimator.applyAnimation(0, 0f)
+                        loadedAnimator.updateBoneMatrices()
+                    }
+                }
+            }
             frameCamera(pending.boundingBox)
             filamentAsset = pending
             pendingAsset = null
@@ -554,6 +565,23 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         if (filamentAsset != null && pendingAsset == null && lastStatus.startsWith("GLB loaded")) {
             diagnosticModelReady = true
         }
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (pendingPixelDiagnostic === callback) {
+                pendingPixelDiagnostic = null
+                callback(
+                    FilamentPixelDiagnostic(
+                        frameSubmitted = false,
+                        cameraFrustumPassed = cameraFrustumPassed,
+                        cameraFrustumDetail = cameraFrustumDetail,
+                        width = surfaceView.width,
+                        height = surfaceView.height,
+                        pixelsAboveThreshold = 0,
+                        screenshotPath = null,
+                        error = "Timed out after 30 seconds waiting for the generated GLB to load and render."
+                    )
+                )
+            }
+        }, 30_000L)
         reportStatus("Diagnostic armed; waiting for a completed Filament frame for PixelCopy.")
     }
 
