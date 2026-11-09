@@ -1247,6 +1247,7 @@ void GlRenderer::renderFrame(float deltaSeconds) {
     int outsidePlane[6] = {0, 0, 0, 0, 0, 0};
     stats_.outsideCorners = 0;
     stats_.firstOutsideCorner = -1;
+    stats_.firstOutsideViewX = stats_.firstOutsideViewY = stats_.firstOutsideViewZ = 0.0f;
     stats_.boundsAllCornersInDepthRange = scene_.hasModel;
     if (scene_.hasModel) {
         for (int corner = 0; corner < 8; ++corner) {
@@ -1275,10 +1276,14 @@ void GlRenderer::renderFrame(float deltaSeconds) {
             if (cz >  cw) ++outsidePlane[5];
             const bool cornerOutside = !depthInside || cx < -cw || cx > cw || cy < -cw || cy > cw || cz < -cw || cz > cw;
             if (cornerOutside) {
-                if (stats_.firstOutsideCorner < 0) stats_.firstOutsideCorner = corner;
+                if (stats_.firstOutsideCorner < 0) {
+                    stats_.firstOutsideCorner = corner;
+                    stats_.firstOutsideViewX = vx;
+                    stats_.firstOutsideViewY = vy;
+                    stats_.firstOutsideViewZ = vz;
+                }
                 ++stats_.outsideCorners;
             }
-            (void)vx; (void)vy;
         }
         bool rejectedByPlane = false;
         for (int count : outsidePlane) rejectedByPlane = rejectedByPlane || count == 8;
