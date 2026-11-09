@@ -13,6 +13,7 @@ adb shell dumpsys activity activities > avatarforge-render-smoke-evidence/activi
 adb shell run-as com.davemega.hub cat shared_prefs/avatarforge_renderer_smoke.xml > avatarforge-render-smoke-evidence/renderer-state.xml 2>&1 || true
 adb exec-out screencap -p > avatarforge-render-smoke-evidence/final-screen.png 2>/dev/null || true
 adb pull /sdcard/Android/data/com.davemega.hub/files/avatarforge-renderer-smoke.png avatarforge-render-smoke-evidence/avatarforge-viewport.png >/dev/null 2>&1 || true
+adb pull /sdcard/Android/data/com.davemega.hub/files/failed_render.png avatarforge-render-smoke-evidence/failed_render.png >/dev/null 2>&1 || true
 
 if [[ "$TEST_STATUS" -ne 0 ]]; then
   echo "FAIL: instrumented AvatarForge GLES GLB renderer test failed with exit $TEST_STATUS."
