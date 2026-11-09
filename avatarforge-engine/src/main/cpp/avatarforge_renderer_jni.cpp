@@ -189,6 +189,17 @@ Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerat
         throwState(env, std::string("Prompt analysis failed: ") + (error ? error : "unknown error"));
         return 0;
     }
+    if (resolved.seed != 1337 || resolved.sex != AF_SEX_FEMALE ||
+        resolved.build != AF_BUILD_ATHLETIC || resolved.hair_style != AF_HAIR_MEDIUM ||
+        resolved.outfit != AF_OUTFIT_JEANS_JACKET ||
+        !std::isfinite(resolved.height_m) || std::fabs(resolved.height_m - 1.75f) > 0.001f) {
+        throwState(env, "Prompt parser did not resolve the exact expected spec: seed=" +
+            std::to_string(resolved.seed) + " sex=" + std::to_string(resolved.sex) +
+            " build=" + std::to_string(resolved.build) + " hair=" +
+            std::to_string(resolved.hair_style) + " outfit=" +
+            std::to_string(resolved.outfit) + " height_m=" + std::to_string(resolved.height_m));
+        return 0;
+    }
     const int32_t generationResult = af_engine_run_all(session->engine);
     if (generationResult != AF_OK) {
         const char* error = af_engine_last_error(session->engine);
