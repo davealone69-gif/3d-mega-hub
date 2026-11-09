@@ -41,6 +41,14 @@ class AvatarForgeSurfaceView(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.i(TAG, "surfaceCreated valid=${holder.surface.isValid}")
+        // Do not mark the new Surface ready until the previous worker has released
+        // its EGL/native-window session. Otherwise it could observe surfaceReady=true
+        // again and keep drawing into the old Surface.
+        stopRenderer()
+        if (renderThread?.isAlive == true) {
+            onStatus("Previous AvatarForge GLES renderer did not stop; refusing to attach a second render worker.")
+            return
+        }
         surfaceReady = true
         pixelCopyPending.set(false)
         pixelCopyComplete.set(false)
