@@ -69,31 +69,45 @@ struct CancelContext {
     }
 };
 
+struct WorkerJniEnv {
+    JavaVM* vm = nullptr;
+    JNIEnv* env = nullptr;
+    ~WorkerJniEnv() {
+        if (vm != nullptr && env != nullptr) vm->DetachCurrentThread();
+    }
+};
+
 int shouldCancel(void* user) {
     auto* context = static_cast<CancelContext*>(user);
     if (context == nullptr || context->vm == nullptr || context->token == nullptr || context->method == nullptr) {
         return 1;
     }
 
-    // JNIEnv is thread-local. Never reuse the JNI environment from the Kotlin caller
-    // on a native worker thread.
-    JNIEnv* workerEnv = nullptr;
-    bool attachedHere = false;
-    const jint state = context->vm->GetEnv(reinterpret_cast<void**>(&workerEnv), JNI_VERSION_1_6);
-    if (state == JNI_EDETACHED) {
-        if (context->vm->AttachCurrentThread(&workerEnv, nullptr) != JNI_OK) return 1;
-        attachedHere = true;
-    } else if (state != JNI_OK || workerEnv == nullptr) {
-        return 1;
+    // JNIEnv is thread-local. Cache an attachment for the lifetime of each native
+    // worker thread, then detach in its thread-local destructor.
+    static thread_local WorkerJniEnv worker;
+    if (worker.vm != context->vm) {
+        if (worker.vm != nullptr && worker.env != nullptr) worker.vm->DetachCurrentThread();
+        worker.vm = nullptr;
+        worker.env = nullptr;
+        JNIEnv* current = nullptr;
+        const jint state = context->vm->GetEnv(reinterpret_cast<void**>(&current), JNI_VERSION_1_6);
+        if (state == JNI_EDETACHED) {
+            if (context->vm->AttachCurrentThread(&current, nullptr) != JNI_OK) return 1;
+            worker.vm = context->vm;
+            worker.env = current;
+        } else if (state == JNI_OK && current != nullptr) {
+            worker.env = current; // Already attached by the JVM; do not detach it.
+        } else {
+            return 1;
+        }
     }
 
+    JNIEnv* workerEnv = worker.env;
+    if (workerEnv == nullptr) return 1;
     const jboolean cancelled = workerEnv->CallBooleanMethod(context->token, context->method);
     const bool hadException = workerEnv->ExceptionCheck();
-    if (hadException) {
-        // Do not leave a pending Java exception on a native worker thread.
-        workerEnv->ExceptionClear();
-    }
-    if (attachedHere) context->vm->DetachCurrentThread();
+    if (hadException) workerEnv->ExceptionClear();
     return hadException || cancelled == JNI_TRUE ? 1 : 0;
 }
 
