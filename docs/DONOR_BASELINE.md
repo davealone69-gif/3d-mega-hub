@@ -63,3 +63,34 @@ Checked against GitHub repository metadata, source files and workflow results on
 ## Important limitation
 
 No donor code has been copied into Mega Hub by this snapshot. No local Gradle build was run in this audit session. No physical-device test was performed.
+
+
+## 2026-11-10 generated-avatar integration update
+
+The active Hub hardening branch now contains a targeted native-engine update in
+`avatarforge-engine/src/main/cpp`:
+
+- `af_engine.cpp`: refresh each submesh AABB from the post-skinning `e->verts` span at the end
+  of `applyCurrentPose()`; expose `af_engine_validate_deformed_mesh()` to check finite positions,
+  normalized finite skin weights and valid joint indices, returning the first failing vertex data.
+- `afcore.h` and `avatarforge_jni.cpp`: expose the validator through the existing native generation
+  call; generation now applies the rest pose, validates the deformed buffer, and fails with the exact
+  vertex position, weights and joint indices before exporting if validation fails.
+- `AvatarForgeEngine.kt`: require the expanded native result and record successful deformed-mesh
+  validation before publishing the generated GLB.
+- `FilamentPreviewView.kt`: frame from the loaded GLB bounds using a conservative bounding sphere,
+  check the configured perspective frustum, and capture the completed Filament frame through Android
+  PixelCopy. The debug diagnostic saves `failed_render.png` to app-specific external storage when
+  fewer than 5,000 threshold pixels are counted.
+- `AvatarStudioScreen.kt`: add a debug-only generated-avatar diagnostic dialog for seed 1337 with
+  a scrolling log and one-tap rerun.
+
+Renderer boundary: 3D-Mega-Hub currently uses Filament gltfio for its viewer. The separate
+AvatarForge `native/src/render/af_gl.cpp` renderer is not part of the Hub's CMake target and is not
+silently copied in as a second renderer. The Hub frame callback evaluates animation before drawing;
+the first animated pose is evaluated before camera framing. Keep Filament as the Hub viewer until a
+separate renderer replacement proves its visible-pixel, lifecycle and device behaviour.
+
+Status on this update: source changes committed; Android build/workflow, native tests, generated-avatar
+PixelCopy result and Samsung SM-S921B runtime remain UNVERIFIED until the exact commit's CI and
+phone test produce evidence.
