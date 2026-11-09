@@ -499,8 +499,8 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         cameraFrustumPassed = checkFrustumIntersection(bounds)
         val viewMatrix = activeCamera.getViewMatrix(null).contentToString()
         val cullingProjectionMatrix = activeCamera.getCullingProjectionMatrix(null).contentToString()
-        val zNear = activeCamera.near
-        val zFar = activeCamera.cullingFar
+        val zNear = activeCamera.getNear()
+        val zFar = activeCamera.getCullingFar()
         cameraFrustumDetail =
             "AABB bounding sphere radius=$radius m; camera distance=$distance m; zNear=$zNear m; zFar=$zFar m; " +
                 "viewMatrix=$viewMatrix; cullingProjectionMatrix=$cullingProjectionMatrix; " +
@@ -510,7 +510,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     private fun checkFrustumIntersection(bounds: com.google.android.filament.Box): Boolean {
         val activeCamera = camera ?: return false
-        return activeCamera.frustum.intersects(bounds)
+        return activeCamera.getFrustum().intersects(bounds)
     }
 
     fun captureDiagnostic(callback: (FilamentPixelDiagnostic) -> Unit) {
