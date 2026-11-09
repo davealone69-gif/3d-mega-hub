@@ -83,28 +83,78 @@ class AvatarForgeRendererSmokeTest {
         }
         assertTrue("AvatarForge viewport lies outside the captured screen: $crop", crop.width() > 0 && crop.height() > 0)
 
-        val distinctColors = HashSet<Int>()
-        val stepX = (crop.width() / 80).coerceAtLeast(1)
-        val stepY = (crop.height() / 80).coerceAtLeast(1)
-        var y = crop.top
-        while (y < crop.bottom) {
-            var x = crop.left
-            while (x < crop.right) {
-                distinctColors.add(image.getPixel(x, y))
-                x += stepX
-            }
-            y += stepY
+        // Persist evidence before assertions so a failing run still carries the exact viewport.
+        val externalDirectory = requireNotNull(context.getExternalFilesDir(null)) {
+            "App external files directory is unavailable"
         }
-        assertTrue(
-            "AvatarForge submitted triangles but viewport pixels are effectively blank (only ${distinctColors.size} sampled colours).",
-            distinctColors.size > 24
-        )
-
-        val output = File(context.getExternalFilesDir(null), "avatarforge-renderer-smoke.png")
+        val output = File(externalDirectory, "avatarforge-renderer-smoke.png")
         FileOutputStream(output).use { stream ->
             assertTrue("Could not encode captured AvatarForge viewport", image.compress(Bitmap.CompressFormat.PNG, 100, stream))
         }
         assertTrue("Captured renderer screenshot is missing", output.isFile && output.length() > 0L)
-        activity.finish()
+
+        // Derive a background reference from the four viewport corners. Then demand a spatially
+        // substantial region of pixels that differs from that background, not just shader dither
+        // or a non-uniform clear pass.
+        val cornerSamples = ArrayList<Int>()
+        val cornerSizeX = (crop.width() / 12).coerceAtLeast(1)
+        val cornerSizeY = (crop.height() / 12).coerceAtLeast(1)
+        for (cornerY in listOf(crop.top, crop.bottom - cornerSizeY)) {
+            for (cornerX in listOf(crop.left, crop.right - cornerSizeX)) {
+                var y = cornerY
+                while (y < cornerY + cornerSizeY) {
+                    var x = cornerX
+                    while (x < cornerX + cornerSizeX) {
+                        cornerSamples.add(image.getPixel(x, y))
+                        x += (cornerSizeX / 8).coerceAtLeast(1)
+                    }
+                    y += (cornerSizeY / 8).coerceAtLeast(1)
+                }
+            }
+        }
+        fun medianChannel(shift: Int): Int =
+            cornerSamples.map { (it shr shift) and 0xff }.sorted()[cornerSamples.size / 2]
+        val backgroundR = medianChannel(16)
+        val backgroundG = medianChannel(8)
+        val backgroundB = medianChannel(0)
+
+        val gridWidth = 96
+        val gridHeight = 96
+        var changedSamples = 0
+        var centralChangedSamples = 0
+        var minChangedX = gridWidth
+        var maxChangedX = -1
+        var minChangedY = gridHeight
+        var maxChangedY = -1
+        for (gy in 0 until gridHeight) {
+            val y = crop.top + ((gy + 0.5f) * crop.height() / gridHeight).toInt()
+            for (gx in 0 until gridWidth) {
+                val x = crop.left + ((gx + 0.5f) * crop.width() / gridWidth).toInt()
+                val pixel = image.getPixel(x, y)
+                val red = (pixel shr 16) and 0xff
+                val green = (pixel shr 8) and 0xff
+                val blue = pixel and 0xff
+                val difference = maxOf(
+                    kotlin.math.abs(red - backgroundR),
+                    kotlin.math.abs(green - backgroundG),
+                    kotlin.math.abs(blue - backgroundB)
+                )
+                if (difference > 32) {
+                    changedSamples++
+                    minChangedX = minOf(minChangedX, gx)
+                    maxChangedX = maxOf(maxChangedX, gx)
+                    minChangedY = minOf(minChangedY, gy)
+                    maxChangedY = maxOf(maxChangedY, gy)
+                    if (gx in 12..83 && gy in 8..87) centralChangedSamples++
+                }
+            }
+        }
+        val coverage = changedSamples.toFloat() / (gridWidth * gridHeight)
+        assertTrue(
+            "Viewport pixels do not contain substantial rendered content: changed=${changedSamples}/${gridWidth * gridHeight} (${coverage * 100}%), central=${centralChangedSamples}, bounds=[${minChangedX},${minChangedY}..${maxChangedX},${maxChangedY}], background=(${backgroundR},${backgroundG},${backgroundB}). Screenshot saved at $output",
+            coverage >= 0.02f && centralChangedSamples >= 80 &&
+                maxChangedX - minChangedX >= 14 && maxChangedY - minChangedY >= 14
+        )
+
     }
 }
