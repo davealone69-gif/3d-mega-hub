@@ -45,6 +45,7 @@ if(ANDROID)
     add_library(afrender SHARED
         src/render/af_render.cpp
         src/render/af_render_capi.cpp
+        src/af_scene_bridge.cpp
         src/render/af_gl.cpp
         src/render/af_vk.cpp
         src/render/af_shaders.cpp)
@@ -98,6 +99,13 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_camera_frustum_test PRIVATE afcore)
     add_test(NAME camera_frustum_regression COMMAND af_camera_frustum_test)
+
+    add_executable(af_scene_visibility_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/scene_visibility_test.cpp)
+    target_include_directories(af_scene_visibility_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(af_scene_visibility_test PRIVATE afcore)
+    add_test(NAME scene_visibility_regression COMMAND af_scene_visibility_test)
 
     add_executable(af_imported_glb_pbr_test
         ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/imported_glb_pbr_test.cpp)

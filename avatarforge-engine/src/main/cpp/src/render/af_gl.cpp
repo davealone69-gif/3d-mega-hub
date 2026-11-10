@@ -27,7 +27,7 @@
 #include "af_render_common.h"
 #include "af_environment.h"
 #include "af_shaders.h"
-#include "../af_scene.h"
+#include "../af_scene_bridge.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>            /* EGL_OPENGL_ES3_BIT_KHR */
@@ -218,9 +218,8 @@ private:
     af_engine* engine_ = nullptr;
     CameraState camera_{};
     FrameScene scene_{};
-    Scene sceneGraph_{};
-    Visibility visibility_{};
-    af_engine* sceneGraphEngine_ = nullptr;
+    af_scene_bridge* sceneGraph_ = nullptr;
+    std::vector<af_scene_draw> visibility_;
     bool visibilityReady_ = false;
     EnvironmentParams env_{};
     ShGlobal sh_{};
@@ -1082,79 +1081,30 @@ void GlRenderer::buildSkeletonLines() {
 void GlRenderer::updateSceneGraph() {
     visibilityReady_ = false;
     visibility_.clear();
-    if (!engine_) {
-        sceneGraph_.clear();
-        sceneGraphEngine_ = nullptr;
+    if (!engine_) return;
+    if (!sceneGraph_) sceneGraph_ = af_scene_bridge_create();
+    if (!sceneGraph_) {
+        AF_GL_LOGE("Could not allocate the imported scene visibility bridge");
         return;
     }
 
     const int submeshCount = af_engine_submesh_count(engine_);
-    const af_submesh* submeshes = af_engine_submeshes(engine_);
-    if (submeshCount <= 0 || !submeshes) {
-        sceneGraph_.clear();
-        sceneGraphEngine_ = engine_;
+    if (submeshCount < 0) return;
+    std::vector<af_scene_draw> draws(static_cast<size_t>(submeshCount));
+    const float eye[3] = {scene_.eye.x, scene_.eye.y, scene_.eye.z};
+    int32_t drawCount = 0;
+    int32_t culledCount = 0;
+    const int32_t rc = af_scene_bridge_update(
+        sceneGraph_, engine_, scene_.camera.viewProj, eye, 1.0f,
+        draws.empty() ? nullptr : draws.data(), submeshCount, &drawCount, &culledCount);
+    if (rc != AF_OK || drawCount < 0 || drawCount > submeshCount) {
+        AF_GL_LOGW("Scene visibility unavailable (rc=%d); retaining validated full-submesh draw path", rc);
         return;
     }
-
-    /* Static glTF node transforms are already baked into engine-space vertices. Represent each
-       drawable primitive as a scene instance so its own bounds and index range participate in the
-       same CPU visibility pass used by the renderer. */
-    if (sceneGraphEngine_ != engine_ ||
-        sceneGraph_.instanceCount() != static_cast<size_t>(submeshCount)) {
-        sceneGraph_.clear();
-        sceneGraphEngine_ = engine_;
-        const int root = sceneGraph_.addNode("Imported asset");
-        for (int i = 0; i < submeshCount; ++i) {
-            const std::string name = "Submesh " + std::to_string(i);
-            const int node = sceneGraph_.addNode(name, root);
-            Geometry geometry;
-            geometry.name = name;
-            const int geometryIndex = sceneGraph_.addGeometry(geometry);
-            sceneGraph_.addInstance(name, geometryIndex, node);
-        }
-    }
-
-    for (int i = 0; i < submeshCount; ++i) {
-        const af_submesh& submesh = submeshes[i];
-        if (submesh.index_offset < 0 || submesh.index_count < 0 ||
-            submesh.vertex_offset < 0 || submesh.vertex_count < 0) {
-            AF_GL_LOGW("Scene visibility disabled: submesh %d has a negative draw range", i);
-            return;
-        }
-        const float minX = submesh.bounds_min[0], minY = submesh.bounds_min[1], minZ = submesh.bounds_min[2];
-        const float maxX = submesh.bounds_max[0], maxY = submesh.bounds_max[1], maxZ = submesh.bounds_max[2];
-        if (!std::isfinite(minX) || !std::isfinite(minY) || !std::isfinite(minZ) ||
-            !std::isfinite(maxX) || !std::isfinite(maxY) || !std::isfinite(maxZ) ||
-            minX > maxX || minY > maxY || minZ > maxZ) {
-            AF_GL_LOGW("Scene visibility disabled: submesh %d has invalid bounds", i);
-            return;
-        }
-        Geometry& geometry = sceneGraph_.geometry(i);
-        geometry.vertexCount = static_cast<size_t>(submesh.vertex_count);
-        geometry.indexCount = static_cast<size_t>(submesh.index_count);
-        geometry.bounds.centre = Vec3((minX + maxX) * 0.5f,
-                                      (minY + maxY) * 0.5f,
-                                      (minZ + maxZ) * 0.5f);
-        const float dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
-        geometry.bounds.radius = std::max(0.0001f, 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz));
-        geometry.lodCount = 1;
-        geometry.lodRanges[0].indexOffset = static_cast<size_t>(submesh.index_offset);
-        geometry.lodRanges[0].indexCount = static_cast<size_t>(submesh.index_count);
-        SceneInstance& instance = sceneGraph_.instance(i);
-        instance.localBounds = geometry.bounds;
-        instance.lodCount = 1;
-        instance.visible = true;
-    }
-
-    if (!sceneGraph_.updateTransforms()) {
-        AF_GL_LOGE("Scene visibility disabled: imported submesh node graph is invalid");
-        return;
-    }
-
-    Mat4 viewProjection{};
-    std::memcpy(viewProjection.m, scene_.camera.viewProj, sizeof(viewProjection.m));
-    sceneGraph_.buildVisibility(viewProjection, scene_.eye, 1.0f, &visibility_);
+    draws.resize(static_cast<size_t>(drawCount));
+    visibility_.swap(draws);
     visibilityReady_ = true;
+    (void)culledCount;
 }
 
 void GlRenderer::updateScene(float deltaSeconds) {
@@ -1395,13 +1345,13 @@ void GlRenderer::drawForwardPass() {
         const int n = af_engine_submesh_count(engine_);
         const int drawCount = visibilityReady_ ? static_cast<int>(visibility_.draws.size()) : n;
         for (int draw = 0; draw < drawCount; ++draw) {
-            const DrawItem* visibleItem = visibilityReady_ ? &visibility_.draws[static_cast<size_t>(draw)] : nullptr;
+            const af_scene_draw* visibleItem = visibilityReady_ ? &visibility_[static_cast<size_t>(draw)] : nullptr;
             const int i = visibleItem ? visibleItem->instance : draw;
             if (i < 0 || i >= n) continue;
             const af_submesh& sm = submeshes[i];
-            const size_t drawIndexOffset = visibleItem ? visibleItem->indexOffset
+            const size_t drawIndexOffset = visibleItem ? static_cast<size_t>(visibleItem->index_offset)
                                                        : static_cast<size_t>(sm.index_offset < 0 ? 0 : sm.index_offset);
-            const size_t drawIndexCount = visibleItem ? visibleItem->indexCount
+            const size_t drawIndexCount = visibleItem ? static_cast<size_t>(visibleItem->index_count)
                                                       : static_cast<size_t>(sm.index_count < 0 ? 0 : sm.index_count);
             /* Re-check immediately before converting the element offset to a byte pointer. */
             if (sm.index_offset < 0 || sm.index_count < 0 ||
@@ -1743,9 +1693,11 @@ void GlRenderer::setOptions(const RendererOptions& options) {
 
 void GlRenderer::attachEngine(af_engine* engine) {
     engine_ = engine;
-    sceneGraph_.clear();
+    if (sceneGraph_) {
+        af_scene_bridge_destroy(sceneGraph_);
+        sceneGraph_ = nullptr;
+    }
     visibility_.clear();
-    sceneGraphEngine_ = nullptr;
     visibilityReady_ = false;
     meshDirty_ = true;
     atlasUploaded_ = false;
@@ -1825,6 +1777,12 @@ void GlRenderer::destroyAll() {
             }
         }
     }
+    if (sceneGraph_) {
+        af_scene_bridge_destroy(sceneGraph_);
+        sceneGraph_ = nullptr;
+    }
+    visibility_.clear();
+    visibilityReady_ = false;
     if (display_ != EGL_NO_DISPLAY) {
         if (surface_ != EGL_NO_SURFACE && eglDestroySurface(display_, surface_) != EGL_TRUE) {
             std::fprintf(stderr, "[AvatarForge] EGL teardown: eglDestroySurface failed (0x%x)\n",
