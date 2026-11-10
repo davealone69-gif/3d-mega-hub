@@ -284,7 +284,16 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
         if (anyOf(w, kAthletic, 5)) { spec->build = AF_BUILD_ATHLETIC; spec->muscle = 0.60f; spec->body_fat = 0.18f; record(out, w, "build", &matched); continue; }
         if (anyOf(w, kMuscular, 6)) { spec->build = AF_BUILD_MUSCULAR; spec->muscle = 0.85f; spec->body_fat = 0.16f; record(out, w, "build", &matched); continue; }
         if (anyOf(w, kHeavy, 7)) { spec->build = AF_BUILD_HEAVY; spec->body_fat = 0.42f; record(out, w, "build", &matched); continue; }
-        if (anyOf(w, kAverage, 4)) { spec->build = AF_BUILD_AVERAGE; record(out, w, "build", &matched); continue; }
+        const std::string nextWord = (i + 1 < words.size()) ? words[i + 1].text : "";
+        const bool mediumHairQualifier =
+            w == "medium" &&
+            (isHairWord(nextWord) ||
+             (isSkinToneWord(nextWord) && i + 2 < words.size() && isHairWord(words[i + 2].text)));
+        if (anyOf(w, kAverage, 4) && !mediumHairQualifier) {
+            spec->build = AF_BUILD_AVERAGE;
+            record(out, w, "build", &matched);
+            continue;
+        }
 
         /* ---- stature adjectives ---- */
         if (w == "tall") {
