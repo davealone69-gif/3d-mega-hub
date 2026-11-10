@@ -32,6 +32,126 @@ class GeneratedAvatarRuntimeTest {
     private external fun nativeGetReadbackPixels(handle: Long): ByteArray?
     private external fun nativeDestroyGenerated(handle: Long)
 
+
+    @Test(timeout = 600000)
+    fun generatedAvatarDebugShaderMustProduceMagentaPixels() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val scenario = ActivityScenario.launch(MainActivity::class.java)
+        val surfaceReady = CountDownLatch(1)
+        var surfaceView: SurfaceView? = null
+        var surfaceWidth = 0
+        var surfaceHeight = 0
+        var handle = 0L
+        var bitmap: Bitmap? = null
+
+        try {
+            scenario.onActivity { activity ->
+                val root = activity.findViewById<ViewGroup>(android.R.id.content)
+                val view = SurfaceView(activity)
+                view.holder.addCallback(object : SurfaceHolder.Callback {
+                    override fun surfaceCreated(holder: SurfaceHolder) = Unit
+
+                    override fun surfaceChanged(
+                        holder: SurfaceHolder,
+                        format: Int,
+                        width: Int,
+                        height: Int
+                    ) {
+                        if (holder.surface.isValid && width > 0 && height > 0) {
+                            surfaceWidth = width
+                            surfaceHeight = height
+                            surfaceReady.countDown()
+                        }
+                    }
+
+                    override fun surfaceDestroyed(holder: SurfaceHolder) = Unit
+                })
+                root.addView(
+                    view,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                )
+                surfaceView = view
+            }
+
+            assertTrue(
+                "Diagnostic SurfaceView did not become ready",
+                surfaceReady.await(30, TimeUnit.SECONDS)
+            )
+
+            val view = requireNotNull(surfaceView)
+            assertTrue("Diagnostic Surface is invalid", view.holder.surface.isValid)
+
+            // The native JNI implementation fixes the generated avatar seed at 1337.
+            handle = nativeCreateGenerated(view.holder.surface, surfaceWidth, surfaceHeight)
+            assertTrue("Seed-1337 native generation failed", handle != 0L)
+
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+            var presented = false
+            while (!presented && System.nanoTime() < deadline) {
+                presented = nativeRenderGenerated(handle, 1.0f / 60.0f)
+                if (!presented) Thread.sleep(16)
+            }
+            assertTrue(
+                "No EGL-presented frame from magenta diagnostic shader: " +
+                    nativeGetVerificationReport(handle),
+                presented
+            )
+
+            val captured = Bitmap.createBitmap(
+                surfaceWidth,
+                surfaceHeight,
+                Bitmap.Config.ARGB_8888
+            )
+            bitmap = captured
+            val copyLatch = CountDownLatch(1)
+            val copyResult = AtomicInteger(Int.MIN_VALUE)
+
+            instrumentation.runOnMainSync {
+                PixelCopy.request(
+                    view,
+                    captured,
+                    { result ->
+                        copyResult.set(result)
+                        copyLatch.countDown()
+                    },
+                    Handler(Looper.getMainLooper())
+                )
+            }
+
+            assertTrue("Magenta PixelCopy callback timed out", copyLatch.await(15, TimeUnit.SECONDS))
+            assertEquals("Magenta PixelCopy failed", PixelCopy.SUCCESS, copyResult.get())
+
+            val pixels = IntArray(surfaceWidth * surfaceHeight)
+            captured.getPixels(
+                pixels, 0, surfaceWidth, 0, 0, surfaceWidth, surfaceHeight
+            )
+            val magentaPixels = pixels.count { pixel ->
+                Color.red(pixel) > 200 &&
+                    Color.green(pixel) < 50 &&
+                    Color.blue(pixel) > 200
+            }
+
+            assertTrue(
+                "Diagnostic Failed: Magenta shader is not visible. The camera is broken.",
+                magentaPixels > 5000
+            )
+        } finally {
+            if (handle != 0L) {
+                runCatching { nativeDestroyGenerated(handle) }
+            }
+            scenario.onActivity { activity ->
+                surfaceView?.let { view ->
+                    (view.parent as? ViewGroup)?.removeView(view)
+                }
+            }
+            scenario.close()
+            bitmap?.recycle()
+        }
+    }
+
     @Test(timeout = 600000)
     fun generatedAvatarMustProduceVisiblePixels() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
