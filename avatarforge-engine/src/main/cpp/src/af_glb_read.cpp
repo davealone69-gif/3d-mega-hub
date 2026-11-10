@@ -784,6 +784,10 @@ int buildPrimitive(const uint8_t* bin, size_t binSize, const json::Json& doc, co
 
 } /* namespace */
 
+bool glbLooksLikeWebp(const uint8_t* data, std::size_t size) {
+    return looksLikeWebp(data, size);
+}
+
 void GlbAsset::bounds(Vec3* outMin, Vec3* outMax) const {
     Vec3 lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
     bool any = false;
