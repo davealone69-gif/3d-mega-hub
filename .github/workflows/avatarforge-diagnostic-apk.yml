@@ -2,6 +2,9 @@ name: AvatarForge diagnostic APK and tests
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - integration/avatarforge-renderer-port
   pull_request:
     branches:
       - main
@@ -44,8 +47,8 @@ jobs:
             --output-on-failure \
             -R "glb_extension_regression|camera_frustum_regression"
 
-  android-magenta-test:
-    name: Build debug APK and verify magenta shader
+  android-generated-avatar-test:
+    name: Build debug APK and verify generated avatar pixels
     runs-on: ubuntu-latest
     needs: host-tests
     timeout-minutes: 45
@@ -57,7 +60,7 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
+          packages: "emulator platform-tools platforms;android-30 platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
       - name: Build diagnostic debug APK
         run: |
@@ -66,22 +69,20 @@ jobs:
       - name: Run PixelCopy diagnostic on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: 30
           target: google_apis
           arch: x86_64
           profile: pixel_2
           disable-animations: true
-          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data
+          emulator-options: -memory 2048 -cores 2 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data
           emulator-boot-timeout: 900
-          script: |
-            ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest \
-              -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest#generatedAvatarDebugShaderMustProduceMagentaPixels
+          script: ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest#generatedAvatarMustProduceVisiblePixels
       - name: Collect diagnostic APK and test evidence
         if: always()
         run: |
           mkdir -p avatarforge-diagnostic-output
           if [ -s app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk avatarforge-diagnostic-output/3D-Mega-Hub-magenta-diagnostic-debug.apk
+            cp app/build/outputs/apk/debug/app-debug.apk avatarforge-diagnostic-output/3D-Mega-Hub-generated-avatar-diagnostic-debug.apk
             sha256sum avatarforge-diagnostic-output/3D-Mega-Hub-magenta-diagnostic-debug.apk > avatarforge-diagnostic-output/SHA256SUMS
           fi
           if [ -d app/build/outputs/androidTest-results ]; then
@@ -93,7 +94,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: 3D-Mega-Hub-magenta-diagnostic-debug-apk
+          name: 3D-Mega-Hub-generated-avatar-diagnostic-debug-apk
           path: avatarforge-diagnostic-output/*
           if-no-files-found: warn
           retention-days: 14
