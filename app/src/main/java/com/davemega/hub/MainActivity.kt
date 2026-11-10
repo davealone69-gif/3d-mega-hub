@@ -221,6 +221,8 @@ private fun MegaHubApp(
                         activity.runOnUiThread { avatarImportStatus = progressLabel }
                     }
                 }
+                // Remote sources receive the same bounded structural validation as document-picker imports.
+                GlbValidator.validate(outputFile)
                 val safeStem = displayName.removeSuffix(".glb").replace(Regex("[^A-Za-z0-9._-]"), "_").take(48).ifEmpty { "remote" }
                 val fileName = "$safeStem-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}.glb"
                 val destination = File(directory, fileName)
