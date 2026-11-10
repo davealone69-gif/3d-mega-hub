@@ -251,6 +251,16 @@ class GeneratedAvatarRuntimeTest {
             }
             assertTrue("PixelCopy callback timed out", copyLatch.await(15, TimeUnit.SECONDS))
 
+            // Preserve the raw compositor capture before any fallback can replace it.
+            val outputDir = requireNotNull(context.getExternalFilesDir(null)) {
+                "External app files directory is unavailable"
+            }
+            val pixelCopyRawFile = File(outputDir, "pixelcopy_raw_capture.png")
+            FileOutputStream(pixelCopyRawFile).use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+            }
+            val pixelCopyImageDiagnostics = bitmapDiagnostics(bitmap)
+
             var pixelCopyGeometryPixels = 0
             if (pixelCopyResult.get() == PixelCopy.SUCCESS) {
                 pixelCopyGeometryPixels = countGeometryPixels(bitmap)
@@ -263,24 +273,35 @@ class GeneratedAvatarRuntimeTest {
             }
             var acceptedPixelCount = if (acceptedCapture == "PixelCopy") pixelCopyGeometryPixels else 0
             var glReadbackGeometryPixels = 0
+            var glReadbackImageDiagnostics = "glReadback=not-requested"
+            var glReadbackRawPath = "UNAVAILABLE"
             if (acceptedCapture == "none") {
                 val rgba = nativeGetReadbackPixels(handle)
                 if (rgba != null && rgba.size == surfaceWidth * surfaceHeight * 4) {
                     val fallback = bitmapFromGlRgba(rgba, surfaceWidth, surfaceHeight)
-                    capturedBitmap?.recycle()
-                    capturedBitmap = fallback
                     glReadbackGeometryPixels = countGeometryPixels(fallback)
+                    glReadbackImageDiagnostics = bitmapDiagnostics(fallback)
+                    val glReadbackFile = File(outputDir, "gl_readback_raw_capture.png")
+                    FileOutputStream(glReadbackFile).use { stream ->
+                        fallback.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                    }
+                    glReadbackRawPath = glReadbackFile.absolutePath
                     if (glReadbackGeometryPixels > 5000) {
                         acceptedCapture = "glReadPixels"
                         acceptedPixelCount = glReadbackGeometryPixels
+                        capturedBitmap?.recycle()
+                        capturedBitmap = fallback
                     } else {
                         acceptedCapture = "PixelCopy+glReadPixels-below-threshold"
+                        fallback.recycle()
                     }
                 } else {
                     acceptedCapture = "PixelCopy-failed+glReadPixels-unavailable"
+                    glReadbackImageDiagnostics = "glReadbackBytes=${rgba?.size ?: -1} expectedBytes=${surfaceWidth * surfaceHeight * 4}"
                 }
             } else {
                 glReadbackGeometryPixels = stats[7]
+                glReadbackImageDiagnostics = "nativeStatsReadbackPixels=${stats[7]}"
             }
 
             val report = nativeGetVerificationReport(handle)
@@ -289,8 +310,10 @@ class GeneratedAvatarRuntimeTest {
             val diagnostics = "capture=$acceptedCapture pixelCopyResult=${pixelCopyResult.get()} " +
                 "pixelCopyGeometryPixels=$pixelCopyGeometryPixels acceptedGeometryPixels=$acceptedPixelCount " +
                 "acceptedPercent=${acceptedPixelPercent}% bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=$totalPixels " +
+                "pixelCopyRaw=${pixelCopyRawFile.absolutePath} pixelCopyImage={$pixelCopyImageDiagnostics} " +
+                "glReadbackRaw=$glReadbackRawPath glReadbackImage={$glReadbackImageDiagnostics} " +
                 "frameCount=${stats[0]} successfulPresentedFrames=${stats[12]} drawCalls=${stats[1]} triangles=${stats[2]} " +
-                "vertices=${stats[3]} glReadbackGeometryPixels=$glReadbackGeometryPixels " +
+                "vertices=${stats[3]} nativeReadbackGeometryPixels=${stats[7]} " +
                 "joints=${stats[10]} blendshapes=${stats[11]} $report"
 
             if (acceptedPixelCount <= 5000) {
@@ -354,6 +377,39 @@ class GeneratedAvatarRuntimeTest {
             scenario.close()
             capturedBitmap?.recycle()
         }
+    }
+
+    private fun bitmapDiagnostics(bitmap: Bitmap): String {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        var minAlpha = 255
+        var maxAlpha = 0
+        var minRed = 255
+        var maxRed = 0
+        var minGreen = 255
+        var maxGreen = 0
+        var minBlue = 255
+        var maxBlue = 0
+        var transparent = 0
+        for (pixel in pixels) {
+            val alpha = Color.alpha(pixel)
+            val red = Color.red(pixel)
+            val green = Color.green(pixel)
+            val blue = Color.blue(pixel)
+            minAlpha = minOf(minAlpha, alpha)
+            maxAlpha = maxOf(maxAlpha, alpha)
+            minRed = minOf(minRed, red)
+            maxRed = maxOf(maxRed, red)
+            minGreen = minOf(minGreen, green)
+            maxGreen = maxOf(maxGreen, green)
+            minBlue = minOf(minBlue, blue)
+            maxBlue = maxOf(maxBlue, blue)
+            if (alpha == 0) transparent++
+        }
+        return "size=${width}x${height} alpha=[${minAlpha},${maxAlpha}] transparent=$transparent " +
+            "red=[${minRed},${maxRed}] green=[${minGreen},${maxGreen}] blue=[${minBlue},${maxBlue}]"
     }
 
     private fun countGeometryPixels(bitmap: Bitmap): Int {
