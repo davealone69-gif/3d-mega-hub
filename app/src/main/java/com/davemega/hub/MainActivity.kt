@@ -57,10 +57,9 @@ private fun MegaHubHome() {
     val diagnosticSnapshot = remember { mutableStateOf(RendererDiagnosticSnapshot()) }
     val shareStatus = remember { mutableStateOf("No diagnostic image has been exported yet.") }
 
-    val diagnosticFile = File(
-        context.getExternalFilesDir(Environment.DIRECTORY_PICTURES),
-        "diagnostics/failed_render.png"
-    )
+    val diagnosticFile = context
+        .getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+        ?.let { File(it, "diagnostics/failed_render.png") }
 
     Column(
         modifier = Modifier
@@ -87,7 +86,7 @@ private fun MegaHubHome() {
 
         Button(
             onClick = {
-                if (!diagnosticFile.isFile) {
+                if (diagnosticFile == null || !diagnosticFile.isFile) {
                     shareStatus.value = "MISSING: failed_render.png has not been generated."
                 } else {
                     runCatching {
