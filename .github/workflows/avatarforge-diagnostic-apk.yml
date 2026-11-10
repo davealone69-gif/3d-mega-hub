@@ -2,9 +2,6 @@ name: AvatarForge diagnostic APK and tests
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - integration/avatarforge-renderer-port
   pull_request:
     branches:
       - main
