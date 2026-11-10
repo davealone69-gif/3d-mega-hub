@@ -28,6 +28,7 @@
 #include "af_environment.h"
 #include "af_shaders.h"
 #include "../af_scene_bridge.h"
+#include "af_avatar_lod.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>            /* EGL_OPENGL_ES3_BIT_KHR */
@@ -198,7 +199,7 @@ private:
 
     /* ---- buffers ---- */
     GLuint cameraUbo_ = 0, postUbo_ = 0, materialUbo_ = 0;
-    GLuint vertexVbo_ = 0, indexIbo_ = 0, groundVbo_ = 0, lineVbo_ = 0;
+    GLuint vertexVbo_ = 0, indexIbo_ = 0, lodIndexIbo_ = 0, groundVbo_ = 0, lineVbo_ = 0;
     GLuint atlasTexture_[AF_TEX_COUNT] = {0, 0, 0, 0, 0};
     bool atlasUploaded_ = false;
     GLint64 vertexCapacity_ = 0, indexCapacity_ = 0, materialCapacity_ = 0, lineCapacity_ = 0;
@@ -219,6 +220,13 @@ private:
     CameraState camera_{};
     FrameScene scene_{};
     af_scene_bridge* sceneGraph_ = nullptr;
+    AvatarLodSet avatarLods_;
+    const af_engine* lodEngine_ = nullptr;
+    const af_vertex* lodVertices_ = nullptr;
+    const uint32_t* lodSourceIndices_ = nullptr;
+    const af_submesh* lodSubmeshes_ = nullptr;
+    int32_t lodVertexCount_ = -1, lodIndexCount_ = -1, lodSubmeshCount_ = -1;
+    bool lodReady_ = false;
     std::vector<af_scene_draw> visibility_;
     bool visibilityReady_ = false;
     EnvironmentParams env_{};
@@ -930,6 +938,43 @@ void GlRenderer::ensureGeometryBuffers() {
     }
     vertexCount_ = vcount;
     indexCount_ = icount;
+
+    /* Build index-only LODs once per imported topology. Animation may dirty the vertex stream
+       every frame, but must not trigger a new simplification. LOD indices address live vertices. */
+    const bool lodTopologyChanged = lodEngine_ != engine_ || lodVertices_ != verts ||
+        lodSourceIndices_ != indices || lodSubmeshes_ != submeshes ||
+        lodVertexCount_ != vcount || lodIndexCount_ != icount || lodSubmeshCount_ != submeshCount;
+    if (lodTopologyChanged) {
+        lodReady_ = false;
+        avatarLods_.clear();
+        if (lodIndexIbo_) { glDeleteBuffers(1, &lodIndexIbo_); lodIndexIbo_ = 0; }
+        lodEngine_ = engine_; lodVertices_ = verts; lodSourceIndices_ = indices;
+        lodSubmeshes_ = submeshes; lodVertexCount_ = vcount;
+        lodIndexCount_ = icount; lodSubmeshCount_ = submeshCount;
+        const GLint64 sourceBytes = GLint64(icount) * GLint64(sizeof(uint32_t));
+        /* Bound temporary CPU/GPU duplication on mobile; full-detail rendering remains fallback. */
+        if (sourceBytes > 0 && sourceBytes <= 32LL * 1024LL * 1024LL &&
+            avatarLods_.build(verts, static_cast<size_t>(vcount), indices,
+                              static_cast<size_t>(icount), submeshes,
+                              static_cast<size_t>(submeshCount)) && avatarLods_.levelCount() > 1) {
+            const auto& lodIndices = avatarLods_.indices();
+            const GLint64 lodBytes = static_cast<GLint64>(lodIndices.size()) * GLint64(sizeof(uint32_t));
+            if (!lodIndices.empty() && lodBytes <= 64LL * 1024LL * 1024LL) {
+                glGenBuffers(1, &lodIndexIbo_);
+                if (lodIndexIbo_) {
+                    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lodIndexIbo_);
+                    glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(lodBytes), lodIndices.data(), GL_STATIC_DRAW);
+                    if (glGetError() == GL_NO_ERROR) {
+                        lodReady_ = true;
+                        AF_GL_LOGI("Avatar LOD ready: levels=%d sourceTriangles=%d lod1Triangles=%d lod2Triangles=%d",
+                                   avatarLods_.levelCount(), icount / 3, avatarLods_.triangleCount(1),
+                                   avatarLods_.levelCount() > 2 ? avatarLods_.triangleCount(2) : 0);
+                    } else { glDeleteBuffers(1, &lodIndexIbo_); lodIndexIbo_ = 0; }
+                }
+            }
+        }
+        if (!lodReady_) AF_GL_LOGI("Avatar LOD unavailable; retaining original full-detail index buffer");
+    }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     meshDirty_ = false;
 }
@@ -1329,7 +1374,9 @@ void GlRenderer::drawForwardPass() {
         }
         glBindVertexArray(avatarVao_);
         glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexIbo_);
+        /* Shadow depth keeps the full source IBO; only forward colour uses camera-distance LOD. */
+        const bool useLodIndices = lodReady_ && lodIndexIbo_ != 0 && !debugMagenta;
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, useLodIndices ? lodIndexIbo_ : indexIbo_);
 
         if (!debugMagenta) {
             for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
@@ -1349,10 +1396,25 @@ void GlRenderer::drawForwardPass() {
             const int i = visibleItem ? visibleItem->instance : draw;
             if (i < 0 || i >= n) continue;
             const af_submesh& sm = submeshes[i];
-            const size_t drawIndexOffset = visibleItem ? static_cast<size_t>(visibleItem->index_offset)
-                                                       : static_cast<size_t>(sm.index_offset < 0 ? 0 : sm.index_offset);
-            const size_t drawIndexCount = visibleItem ? static_cast<size_t>(visibleItem->index_count)
-                                                      : static_cast<size_t>(sm.index_count < 0 ? 0 : sm.index_count);
+            size_t drawIndexOffset = visibleItem ? static_cast<size_t>(visibleItem->index_offset)
+                                                  : static_cast<size_t>(sm.index_offset < 0 ? 0 : sm.index_offset);
+            size_t drawIndexCount = visibleItem ? static_cast<size_t>(visibleItem->index_count)
+                                                : static_cast<size_t>(sm.index_count < 0 ? 0 : sm.index_count);
+            if (useLodIndices && avatarLods_.levelCount() > 1 &&
+                static_cast<size_t>(i) < avatarLods_.level(0).submeshes.size() && sm.index_count >= 768) {
+                const float cx = 0.5f * (sm.bounds_min[0] + sm.bounds_max[0]);
+                const float cy = 0.5f * (sm.bounds_min[1] + sm.bounds_max[1]);
+                const float cz = 0.5f * (sm.bounds_min[2] + sm.bounds_max[2]);
+                const float dx = cx - scene_.eye.x, dy = cy - scene_.eye.y, dz = cz - scene_.eye.z;
+                const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+                const int selectedLod = distance >= 16.0f && avatarLods_.levelCount() > 2 ? 2
+                                       : distance >= 8.0f ? 1 : 0;
+                const auto& ranges = avatarLods_.level(selectedLod).submeshes;
+                if (static_cast<size_t>(i) < ranges.size() && ranges[static_cast<size_t>(i)].indexCount > 0) {
+                    drawIndexOffset = ranges[static_cast<size_t>(i)].firstIndex;
+                    drawIndexCount = ranges[static_cast<size_t>(i)].indexCount;
+                }
+            }
             /* Re-check immediately before converting the element offset to a byte pointer. */
             if (sm.index_offset < 0 || sm.index_count < 0 ||
                 drawIndexOffset > static_cast<size_t>(indexCount_) ||
@@ -1700,6 +1762,10 @@ void GlRenderer::attachEngine(af_engine* engine) {
     visibility_.clear();
     visibilityReady_ = false;
     meshDirty_ = true;
+    if (lodIndexIbo_) { glDeleteBuffers(1, &lodIndexIbo_); lodIndexIbo_ = 0; }
+    avatarLods_.clear(); lodReady_ = false;
+    lodEngine_ = nullptr; lodVertices_ = nullptr; lodSourceIndices_ = nullptr; lodSubmeshes_ = nullptr;
+    lodVertexCount_ = lodIndexCount_ = lodSubmeshCount_ = -1;
     atlasUploaded_ = false;
     vertexDumpLogged_ = false;
     cameraDumpLogged_ = false;
@@ -1759,8 +1825,13 @@ void GlRenderer::destroyAll() {
                                         bloomDownProgram_, bloomUpProgram_, compositeProgram_,
                                         debugMagentaProgram_};
             for (GLuint p : programs) if (p) glDeleteProgram(p);
-            const GLuint buffers[6] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, groundVbo_};
+            const GLuint buffers[7] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, lodIndexIbo_, groundVbo_};
             for (GLuint b : buffers) if (b) glDeleteBuffers(1, &b);
+            lodIndexIbo_ = 0;
+            avatarLods_.clear();
+            lodReady_ = false;
+            lodEngine_ = nullptr; lodVertices_ = nullptr; lodSourceIndices_ = nullptr; lodSubmeshes_ = nullptr;
+            lodVertexCount_ = lodIndexCount_ = lodSubmeshCount_ = -1;
             if (lineVbo_) glDeleteBuffers(1, &lineVbo_);
             for (int i = 0; i < AF_TEX_COUNT; ++i) if (atlasTexture_[i]) glDeleteTextures(1, &atlasTexture_[i]);
             const GLuint vaos[4] = {avatarVao_, groundVao_, emptyVao_, lineVao_};
