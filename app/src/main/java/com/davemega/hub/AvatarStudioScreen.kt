@@ -161,6 +161,11 @@ fun AvatarStudioScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Renderer diagnostics are saved automatically to Downloads/3D Mega Hub Diagnostics when a renderer check runs.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 diagnosticScreenshot?.takeIf { it.isFile }?.let { screenshot ->
                     OutlinedButton(
                         onClick = {
