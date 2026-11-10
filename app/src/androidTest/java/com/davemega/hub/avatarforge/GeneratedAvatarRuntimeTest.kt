@@ -34,6 +34,7 @@ private data class CaptureDiagnostics(
     val source: String,
     val pixelCopyStatus: Int?,
     val captureTimestampElapsedRealtimeNanos: Long,
+    val rendererStatsTimestampElapsedRealtimeNanos: Long,
     val rendererFrameIndex: Int,
     val rendererPresentedFrames: Int,
     val alphaIndicatorsValid: Boolean,
@@ -281,6 +282,7 @@ class GeneratedAvatarRuntimeTest {
             assertEquals("GL readback width differs from the live SurfaceView", surfaceWidth, stats[8])
             assertEquals("GL readback height differs from the live SurfaceView", surfaceHeight, stats[9])
 
+            val rendererStatsTimestampNanos = SystemClock.elapsedRealtimeNanos()
             val rendererStatsAtCapture = nativeGetVerificationStats(handle)
             val rendererReportAtCapture = nativeGetVerificationReport(handle)
             val capture = captureWithEvidence(
@@ -290,6 +292,7 @@ class GeneratedAvatarRuntimeTest {
                 height = surfaceHeight,
                 handle = handle,
                 rendererStatsAtCapture = rendererStatsAtCapture,
+                rendererStatsTimestampNanos = rendererStatsTimestampNanos,
                 pixelCopyStatus = pixelCopyResult,
                 instrumentation = instrumentation
             )
@@ -395,6 +398,7 @@ class GeneratedAvatarRuntimeTest {
         height: Int,
         handle: Long,
         rendererStatsAtCapture: IntArray,
+        rendererStatsTimestampNanos: Long,
         pixelCopyStatus: AtomicInteger,
         instrumentation: Instrumentation
     ): CaptureResult {
@@ -425,7 +429,7 @@ class GeneratedAvatarRuntimeTest {
 
         val pixelCopyDiagnostics = diagnose(
             pixelCopyBitmap, "pixelcopy", pixelCopyStatus.get(), captureTimestampNanos,
-            rendererFrameIndex, rendererPresentedFrames
+            rendererStatsTimestampNanos, rendererFrameIndex, rendererPresentedFrames
         )
         pixelCopyBitmap?.let { savePng(it, File(outputDir, "raw_pixelcopy.png")) }
 
@@ -445,7 +449,7 @@ class GeneratedAvatarRuntimeTest {
             }.getOrNull()
             fallbackDiagnostics = diagnose(
                 fallbackBitmap, "native-fallback", null, SystemClock.elapsedRealtimeNanos(),
-                rendererFrameIndex, rendererPresentedFrames
+                rendererStatsTimestampNanos, rendererFrameIndex, rendererPresentedFrames
             )
             fallbackBitmap?.let { savePng(it, File(outputDir, "raw_native_fallback.png")) }
 
@@ -481,13 +485,14 @@ class GeneratedAvatarRuntimeTest {
         source: String,
         pixelCopyStatus: Int?,
         captureTimestampElapsedRealtimeNanos: Long,
+        rendererStatsTimestampElapsedRealtimeNanos: Long,
         rendererFrameIndex: Int,
         rendererPresentedFrames: Int
     ): CaptureDiagnostics {
         if (bitmap == null) {
             return CaptureDiagnostics(
                 source, pixelCopyStatus, captureTimestampElapsedRealtimeNanos,
-                rendererFrameIndex, rendererPresentedFrames, false,
+                rendererStatsTimestampElapsedRealtimeNanos, rendererFrameIndex, rendererPresentedFrames, false,
                 0, 0, "null", false,
                 1f, 0f, 0, List(256) { 0 }, 0, 0, 0, 0, 0f, 0
             )
