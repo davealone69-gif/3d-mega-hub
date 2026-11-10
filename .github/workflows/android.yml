@@ -109,19 +109,17 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "emulator platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
+          packages: "emulator platform-tools platforms;android-30 platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
-      - name: Update Android Emulator to current SDK tools
-        run: sdkmanager --install "emulator"
       - name: Run real imported-GLB AvatarForge GLES renderer test
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: 30
           target: google_apis
           arch: x86_64
           profile: pixel_2
-          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 4096 -no-snapshot -wipe-data
-          emulator-boot-timeout: 600
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -memory 2048 -cores 2 -no-snapshot -wipe-data
+          emulator-boot-timeout: 900
           disable-animations: true
           script: bash .github/scripts/avatarforge-render-smoke.sh
       - name: Upload AvatarForge renderer evidence
