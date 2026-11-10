@@ -105,14 +105,14 @@ The live GitHub inventory returned 15 branches. Keep exactly one active work tar
 | `work/android-shell-foundation` | Early divergent shell and wrapper foundation, superseded by the integrated app/toolchain. |
 | `trae/agent-hDYcEF` | Contains generated Gradle cache/lock files and older viewer edits; no cache files are to be imported. |
 | `fix/filament-engine-jni-init`, `work/engine-integration-candidate`, `work/filament-gles-renderer`, `work/filament-renderer-live-diagnostics` | Ancestor branches behind the canonical integration; no unique forward commits against canonical. |
-| `work/fileprovider-renderer-diagnostics` | Kept as a historical recovery point only; not an active target. |
 
 ### Exact-head validation follow-up
 
 - The latest recorded canonical CI set for commit `46b13ee87f0daeaf5e89ae752575243b07e98a22` passed Android lint, unit tests, debug APK assembly, R8/minification, native host regression, and signed preview APK/AAB generation.
 - Emulator install and launch succeeded, but the smoke script then exited with code 1. This is a failed smoke gate, not a successful renderer test.
 - The generated-avatar and AvatarForge GLES instrumentation jobs failed before execution because `AvatarForgeRendererSmokeTest.kt` called a no-argument `UiDevice.takeScreenshot()` method unavailable in the pinned UI Automator 2.3.0 dependency. The test was corrected on this branch to use `InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()`, which returns the Bitmap used by the existing pixel assertions.
-- The corrected test change is committed as `42da0e396555eb6fb340a072b5d9396184e0164e`. **Fresh CI for this commit is required; no pass is claimed yet.**
+- The corrected test change is committed as `42da0e396555eb6fb340a072b5d9396184e0164e`. The emulator smoke script was also corrected in `5b8f6c1aef6e1a88c3d5e3352300f6febcfe4baa`: it now trusts the successful `am start -W` result plus a live process PID instead of a brittle `dumpsys` text-format grep. Existing GLB-load, frame, ANR and screenshot checks remain in place. **Fresh CI for these exact commits is required; no pass is claimed yet.**
+- PR #11 was closed as superseded after confirming its unique GLB fixture facts and user-confirmed display note are already present in the canonical README. Its older baseline README was not merged.
 - Samsung SM-S921B rendering and visible-pixel verification remain **UNVERIFIED**. Production signing remains **BLOCKED** pending the user's production keystore and protected CI secrets.
 
 Do not merge to `main` until fresh exact-head CI, emulator install/launch, real GLES pixel evidence and review are complete. The user's physical-phone test remains a separate final gate.
