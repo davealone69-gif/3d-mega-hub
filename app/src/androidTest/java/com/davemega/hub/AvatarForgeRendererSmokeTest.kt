@@ -5,7 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
+import android.view.PixelCopy
+import android.view.SurfaceView
 import android.view.View
 import android.view.ViewGroup
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -18,6 +22,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -280,14 +286,36 @@ class AvatarForgeRendererSmokeTest {
         assertTrue("Renderer reported a GLES error", prefs.getInt("gl_error", -1) == 0)
         assertTrue("Renderer reported an EGL presentation error", prefs.getInt("egl_error", -1) == 0)
 
-        val location = IntArray(2)
-        avatarForgeView.getLocationOnScreen(location)
-        val bounds = Rect(location[0], location[1], location[0] + avatarForgeView.width, location[1] + avatarForgeView.height)
-        val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
-        assertNotNull("Could not capture emulator screen", screenshot)
-        val image = screenshot!!
-        val crop = Rect(bounds).apply { intersect(0, 0, image.width, image.height) }
-        assertTrue("AvatarForge viewport lies outside the captured screen: $crop", crop.width() > 0 && crop.height() > 0)
+        /* Capture the SurfaceView buffer itself. UiAutomation.takeScreenshot() can omit or
+           capture a separately-composited SurfaceView as its background on emulator/GPU paths;
+           it is not valid evidence for a native GLES texture sample. */
+        val surfaceView = avatarForgeView as? SurfaceView
+            ?: throw AssertionError("AvatarForgeSurfaceView is not backed by Android SurfaceView")
+        val image = Bitmap.createBitmap(surfaceView.width, surfaceView.height, Bitmap.Config.ARGB_8888)
+        val pixelCopyLatch = CountDownLatch(1)
+        var pixelCopyResult = PixelCopy.ERROR_UNKNOWN
+        PixelCopy.request(surfaceView, image, { result ->
+            pixelCopyResult = result
+            pixelCopyLatch.countDown()
+        }, Handler(Looper.getMainLooper()))
+        assertTrue("PixelCopy did not return the actual AvatarForge SurfaceView buffer",
+            pixelCopyLatch.await(15, TimeUnit.SECONDS))
+        assertTrue("PixelCopy failed for AvatarForge SurfaceView: result=$pixelCopyResult",
+            pixelCopyResult == PixelCopy.SUCCESS)
+        val crop = Rect(0, 0, image.width, image.height)
+        assertTrue("AvatarForge SurfaceView capture has invalid dimensions: $crop",
+            crop.width() > 0 && crop.height() > 0)
+
+        // Persist the exact renderer buffer before colour/coverage assertions so failures retain evidence.
+        val externalDirectory = requireNotNull(context.getExternalFilesDir(null)) {
+            "App external files directory is unavailable"
+        }
+        val output = File(externalDirectory, "avatarforge-renderer-smoke.png")
+        FileOutputStream(output).use { stream ->
+            assertTrue("Could not encode captured AvatarForge SurfaceView",
+                image.compress(Bitmap.CompressFormat.PNG, 100, stream))
+        }
+        assertTrue("Captured renderer screenshot is missing", output.isFile && output.length() > 0L)
 
         if (glb.name.contains("webp-extension")) {
             val texturedCenter = image.getPixel(crop.centerX(), crop.centerY())
@@ -295,20 +323,10 @@ class AvatarForgeRendererSmokeTest {
             val green = (texturedCenter shr 8) and 0xff
             val blue = texturedCenter and 0xff
             assertTrue(
-                "Required WebP texture was not visible at the center of the rendered triangle: RGB=($red,$green,$blue)",
+                "Required WebP texture was not visible in PixelCopy SurfaceView buffer at the triangle centre: RGB=($red,$green,$blue)",
                 red > green + 20 && blue > green + 20 && red > 40 && blue > 40
             )
         }
-
-        // Persist evidence before assertions so a failing run still carries the exact viewport.
-        val externalDirectory = requireNotNull(context.getExternalFilesDir(null)) {
-            "App external files directory is unavailable"
-        }
-        val output = File(externalDirectory, "avatarforge-renderer-smoke.png")
-        FileOutputStream(output).use { stream ->
-            assertTrue("Could not encode captured AvatarForge viewport", image.compress(Bitmap.CompressFormat.PNG, 100, stream))
-        }
-        assertTrue("Captured renderer screenshot is missing", output.isFile && output.length() > 0L)
 
         // Compare against a robust four-corner background estimate. A successful frame counter or
         // post-process draw alone is not accepted as evidence of visible model geometry.
