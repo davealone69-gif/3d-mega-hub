@@ -1343,7 +1343,7 @@ void GlRenderer::drawForwardPass() {
 
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
-        const int drawCount = visibilityReady_ ? static_cast<int>(visibility_.draws.size()) : n;
+        const int drawCount = visibilityReady_ ? static_cast<int>(visibility_.size()) : n;
         for (int draw = 0; draw < drawCount; ++draw) {
             const af_scene_draw* visibleItem = visibilityReady_ ? &visibility_[static_cast<size_t>(draw)] : nullptr;
             const int i = visibleItem ? visibleItem->instance : draw;
