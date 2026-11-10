@@ -1,4 +1,5 @@
 #include "af_isosurface.h"
+#include "af_prompt.h"
 
 #include <cmath>
 #include <cstdio>
@@ -23,6 +24,30 @@ std::vector<float> sample(int threads, int blockSize) {
 }
 
 int main() {
+    // Explicit numeric measurements must win over descriptive adjectives regardless of order.
+    af_spec measured{};
+    af_spec_init(&measured);
+    af::PromptParse measuredParse;
+    const int measuredMatches = af::parsePrompt(
+        "Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans",
+        &measured, &measuredParse);
+    require(measuredMatches > 0, "avatar prompt matched no attributes");
+    require(measured.sex == AF_SEX_FEMALE, "female prompt was not parsed");
+    require(measured.build == AF_BUILD_ATHLETIC, "athletic build was not parsed");
+    require(measured.hair_style == AF_HAIR_MEDIUM, "medium hair was not parsed");
+    require(measured.outfit == AF_OUTFIT_JEANS_JACKET, "jeans outfit was not parsed");
+    require(std::fabs(measured.height_m - 1.75f) < 0.001f,
+            "explicit 175 cm height was overwritten by the word tall");
+
+    // A hairstyle adjective must not be mistaken for a person's stature.
+    af_spec shortHair{};
+    af_spec_init(&shortHair);
+    af::PromptParse shortHairParse;
+    af::parsePrompt("short hair", &shortHair, &shortHairParse);
+    require(shortHair.hair_style == AF_HAIR_SHORT, "short hair style was not parsed");
+    require(std::fabs(shortHair.height_m - 1.75f) < 0.001f,
+            "short hair incorrectly changed avatar stature");
+
     const std::vector<float> reference = sample(1, 1);
     require(!reference.empty(), "reference grid is empty");
 
