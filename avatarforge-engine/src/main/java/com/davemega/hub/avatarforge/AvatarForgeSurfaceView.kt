@@ -1,12 +1,9 @@
 package com.davemega.hub.avatarforge
 
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.os.Build
-import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -16,7 +13,6 @@ import android.view.PixelCopy
 import android.view.ScaleGestureDetector
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
