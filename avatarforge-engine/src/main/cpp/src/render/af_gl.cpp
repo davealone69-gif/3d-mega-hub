@@ -1319,20 +1319,11 @@ void GlRenderer::drawShadowPass() {
     glBindVertexArray(avatarVao_);
     glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexIbo_);
-    if (visibilityReady_) {
-        for (const DrawItem& item : visibility_.draws) {
-            if (item.indexOffset > static_cast<size_t>(indexCount_) ||
-                item.indexCount > static_cast<size_t>(indexCount_) - item.indexOffset) continue;
-            const size_t byteOffset = item.indexOffset * sizeof(uint32_t);
-            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(item.indexCount), GL_UNSIGNED_INT,
-                           reinterpret_cast<const void*>(byteOffset));
-            ++drawCalls_;
-        }
-    } else {
-        glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
-        ++drawCalls_;
-    }
+    /* Shadow depth uses the light's own camera, not the viewer frustum. Keep the complete
+       model here; viewer-camera culling is applied only to the forward colour pass. */
+    glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
     glDisable(GL_POLYGON_OFFSET_FILL);
+    ++drawCalls_;
 }
 
 void GlRenderer::drawForwardPass() {
