@@ -85,39 +85,47 @@ CI status can change after this README is updated. Check the latest [GitHub Acti
 
 [Download the previously published debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk). This is an older troubleshooting build, not the current integration candidate and not a production release.
 
-## Prompt-to-avatar validation and next stage
+## Renderer completion first, avatar quality second
 
-**Owner phone-test finding (2026-11-11):** changing the prompt did not visibly change the displayed character. Treat prompt-driven visible variation as **FAILED IN USER TEST / NOT FIXED**. Renderer success and a generated GLB do not establish that prompt attributes affect the exported character.
+**Priority correction (2026-11-11):** finish and verify the remaining renderer and GLB pipeline before spending effort on avatar-generation quality. Prompt variation has now been observed by the owner using the two diagnostic prompts below; the generated characters are visibly different but poor quality. Do not let avatar-quality work displace renderer completion.
 
-### Two parser-supported diagnostic prompts
+### Stage A: finish the renderer and model pipeline
 
-Use these exact inputs as a differential test:
+Work only on `integration/avatarforge-renderer-port`, with PR #9 as the sole active review.
+
+1. **Exact-head Android CI.** Complete debug APK assembly, unit tests, lint, R8/minification, native host tests and all instrumentation against the latest branch head. Distinguish runner cancellations from actual test failures.
+2. **Imported GLB path.** Verify self-contained GLB import, validation, app-private copy, reload and error handling. External-resource `.gltf` remains explicitly unsupported unless separately implemented and tested.
+3. **Native GLES rendering.** Verify shader compile/link, vertex/index/texture upload, draw calls, EGL swaps and PixelCopy geometry on the real imported/generated GLB route. Preserve captures and diagnostics.
+4. **Model/material correctness.** Verify transforms, normals, bounds, materials, textures, alpha handling, camera framing and visible output across representative GLBs. Do not infer texture/material support from geometry-only fixtures.
+5. **Lifecycle and resilience.** Verify surface create/destroy/recreate, pause/resume, repeated model replacement, cancellation, malformed/oversized files, resource cleanup and no crashes/ANRs.
+6. **Animation and skinning.** Establish actual support boundaries with fixtures containing skins, joints, animations and morph targets. Verify pose evaluation and deformation, not merely successful parsing. Clearly mark unsupported features.
+7. **Emulator and physical device.** Complete emulator install/launch/render checks, then test the exact candidate on Samsung SM-S921B for visible output, import, surface recreation, memory and thermal behaviour. Record APK SHA-256 and evidence.
+
+### Stage B: improve avatar generation after Stage A
+
+The owner tested the following prompts and reports that the displayed models change, but both results are poor quality:
 
 1. `Adult man, muscular build, tall, dark skin, short black hair, red shirt`
 2. `Adult woman, slim build, short, pale skin, long brown hair, blue dress`
 
-The native parser contains explicit vocabulary for male/female, muscular/slim, tall/short, skin-tone qualifiers, hair length and named colours. These examples are chosen from that vocabulary. They are test inputs only; successful parsing is not proof that the renderer visibly applies every attribute.
+Preserve the working procedural generator. Once Stage A is complete:
 
-### Next stage: prove prompt changes reach the model
+1. Add parser/spec differential tests for the two prompts, including sequential parsing into a reused spec to detect stale state.
+2. Verify each prompt's attributes propagate into exported GLB geometry and material values. File hashes alone are insufficient.
+3. Improve anatomy, silhouette, face, hands, feet, hair, clothing and material quality in measurable increments.
+4. Show recognised and ignored prompt tokens in the UI. Do not imply unsupported words were understood.
+5. Re-run controlled GLB and GLES image comparisons after each generation change.
 
-Work only on `integration/avatarforge-renderer-port` and keep PR #9 as the sole active review.
-
-1. **Parser differential regression (first gate).** Add native tests for both exact prompts. Assert the parsed specs differ in sex, build, height, skin melanin, hair style/colour and garment colour where those fields are supported. Also test parsing prompt B after prompt A using the same spec object, and compare against parsing B from a fresh default spec. This catches stale state and prompt-order leakage.
-2. **Generation propagation (second gate).** Generate two independent GLBs from those parsed specs. Record each prompt's matched tokens and resolved spec. Compare exported GLB structure, vertex positions, bounds, normals and material/base-colour data. Require meaningful, attributable differences; different file hashes alone are insufficient.
-3. **Renderer differential (third gate).** Load both generated GLBs through the real AvatarForge GLES route under the same camera, lighting and viewport conditions. Capture both images and verify visible differences in the expected regions. Preserve the GLBs, spec reports, captures and hashes as CI artifacts.
-4. **UI truthfulness (fourth gate).** Show which prompt tokens were recognised and which were ignored. Warn or reject a prompt with no supported attributes. Do not report a successful personalised result merely because a default mesh was exported.
-5. **Phone verification (release gate).** Install the exact candidate on the Samsung SM-S921B. Run both prompts and compare the actual displayed characters. Record APK SHA-256 and captures. Emulator evidence does not replace this phone test.
-
-### Prompt-generation evidence ledger
+### Evidence ledger
 
 | Item | Status | Evidence / next action |
 |---|---|---|
+| Prompt changes produce visibly different displayed models | **OWNER-OBSERVED** | Owner reports two prompts changed the displayed character; quality is poor |
 | Deterministic native prompt parser exists | **REAL + VERIFIED (SOURCE)** | `af_prompt.cpp` contains explicit attribute vocabularies and spec assignments |
-| Two supported diagnostic prompts documented | **REAL + VERIFIED (SOURCE)** | Exact prompts above use parser-recognised vocabulary |
-| Prompt changes visibly change the character | **FAILED IN USER TEST** | Owner reports changing the prompt did not change the displayed picture; reproduce and diagnose |
-| Parsed attributes propagate into distinct exported GLBs | **MISSING** | Add parser and generated-GLB differential regression tests |
-| Two prompts render visibly different characters | **MISSING** | Add controlled GLES image comparison |
-| Prompt recognition/ignored-token feedback | **PARTIAL / NEEDS VALIDATION** | Generation result has a prompt-match warning path; UI should expose recognised and ignored tokens clearly |
+| Renderer and imported-GLB path complete | **PARTIAL** | Exact-head imported-GLB GLES instrumentation and remaining lifecycle/material coverage still required |
+| GLES generated-avatar diagnostic | **REAL + VERIFIED (EMULATOR, PRIOR HEAD)** | Prior CI proved generated geometry rendered; does not close imported-GLB or physical-device gates |
+| Samsung SM-S921B runtime | **UNVERIFIED** | Requires exact candidate APK installed and tested on the phone |
+| Avatar visual quality | **POOR / NEEDS IMPROVEMENT** | Owner's direct comparison; defer quality work until Stage A is complete |
 | AI/natural-language understanding | **MISSING** | Current implementation is deterministic keyword parsing, not an LLM or generative AI model |
 
-Do not mark this stage complete based on a successful renderer smoke test, a non-empty GLB, different filenames or different file hashes alone. The proof must connect prompt → parsed spec → generated geometry/materials → visible rendered difference.
+Do not mark renderer completion from a successful build or a single generated-avatar screenshot. Each supported path and lifecycle gate needs its own real evidence. Do not mark avatar quality improved without before/after GLB and rendered-image comparisons.
