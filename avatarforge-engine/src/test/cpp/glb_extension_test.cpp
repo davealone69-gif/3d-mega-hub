@@ -79,10 +79,10 @@ void testWebpSignatureDetection() {
 
     auto check = [](const char* name, bool actual, bool expected) {
         if (actual == expected) {
-            std::printf("PASS  %s\\n", name);
+            std::printf("PASS  %s\n", name);
         } else {
             ++failures;
-            std::printf("FAIL  %s: got=%d expected=%d\\n", name,
+            std::printf("FAIL  %s: got=%d expected=%d\n", name,
                         actual ? 1 : 0, expected ? 1 : 0);
         }
     };
@@ -95,7 +95,7 @@ void testWebpSignatureDetection() {
           af::glbLooksLikeWebp(jpeg.data(), jpeg.size()), false);
     check("rejects truncated RIFF/WEBP header",
           af::glbLooksLikeWebp(webp.data(), 11), false);
-    check("rejects RIFF length beyond supplied bytes",
+    check("rejects null WebP data pointer",
           af::glbLooksLikeWebp(nullptr, webp.size()), false);
 
     std::vector<uint8_t> invalidLength = webp;
@@ -135,10 +135,10 @@ void testCameraFrustumFor175cmAabb() {
 
     auto check = [](const char* name, bool condition) {
         if (condition) {
-            std::printf("PASS  %s\\n", name);
+            std::printf("PASS  %s\n", name);
         } else {
             ++failures;
-            std::printf("FAIL  %s\\n", name);
+            std::printf("FAIL  %s\n", name);
         }
     };
 
@@ -261,10 +261,10 @@ int main() {
     const bool fallbackOk = fallbackRc == AF_OK && fallbackAsset.materials.size() == 1 &&
         fallbackAsset.materials[0].baseColorTexture == 1 && fallbackAsset.textures.size() == 2 &&
         fallbackAsset.textures[1].width == 1 && fallbackAsset.textures[1].rgba.size() == 4;
-    if (fallbackOk) std::printf("PASS  optional WebP core-source fallback\\n");
+    if (fallbackOk) std::printf("PASS  optional WebP core-source fallback\n");
     else {
         ++failures;
-        std::printf("FAIL  optional WebP fallback: rc=%d texture=%d error=%s\\n",
+        std::printf("FAIL  optional WebP fallback: rc=%d texture=%d error=%s\n",
                     fallbackRc, fallbackAsset.materials.empty() ? -99 : fallbackAsset.materials[0].baseColorTexture,
                     fallbackError.c_str());
     }
