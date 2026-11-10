@@ -185,6 +185,8 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
     /* Explicit numeric height measurements take precedence over generic stature adjectives,
        regardless of their order in the prompt (for example, "175 cm tall"). */
     bool explicitHeight = false;
+    bool tallAdjective = false;
+    bool shortAdjective = false;
     /* A word can be consumed by a branch that is not the word's own noun branch: "68 cm waist"
        eats the noun "waist". A later number must not look back at a noun that is already spent,
        or "68 cm waist, 96 cm hips" would set the waist twice. */
@@ -297,17 +299,11 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
 
         /* ---- stature adjectives ---- */
         if (w == "tall") {
-            if (!explicitHeight) {
-                spec->height_m = (spec->sex == AF_SEX_FEMALE) ? 1.78f : 1.90f;
-                record(out, w, "height_m", &matched);
-            }
+            tallAdjective = true;
             continue;
         }
         if (w == "short" && (i + 1 >= words.size() || !isHairWord(words[i + 1].text))) {
-            if (!explicitHeight) {
-                spec->height_m = (spec->sex == AF_SEX_FEMALE) ? 1.56f : 1.68f;
-                record(out, w, "height_m", &matched);
-            }
+            shortAdjective = true;
             continue;
         }
 
@@ -505,6 +501,18 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
                 record(out, words[i].text + " " + noun, "cloth_tone", &matched);
                 break;
             }
+        }
+    }
+
+    /* Resolve stature adjectives after the whole prompt so sex order cannot affect defaults.
+       Explicit numeric measurements always win, regardless of where "tall"/"short" appears. */
+    if (!explicitHeight) {
+        if (tallAdjective) {
+            spec->height_m = (spec->sex == AF_SEX_FEMALE) ? 1.78f : 1.90f;
+            record(out, "tall", "height_m", &matched);
+        } else if (shortAdjective) {
+            spec->height_m = (spec->sex == AF_SEX_FEMALE) ? 1.56f : 1.68f;
+            record(out, "short", "height_m", &matched);
         }
     }
 
