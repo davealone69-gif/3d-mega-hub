@@ -83,6 +83,7 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/glb_extension_test.cpp)
     target_include_directories(af_glb_extension_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/render
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_glb_extension_test PRIVATE afcore)
     add_test(NAME glb_extension_regression COMMAND af_glb_extension_test)
