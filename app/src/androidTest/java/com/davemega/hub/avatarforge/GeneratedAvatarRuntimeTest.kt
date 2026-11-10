@@ -22,6 +22,38 @@ import java.io.FileOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import org.json.JSONArray
+import org.json.JSONObject
+import kotlinx.coroutines.runBlocking
+
+private const val VISIBILITY_THRESHOLD = 5000
+
+private data class CaptureDiagnostics(
+    val source: String,
+    val width: Int,
+    val height: Int,
+    val config: String,
+    val hasAlphaChannel: Boolean,
+    val alphaZeroFraction: Float,
+    val alphaOpaqueFraction: Float,
+    val alphaDistinctLevels: Int,
+    val meanR: Int,
+    val meanG: Int,
+    val meanB: Int,
+    val meanA: Int,
+    val stddevA: Float,
+    val geometryPixels: Int
+)
+
+private data class CaptureResult(
+    val bitmap: Bitmap?,
+    val pixelCopyBitmap: Bitmap?,
+    val nativeFallbackBitmap: Bitmap?,
+    val finalDiagnostics: CaptureDiagnostics,
+    val pixelCopyDiagnostics: CaptureDiagnostics,
+    val nativeFallbackDiagnostics: CaptureDiagnostics?,
+    val usedFallback: Boolean
+)
 
 @RunWith(AndroidJUnit4::class)
 class GeneratedAvatarRuntimeTest {
@@ -163,6 +195,7 @@ class GeneratedAvatarRuntimeTest {
         var surfaceHeight = 0
         var handle = 0L
         var capturedBitmap: Bitmap? = null
+        var captureEvidence: CaptureResult? = null
         var failureScreenshotPath: String? = null
         var pixelCopyResult = AtomicInteger(Int.MIN_VALUE)
 
@@ -240,83 +273,34 @@ class GeneratedAvatarRuntimeTest {
             assertEquals("GL readback width differs from the live SurfaceView", surfaceWidth, stats[8])
             assertEquals("GL readback height differs from the live SurfaceView", surfaceHeight, stats[9])
 
-            val bitmap = Bitmap.createBitmap(surfaceWidth, surfaceHeight, Bitmap.Config.ARGB_8888)
-            capturedBitmap = bitmap
-            val copyLatch = CountDownLatch(1)
-            instrumentation.runOnMainSync {
-                PixelCopy.request(view, bitmap, { result ->
-                    pixelCopyResult.set(result)
-                    copyLatch.countDown()
-                }, Handler(Looper.getMainLooper()))
+            val capture = runBlocking {
+                captureWithEvidence(
+                    context = context,
+                    view = view,
+                    width = surfaceWidth,
+                    height = surfaceHeight,
+                    handle = handle,
+                    pixelCopyStatus = pixelCopyResult,
+                    instrumentation = instrumentation
+                )
             }
-            assertTrue("PixelCopy callback timed out", copyLatch.await(15, TimeUnit.SECONDS))
-
-            // Preserve the raw compositor capture before any fallback can replace it.
-            val outputDir = requireNotNull(context.getExternalFilesDir(null)) {
-                "External app files directory is unavailable"
-            }
-            val pixelCopyRawFile = File(outputDir, "pixelcopy_raw_capture.png")
-            FileOutputStream(pixelCopyRawFile).use { stream ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-            }
-            val pixelCopyImageDiagnostics = bitmapDiagnostics(bitmap)
-
-            var pixelCopyGeometryPixels = 0
-            if (pixelCopyResult.get() == PixelCopy.SUCCESS) {
-                pixelCopyGeometryPixels = countGeometryPixels(bitmap)
-            }
-
-            var acceptedCapture = if (pixelCopyResult.get() == PixelCopy.SUCCESS && pixelCopyGeometryPixels > 5000) {
-                "PixelCopy"
-            } else {
-                "none"
-            }
-            var acceptedPixelCount = if (acceptedCapture == "PixelCopy") pixelCopyGeometryPixels else 0
-            var glReadbackGeometryPixels = 0
-            var glReadbackImageDiagnostics = "glReadback=not-requested"
-            var glReadbackRawPath = "UNAVAILABLE"
-            if (acceptedCapture == "none") {
-                val rgba = nativeGetReadbackPixels(handle)
-                if (rgba != null && rgba.size == surfaceWidth * surfaceHeight * 4) {
-                    val fallback = bitmapFromGlRgba(rgba, surfaceWidth, surfaceHeight)
-                    glReadbackGeometryPixels = countGeometryPixels(fallback)
-                    glReadbackImageDiagnostics = bitmapDiagnostics(fallback)
-                    val glReadbackFile = File(outputDir, "gl_readback_raw_capture.png")
-                    FileOutputStream(glReadbackFile).use { stream ->
-                        fallback.compress(Bitmap.CompressFormat.PNG, 100, stream)
-                    }
-                    glReadbackRawPath = glReadbackFile.absolutePath
-                    if (glReadbackGeometryPixels > 5000) {
-                        acceptedCapture = "glReadPixels"
-                        acceptedPixelCount = glReadbackGeometryPixels
-                        capturedBitmap?.recycle()
-                        capturedBitmap = fallback
-                    } else {
-                        acceptedCapture = "PixelCopy+glReadPixels-below-threshold"
-                        fallback.recycle()
-                    }
-                } else {
-                    acceptedCapture = "PixelCopy-failed+glReadPixels-unavailable"
-                    glReadbackImageDiagnostics = "glReadbackBytes=${rgba?.size ?: -1} expectedBytes=${surfaceWidth * surfaceHeight * 4}"
-                }
-            } else {
-                glReadbackGeometryPixels = stats[7]
-                glReadbackImageDiagnostics = "nativeStatsReadbackPixels=${stats[7]}"
-            }
-
+            captureEvidence = capture
+            capturedBitmap = capture.bitmap
+            val statsForReport = nativeGetVerificationStats(handle)
             val report = nativeGetVerificationReport(handle)
             val totalPixels = surfaceWidth * surfaceHeight
-            val acceptedPixelPercent = if (totalPixels > 0) acceptedPixelCount * 100.0f / totalPixels else 0.0f
-            val diagnostics = "capture=$acceptedCapture pixelCopyResult=${pixelCopyResult.get()} " +
-                "pixelCopyGeometryPixels=$pixelCopyGeometryPixels acceptedGeometryPixels=$acceptedPixelCount " +
-                "acceptedPercent=${acceptedPixelPercent}% bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=$totalPixels " +
-                "pixelCopyRaw=${pixelCopyRawFile.absolutePath} pixelCopyImage={$pixelCopyImageDiagnostics} " +
-                "glReadbackRaw=$glReadbackRawPath glReadbackImage={$glReadbackImageDiagnostics} " +
-                "frameCount=${stats[0]} successfulPresentedFrames=${stats[12]} drawCalls=${stats[1]} triangles=${stats[2]} " +
-                "vertices=${stats[3]} nativeReadbackGeometryPixels=${stats[7]} " +
-                "joints=${stats[10]} blendshapes=${stats[11]} $report"
+            val finalDiag = capture.finalDiagnostics
+            val pixelCopyDiag = capture.pixelCopyDiagnostics
+            val nativeDiag = capture.nativeFallbackDiagnostics
+            val diagnostics = "capture=${finalDiag.source} usedFallback=${capture.usedFallback} " +
+                "pixelCopy=${pixelCopyDiag} nativeFallback=${nativeDiag ?: "not-run"} " +
+                "final=${finalDiag} bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=$totalPixels " +
+                "frameCount=${statsForReport[0]} successfulPresentedFrames=${statsForReport[12]} " +
+                "drawCalls=${statsForReport[1]} triangles=${statsForReport[2]} vertices=${statsForReport[3]} " +
+                "nativeReadbackGeometryPixels=${statsForReport[7]} joints=${statsForReport[10]} " +
+                "blendshapes=${statsForReport[11]} $report"
 
-            if (acceptedPixelCount <= 5000) {
+            if (finalDiag.geometryPixels < VISIBILITY_THRESHOLD) {
                 val outputDir = requireNotNull(context.getExternalFilesDir(null)) {
                     "External app files directory is unavailable"
                 }
@@ -327,7 +311,7 @@ class GeneratedAvatarRuntimeTest {
                 failureScreenshotPath = screenshot.absolutePath
                 throw AssertionError("Generated avatar is not visibly rendered. $diagnostics screenshot=${screenshot.absolutePath}")
             }
-            assertTrue("Visible pixel threshold not met. $diagnostics", acceptedPixelCount > 5000)
+            assertTrue("Visible pixel threshold not met. $diagnostics", finalDiag.geometryPixels >= VISIBILITY_THRESHOLD)
         } catch (failure: Throwable) {
             val view = surfaceView
             if (failureScreenshotPath == null && view != null && view.width > 0 && view.height > 0) {
@@ -375,7 +359,176 @@ class GeneratedAvatarRuntimeTest {
                 surfaceView?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
             }
             scenario.close()
-            capturedBitmap?.recycle()
+            listOfNotNull(captureEvidence?.pixelCopyBitmap, captureEvidence?.nativeFallbackBitmap).distinct().forEach { bitmap ->
+                if (!bitmap.isRecycled) bitmap.recycle()
+            }
+            if (captureEvidence == null) capturedBitmap?.takeIf { !it.isRecycled }?.recycle()
+        }
+    }
+
+    private suspend fun captureWithEvidence(
+        context: android.content.Context,
+        view: SurfaceView,
+        width: Int,
+        height: Int,
+        handle: Long,
+        pixelCopyStatus: AtomicInteger,
+        instrumentation: androidx.test.platform.app.InstrumentationRegistry.Instrumentation
+    ): CaptureResult {
+        val outputDir = requireNotNull(context.getExternalFilesDir(null)) {
+            "External app files directory is unavailable"
+        }
+
+        // Primary capture is immutable evidence. Never recycle or reassign it during fallback.
+        val pixelCopyBitmap = runCatching {
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val latch = CountDownLatch(1)
+            instrumentation.runOnMainSync {
+                PixelCopy.request(view, bitmap, { result ->
+                    pixelCopyStatus.set(result)
+                    latch.countDown()
+                }, Handler(Looper.getMainLooper()))
+            }
+            check(latch.await(15, TimeUnit.SECONDS)) { "PixelCopy callback timed out" }
+            check(pixelCopyStatus.get() == PixelCopy.SUCCESS) {
+                "PixelCopy failed with status=${pixelCopyStatus.get()}"
+            }
+            bitmap
+        }.getOrNull()
+
+        val pixelCopyDiagnostics = diagnose(pixelCopyBitmap, "pixelcopy")
+        pixelCopyBitmap?.let { savePng(it, File(outputDir, "raw_pixelcopy.png")) }
+
+        var finalBitmap = pixelCopyBitmap
+        var finalDiagnostics = pixelCopyDiagnostics
+        var fallbackBitmap: Bitmap? = null
+        var fallbackDiagnostics: CaptureDiagnostics? = null
+        var usedFallback = false
+
+        if (pixelCopyDiagnostics.geometryPixels < VISIBILITY_THRESHOLD) {
+            fallbackBitmap = runCatching {
+                val rgba = nativeGetReadbackPixels(handle)
+                check(rgba != null && rgba.size == width * height * 4) {
+                    "Native readback unavailable: bytes=${rgba?.size ?: -1}, expected=${width * height * 4}"
+                }
+                bitmapFromGlRgba(requireNotNull(rgba), width, height)
+            }.getOrNull()
+            fallbackDiagnostics = diagnose(fallbackBitmap, "native-fallback")
+            fallbackBitmap?.let { savePng(it, File(outputDir, "raw_native_fallback.png")) }
+
+            if (fallbackBitmap != null &&
+                fallbackDiagnostics.geometryPixels >= VISIBILITY_THRESHOLD
+            ) {
+                finalBitmap = fallbackBitmap
+                finalDiagnostics = fallbackDiagnostics
+                usedFallback = true
+            }
+        }
+
+        saveDiagnosticsJson(
+            File(outputDir, "capture_diagnostics.json"),
+            listOfNotNull(pixelCopyDiagnostics, fallbackDiagnostics)
+        )
+
+        // failed_render is the chosen attempted frame, while raw captures remain untouched.
+        finalBitmap?.let { savePng(it, File(outputDir, "failed_render.png")) }
+        return CaptureResult(
+            bitmap = finalBitmap,
+            pixelCopyBitmap = pixelCopyBitmap,
+            nativeFallbackBitmap = fallbackBitmap,
+            finalDiagnostics = finalDiagnostics,
+            pixelCopyDiagnostics = pixelCopyDiagnostics,
+            nativeFallbackDiagnostics = fallbackDiagnostics,
+            usedFallback = usedFallback
+        )
+    }
+
+    private fun diagnose(bitmap: Bitmap?, source: String): CaptureDiagnostics {
+        if (bitmap == null) {
+            return CaptureDiagnostics(
+                source, 0, 0, "null", false,
+                1f, 0f, 0, 0, 0, 0, 0, 0f, 0
+            )
+        }
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        val alphaHistogram = IntArray(256)
+        var sumR = 0L
+        var sumG = 0L
+        var sumB = 0L
+        var sumA = 0L
+        for (pixel in pixels) {
+            val r = Color.red(pixel)
+            val g = Color.green(pixel)
+            val b = Color.blue(pixel)
+            val a = Color.alpha(pixel)
+            sumR += r
+            sumG += g
+            sumB += b
+            sumA += a
+            alphaHistogram[a]++
+        }
+        val count = pixels.size.coerceAtLeast(1)
+        val meanA = sumA.toDouble() / count
+        var alphaSquaredError = 0.0
+        for (alpha in 0..255) {
+            val delta = alpha - meanA
+            alphaSquaredError += delta * delta * alphaHistogram[alpha]
+        }
+        val zeroAlpha = alphaHistogram[0]
+        val opaqueAlpha = alphaHistogram[255]
+        return CaptureDiagnostics(
+            source = source,
+            width = width,
+            height = height,
+            config = bitmap.config?.name ?: "unknown",
+            hasAlphaChannel = bitmap.hasAlpha(),
+            alphaZeroFraction = zeroAlpha.toFloat() / count,
+            alphaOpaqueFraction = opaqueAlpha.toFloat() / count,
+            alphaDistinctLevels = alphaHistogram.count { it > 0 },
+            meanR = (sumR / count).toInt(),
+            meanG = (sumG / count).toInt(),
+            meanB = (sumB / count).toInt(),
+            meanA = meanA.toInt(),
+            stddevA = kotlin.math.sqrt(alphaSquaredError / count).toFloat(),
+            geometryPixels = countGeometryPixels(bitmap)
+        )
+    }
+
+    private fun savePng(bitmap: Bitmap, file: File) {
+        FileOutputStream(file).use { stream ->
+            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
+                "PNG compression failed for ${file.absolutePath}"
+            }
+            stream.flush()
+        }
+    }
+
+    private fun saveDiagnosticsJson(file: File, diagnostics: List<CaptureDiagnostics>) {
+        val json = JSONArray()
+        diagnostics.forEach { item ->
+            json.put(JSONObject().apply {
+                put("source", item.source)
+                put("width", item.width)
+                put("height", item.height)
+                put("config", item.config)
+                put("hasAlphaChannel", item.hasAlphaChannel)
+                put("alphaZeroFraction", item.alphaZeroFraction.toDouble())
+                put("alphaOpaqueFraction", item.alphaOpaqueFraction.toDouble())
+                put("alphaDistinctLevels", item.alphaDistinctLevels)
+                put("meanR", item.meanR)
+                put("meanG", item.meanG)
+                put("meanB", item.meanB)
+                put("meanA", item.meanA)
+                put("stddevA", item.stddevA.toDouble())
+                put("geometryPixels", item.geometryPixels)
+            })
+        }
+        FileOutputStream(file).use { stream ->
+            stream.write(json.toString(2).toByteArray(Charsets.UTF_8))
+            stream.flush()
         }
     }
 
