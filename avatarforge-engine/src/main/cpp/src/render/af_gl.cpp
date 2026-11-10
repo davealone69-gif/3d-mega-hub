@@ -27,6 +27,7 @@
 #include "af_render_common.h"
 #include "af_environment.h"
 #include "af_shaders.h"
+#include "../af_scene.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>            /* EGL_OPENGL_ES3_BIT_KHR */
@@ -154,6 +155,7 @@ private:
     void rebuildMaterialBlocks();
     void buildSkeletonLines();
     void updateScene(float deltaSeconds);
+    void updateSceneGraph();
     void updateAnimation(float deltaSeconds);
     void drawShadowPass();
     void drawForwardPass();
@@ -216,6 +218,10 @@ private:
     af_engine* engine_ = nullptr;
     CameraState camera_{};
     FrameScene scene_{};
+    Scene sceneGraph_{};
+    Visibility visibility_{};
+    af_engine* sceneGraphEngine_ = nullptr;
+    bool visibilityReady_ = false;
     EnvironmentParams env_{};
     ShGlobal sh_{};
     bool meshDirty_ = true;
@@ -1073,6 +1079,84 @@ void GlRenderer::buildSkeletonLines() {
 /* ============================================================================================
  *  Per-frame
  * ============================================================================================ */
+void GlRenderer::updateSceneGraph() {
+    visibilityReady_ = false;
+    visibility_.clear();
+    if (!engine_) {
+        sceneGraph_.clear();
+        sceneGraphEngine_ = nullptr;
+        return;
+    }
+
+    const int submeshCount = af_engine_submesh_count(engine_);
+    const af_submesh* submeshes = af_engine_submeshes(engine_);
+    if (submeshCount <= 0 || !submeshes) {
+        sceneGraph_.clear();
+        sceneGraphEngine_ = engine_;
+        return;
+    }
+
+    /* Static glTF node transforms are already baked into engine-space vertices. Represent each
+       drawable primitive as a scene instance so its own bounds and index range participate in the
+       same CPU visibility pass used by the renderer. */
+    if (sceneGraphEngine_ != engine_ ||
+        sceneGraph_.instanceCount() != static_cast<size_t>(submeshCount)) {
+        sceneGraph_.clear();
+        sceneGraphEngine_ = engine_;
+        const int root = sceneGraph_.addNode("Imported asset");
+        for (int i = 0; i < submeshCount; ++i) {
+            const std::string name = "Submesh " + std::to_string(i);
+            const int node = sceneGraph_.addNode(name, root);
+            Geometry geometry;
+            geometry.name = name;
+            const int geometryIndex = sceneGraph_.addGeometry(geometry);
+            sceneGraph_.addInstance(name, geometryIndex, node);
+        }
+    }
+
+    for (int i = 0; i < submeshCount; ++i) {
+        const af_submesh& submesh = submeshes[i];
+        if (submesh.index_offset < 0 || submesh.index_count < 0 ||
+            submesh.vertex_offset < 0 || submesh.vertex_count < 0) {
+            AF_GL_LOGW("Scene visibility disabled: submesh %d has a negative draw range", i);
+            return;
+        }
+        const float minX = submesh.bounds_min[0], minY = submesh.bounds_min[1], minZ = submesh.bounds_min[2];
+        const float maxX = submesh.bounds_max[0], maxY = submesh.bounds_max[1], maxZ = submesh.bounds_max[2];
+        if (!std::isfinite(minX) || !std::isfinite(minY) || !std::isfinite(minZ) ||
+            !std::isfinite(maxX) || !std::isfinite(maxY) || !std::isfinite(maxZ) ||
+            minX > maxX || minY > maxY || minZ > maxZ) {
+            AF_GL_LOGW("Scene visibility disabled: submesh %d has invalid bounds", i);
+            return;
+        }
+        Geometry& geometry = sceneGraph_.geometry(i);
+        geometry.vertexCount = static_cast<size_t>(submesh.vertex_count);
+        geometry.indexCount = static_cast<size_t>(submesh.index_count);
+        geometry.bounds.centre = Vec3((minX + maxX) * 0.5f,
+                                      (minY + maxY) * 0.5f,
+                                      (minZ + maxZ) * 0.5f);
+        const float dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
+        geometry.bounds.radius = std::max(0.0001f, 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz));
+        geometry.lodCount = 1;
+        geometry.lodRanges[0].indexOffset = static_cast<size_t>(submesh.index_offset);
+        geometry.lodRanges[0].indexCount = static_cast<size_t>(submesh.index_count);
+        SceneInstance& instance = sceneGraph_.instance(i);
+        instance.localBounds = geometry.bounds;
+        instance.lodCount = 1;
+        instance.visible = true;
+    }
+
+    if (!sceneGraph_.updateTransforms()) {
+        AF_GL_LOGE("Scene visibility disabled: imported submesh node graph is invalid");
+        return;
+    }
+
+    Mat4 viewProjection{};
+    std::memcpy(viewProjection.m, scene_.camera.viewProj, sizeof(viewProjection.m));
+    sceneGraph_.buildVisibility(viewProjection, scene_.eye, 1.0f, &visibility_);
+    visibilityReady_ = true;
+}
+
 void GlRenderer::updateScene(float deltaSeconds) {
     if (std::isfinite(deltaSeconds) && deltaSeconds > 0.0f) {
         cameraLogAccumulatorSeconds_ += deltaSeconds;
@@ -1089,6 +1173,7 @@ void GlRenderer::updateScene(float deltaSeconds) {
     /* depthZeroToOne = false: GL clip space, which is also why the ES dialect of the shaders has
        AF_CLIP_Y = +1 and rescales the shadow lookup's z. */
     buildCameraUbo(&scene_, camera_, options_, env_, sh_, surfaceWidth_, surfaceHeight_, false);
+    updateSceneGraph();
 
     /* Exact camera/frustum dump once per elapsed second, using the matrix uploaded this frame. */
     if (cameraLogAccumulatorSeconds_ >= 1.0f) {
@@ -1234,9 +1319,20 @@ void GlRenderer::drawShadowPass() {
     glBindVertexArray(avatarVao_);
     glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexIbo_);
-    glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
+    if (visibilityReady_) {
+        for (const DrawItem& item : visibility_.draws) {
+            if (item.indexOffset > static_cast<size_t>(indexCount_) ||
+                item.indexCount > static_cast<size_t>(indexCount_) - item.indexOffset) continue;
+            const size_t byteOffset = item.indexOffset * sizeof(uint32_t);
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(item.indexCount), GL_UNSIGNED_INT,
+                           reinterpret_cast<const void*>(byteOffset));
+            ++drawCalls_;
+        }
+    } else {
+        glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
+        ++drawCalls_;
+    }
     glDisable(GL_POLYGON_OFFSET_FILL);
-    ++drawCalls_;
 }
 
 void GlRenderer::drawForwardPass() {
@@ -1306,11 +1402,20 @@ void GlRenderer::drawForwardPass() {
 
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
-        for (int i = 0; i < n; ++i) {
+        const int drawCount = visibilityReady_ ? static_cast<int>(visibility_.draws.size()) : n;
+        for (int draw = 0; draw < drawCount; ++draw) {
+            const DrawItem* visibleItem = visibilityReady_ ? &visibility_.draws[static_cast<size_t>(draw)] : nullptr;
+            const int i = visibleItem ? visibleItem->instance : draw;
+            if (i < 0 || i >= n) continue;
             const af_submesh& sm = submeshes[i];
+            const size_t drawIndexOffset = visibleItem ? visibleItem->indexOffset
+                                                       : static_cast<size_t>(sm.index_offset < 0 ? 0 : sm.index_offset);
+            const size_t drawIndexCount = visibleItem ? visibleItem->indexCount
+                                                      : static_cast<size_t>(sm.index_count < 0 ? 0 : sm.index_count);
             /* Re-check immediately before converting the element offset to a byte pointer. */
             if (sm.index_offset < 0 || sm.index_count < 0 ||
-                sm.index_offset > indexCount_ || sm.index_count > indexCount_ - sm.index_offset) {
+                drawIndexOffset > static_cast<size_t>(indexCount_) ||
+                drawIndexCount > static_cast<size_t>(indexCount_) - drawIndexOffset) {
                 geometryValid_ = false;
                 std::fprintf(stderr, "[AvatarForge] skipped invalid submesh draw range %d\n", i);
                 continue;
@@ -1324,7 +1429,7 @@ void GlRenderer::drawForwardPass() {
                 glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
                                   sizeof(MaterialUbo));
             }
-            const size_t byteOffset = static_cast<size_t>(sm.index_offset) * sizeof(uint32_t);
+            const size_t byteOffset = drawIndexOffset * sizeof(uint32_t);
             if (!drawDumpLogged_) {
                 AF_GL_LOGI("DrawElements submesh=%d mode=TRIANGLES count=%d indexType=UNSIGNED_INT indexOffset=%d byteOffset=%zu vertexRange=[%d,%d)",
                            i, sm.index_count, sm.index_offset, byteOffset, sm.vertex_offset,
@@ -1346,7 +1451,7 @@ void GlRenderer::drawForwardPass() {
                 lastDrawError_ = preDrawError;
                 continue;
             }
-            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(sm.index_count), GL_UNSIGNED_INT,
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndexCount), GL_UNSIGNED_INT,
                            reinterpret_cast<const void*>(byteOffset));
             const GLenum drawError = glGetError();
             if (drawError != GL_NO_ERROR) {
@@ -1647,6 +1752,10 @@ void GlRenderer::setOptions(const RendererOptions& options) {
 
 void GlRenderer::attachEngine(af_engine* engine) {
     engine_ = engine;
+    sceneGraph_.clear();
+    visibility_.clear();
+    sceneGraphEngine_ = nullptr;
+    visibilityReady_ = false;
     meshDirty_ = true;
     atlasUploaded_ = false;
     vertexDumpLogged_ = false;

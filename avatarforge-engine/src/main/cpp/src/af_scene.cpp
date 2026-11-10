@@ -210,13 +210,17 @@ Bounds Scene::instanceWorldBounds(int index) const {
 
 void Scene::buildVisibility(const Camera& camera, float quality, Visibility* out) const {
     if (!out) return;
+    buildVisibility(camera.viewProjection(), camera.position, quality, out);
+}
+
+void Scene::buildVisibility(const Mat4& viewProjection, const Vec3& eye,
+                            float quality, Visibility* out) const {
+    if (!out) return;
     out->clear();
     if (quality < 0.0f) quality = 0.0f;
     if (quality > 1.0f) quality = 1.0f;
 
-    const Mat4 vp = camera.viewProjection();
-    const Frustum frustum = Frustum::fromViewProjection(vp);
-    const Vec3 eye = camera.position;
+    const Frustum frustum = Frustum::fromViewProjection(viewProjection);
 
     for (size_t i = 0; i < instances_.size(); ++i) {
         const SceneInstance& inst = instances_[i];

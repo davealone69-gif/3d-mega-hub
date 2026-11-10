@@ -4,6 +4,7 @@
  * Tests the real header-only buildCameraUbo implementation against a 1.75 m AABB.
  */
 #include "af_render_common.h"
+#include "af_scene.h"
 
 #include <cmath>
 #include <cstdio>
@@ -93,6 +94,31 @@ int main() {
 
     check("all eight AABB corners have positive clipW", cornersWithPositiveW == 8);
     check("all eight AABB corners pass camera depth range", cornersInDepthRange == 8);
+
+    /* Exercise the exact view-projection matrix submitted to GLES through the scene visibility pass. */
+    af::Scene importedScene;
+    const int assetRoot = importedScene.addNode("Imported GLB");
+    auto addSubmesh = [&](const char* name, const af::Vec3& centre) {
+        const int node = importedScene.addNode(name, assetRoot);
+        af::Geometry geometry;
+        geometry.name = name;
+        geometry.vertexCount = 3;
+        geometry.indexCount = 3;
+        geometry.bounds.centre = centre;
+        geometry.bounds.radius = 0.1f;
+        geometry.lodRanges[0] = {0, 3};
+        const int geometryIndex = importedScene.addGeometry(geometry);
+        return importedScene.addInstance(name, geometryIndex, node);
+    };
+    const int visibleInstance = addSubmesh("visible", af::Vec3(0.0f, 0.875f, 0.0f));
+    addSubmesh("outside", af::Vec3(100.0f, 0.875f, 0.0f));
+    check("imported scene node transforms resolve", importedScene.updateTransforms());
+    af::Visibility visible;
+    importedScene.buildVisibility(viewProjection, scene.eye, 1.0f, &visible);
+    check("scene visibility retains an in-frustum imported primitive",
+          visible.draws.size() == 1 && visible.draws[0].instance == visibleInstance);
+    check("scene visibility culls an out-of-frustum imported primitive",
+          visible.culledInstances == 1);
 
     // Regression: origin-centered foreign GLBs (e.g. Y in [-0.5, +0.5]) must anchor ground at modelMin[1].
     scene.modelMin[1] = -0.4999f;

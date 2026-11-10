@@ -206,6 +206,10 @@ public:
      */
     void buildVisibility(const Camera& camera, float quality, Visibility* out) const;
 
+    /** Uses the exact view-projection matrix submitted to the GPU, avoiding camera-math drift
+     *  between CPU visibility and the active renderer backend. */
+    void buildVisibility(const Mat4& viewProjection, const Vec3& eye, float quality, Visibility* out) const;
+
     /** World-space bounds of an instance, from its geometry bounds and node transform. */
     Bounds instanceWorldBounds(int instance) const;
 
