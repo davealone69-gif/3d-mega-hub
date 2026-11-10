@@ -3,12 +3,15 @@ package com.davemega.hub.avatarforge
 import android.app.Instrumentation
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.view.PixelCopy
@@ -190,6 +193,107 @@ class GeneratedAvatarRuntimeTest {
             }
             scenario.close()
             bitmap?.recycle()
+        }
+    }
+
+    @Test(timeout = 600000)
+    fun generatedAvatarTextureViewWindowCaptureA_B() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val scenario = ActivityScenario.launch(MainActivity::class.java)
+        val surfaceReady = CountDownLatch(1)
+        var textureView: TextureView? = null
+        var renderSurface: Surface? = null
+        var surfaceWidth = 0
+        var surfaceHeight = 0
+        var handle = 0L
+        var bitmap: Bitmap? = null
+        try {
+            scenario.onActivity { activity ->
+                val root = activity.findViewById<ViewGroup>(android.R.id.content)
+                val view = TextureView(activity)
+                view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                    override fun onSurfaceTextureAvailable(surfaceTexture: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                        surfaceWidth = width
+                        surfaceHeight = height
+                        surfaceTexture.setDefaultBufferSize(width, height)
+                        renderSurface = Surface(surfaceTexture)
+                        surfaceReady.countDown()
+                    }
+                    override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                        surfaceWidth = width
+                        surfaceHeight = height
+                    }
+                    override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean = true
+                    override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) = Unit
+                }
+                root.addView(view, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                ))
+                textureView = view
+            }
+            assertTrue("TextureView SurfaceTexture did not become ready", surfaceReady.await(30, TimeUnit.SECONDS))
+            val surface = requireNotNull(renderSurface)
+            assertTrue("TextureView render Surface is invalid", surface.isValid)
+            handle = nativeCreateGenerated(surface, surfaceWidth, surfaceHeight)
+            assertTrue("TextureView generated-avatar session returned null", handle != 0L)
+
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+            var presented = false
+            while (!presented && System.nanoTime() < deadline) {
+                presented = nativeRenderGenerated(handle, 1.0f / 60.0f)
+                if (!presented) Thread.sleep(16)
+            }
+            assertTrue("TextureView path did not present an EGL frame: ${nativeGetVerificationReport(handle)}", presented)
+
+            val statsTimestamp = SystemClock.elapsedRealtimeNanos()
+            val stats = nativeGetVerificationStats(handle)
+            val report = nativeGetVerificationReport(handle)
+            val view = requireNotNull(textureView)
+            val location = IntArray(2)
+            view.getLocationInWindow(location)
+            val sourceRect = Rect(
+                location[0], location[1],
+                location[0] + surfaceWidth, location[1] + surfaceHeight
+            )
+            val captured = Bitmap.createBitmap(surfaceWidth, surfaceHeight, Bitmap.Config.ARGB_8888)
+            bitmap = captured
+            val captureTimestamp = SystemClock.elapsedRealtimeNanos()
+            val latch = CountDownLatch(1)
+            val result = AtomicInteger(Int.MIN_VALUE)
+            instrumentation.runOnMainSync {
+                PixelCopy.request(
+                    requireNotNull(view.context.let { (it as android.app.Activity).window }),
+                    sourceRect,
+                    captured,
+                    { status -> result.set(status); latch.countDown() },
+                    Handler(Looper.getMainLooper())
+                )
+            }
+            assertTrue("TextureView window PixelCopy callback timed out", latch.await(15, TimeUnit.SECONDS))
+            assertEquals("TextureView window PixelCopy failed", PixelCopy.SUCCESS, result.get())
+
+            val diag = diagnose(
+                captured, "textureview-window", result.get(), captureTimestamp,
+                statsTimestamp, stats.getOrNull(0) ?: -1, stats.getOrNull(12) ?: -1
+            )
+            val outputDir = requireNotNull(context.getExternalFilesDir(null))
+            savePng(captured, File(outputDir, "raw_textureview_window.png"))
+            saveDiagnosticsJson(File(outputDir, "textureview_capture_diagnostics.json"), listOf(diag))
+            assertTrue(
+                "TextureView A/B capture did not cross visibility threshold. diag=$diag " +
+                    "rendererStats=${stats.contentToString()} rendererReport=$report",
+                diag.geometryPixels >= VISIBILITY_THRESHOLD
+            )
+        } finally {
+            if (handle != 0L) runCatching { nativeDestroyGenerated(handle) }
+            renderSurface?.release()
+            scenario.onActivity { activity ->
+                textureView?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
+            }
+            scenario.close()
+            bitmap?.takeIf { !it.isRecycled }?.recycle()
         }
     }
 
