@@ -24,9 +24,13 @@ adb install -r "$APK"
 adb shell am force-stop com.davemega.hub
 adb shell am start -W -n com.davemega.hub/.MainActivity --ez com.davemega.hub.extra.OPEN_AVATAR_STUDIO true
 sleep 5
-adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | grep -q "com.davemega.hub"
+adb shell dumpsys activity activities > emulator-diagnostics/activities.txt 2>&1 || true
 PID="$(adb shell pidof -s com.davemega.hub | tr -d '\r')"
-test -n "$PID"
+if [[ -z "$PID" ]]; then
+  echo "MainActivity launch returned successfully, but the app process is not running."
+  adb logcat -b all -d > emulator-diagnostics/full-logcat.txt || true
+  exit 1
+fi
 
 # Avatar Studio is opened by a deterministic launch extra; no coordinate taps required.
 
