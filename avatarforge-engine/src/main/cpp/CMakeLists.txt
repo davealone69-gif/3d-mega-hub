@@ -12,6 +12,7 @@ set(AF_KERNEL_FLAGS ${AF_OPT_FLAGS} -fno-math-errno -fno-finite-math-only -ffp-c
 add_library(afcore SHARED
     src/af_anatomy.cpp
     src/af_body.cpp
+    src/af_avatar_lod.cpp
     src/af_engine.cpp
     src/af_field.cpp
     src/af_glb.cpp
@@ -99,6 +100,14 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_camera_frustum_test PRIVATE afcore)
     add_test(NAME camera_frustum_regression COMMAND af_camera_frustum_test)
+
+    add_executable(af_avatar_lod_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/avatar_lod_test.cpp)
+    target_include_directories(af_avatar_lod_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_avatar_lod_test PRIVATE afcore)
+    add_test(NAME avatar_lod_regression COMMAND af_avatar_lod_test)
 
     add_executable(af_scene_visibility_test
         ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/scene_visibility_test.cpp)
