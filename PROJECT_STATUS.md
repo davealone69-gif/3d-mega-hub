@@ -18,7 +18,7 @@ The repository had 14 branches at the time of the audit. The working source was 
 
 | Branch / workstream | Disposition |
 |---|---|
-| `work/samsung-s24-photoreal-patch` | Three commits ahead of `integration/avatarforge-renderer-port`; contains the latest WebP texture decoding/fallback, GLES upload retry and generated-runtime test changes. Included in the integration branch. |
+| `work/samsung-s24-photoreal-patch` | Its three WebP/GLES commits were fast-forwarded into the canonical integration branch. Its ref is now a stale pre-finalization pointer; do not continue work there. |
 | `integration/avatarforge-renderer-port` | Canonical integration base and target branch. Retains native AvatarForge GLES for imported/generated GLBs and separate Filament preview for the bundled sample. |
 | `work/fileprovider-renderer-diagnostics` | Selectively ported the FileProvider capability. Its replacement foundation `MainActivity` and non-connected capability/diagnostic overlay were deliberately not copied. The real Avatar Studio now shares the actual PixelCopy file. |
 | `agent/android-build-check-2026-11-03` | Ported its launcher vector asset and manifest icon reference. Existing current `.gitignore` already excludes generated Gradle/build outputs and signing-key files. |
@@ -28,7 +28,6 @@ The repository had 14 branches at the time of the audit. The working source was 
 | `work/avatarforge-core-integration` | Earlier divergent engine snapshot. Not copied over the newer integrated engine; doing so would roll back generation-core changes. |
 | `work/android-shell-foundation` | Divergent early shell/wrapper foundation. Not copied over the later application and pinned toolchain. |
 | `trae/agent-hDYcEF` | Contains generated `.gradle` cache/lock artifacts and older viewer edits. Cache files are not source and were not imported. |
-| `agent/android-build-check-2026-11-03` | Only the launcher icon was useful and is now included; old manifest contents were not copied. |
 
 Older branch refs are retained as historical recovery points; they are not parallel active work targets. Continue work only on `integration/avatarforge-renderer-port`. Keep `main` stable.
 
