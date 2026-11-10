@@ -302,7 +302,9 @@ class GeneratedAvatarRuntimeTest {
             val pixelCopyDiag = capture.pixelCopyDiagnostics
             val nativeDiag = capture.nativeFallbackDiagnostics
             val diagnostics = "capture=${finalDiag.source} usedFallback=${capture.usedFallback} " +
-                "pixelCopyStatus=${pixelCopyResult.get()} captureTimestampNs=${finalDiag.captureTimestampElapsedRealtimeNanos} " +\n                "rendererFrameAtCapture=${finalDiag.rendererFrameIndex} presentedAtCapture=${finalDiag.rendererPresentedFrames} " +\n                "pixelCopy=${pixelCopyDiag} nativeFallback=${nativeDiag ?: "not-run"} " +
+                "pixelCopyStatus=${pixelCopyResult.get()} captureTimestampNs=${finalDiag.captureTimestampElapsedRealtimeNanos} " +
+                "rendererFrameAtCapture=${finalDiag.rendererFrameIndex} presentedAtCapture=${finalDiag.rendererPresentedFrames} " +
+                "pixelCopy=${pixelCopyDiag} nativeFallback=${nativeDiag ?: "not-run"} " +
                 "final=${finalDiag} bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=$totalPixels " +
                 "frameCount=${statsForReport[0]} successfulPresentedFrames=${statsForReport[12]} " +
                 "drawCalls=${statsForReport[1]} triangles=${statsForReport[2]} vertices=${statsForReport[3]} " +
@@ -421,7 +423,10 @@ class GeneratedAvatarRuntimeTest {
         val pixelCopyCompleted = runCatching { copyLatch.await(15, TimeUnit.SECONDS) }.getOrDefault(false)
         if (!pixelCopyCompleted) pixelCopyStatus.compareAndSet(Int.MIN_VALUE, -2)
 
-        val pixelCopyDiagnostics = diagnose(\n            pixelCopyBitmap, "pixelcopy", pixelCopyStatus.get(), captureTimestampNanos,\n            rendererFrameIndex, rendererPresentedFrames\n        )
+        val pixelCopyDiagnostics = diagnose(
+            pixelCopyBitmap, "pixelcopy", pixelCopyStatus.get(), captureTimestampNanos,
+            rendererFrameIndex, rendererPresentedFrames
+        )
         pixelCopyBitmap?.let { savePng(it, File(outputDir, "raw_pixelcopy.png")) }
 
         var finalBitmap = pixelCopyBitmap
@@ -438,7 +443,10 @@ class GeneratedAvatarRuntimeTest {
                 }
                 bitmapFromGlRgba(requireNotNull(rgba), width, height)
             }.getOrNull()
-            fallbackDiagnostics = diagnose(\n                fallbackBitmap, "native-fallback", null, SystemClock.elapsedRealtimeNanos(),\n                rendererFrameIndex, rendererPresentedFrames\n            )
+            fallbackDiagnostics = diagnose(
+                fallbackBitmap, "native-fallback", null, SystemClock.elapsedRealtimeNanos(),
+                rendererFrameIndex, rendererPresentedFrames
+            )
             fallbackBitmap?.let { savePng(it, File(outputDir, "raw_native_fallback.png")) }
 
             if (fallbackBitmap != null &&
@@ -468,7 +476,14 @@ class GeneratedAvatarRuntimeTest {
         )
     }
 
-    private fun diagnose(\n        bitmap: Bitmap?,\n        source: String,\n        pixelCopyStatus: Int?,\n        captureTimestampElapsedRealtimeNanos: Long,\n        rendererFrameIndex: Int,\n        rendererPresentedFrames: Int\n    ): CaptureDiagnostics {
+    private fun diagnose(
+        bitmap: Bitmap?,
+        source: String,
+        pixelCopyStatus: Int?,
+        captureTimestampElapsedRealtimeNanos: Long,
+        rendererFrameIndex: Int,
+        rendererPresentedFrames: Int
+    ): CaptureDiagnostics {
         if (bitmap == null) {
             return CaptureDiagnostics(
                 source, null, 0L, -1, -1, false,
