@@ -257,7 +257,7 @@ class AvatarForgeRendererSmokeTest {
         val bounds = viewport!!.visibleBounds
         assertTrue("AvatarForge viewport is not visible: $bounds", bounds.width() > 100 && bounds.height() > 100)
 
-        val screenshot = device.takeScreenshot()
+        val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         assertNotNull("Could not capture emulator screen", screenshot)
         val image = screenshot!!
         val crop = Rect(bounds).apply { intersect(0, 0, image.width, image.height) }
