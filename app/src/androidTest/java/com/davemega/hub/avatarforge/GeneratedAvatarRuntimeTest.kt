@@ -1,5 +1,6 @@
 package com.davemega.hub.avatarforge
 
+import android.app.Instrumentation
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
@@ -373,7 +374,7 @@ class GeneratedAvatarRuntimeTest {
         height: Int,
         handle: Long,
         pixelCopyStatus: AtomicInteger,
-        instrumentation: androidx.test.platform.app.InstrumentationRegistry.Instrumentation
+        instrumentation: Instrumentation
     ): CaptureResult {
         val outputDir = requireNotNull(context.getExternalFilesDir(null)) {
             "External app files directory is unavailable"
