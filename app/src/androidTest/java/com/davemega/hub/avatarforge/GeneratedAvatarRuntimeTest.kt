@@ -203,6 +203,7 @@ class GeneratedAvatarRuntimeTest {
         val scenario = ActivityScenario.launch(MainActivity::class.java)
         val surfaceReady = CountDownLatch(1)
         var textureView: TextureView? = null
+        var activityWindow: android.view.Window? = null
         var renderSurface: Surface? = null
         var surfaceWidth = 0
         var surfaceHeight = 0
@@ -210,6 +211,7 @@ class GeneratedAvatarRuntimeTest {
         var bitmap: Bitmap? = null
         try {
             scenario.onActivity { activity ->
+                activityWindow = activity.window
                 val root = activity.findViewById<ViewGroup>(android.R.id.content)
                 val view = TextureView(activity)
                 view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
@@ -264,7 +266,7 @@ class GeneratedAvatarRuntimeTest {
             val result = AtomicInteger(Int.MIN_VALUE)
             instrumentation.runOnMainSync {
                 PixelCopy.request(
-                    requireNotNull(view.context.let { (it as android.app.Activity).window }),
+                    requireNotNull(activityWindow),
                     sourceRect,
                     captured,
                     { status -> result.set(status); latch.countDown() },
