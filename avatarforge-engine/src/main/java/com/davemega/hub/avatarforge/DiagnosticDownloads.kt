@@ -49,6 +49,11 @@ internal object DiagnosticDownloads {
             }
             val uri = existing ?: resolver.insert(collection, values)
                 ?: error("Android could not create a Downloads entry for $displayName.")
+            if (existing != null) {
+                check(resolver.update(uri, values, null, null) == 1) {
+                    "Android could not prepare the existing Downloads entry for $displayName."
+                }
+            }
             try {
                 resolver.openOutputStream(uri, "wt")?.use(write)
                     ?: error("Android could not open the Downloads entry for $displayName.")
