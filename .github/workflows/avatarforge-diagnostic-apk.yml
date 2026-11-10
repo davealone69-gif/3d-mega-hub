@@ -36,7 +36,7 @@ jobs:
       - name: Build host regression executable
         run: |
           cmake --build build/avatarforge-host \
-            --target af_glb_extension_test \
+            --target af_glb_extension_test af_camera_frustum_test \
             --parallel 2
       - name: Run WebP and camera regression tests
         run: |
