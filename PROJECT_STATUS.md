@@ -87,3 +87,32 @@ Production release signing remains blocked until a user-owned keystore is config
 ## Next single gate
 
 Run the exact consolidated branch through host CTest, Android unit tests, lint, debug APK, R8/minification, signed preview APK/AAB, corrected emulator GLES smoke and artifact/signature checks. Inspect the captured model pixels. Then install and test that exact APK on Samsung SM-S921B. Until the phone test passes, the app is not a green build and renderer status remains **UNVERIFIED**.
+
+## Repository consolidation audit (2026-11-11)
+
+The live GitHub inventory returned 15 branches. Keep exactly one active work target: `integration/avatarforge-renderer-port`. `main` remains the stable baseline and has not been modified by this consolidation.
+
+| Branch | Audit disposition |
+|---|---|
+| `integration/avatarforge-renderer-port` | **CANONICAL.** Continue all implementation, fixes and evidence updates here. PR #9 is the review path to `main`. |
+| `work/samsung-s24-photoreal-patch` | Behind canonical; its WebP/GLES work is already in the canonical line. No cherry-pick. |
+| `work/fileprovider-renderer-diagnostics` | Five-commit divergent foundation rewrite. The useful FileProvider capability is already selectively implemented in canonical Avatar Studio; its replacement Compose-only MainActivity and disconnected overlay are not to be merged. |
+| `agent/android-build-check-2026-11-03` | Launcher icon and manifest reference are already present in canonical. No additional source change required. |
+| `docs/glb-display-generation-baseline` / PR #11 | README-only update is redundant with the current canonical README, which already records the user-confirmed `mylove.glb` display result, fixture facts and separation of viewing from generation quality. Do not merge the stale baseline README over the current project handover. |
+| `fix/mega-hub-candidate-hardening` / closed PR #10 | Divergent older candidate. Its Filament-based generated-avatar capture path conflicts with the selected canonical split (AvatarForge GLES for imported/generated GLBs; Filament only for the bundled sample). The canonical engine already contains post-skin deformation validation and refreshed submesh bounds. Do not wholesale merge the older app, renderer or engine files. Preserve as a historical comparison until branch cleanup is approved. |
+| `feature/first-working-gles-scene` | Earlier standalone GLES scene, superseded by the integrated AvatarForge GLES viewport. |
+| `work/avatarforge-core-integration` | Earlier engine snapshot, not a safe replacement for the later canonical generation core. |
+| `work/android-shell-foundation` | Early divergent shell and wrapper foundation, superseded by the integrated app/toolchain. |
+| `trae/agent-hDYcEF` | Contains generated Gradle cache/lock files and older viewer edits; no cache files are to be imported. |
+| `fix/filament-engine-jni-init`, `work/engine-integration-candidate`, `work/filament-gles-renderer`, `work/filament-renderer-live-diagnostics` | Ancestor branches behind the canonical integration; no unique forward commits against canonical. |
+| `work/fileprovider-renderer-diagnostics` | Kept as a historical recovery point only; not an active target. |
+
+### Exact-head validation follow-up
+
+- The latest recorded canonical CI set for commit `46b13ee87f0daeaf5e89ae752575243b07e98a22` passed Android lint, unit tests, debug APK assembly, R8/minification, native host regression, and signed preview APK/AAB generation.
+- Emulator install and launch succeeded, but the smoke script then exited with code 1. This is a failed smoke gate, not a successful renderer test.
+- The generated-avatar and AvatarForge GLES instrumentation jobs failed before execution because `AvatarForgeRendererSmokeTest.kt` called a no-argument `UiDevice.takeScreenshot()` method unavailable in the pinned UI Automator 2.3.0 dependency. The test was corrected on this branch to use `InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()`, which returns the Bitmap used by the existing pixel assertions.
+- The corrected test change is committed as `42da0e396555eb6fb340a072b5d9396184e0164e`. **Fresh CI for this commit is required; no pass is claimed yet.**
+- Samsung SM-S921B rendering and visible-pixel verification remain **UNVERIFIED**. Production signing remains **BLOCKED** pending the user's production keystore and protected CI secrets.
+
+Do not merge to `main` until fresh exact-head CI, emulator install/launch, real GLES pixel evidence and review are complete. The user's physical-phone test remains a separate final gate.
