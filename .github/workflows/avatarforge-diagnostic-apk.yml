@@ -39,13 +39,13 @@ jobs:
       - name: Build host regression executable
         run: |
           cmake --build build/avatarforge-host \
-            --target af_glb_extension_test af_camera_frustum_test af_scene_visibility_test af_imported_glb_pbr_test \
+            --target af_glb_extension_test af_camera_frustum_test af_scene_visibility_test af_avatar_lod_test af_imported_glb_pbr_test \
             --parallel 2
       - name: Run WebP, PBR import and camera regression tests
         run: |
           ctest --test-dir build/avatarforge-host \
             --output-on-failure \
-            -R "glb_extension_regression|camera_frustum_regression|scene_visibility_regression|imported_glb_pbr_regression"
+            -R "glb_extension_regression|camera_frustum_regression|scene_visibility_regression|avatar_lod_regression|imported_glb_pbr_regression"
 
   android-generated-avatar-test:
     name: Build debug APK and verify generated avatar pixels
