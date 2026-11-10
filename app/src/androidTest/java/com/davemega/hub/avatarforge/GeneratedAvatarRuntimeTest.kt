@@ -512,6 +512,9 @@ class GeneratedAvatarRuntimeTest {
             sumA += a
             alphaHistogram[a]++
         }
+        check(alphaHistogram.sum() == width * height) {
+            "Alpha histogram invariant failed for $source: ${alphaHistogram.sum()} != ${width * height}"
+        }
         val count = pixels.size.coerceAtLeast(1)
         val meanA = sumA.toDouble() / count
         var alphaSquaredError = 0.0
