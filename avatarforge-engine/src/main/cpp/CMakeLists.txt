@@ -87,4 +87,15 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_glb_extension_test PRIVATE afcore)
     add_test(NAME glb_extension_regression COMMAND af_glb_extension_test)
+
+    # Camera math uses a separate translation unit because af_math.h and
+    # af_render_common.h intentionally own distinct renderer/kernel math types.
+    add_executable(af_camera_frustum_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/camera_frustum_test.cpp)
+    target_include_directories(af_camera_frustum_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/render
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_camera_frustum_test PRIVATE afcore)
+    add_test(NAME camera_frustum_regression COMMAND af_camera_frustum_test)
 endif()
