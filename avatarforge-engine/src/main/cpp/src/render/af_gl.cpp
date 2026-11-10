@@ -51,6 +51,28 @@ namespace {
 #define AF_GL_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "AvatarForge", __VA_ARGS__)
 #define AF_GL_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "AvatarForge", __VA_ARGS__)
 
+/* TEMPORARY: bypass avatar PBR/material/texture shading to isolate the GLES camera path. */
+static constexpr bool kDebugMagentaAvatar = true;
+
+static constexpr const char* kDebugMagentaVertexShader = R"AFGLSL(#version 310 es
+precision highp float;
+layout(location = 0) in vec3 aPos;
+layout(std140) uniform CameraBlock {
+    mat4 uViewProj;
+};
+void main() {
+    gl_Position = uViewProj * vec4(aPos, 1.0);
+}
+)AFGLSL";
+
+static constexpr const char* kDebugMagentaFragmentShader = R"AFGLSL(#version 310 es
+precision highp float;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(1.0, 0.0, 1.0, 1.0);
+}
+)AFGLSL";
+
 void logVertexAttribute(GLuint index, GLint expectedComponents, size_t expectedOffset) {
     GLint enabled = 0, size = 0, type = 0, normalized = 0, stride = 0, buffer = 0;
     void* pointer = nullptr;
@@ -149,6 +171,7 @@ private:
 
     /* ---- programs and uniform locations ---- */
     GLuint forwardProgram_ = 0, shadowProgram_ = 0, groundProgram_ = 0, lineProgram_ = 0;
+    GLuint debugMagentaProgram_ = 0;
     GLuint bloomDownProgram_ = 0, bloomUpProgram_ = 0, compositeProgram_ = 0;
     GLuint avatarVao_ = 0, groundVao_ = 0, emptyVao_ = 0, lineVao_ = 0;
 
@@ -208,6 +231,7 @@ private:
     bool vertexDumpLogged_ = false;
     bool cameraDumpLogged_ = false;
     bool drawDumpLogged_ = false;
+    float cameraLogAccumulatorSeconds_ = 0.0f;
     GLenum lastDrawError_ = GL_NO_ERROR;
 };
 
@@ -334,10 +358,59 @@ bool GlRenderer::createPrograms(std::string* error) {
     if (!(bloomUpProgram_ = linkProgram("fullscreen", "bloom_up", error))) return false;
     if (!(compositeProgram_ = linkProgram("fullscreen", "composite", error))) return false;
 
+    /* Temporary unlit avatar shader. Position attribute and CameraBlock binding match the PBR path. */
+    {
+        GLuint vs = 0;
+        GLuint fs = 0;
+        if (!compileShader(GL_VERTEX_SHADER, kDebugMagentaVertexShader,
+                           "debug_magenta_vertex", &vs, error)) return false;
+        if (!compileShader(GL_FRAGMENT_SHADER, kDebugMagentaFragmentShader,
+                           "debug_magenta_fragment", &fs, error)) {
+            glDeleteShader(vs);
+            return false;
+        }
+        debugMagentaProgram_ = glCreateProgram();
+        if (!debugMagentaProgram_) {
+            glDeleteShader(vs);
+            glDeleteShader(fs);
+            if (error) *error = "glCreateProgram failed for debug magenta shader";
+            return false;
+        }
+        glAttachShader(debugMagentaProgram_, vs);
+        glAttachShader(debugMagentaProgram_, fs);
+        glLinkProgram(debugMagentaProgram_);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+
+        GLint linked = GL_FALSE;
+        glGetProgramiv(debugMagentaProgram_, GL_LINK_STATUS, &linked);
+        if (linked != GL_TRUE) {
+            GLint logLength = 0;
+            glGetProgramiv(debugMagentaProgram_, GL_INFO_LOG_LENGTH, &logLength);
+            std::string log(static_cast<size_t>(logLength > 1 ? logLength : 1), '\\0');
+            glGetProgramInfoLog(debugMagentaProgram_, logLength, nullptr, log.data());
+            if (error) *error = "Debug magenta shader link failed: " + log;
+            glDeleteProgram(debugMagentaProgram_);
+            debugMagentaProgram_ = 0;
+            return false;
+        }
+        const GLuint cameraBlock = glGetUniformBlockIndex(debugMagentaProgram_, "CameraBlock");
+        if (cameraBlock == GL_INVALID_INDEX) {
+            if (error) *error = "Debug magenta shader has no CameraBlock";
+            glDeleteProgram(debugMagentaProgram_);
+            debugMagentaProgram_ = 0;
+            return false;
+        }
+        glUniformBlockBinding(debugMagentaProgram_, cameraBlock, 0);
+        AF_GL_LOGW("DEBUG_MAGENTA shader linked program=%u CameraBlock=%u",
+                   debugMagentaProgram_, cameraBlock);
+    }
+
     /* Uniform blocks are bound by index rather than relying on the layout(binding=) qualifier,
        which ES 3.1 accepts but not every driver implements identically. */
-    const GLuint programs[7] = {forwardProgram_, shadowProgram_, groundProgram_, lineProgram_,
-                                bloomDownProgram_, bloomUpProgram_, compositeProgram_};
+    const GLuint programs[8] = {forwardProgram_, shadowProgram_, groundProgram_, lineProgram_,
+                                bloomDownProgram_, bloomUpProgram_, compositeProgram_,
+                                debugMagentaProgram_};
     bool hasCameraBlock = false;
     for (GLuint p : programs) {
         const GLuint cameraIndex = glGetUniformBlockIndex(p, "CameraBlock");
@@ -945,7 +1018,9 @@ void GlRenderer::buildSkeletonLines() {
  *  Per-frame
  * ============================================================================================ */
 void GlRenderer::updateScene(float deltaSeconds) {
-    (void)deltaSeconds;
+    if (std::isfinite(deltaSeconds) && deltaSeconds > 0.0f) {
+        cameraLogAccumulatorSeconds_ += deltaSeconds;
+    }
     env_.sunAzimuthDeg = options_.sunAzimuthDeg;
     env_.sunElevationDeg = options_.sunElevationDeg;
     env_.sunIntensity = options_.sunIntensity;
@@ -958,6 +1033,29 @@ void GlRenderer::updateScene(float deltaSeconds) {
     /* depthZeroToOne = false: GL clip space, which is also why the ES dialect of the shaders has
        AF_CLIP_Y = +1 and rescales the shadow lookup's z. */
     buildCameraUbo(&scene_, camera_, options_, env_, sh_, surfaceWidth_, surfaceHeight_, false);
+
+    /* Exact camera/frustum dump once per elapsed second, using the matrix uploaded this frame. */
+    if (cameraLogAccumulatorSeconds_ >= 1.0f) {
+        cameraLogAccumulatorSeconds_ = std::fmod(cameraLogAccumulatorSeconds_, 1.0f);
+        AF_GL_LOGW(
+            "CAMERA_DIAG target=(%.9g,%.9g,%.9g) eye=(%.9g,%.9g,%.9g) "
+            "distance=%.9g fov=%.9g zNear=%.9g zFar=%.9g viewport=%dx%d",
+            camera_.targetX, camera_.targetY, camera_.targetZ,
+            scene_.eye.x, scene_.eye.y, scene_.eye.z,
+            camera_.distance, camera_.fovDeg, scene_.nearPlane, scene_.farPlane,
+            surfaceWidth_, surfaceHeight_);
+        const float* vp = scene_.camera.viewProj;
+        for (int row = 0; row < 4; ++row) {
+            AF_GL_LOGW("CAMERA_DIAG viewProj.row%d=[%.9g, %.9g, %.9g, %.9g]",
+                       row, vp[row], vp[4 + row], vp[8 + row], vp[12 + row]);
+        }
+        const float* view = scene_.camera.view;
+        for (int row = 0; row < 4; ++row) {
+            AF_GL_LOGW("CAMERA_DIAG view.row%d=[%.9g, %.9g, %.9g, %.9g]",
+                       row, view[row], view[4 + row], view[8 + row], view[12 + row]);
+        }
+    }
+
     if (!cameraDumpLogged_) {
         bool matrixFinite = true;
         for (int i = 0; i < 16; ++i) matrixFinite = matrixFinite && std::isfinite(scene_.camera.viewProj[i]);
@@ -1099,7 +1197,7 @@ void GlRenderer::drawForwardPass() {
     glBindBufferRange(GL_UNIFORM_BUFFER, 0, cameraUbo_, GLintptr(frame) * uboAlignment_, sizeof(CameraUbo));
 
     /* ---- studio ground ---- */
-    if (options_.groundPlane && engine_ && vertexCount_ > 0) {
+    if (!kDebugMagentaAvatar && options_.groundPlane && engine_ && vertexCount_ > 0) {
         glUseProgram(groundProgram_);
         glBindVertexArray(groundVao_);
         glBindBuffer(GL_ARRAY_BUFFER, groundVbo_);
@@ -1124,18 +1222,30 @@ void GlRenderer::drawForwardPass() {
                    scene_.hasModel ? 1 : 0);
     }
     if (avatarDrawable) {
-        glUseProgram(forwardProgram_);
+        const GLuint avatarProgram = kDebugMagentaAvatar ? debugMagentaProgram_ : forwardProgram_;
+        if (!avatarProgram) {
+            AF_GL_LOGE("Avatar draw aborted: selected shader program is zero");
+            return;
+        }
+        glUseProgram(avatarProgram);
+        const GLboolean cullingWasEnabled = glIsEnabled(GL_CULL_FACE);
+        if (kDebugMagentaAvatar) {
+            glDisable(GL_CULL_FACE);
+            AF_GL_LOGW("DEBUG_MAGENTA active: avatar PBR, textures, material UBO and culling bypassed");
+        }
         glBindVertexArray(avatarVao_);
         glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexIbo_);
 
-        for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
-            glActiveTexture(GL_TEXTURE0 + slot);
-            glBindTexture(GL_TEXTURE_2D, atlasTexture_[slot]);
+        if (!kDebugMagentaAvatar) {
+            for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
+                glActiveTexture(GL_TEXTURE0 + slot);
+                glBindTexture(GL_TEXTURE_2D, atlasTexture_[slot]);
+            }
+            glActiveTexture(GL_TEXTURE5);
+            glBindTexture(GL_TEXTURE_2D, shadowTexture_);
+            glActiveTexture(GL_TEXTURE0);
         }
-        glActiveTexture(GL_TEXTURE5);
-        glBindTexture(GL_TEXTURE_2D, shadowTexture_);
-        glActiveTexture(GL_TEXTURE0);
 
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
@@ -1148,8 +1258,10 @@ void GlRenderer::drawForwardPass() {
                 std::fprintf(stderr, "[AvatarForge] skipped invalid submesh draw range %d\n", i);
                 continue;
             }
-            glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
-                              sizeof(MaterialUbo));
+            if (!kDebugMagentaAvatar) {
+                glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
+                                  sizeof(MaterialUbo));
+            }
             const size_t byteOffset = static_cast<size_t>(sm.index_offset) * sizeof(uint32_t);
             if (!drawDumpLogged_) {
                 AF_GL_LOGI("DrawElements submesh=%d mode=TRIANGLES count=%d indexType=UNSIGNED_INT indexOffset=%d byteOffset=%zu vertexRange=[%d,%d)",
@@ -1188,6 +1300,7 @@ void GlRenderer::drawForwardPass() {
             ++drawCalls_;
             triangles_ += sm.index_count / 3;
         }
+        if (kDebugMagentaAvatar && cullingWasEnabled) glEnable(GL_CULL_FACE);
     }
 
     /* ---- skeleton overlay ---- */
@@ -1515,8 +1628,9 @@ void GlRenderer::destroyAll() {
         const EGLBoolean madeCurrent = eglMakeCurrent(display_, surface_, surface_, context_);
         if (madeCurrent == EGL_TRUE) {
             destroyTargets();
-            const GLuint programs[7] = {forwardProgram_, shadowProgram_, groundProgram_, lineProgram_,
-                                        bloomDownProgram_, bloomUpProgram_, compositeProgram_};
+            const GLuint programs[8] = {forwardProgram_, shadowProgram_, groundProgram_, lineProgram_,
+                                        bloomDownProgram_, bloomUpProgram_, compositeProgram_,
+                                        debugMagentaProgram_};
             for (GLuint p : programs) if (p) glDeleteProgram(p);
             const GLuint buffers[6] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, groundVbo_};
             for (GLuint b : buffers) if (b) glDeleteBuffers(1, &b);
