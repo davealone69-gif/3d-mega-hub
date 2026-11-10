@@ -182,6 +182,9 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
        between ("long dark hair"). They are held here and applied when the noun arrives. */
     int pendingStyle = -1;        /* af_hair_style, or -1 */
     float pendingMelanin = -1.0f; /* -1 = none */
+    /* Explicit numeric height measurements take precedence over generic stature adjectives,
+       regardless of their order in the prompt (for example, "175 cm tall"). */
+    bool explicitHeight = false;
     /* A word can be consumed by a branch that is not the word's own noun branch: "68 cm waist"
        eats the noun "waist". A later number must not look back at a noun that is already spent,
        or "68 cm waist, 96 cm hips" would set the waist twice. */
@@ -221,6 +224,7 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
                 }
                 /* A bare "<n> cm" is a height. */
                 spec->height_m = value * 0.01f;
+                explicitHeight = true;
                 record(out, w + " cm", "height_m", &matched);
                 i += 1;
                 continue;
@@ -228,6 +232,7 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
             if (next == "m" || next == "metre" || next == "metres" || next == "meter" || next == "meters") {
                 if (value > 1.0f && value < 2.4f) {
                     spec->height_m = value;
+                    explicitHeight = true;
                     record(out, w + " m", "height_m", &matched);
                 }
                 i += 1;
@@ -242,6 +247,7 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
                     i += 2;
                 }
                 spec->height_m = feet * 0.3048f + inches * 0.0254f;
+                explicitHeight = true;
                 record(out, w + " ft", "height_m", &matched);
                 i += 1;
                 continue;
@@ -281,8 +287,20 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
         if (anyOf(w, kAverage, 4)) { spec->build = AF_BUILD_AVERAGE; record(out, w, "build", &matched); continue; }
 
         /* ---- stature adjectives ---- */
-        if (w == "tall") { spec->height_m = (spec->sex == AF_SEX_FEMALE) ? 1.78f : 1.90f; record(out, w, "height_m", &matched); continue; }
-        if (w == "short") { spec->height_m = (spec->sex == AF_SEX_FEMALE) ? 1.56f : 1.68f; record(out, w, "height_m", &matched); continue; }
+        if (w == "tall") {
+            if (!explicitHeight) {
+                spec->height_m = (spec->sex == AF_SEX_FEMALE) ? 1.78f : 1.90f;
+                record(out, w, "height_m", &matched);
+            }
+            continue;
+        }
+        if (w == "short" && (i + 1 >= words.size() || !isHairWord(words[i + 1].text))) {
+            if (!explicitHeight) {
+                spec->height_m = (spec->sex == AF_SEX_FEMALE) ? 1.56f : 1.68f;
+                record(out, w, "height_m", &matched);
+            }
+            continue;
+        }
 
         /* ---- age adjectives ---- */
         if (w == "young") { spec->age_years = 22.0f; record(out, w, "age_years", &matched); continue; }
