@@ -1025,6 +1025,9 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         const json::Json& img = images.at(i);
         ImportedTexture tex;
         tex.name = img["name"].stringOr("");
+        const std::string declaredMimeType = img["mimeType"].stringOr("");
+        AF_IMPORT_LOGI("GLB image[%zu] name='%s' declaredMimeType='%s'",
+                       i, tex.name.c_str(), declaredMimeType.c_str());
         if (img.find("uri")) {
             /* External or data URI: the app is offline and its exports are single-file. */
             out->warnings.push_back({"image uses a URI", "not loaded (offline, single-file assets only)"});
@@ -1047,6 +1050,14 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
             continue;
         }
         const uint8_t* bytes = binChunk ? binChunk + bvOffset : nullptr;
+        const char* detectedMimeType =
+            (bytes && looksLikePng(bytes, bvLength)) ? "image/png" :
+            (bytes && looksLikeWebp(bytes, bvLength)) ? "image/webp" :
+            (bytes && bvLength >= 2 && bytes[0] == 0xFF && bytes[1] == 0xD8)
+                ? "image/jpeg" : "unknown";
+        AF_IMPORT_LOGI(
+            "GLB image[%zu] MIME declared='%s' detected='%s' bufferView=%d bytes=%zu",
+            i, declaredMimeType.c_str(), detectedMimeType, bvIndex, bvLength);
         std::string reason;
         DecodedImage decoded;
         if (webpImageRequired[i] && (!bytes || !looksLikeWebp(bytes, bvLength))) {
