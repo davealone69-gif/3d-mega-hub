@@ -45,7 +45,7 @@ jobs:
         run: |
           ctest --test-dir build/avatarforge-host \
             --output-on-failure \
-            -R glb_extension_regression
+            -R "glb_extension_regression|camera_frustum_regression"
 
   android-magenta-test:
     name: Build debug APK and verify magenta shader
