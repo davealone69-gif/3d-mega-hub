@@ -2,7 +2,7 @@
 
 **Android-first avatar studio with an integrated AI assistant and a real 3D runtime.**
 
-This repository is the new product host. Existing repositories remain independent donor/source projects until their code, dependencies, licences, tests, and build status have been checked. No donor is considered integrated merely because its files or documentation were copied.
+This repository is the integrated Android product host. Existing repositories remain independent donor/source projects until their code, dependencies, licences, tests, and build status have been checked. No donor is considered integrated merely because its files or documentation were copied.
 
 ## Product goals
 
@@ -12,6 +12,41 @@ This repository is the new product host. Existing repositories remain independen
 - Provide avatar import/export, a persistent library, generation-job status, resource controls, and useful diagnostics.
 - Prioritize the Samsung SM-S921B / Exynos 2400 target and a reliable OpenGL ES path. Vulkan remains optional until verified on the actual device.
 - Ship a reproducible Android build, with an AAB as the primary release artifact and a signed APK for installation/testing. Never commit signing secrets.
+
+
+## Current capability split (2026-11-10)
+
+### GLB import and display
+
+The user reports that the current 3D-Mega-Hub working build displays the supplied mylove.glb
+correctly on the phone. Treat this as **user-confirmed for that tested fixture/build**, not as proof
+that every GLB variant, renderer path or device is covered. Preserve the successful viewing path
+while generation work proceeds independently.
+
+Reference fixture facts: 9,287,272 bytes; GLB 2.0; 163,756 vertices; 144,073 triangles; one mesh
+and one material; two 2048 × 2048 WebP textures; normals and UVs; two nodes; no skeleton and no
+animations. It is therefore a static display benchmark, not a rigged-avatar benchmark.
+
+### Avatar generation
+
+Generation is a separate, **PARTIAL / needs visual-quality work** capability owned by AvatarForge's
+procedural engine. Its host records demonstrate substantial geometry and rig output, but do not
+establish that generated faces, anatomy, proportions, skin, hair, clothing or materials match the
+reference model visually. The reference GLB's vertex count is already lower than one recorded
+AvatarForge generated fixture, so polygon count alone is not the bottleneck.
+
+The reference GLB has no skeleton or animation and the available inspection record does not provide
+trustworthy anthropometric tape measurements. Do not infer chest/waist/hip/height values from polygon
+counts or invent an af_spec. First extract metric bounds, then derive and validate measurable
+cross-sections/landmarks. Compare silhouette, face, UVs, textures and material response side by side.
+
+The user's comparison set is in Dropbox /Model: generated_avatar_diagnostic.png and two
+Screenshot_20261110_*.jpg captures. Visual scoring and numeric geometry extraction remain pending.
+
+**Repository boundary:** 3D-Mega-Hub owns the integrated app and GLB viewing workflow; AvatarForge
+owns the standalone generator/engine. Improve generation in AvatarForge and consume its proven
+outputs in the Hub. Do not duplicate the generator inside the Hub or destabilize the working GLB
+viewer to chase generator quality.
 
 ## Blueprint and audit records
 
