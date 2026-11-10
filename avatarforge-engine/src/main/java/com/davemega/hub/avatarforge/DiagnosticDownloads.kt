@@ -65,7 +65,18 @@ internal object DiagnosticDownloads {
                 }
                 return uri
             } catch (failure: Throwable) {
-                if (existing == null) runCatching { resolver.delete(uri, null, null) }
+                if (existing == null) {
+                    runCatching { resolver.delete(uri, null, null) }
+                } else {
+                    runCatching {
+                        resolver.update(
+                            uri,
+                            ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
+                            null,
+                            null
+                        )
+                    }
+                }
                 throw failure
             }
         }
