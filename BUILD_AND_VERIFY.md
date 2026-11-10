@@ -23,6 +23,8 @@ Debug builds expose **Run generated-avatar GLES diagnostic** in Avatar Studio. I
 
 PixelCopy requests are attempt-scoped, invalidated on surface destruction, protected against duplicate/late callbacks, and fail closed after a 15-second callback timeout. The instrumentation test also has a native GLES `glReadPixels()` fallback and applies the same background-subtracted pixel count.
 
+The resulting capture path is recorded in `avatarforge_renderer_smoke/screenshot_path` and saved directly under `context.getExternalFilesDir(null)`. Avatar Studio offers **Save / Share failed_render.png** (or the successful capture name) only after the real file exists. AndroidX FileProvider is configured with an `external-files-path` rooted at the app-specific external-files directory; the share action validates the canonical parent path, attaches ClipData and grants temporary read access. No shared-storage permission or broad filesystem root is exposed.
+
 ## CI and local verification
 
 The GitHub PR is the authoritative current-head verification ledger. A previous passing build does not prove a newer commit passed. The required gates are:
