@@ -531,6 +531,12 @@ class GeneratedAvatarRuntimeTest {
         val opaqueAlpha = alphaHistogram[255]
         return CaptureDiagnostics(
             source = source,
+            pixelCopyStatus = pixelCopyStatus,
+            captureTimestampElapsedRealtimeNanos = captureTimestampElapsedRealtimeNanos,
+            rendererStatsTimestampElapsedRealtimeNanos = rendererStatsTimestampElapsedRealtimeNanos,
+            rendererFrameIndex = rendererFrameIndex,
+            rendererPresentedFrames = rendererPresentedFrames,
+            alphaIndicatorsValid = bitmap.hasAlpha(),
             width = width,
             height = height,
             config = bitmap.config?.name ?: "unknown",
