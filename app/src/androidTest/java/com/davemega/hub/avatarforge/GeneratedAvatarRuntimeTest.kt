@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.ViewGroup
@@ -37,6 +38,7 @@ private data class CaptureDiagnostics(
     val alphaZeroFraction: Float,
     val alphaOpaqueFraction: Float,
     val alphaDistinctLevels: Int,
+    val alphaHistogram: List<Int>,
     val meanR: Int,
     val meanG: Int,
     val meanB: Int,
@@ -298,6 +300,17 @@ class GeneratedAvatarRuntimeTest {
                 "nativeReadbackGeometryPixels=${statsForReport[7]} joints=${statsForReport[10]} " +
                 "blendshapes=${statsForReport[11]} $report"
 
+            if (capture.usedFallback &&
+                pixelCopyDiag.geometryPixels < VISIBILITY_THRESHOLD &&
+                finalDiag.geometryPixels >= VISIBILITY_THRESHOLD
+            ) {
+                Log.w(
+                    "GeneratedAvatarRuntimeTest",
+                    "CAPTURE_PIPELINE_REGRESSION: native fallback passed while PixelCopy failed visibility. " +
+                        "pixelCopy=$pixelCopyDiag nativeFallback=$nativeDiag"
+                )
+            }
+
             if (finalDiag.geometryPixels < VISIBILITY_THRESHOLD) {
                 val outputDir = requireNotNull(context.getExternalFilesDir(null)) {
                     "External app files directory is unavailable"
@@ -446,7 +459,7 @@ class GeneratedAvatarRuntimeTest {
         if (bitmap == null) {
             return CaptureDiagnostics(
                 source, 0, 0, "null", false,
-                1f, 0f, 0, 0, 0, 0, 0, 0f, 0
+                1f, 0f, 0, List(256) { 0 }, 0, 0, 0, 0, 0f, 0
             )
         }
         val width = bitmap.width
@@ -487,6 +500,7 @@ class GeneratedAvatarRuntimeTest {
             alphaZeroFraction = zeroAlpha.toFloat() / count,
             alphaOpaqueFraction = opaqueAlpha.toFloat() / count,
             alphaDistinctLevels = alphaHistogram.count { it > 0 },
+            alphaHistogram = alphaHistogram.toList(),
             meanR = (sumR / count).toInt(),
             meanG = (sumG / count).toInt(),
             meanB = (sumB / count).toInt(),
@@ -517,6 +531,7 @@ class GeneratedAvatarRuntimeTest {
                 put("alphaZeroFraction", item.alphaZeroFraction.toDouble())
                 put("alphaOpaqueFraction", item.alphaOpaqueFraction.toDouble())
                 put("alphaDistinctLevels", item.alphaDistinctLevels)
+                put("alphaHistogram", JSONArray(item.alphaHistogram))
                 put("meanR", item.meanR)
                 put("meanG", item.meanG)
                 put("meanB", item.meanB)
