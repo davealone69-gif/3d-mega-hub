@@ -84,3 +84,40 @@ CI status can change after this README is updated. Check the latest [GitHub Acti
 ## Older debug build
 
 [Download the previously published debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk). This is an older troubleshooting build, not the current integration candidate and not a production release.
+
+## Prompt-to-avatar validation and next stage
+
+**Owner phone-test finding (2026-11-11):** changing the prompt did not visibly change the displayed character. Treat prompt-driven visible variation as **FAILED IN USER TEST / NOT FIXED**. Renderer success and a generated GLB do not establish that prompt attributes affect the exported character.
+
+### Two parser-supported diagnostic prompts
+
+Use these exact inputs as a differential test:
+
+1. `Adult man, muscular build, tall, dark skin, short black hair, red shirt`
+2. `Adult woman, slim build, short, pale skin, long brown hair, blue dress`
+
+The native parser contains explicit vocabulary for male/female, muscular/slim, tall/short, skin-tone qualifiers, hair length and named colours. These examples are chosen from that vocabulary. They are test inputs only; successful parsing is not proof that the renderer visibly applies every attribute.
+
+### Next stage: prove prompt changes reach the model
+
+Work only on `integration/avatarforge-renderer-port` and keep PR #9 as the sole active review.
+
+1. **Parser differential regression (first gate).** Add native tests for both exact prompts. Assert the parsed specs differ in sex, build, height, skin melanin, hair style/colour and garment colour where those fields are supported. Also test parsing prompt B after prompt A using the same spec object, and compare against parsing B from a fresh default spec. This catches stale state and prompt-order leakage.
+2. **Generation propagation (second gate).** Generate two independent GLBs from those parsed specs. Record each prompt's matched tokens and resolved spec. Compare exported GLB structure, vertex positions, bounds, normals and material/base-colour data. Require meaningful, attributable differences; different file hashes alone are insufficient.
+3. **Renderer differential (third gate).** Load both generated GLBs through the real AvatarForge GLES route under the same camera, lighting and viewport conditions. Capture both images and verify visible differences in the expected regions. Preserve the GLBs, spec reports, captures and hashes as CI artifacts.
+4. **UI truthfulness (fourth gate).** Show which prompt tokens were recognised and which were ignored. Warn or reject a prompt with no supported attributes. Do not report a successful personalised result merely because a default mesh was exported.
+5. **Phone verification (release gate).** Install the exact candidate on the Samsung SM-S921B. Run both prompts and compare the actual displayed characters. Record APK SHA-256 and captures. Emulator evidence does not replace this phone test.
+
+### Prompt-generation evidence ledger
+
+| Item | Status | Evidence / next action |
+|---|---|---|
+| Deterministic native prompt parser exists | **REAL + VERIFIED (SOURCE)** | `af_prompt.cpp` contains explicit attribute vocabularies and spec assignments |
+| Two supported diagnostic prompts documented | **REAL + VERIFIED (SOURCE)** | Exact prompts above use parser-recognised vocabulary |
+| Prompt changes visibly change the character | **FAILED IN USER TEST** | Owner reports changing the prompt did not change the displayed picture; reproduce and diagnose |
+| Parsed attributes propagate into distinct exported GLBs | **MISSING** | Add parser and generated-GLB differential regression tests |
+| Two prompts render visibly different characters | **MISSING** | Add controlled GLES image comparison |
+| Prompt recognition/ignored-token feedback | **PARTIAL / NEEDS VALIDATION** | Generation result has a prompt-match warning path; UI should expose recognised and ignored tokens clearly |
+| AI/natural-language understanding | **MISSING** | Current implementation is deterministic keyword parsing, not an LLM or generative AI model |
+
+Do not mark this stage complete based on a successful renderer smoke test, a non-empty GLB, different filenames or different file hashes alone. The proof must connect prompt → parsed spec → generated geometry/materials → visible rendered difference.
