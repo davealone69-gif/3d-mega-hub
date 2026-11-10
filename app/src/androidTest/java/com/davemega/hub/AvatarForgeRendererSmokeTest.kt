@@ -6,12 +6,13 @@ import android.graphics.Color
 import android.graphics.Rect
 import android.net.Uri
 import android.os.SystemClock
+import android.view.View
+import android.view.ViewGroup
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
-import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -225,12 +226,37 @@ class AvatarForgeRendererSmokeTest {
         val activity = instrumentation.startActivitySync(launch)
         assertNotNull("MainActivity did not launch", activity)
 
-        assertTrue(
-            "AvatarForge SurfaceView was never attached. The test must exercise the imported-GLB route, not Filament's bundled-sample viewer.",
-            device.wait(Until.hasObject(By.clazz(AvatarForgeSurfaceView::class.java.name)), 20_000)
-        )
-
         val prefs = context.getSharedPreferences("avatarforge_renderer_smoke", 0)
+        fun findAvatarForgeSurface(view: View): View? {
+            if (view.javaClass.name == "com.davemega.hub.avatarforge.AvatarForgeSurfaceView") return view
+            if (view is ViewGroup) {
+                for (index in 0 until view.childCount) {
+                    findAvatarForgeSurface(view.getChildAt(index))?.let { return it }
+                }
+            }
+            return null
+        }
+
+        // The viewport is below the import and generation controls in a vertically scrolling
+        // Compose screen. Bring it on-screen so SurfaceView receives surfaceCreated; merely
+        // launching the Avatar tab does not guarantee that an off-screen SurfaceView has a surface.
+        val scrollDeadline = SystemClock.elapsedRealtime() + 30_000L
+        var viewport = findAvatarForgeSurface(activity.window.decorView)
+        while ((viewport == null || !viewport.isShown || !viewport.isAttachedToWindow) &&
+            SystemClock.elapsedRealtime() < scrollDeadline) {
+            val width = device.displayWidth
+            val height = device.displayHeight
+            device.swipe(width / 2, (height * 0.82f).toInt(), width / 2, (height * 0.22f).toInt(), 18)
+            SystemClock.sleep(400L)
+            viewport = findAvatarForgeSurface(activity.window.decorView)
+        }
+        assertNotNull(
+            "Imported GLB did not create an AvatarForgeSurfaceView after scrolling the Avatar Studio viewport into view.",
+            viewport
+        )
+        assertTrue("AvatarForge SurfaceView is not attached to the Activity window",
+            viewport!!.isAttachedToWindow && viewport.isShown && viewport.width > 100 && viewport.height > 100)
+
         val deadline = SystemClock.elapsedRealtime() + 90_000L
         while (SystemClock.elapsedRealtime() < deadline) {
             if (prefs.getString("status", "") == "FRAME_PRESENTED" ||
@@ -252,11 +278,9 @@ class AvatarForgeRendererSmokeTest {
         assertTrue("Renderer reported a GLES error", prefs.getInt("gl_error", -1) == 0)
         assertTrue("Renderer reported an EGL presentation error", prefs.getInt("egl_error", -1) == 0)
 
-        val viewport = device.findObject(By.clazz(AvatarForgeSurfaceView::class.java.name))
-        assertNotNull("AvatarForge viewport disappeared after rendering", viewport)
-        val bounds = viewport!!.visibleBounds
-        assertTrue("AvatarForge viewport is not visible: $bounds", bounds.width() > 100 && bounds.height() > 100)
-
+        val location = IntArray(2)
+        viewport.getLocationOnScreen(location)
+        val bounds = Rect(location[0], location[1], location[0] + viewport.width, location[1] + viewport.height)
         val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         assertNotNull("Could not capture emulator screen", screenshot)
         val image = screenshot!!
