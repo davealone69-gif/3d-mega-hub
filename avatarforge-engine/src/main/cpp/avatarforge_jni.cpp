@@ -1,16 +1,150 @@
 #include <jni.h>
+#include <android/bitmap.h>
+#include <dlfcn.h>
 
 #include "afcore.h"
+#include "af_glb_read.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <unordered_set>
 
 namespace {
+JavaVM* gJavaVm = nullptr;
+
+bool decodeViaAndroidBitmapFactory(const uint8_t* data, std::size_t size,
+                                   af::DecodedImage* out, std::string* error) {
+    if (!gJavaVm || !data || size == 0 || size > 64u * 1024u * 1024u || !out) {
+        if (error) *error = "JNI BitmapFactory fallback is unavailable or received invalid input";
+        return false;
+    }
+    struct BitmapNdkApi {
+        void* lib = dlopen("libjnigraphics.so", RTLD_NOW | RTLD_LOCAL);
+        using GetInfo = int (*)(JNIEnv*, jobject, AndroidBitmapInfo*);
+        using Lock = int (*)(JNIEnv*, jobject, void**);
+        using Unlock = int (*)(JNIEnv*, jobject);
+        GetInfo getInfo = lib ? reinterpret_cast<GetInfo>(dlsym(lib, "AndroidBitmap_getInfo")) : nullptr;
+        Lock lock = lib ? reinterpret_cast<Lock>(dlsym(lib, "AndroidBitmap_lockPixels")) : nullptr;
+        Unlock unlock = lib ? reinterpret_cast<Unlock>(dlsym(lib, "AndroidBitmap_unlockPixels")) : nullptr;
+        bool ready() const { return getInfo && lock && unlock; }
+    };
+    static const BitmapNdkApi ndk;
+    if (!ndk.ready()) {
+        if (error) *error = "libjnigraphics AndroidBitmap API unavailable";
+        return false;
+    }
+
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    const jint envStat = gJavaVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (envStat == JNI_EDETACHED) {
+        if (gJavaVm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) {
+            if (error) *error = "failed to attach worker thread to JVM for BitmapFactory decode";
+            return false;
+        }
+        attached = true;
+    } else if (envStat != JNI_OK || !env) {
+        if (error) *error = "JVM environment unavailable for BitmapFactory decode";
+        return false;
+    }
+    struct DetachGuard {
+        JavaVM* vm;
+        bool shouldDetach;
+        ~DetachGuard() { if (vm && shouldDetach) vm->DetachCurrentThread(); }
+    } detachGuard{gJavaVm, attached};
+
+    if (env->PushLocalFrame(16) < 0) {
+        env->ExceptionClear();
+        if (error) *error = "JNI PushLocalFrame failed during image decode";
+        return false;
+    }
+    struct FrameGuard {
+        JNIEnv* e;
+        ~FrameGuard() { e->PopLocalFrame(nullptr); }
+    } frameGuard{env};
+
+    jclass factoryCls = env->FindClass("android/graphics/BitmapFactory");
+    jclass optsCls = env->FindClass("android/graphics/BitmapFactory$Options");
+    jclass configCls = env->FindClass("android/graphics/Bitmap$Config");
+    jclass bmpCls = env->FindClass("android/graphics/Bitmap");
+    if (!factoryCls || !optsCls || !configCls || !bmpCls) {
+        env->ExceptionClear();
+        if (error) *error = "Android BitmapFactory classes not found";
+        return false;
+    }
+    jmethodID optsCtor = env->GetMethodID(optsCls, "<init>", "()V");
+    jfieldID inPremulField = env->GetFieldID(optsCls, "inPremultiplied", "Z");
+    jfieldID inConfigField = env->GetFieldID(optsCls, "inPreferredConfig", "Landroid/graphics/Bitmap$Config;");
+    jfieldID argbField = env->GetStaticFieldID(configCls, "ARGB_8888", "Landroid/graphics/Bitmap$Config;");
+    jmethodID decodeMethod = env->GetStaticMethodID(
+        factoryCls, "decodeByteArray", "([BIILandroid/graphics/BitmapFactory$Options;)Landroid/graphics/Bitmap;");
+    jmethodID recycleMethod = env->GetMethodID(bmpCls, "recycle", "()V");
+    if (!optsCtor || !inPremulField || !inConfigField || !argbField || !decodeMethod || !recycleMethod) {
+        env->ExceptionClear();
+        if (error) *error = "Android BitmapFactory methods not found";
+        return false;
+    }
+
+    jobject opts = env->NewObject(optsCls, optsCtor);
+    jobject argbConfig = env->GetStaticObjectField(configCls, argbField);
+    jbyteArray inputBytes = env->NewByteArray(static_cast<jsize>(size));
+    if (!opts || !argbConfig || !inputBytes) {
+        env->ExceptionClear();
+        if (error) *error = "out of JNI memory allocating BitmapFactory input";
+        return false;
+    }
+    env->SetBooleanField(opts, inPremulField, JNI_FALSE);
+    env->SetObjectField(opts, inConfigField, argbConfig);
+    env->SetByteArrayRegion(inputBytes, 0, static_cast<jsize>(size), reinterpret_cast<const jbyte*>(data));
+
+    jobject bitmap = env->CallStaticObjectMethod(factoryCls, decodeMethod, inputBytes, 0, static_cast<jint>(size), opts);
+    if (env->ExceptionCheck() || !bitmap) {
+        env->ExceptionClear();
+        if (error) *error = "BitmapFactory.decodeByteArray rejected embedded image";
+        return false;
+    }
+
+    AndroidBitmapInfo info{};
+    bool ok = false;
+    if (ndk.getInfo(env, bitmap, &info) == ANDROID_BITMAP_RESULT_SUCCESS &&
+        info.format == ANDROID_BITMAP_FORMAT_RGBA_8888 &&
+        info.width > 0 && info.height > 0 && info.width <= 8192 && info.height <= 8192 &&
+        static_cast<std::size_t>(info.width) * static_cast<std::size_t>(info.height) * 4u <= 64u * 1024u * 1024u) {
+        void* pixels = nullptr;
+        if (ndk.lock(env, bitmap, &pixels) == ANDROID_BITMAP_RESULT_SUCCESS && pixels) {
+            try {
+                const std::size_t rowBytes = static_cast<std::size_t>(info.width) * 4u;
+                out->width = static_cast<int>(info.width);
+                out->height = static_cast<int>(info.height);
+                out->rgba.resize(rowBytes * static_cast<std::size_t>(info.height));
+                const uint8_t* src = static_cast<const uint8_t*>(pixels);
+                for (uint32_t y = 0; y < info.height; ++y) {
+                    std::memcpy(out->rgba.data() + static_cast<std::size_t>(y) * rowBytes,
+                                src + static_cast<std::size_t>(y) * info.stride, rowBytes);
+                }
+                ok = true;
+            } catch (const std::bad_alloc&) {
+                out->width = 0;
+                out->height = 0;
+                out->rgba.clear();
+                if (error) *error = "out of memory copying decoded Bitmap pixels";
+            }
+            ndk.unlock(env, bitmap);
+        } else if (error) {
+            *error = "AndroidBitmap_lockPixels failed";
+        }
+    } else if (error) {
+        *error = "decoded Bitmap dimensions or format outside supported RGBA8888 1..8192 limits";
+    }
+    env->CallVoidMethod(bitmap, recycleMethod);
+    env->ExceptionClear();
+    return ok;
+}
 constexpr jsize kSpecIntCount = 7;
 constexpr jsize kSpecFloatCount = 33;
 
@@ -333,3 +467,11 @@ Java_com_davemega_hub_avatarforge_NativeMethods_generate(
     if (out != nullptr) env->SetLongArrayRegion(out, 0, static_cast<jsize>(sizeof(values) / sizeof(values[0])), values);
     return out;
 }
+
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+    gJavaVm = vm;
+    af::setFallbackImageDecoder(&decodeViaAndroidBitmapFactory);
+    return JNI_VERSION_1_6;
+}
+
+

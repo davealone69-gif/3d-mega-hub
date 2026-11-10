@@ -1,6 +1,7 @@
 package com.davemega.hub
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -41,20 +42,67 @@ private data class ChatLine(val fromUser: Boolean, val text: String)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val initialImportUrl = extractIncomingGlbUrl(intent)
+        val initialImportUri = if (initialImportUrl == null) extractIncomingGlbUri(intent) else null
         val startPage = resolveHubStartPage(
-            openAvatarStudio = intent.getBooleanExtra(EXTRA_OPEN_AVATAR_STUDIO, false)
+            openAvatarStudio = intent.getBooleanExtra(EXTRA_OPEN_AVATAR_STUDIO, false) ||
+                initialImportUrl != null || initialImportUri != null
         )
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { MegaHubApp(startPage) }
+                Surface(Modifier.fillMaxSize()) {
+                    MegaHubApp(
+                        startPage = startPage,
+                        initialImportUrl = if (savedInstanceState == null) initialImportUrl else null,
+                        initialImportUri = if (savedInstanceState == null) initialImportUri else null
+                    )
+                }
             }
         }
     }
 }
 
+private fun extractIncomingGlbUrl(intent: Intent?): String? {
+    if (intent == null) return null
+    intent.getStringExtra(EXTRA_IMPORT_GLB_URL)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+    if (intent.action == Intent.ACTION_SEND) {
+        val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
+        if (sharedText.contains("http://", ignoreCase = true) || sharedText.contains("https://", ignoreCase = true)) {
+            return sharedText
+        }
+    }
+    if (intent.action == Intent.ACTION_VIEW) {
+        val data = intent.data
+        val scheme = data?.scheme?.lowercase(Locale.ROOT)
+        if (scheme == "https" || scheme == "http") {
+            return data.toString()
+        }
+    }
+    return null
+}
+
+private fun extractIncomingGlbUri(intent: Intent?): Uri? {
+    if (intent == null) return null
+    if (intent.action == Intent.ACTION_VIEW) {
+        val data = intent.data
+        val scheme = data?.scheme?.lowercase(Locale.ROOT)
+        if (scheme == "content" || scheme == "file") return data
+    }
+    if (intent.action == Intent.ACTION_SEND) {
+        @Suppress("DEPRECATION")
+        val stream = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        if (stream != null) return stream
+    }
+    return null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MegaHubApp(startPage: HubStartPage) {
+private fun MegaHubApp(
+    startPage: HubStartPage,
+    initialImportUrl: String? = null,
+    initialImportUri: Uri? = null
+) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("mega_hub", Context.MODE_PRIVATE) }
     var page by remember {
@@ -139,6 +187,73 @@ private fun MegaHubApp(startPage: HubStartPage) {
                     }
                 }
             }
+        }
+    }
+
+    fun importAvatarUrl(rawUrl: String) {
+        if (avatarImporting) return
+        val activity = context as? ComponentActivity ?: return
+        avatarImporting = true
+        avatarImportStatus = "Connecting to remote URL and downloading GLB…"
+        thread(name = "MegaHubRemoteGlbImport") {
+            var temporaryFile: File? = null
+            try {
+                val directory = File(context.filesDir, "avatars")
+                check(directory.isDirectory || directory.mkdirs()) { "Could not create the private avatar library directory." }
+                val outputFile = File.createTempFile("remote-avatar-", ".glb.part", directory)
+                temporaryFile = outputFile
+                var lastProgressStep = -1L
+                val displayName = RemoteGlbUrl.downloadToFile(
+                    rawUrl = rawUrl,
+                    destinationTempFile = outputFile,
+                    maxBytes = GlbValidator.MAX_GLB_BYTES
+                ) { downloadedBytes, totalBytes ->
+                    val step = downloadedBytes / (512L * 1024L)
+                    if (step != lastProgressStep && !activity.isFinishing && !activity.isDestroyed) {
+                        lastProgressStep = step
+                        val mb = String.format(Locale.US, "%.1f", downloadedBytes / (1024.0 * 1024.0))
+                        val progressLabel = if (totalBytes > 0L) {
+                            val totalMb = String.format(Locale.US, "%.1f", totalBytes / (1024.0 * 1024.0))
+                            "Downloading GLB… $mb / $totalMb MiB"
+                        } else {
+                            "Downloading GLB… $mb MiB"
+                        }
+                        activity.runOnUiThread { avatarImportStatus = progressLabel }
+                    }
+                }
+                val safeStem = displayName.removeSuffix(".glb").replace(Regex("[^A-Za-z0-9._-]"), "_").take(48).ifEmpty { "remote" }
+                val fileName = "$safeStem-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}.glb"
+                val destination = File(directory, fileName)
+                Files.move(outputFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                temporaryFile = null
+                val importedUri = Uri.fromFile(destination)
+                prefs.edit().putString("avatar_uri", importedUri.toString())
+                    .putString("avatar_name", displayName).apply()
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread {
+                        avatarUri = importedUri
+                        avatarName = displayName
+                        avatarImporting = false
+                        avatarImportStatus = "Downloaded & validated $displayName · ${destination.length() / 1024L} KiB"
+                    }
+                }
+            } catch (failure: Exception) {
+                temporaryFile?.delete()
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread {
+                        avatarImporting = false
+                        avatarImportStatus = "URL import failed: ${failure.message ?: failure.javaClass.simpleName}"
+                        Toast.makeText(context, avatarImportStatus, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(initialImportUrl, initialImportUri) {
+        when {
+            !initialImportUrl.isNullOrBlank() -> importAvatarUrl(initialImportUrl)
+            initialImportUri != null -> importAvatar(initialImportUri)
         }
     }
 
@@ -286,8 +401,11 @@ private fun MegaHubApp(startPage: HubStartPage) {
                         avatarUri = avatarUri,
                         avatarName = avatarName,
                         onImport = {
-                            avatarPicker.launch(arrayOf("model/gltf-binary", "application/octet-stream"))
+                            // Use */* so Android DocumentProviders (Downloads, Dropbox, Drive) do not grey out .glb files;
+                            // GlbValidator strictly verifies binary glTF 2.0 headers and chunks on import.
+                            avatarPicker.launch(arrayOf("*/*"))
                         },
+                        onImportUrl = { url -> importAvatarUrl(url) },
                         onRemove = {
                             avatarUri = null
                             avatarName = "Built-in sample model"
@@ -384,3 +502,4 @@ private fun HubCard(title: String, status: String, detail: String, onClick: (() 
         }
     }
 }
+

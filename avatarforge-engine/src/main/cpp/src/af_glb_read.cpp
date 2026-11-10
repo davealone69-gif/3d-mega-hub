@@ -18,6 +18,8 @@
 
 #include "af_json.h"
 
+#include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -30,12 +32,17 @@
 #define AF_IMPORT_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "AvatarForge", __VA_ARGS__)
 #define AF_IMPORT_LOGW(...) __android_log_print(ANDROID_LOG_WARN, "AvatarForge", __VA_ARGS__)
 #else
+#if defined(__linux__) || defined(__APPLE__)
+#include <dlfcn.h>
+#endif
 #define AF_IMPORT_LOGI(...) do { std::fprintf(stderr, "[AvatarForge] "); std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
 #define AF_IMPORT_LOGW(...) do { std::fprintf(stderr, "[AvatarForge][WARN] "); std::fprintf(stderr, __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
 #endif
 
 namespace af {
 namespace {
+
+std::atomic<PlatformImageDecodeFn> gFallbackImageDecoder{nullptr};
 
 constexpr uint32_t GLB_MAGIC = 0x46546C67u;   /* 'glTF' little-endian */
 constexpr uint32_t CHUNK_JSON = 0x4E4F534Au;
@@ -90,6 +97,8 @@ bool decodePlatformImage(const uint8_t* data, size_t size, DecodedImage* out, st
     };
     static const DecoderApi api;
     if (!api.ready()) {
+        PlatformImageDecodeFn fallback = gFallbackImageDecoder.load(std::memory_order_acquire);
+        if (fallback) return fallback(data, size, out, error);
         if (error) *error = "Android AImageDecoder API is unavailable (requires Android 11 / API 30 or newer)";
         return false;
     }
@@ -153,8 +162,80 @@ bool decodePlatformImage(const uint8_t* data, size_t size, DecodedImage* out, st
         return false;
     }
 #else
-    (void)data; (void)size; (void)out;
-    if (error) *error = "platform image decoding is available only on Android API 30+";
+    if (!data || size == 0 || !out) {
+        if (error) *error = "platform image decoder received empty input";
+        return false;
+    }
+    PlatformImageDecodeFn fallback = gFallbackImageDecoder.load(std::memory_order_acquire);
+    if (fallback && fallback(data, size, out, error)) return true;
+
+#if defined(__linux__) || defined(__APPLE__)
+    if (looksLikeWebp(data, size)) {
+        struct HostWebpApi {
+            void* library = nullptr;
+            using GetInfo = int (*)(const uint8_t*, size_t, int*, int*);
+            using DecodeRgba = uint8_t* (*)(const uint8_t*, size_t, int*, int*);
+            using Free = void (*)(void*);
+            GetInfo getInfo = nullptr;
+            DecodeRgba decodeRgba = nullptr;
+            Free freeFn = nullptr;
+            HostWebpApi() {
+                const char* const candidates[] = {
+                    "libwebp.so.7", "libwebp.so.6", "libwebp.so", "libwebp.7.dylib", "libwebp.dylib"
+                };
+                for (const char* name : candidates) {
+                    library = dlopen(name, RTLD_LAZY | RTLD_LOCAL);
+                    if (library) break;
+                }
+                if (library) {
+                    getInfo = reinterpret_cast<GetInfo>(dlsym(library, "WebPGetInfo"));
+                    decodeRgba = reinterpret_cast<DecodeRgba>(dlsym(library, "WebPDecodeRGBA"));
+                    freeFn = reinterpret_cast<Free>(dlsym(library, "WebPFree"));
+                }
+            }
+            bool ready() const { return getInfo && decodeRgba && freeFn; }
+        };
+        static const HostWebpApi webpApi;
+        if (webpApi.ready()) {
+            int width = 0, height = 0;
+            if (!webpApi.getInfo(data, size, &width, &height)) {
+                if (error) *error = "libwebp rejected malformed WebP header/payload";
+                return false;
+            }
+            if (width <= 0 || height <= 0 || width > 8192 || height > 8192) {
+                if (error) *error = "decoded WebP dimensions are outside the supported 1..8192 range";
+                return false;
+            }
+            const size_t totalBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+            if (totalBytes > MAX_DECODED_IMAGE_BYTES) {
+                if (error) *error = "decoded WebP image exceeds the bounded RGBA memory limit";
+                return false;
+            }
+            int decodedW = 0, decodedH = 0;
+            uint8_t* rgba = webpApi.decodeRgba(data, size, &decodedW, &decodedH);
+            if (!rgba || decodedW != width || decodedH != height) {
+                if (rgba) webpApi.freeFn(rgba);
+                if (error) *error = "libwebp failed to decode WebP payload";
+                return false;
+            }
+            try {
+                out->width = width;
+                out->height = height;
+                out->rgba.assign(rgba, rgba + totalBytes);
+                webpApi.freeFn(rgba);
+                return true;
+            } catch (const std::bad_alloc&) {
+                webpApi.freeFn(rgba);
+                out->width = 0;
+                out->height = 0;
+                out->rgba.clear();
+                if (error) *error = "not enough memory for decoded WebP image";
+                return false;
+            }
+        }
+    }
+#endif
+    if (error) *error = "platform image decoding is available only on Android API 30+ (or host with libwebp)";
     return false;
 #endif
 }
@@ -665,7 +746,8 @@ int buildPrimitive(const uint8_t* bin, size_t binSize, const json::Json& doc, co
     std::vector<float> scratch;
     int present = readVec("NORMAL", 3, &scratch);
     if (present < 0) return present;
-    if (present == 0) {
+    const bool hasExplicitNormals = (present == 0);
+    if (hasExplicitNormals) {
         for (size_t i = 0; i < vertexCount; ++i) {
             (*pool)[i].normal[0] = scratch[i * 3 + 0];
             (*pool)[i].normal[1] = scratch[i * 3 + 1];
@@ -778,6 +860,155 @@ int buildPrimitive(const uint8_t* bin, size_t binSize, const json::Json& doc, co
         out->indices.resize(vertexCount);
         for (size_t i = 0; i < vertexCount; ++i) out->indices[i] = static_cast<uint32_t>(i);
     }
+
+    /* Sanitize missing, zero-length, or corrupted/inverted vertex normals (such as 3D scan /
+       trimesh xatlas exports where UV-seam splits leave >10% of stored normals inverted against
+       triangle winding) using position-welded smooth area-weighted normals so UV seams stay seamless. */
+    const bool hasExplicitTangents = (attribute(prim, "TANGENT", &present) && present >= 0);
+    struct WeldedPosKey {
+        int32_t qx, qy, qz;
+        uint32_t vi;
+        bool operator<(const WeldedPosKey& o) const {
+            if (qx != o.qx) return qx < o.qx;
+            if (qy != o.qy) return qy < o.qy;
+            return qz < o.qz;
+        }
+    };
+    std::vector<float> triNx(vertexCount, 0.0f);
+    std::vector<float> triNy(vertexCount, 0.0f);
+    std::vector<float> triNz(vertexCount, 0.0f);
+    std::vector<uint8_t> referenced(vertexCount, 0u);
+    for (size_t t = 0; t + 2 < out->indices.size(); t += 3) {
+        const uint32_t i0 = out->indices[t + 0];
+        const uint32_t i1 = out->indices[t + 1];
+        const uint32_t i2 = out->indices[t + 2];
+        referenced[i0] = referenced[i1] = referenced[i2] = 1u;
+        const float e1x = (*pool)[i1].pos[0] - (*pool)[i0].pos[0];
+        const float e1y = (*pool)[i1].pos[1] - (*pool)[i0].pos[1];
+        const float e1z = (*pool)[i1].pos[2] - (*pool)[i0].pos[2];
+        const float e2x = (*pool)[i2].pos[0] - (*pool)[i0].pos[0];
+        const float e2y = (*pool)[i2].pos[1] - (*pool)[i0].pos[1];
+        const float e2z = (*pool)[i2].pos[2] - (*pool)[i0].pos[2];
+        const float fnx = e1y * e2z - e1z * e2y;
+        const float fny = e1z * e2x - e1x * e2z;
+        const float fnz = e1x * e2y - e1y * e2x;
+        if (std::isfinite(fnx) && std::isfinite(fny) && std::isfinite(fnz)) {
+            triNx[i0] += fnx; triNy[i0] += fny; triNz[i0] += fnz;
+            triNx[i1] += fnx; triNy[i1] += fny; triNz[i1] += fnz;
+            triNx[i2] += fnx; triNy[i2] += fny; triNz[i2] += fnz;
+        }
+    }
+
+    /* Weld normals across coincident 3D positions so UV-split chart borders shade smoothly. */
+    std::vector<WeldedPosKey> keys(vertexCount);
+    for (size_t i = 0; i < vertexCount; ++i) {
+        const float px = std::isfinite((*pool)[i].pos[0]) ? (*pool)[i].pos[0] : 0.0f;
+        const float py = std::isfinite((*pool)[i].pos[1]) ? (*pool)[i].pos[1] : 0.0f;
+        const float pz = std::isfinite((*pool)[i].pos[2]) ? (*pool)[i].pos[2] : 0.0f;
+        keys[i] = {
+            static_cast<int32_t>(std::llround(static_cast<double>(px) * 100000.0)),
+            static_cast<int32_t>(std::llround(static_cast<double>(py) * 100000.0)),
+            static_cast<int32_t>(std::llround(static_cast<double>(pz) * 100000.0)),
+            static_cast<uint32_t>(i)
+        };
+    }
+    std::sort(keys.begin(), keys.end());
+    std::vector<float> geomNx(vertexCount, 0.0f);
+    std::vector<float> geomNy(vertexCount, 0.0f);
+    std::vector<float> geomNz(vertexCount, 0.0f);
+    for (size_t s = 0; s < vertexCount;) {
+        size_t e = s + 1;
+        while (e < vertexCount &&
+               keys[e].qx == keys[s].qx && keys[e].qy == keys[s].qy && keys[e].qz == keys[s].qz) {
+            ++e;
+        }
+        float sx = 0.0f, sy = 0.0f, sz = 0.0f;
+        for (size_t k = s; k < e; ++k) {
+            sx += triNx[keys[k].vi];
+            sy += triNy[keys[k].vi];
+            sz += triNz[keys[k].vi];
+        }
+        for (size_t k = s; k < e; ++k) {
+            const uint32_t vi = keys[k].vi;
+            /* Preserve intentional hard creases where a sub-surface opposes the welded average. */
+            const float dotGroup = triNx[vi] * sx + triNy[vi] * sy + triNz[vi] * sz;
+            if (dotGroup < 0.0f && (triNx[vi] * triNx[vi] + triNy[vi] * triNy[vi] + triNz[vi] * triNz[vi]) > 1e-20f) {
+                geomNx[vi] = triNx[vi]; geomNy[vi] = triNy[vi]; geomNz[vi] = triNz[vi];
+            } else {
+                geomNx[vi] = sx; geomNy[vi] = sy; geomNz[vi] = sz;
+            }
+        }
+        s = e;
+    }
+
+    size_t invalidNormalCount = 0;
+    size_t invertedNormalCount = 0;
+    size_t referencedCount = 0;
+    if (hasExplicitNormals) {
+        for (size_t i = 0; i < vertexCount; ++i) {
+            const float nx = (*pool)[i].normal[0];
+            const float ny = (*pool)[i].normal[1];
+            const float nz = (*pool)[i].normal[2];
+            const float lenSq = nx * nx + ny * ny + nz * nz;
+            if (!std::isfinite(lenSq) || lenSq < 1e-12f) {
+                ++invalidNormalCount;
+                continue;
+            }
+            if (referenced[i]) {
+                const float gx = geomNx[i], gy = geomNy[i], gz = geomNz[i];
+                const float gLenSq = gx * gx + gy * gy + gz * gz;
+                if (gLenSq >= 1e-18f) {
+                    ++referencedCount;
+                    const float cosAngle = (nx * gx + ny * gy + nz * gz) / std::sqrt(lenSq * gLenSq);
+                    if (cosAngle < -0.05f) ++invertedNormalCount;
+                }
+            }
+        }
+    }
+    const bool rebuildAllNormals = !hasExplicitNormals ||
+                                   (referencedCount >= 24 && invertedNormalCount * 10 > referencedCount);
+    if (rebuildAllNormals || invalidNormalCount > 0) {
+        for (size_t i = 0; i < vertexCount; ++i) {
+            float nx = (*pool)[i].normal[0];
+            float ny = (*pool)[i].normal[1];
+            float nz = (*pool)[i].normal[2];
+            float lenSq = nx * nx + ny * ny + nz * nz;
+            if (rebuildAllNormals || !std::isfinite(lenSq) || lenSq < 1e-12f) {
+                nx = geomNx[i];
+                ny = geomNy[i];
+                nz = geomNz[i];
+                lenSq = nx * nx + ny * ny + nz * nz;
+            }
+            if (std::isfinite(lenSq) && lenSq >= 1e-12f) {
+                const float inv = 1.0f / std::sqrt(lenSq);
+                nx *= inv; ny *= inv; nz *= inv;
+                (*pool)[i].normal[0] = nx;
+                (*pool)[i].normal[1] = ny;
+                (*pool)[i].normal[2] = nz;
+            } else {
+                nx = 0.0f; ny = 1.0f; nz = 0.0f;
+                (*pool)[i].normal[0] = 0.0f;
+                (*pool)[i].normal[1] = 1.0f;
+                (*pool)[i].normal[2] = 0.0f;
+            }
+            if (!hasExplicitTangents) {
+                /* Keep implicit tangent orthonormal to repaired normal for anisotropic/normal-map lobes. */
+                const float ux = (std::fabs(ny) < 0.99f) ? 0.0f : 1.0f;
+                const float uy = (std::fabs(ny) < 0.99f) ? 1.0f : 0.0f;
+                float tx = uy * nz;
+                float ty = -ux * nz;
+                float tz = ux * ny - uy * nx;
+                const float tLen = std::sqrt(tx * tx + ty * ty + tz * tz);
+                if (tLen > 1e-6f) {
+                    (*pool)[i].tangent[0] = tx / tLen;
+                    (*pool)[i].tangent[1] = ty / tLen;
+                    (*pool)[i].tangent[2] = tz / tLen;
+                    (*pool)[i].tangent[3] = 1.0f;
+                }
+            }
+        }
+    }
+
     out->material = prim.find("material") && prim["material"].isNumber() ? prim["material"].asInt(-1) : -1;
     return AF_OK;
 }
@@ -786,6 +1017,10 @@ int buildPrimitive(const uint8_t* bin, size_t binSize, const json::Json& doc, co
 
 bool glbLooksLikeWebp(const uint8_t* data, std::size_t size) {
     return looksLikeWebp(data, size);
+}
+
+void setFallbackImageDecoder(PlatformImageDecodeFn fn) {
+    gFallbackImageDecoder.store(fn, std::memory_order_release);
 }
 
 void GlbAsset::bounds(Vec3* outMin, Vec3* outMax) const {
@@ -971,6 +1206,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
     for (const auto& m : doc["materials"].items()) {
         ImportedMaterial mat;
         mat.name = m["name"].stringOr("");
+        mat.alphaMode = m["alphaMode"].stringOr("OPAQUE");
         const json::Json& pbr = m["pbrMetallicRoughness"];
         const json::Json& bc = pbr["baseColorFactor"];
         if (bc.size() == 4) {
@@ -993,6 +1229,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         mat.baseColorTexture = texIndex(pbr["baseColorTexture"]);
         mat.metallicRoughnessTexture = texIndex(pbr["metallicRoughnessTexture"]);
         mat.normalTexture = texIndex(m["normalTexture"]);
+        mat.occlusionTexture = texIndex(m["occlusionTexture"]);
         mat.emissiveTexture = texIndex(m["emissiveTexture"]);
         out->materials.push_back(std::move(mat));
     }
@@ -1132,6 +1369,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         resolveMaterialTexture(material.baseColorTexture);
         resolveMaterialTexture(material.metallicRoughnessTexture);
         resolveMaterialTexture(material.normalTexture);
+        resolveMaterialTexture(material.occlusionTexture);
         resolveMaterialTexture(material.emissiveTexture);
     }
 
@@ -1345,3 +1583,4 @@ int importGlbFile(const char* path, GlbAsset* out, std::string* error) {
 }
 
 } /* namespace af */
+

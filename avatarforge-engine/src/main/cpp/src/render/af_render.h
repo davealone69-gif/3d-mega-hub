@@ -83,6 +83,7 @@ struct RendererOptions {
     float shadowSoftness       = 1.0f;   /* PCF radius in texels                               */
     bool  groundPlane          = true;   /* draws the contact-shadow plane under the figure    */
     bool  verifyFramePixels    = false;  /* diagnostic readback; enabled only by runtime tests */
+    bool  debugMagenta         = false;  /* synthetic unlit magenta pass; opt-in test only     */
 };
 
 struct CameraState {
@@ -215,3 +216,4 @@ int pickRegion(const af_engine* engine, const float rayOrigin[3], const float ra
 } /* namespace af */
 
 #endif /* AF_RENDER_H */
+

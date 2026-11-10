@@ -45,6 +45,7 @@ fun AvatarStudioScreen(
     avatarUri: Uri?,
     avatarName: String,
     onImport: () -> Unit,
+    onImportUrl: (String) -> Unit = {},
     onRemove: () -> Unit,
     onGenerated: (Uri, String) -> Unit,
     isImporting: Boolean = false,
@@ -55,6 +56,7 @@ fun AvatarStudioScreen(
     val engineHealth = remember { AvatarForgeEngine.health() }
     val isDebuggable = remember { (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 }
     var pixelDiagnosticPath by remember { mutableStateOf<String?>(null) }
+    var remoteGlbUrl by remember { mutableStateOf("") }
     var generationPrompt by remember {
         mutableStateOf("Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans")
     }
@@ -145,6 +147,11 @@ fun AvatarStudioScreen(
                         )
                     }
                 }
+                Text(
+                    "Drag to orbit · Pinch to zoom · Double-tap to reset camera",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
                 Text("Selected asset: $avatarName", style = MaterialTheme.typography.bodySmall)
                 if (importStatus.isNotBlank()) {
@@ -155,6 +162,21 @@ fun AvatarStudioScreen(
                         Text(if (isImporting) "Importing…" else "Import GLB")
                     }
                     if (avatarUri != null) OutlinedButton(onClick = onRemove, enabled = !isImporting && !generating) { Text("Use sample model") }
+                }
+                OutlinedTextField(
+                    value = remoteGlbUrl,
+                    onValueChange = { remoteGlbUrl = it.take(4_096) },
+                    label = { Text("HTTPS or Dropbox .glb link") },
+                    placeholder = { Text("https://www.dropbox.com/.../model.glb?dl=0") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedButton(
+                    onClick = { onImportUrl(remoteGlbUrl) },
+                    enabled = !isImporting && !generating && remoteGlbUrl.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (isImporting) "Downloading GLB…" else "Download & Render URL")
                 }
             }
         }
@@ -215,3 +237,4 @@ fun AvatarStudioScreen(
         }
     }
 }
+

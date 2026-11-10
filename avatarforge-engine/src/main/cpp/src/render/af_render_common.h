@@ -374,7 +374,8 @@ inline void buildCameraUbo(FrameScene* scene, const CameraState& cam, const Rend
         scene->camera.sh[i][2] = sh.coef[i][2];
         scene->camera.sh[i][3] = 0.0f;
     }
-    scene->camera.ground[0] = 0.0f;
+    scene->camera.ground[0] = (scene->hasModel && std::isfinite(scene->modelMin[1]))
+                                  ? scene->modelMin[1] : 0.0f;
     scene->camera.ground[1] = opt.groundPlane ? 1.0f : 0.0f;
     scene->camera.ground[2] = 0.55f;
     scene->eye = eye;
@@ -457,3 +458,4 @@ inline void screenRay(const CameraState& cam, float ndcX, float ndcY, int width,
 } /* namespace af */
 
 #endif /* AF_RENDER_COMMON_H */
+

@@ -70,6 +70,12 @@ private data class CaptureResult(
 @RunWith(AndroidJUnit4::class)
 class GeneratedAvatarRuntimeTest {
     private external fun nativeCreateGenerated(surface: android.view.Surface, width: Int, height: Int): Long
+    private external fun nativeCreateGeneratedDebug(
+        surface: android.view.Surface,
+        width: Int,
+        height: Int,
+        debugMagenta: Boolean
+    ): Long
     private external fun nativeRenderGenerated(handle: Long, deltaSeconds: Float): Boolean
     private external fun nativeGetVerificationStats(handle: Long): IntArray
     private external fun nativeGetVerificationReport(handle: Long): String
@@ -129,7 +135,7 @@ class GeneratedAvatarRuntimeTest {
             assertTrue("Diagnostic Surface is invalid", view.holder.surface.isValid)
 
             // The native JNI implementation fixes the generated avatar seed at 1337.
-            handle = nativeCreateGenerated(view.holder.surface, surfaceWidth, surfaceHeight)
+            handle = nativeCreateGeneratedDebug(view.holder.surface, surfaceWidth, surfaceHeight, true)
             assertTrue("Seed-1337 native generation failed", handle != 0L)
 
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
@@ -772,3 +778,4 @@ class GeneratedAvatarRuntimeTest {
         }
     }
 }
+

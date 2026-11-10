@@ -3,10 +3,14 @@ package com.davemega.hub.avatarforge
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.PixelCopy
+import android.view.ScaleGestureDetector
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import java.io.File
@@ -34,9 +38,102 @@ class AvatarForgeSurfaceView(
     @Volatile private var surfaceHeight = 0
     @Volatile private var renderThread: Thread? = null
 
+    private val cameraLock = Any()
+    private var pendingYawDeg = 0f
+    private var pendingPitchDeg = 0f
+    private var pendingZoomScale = 1f
+    private var pendingCameraReset = false
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var activePointerId = MotionEvent.INVALID_POINTER_ID
+
+    private val scaleDetector = ScaleGestureDetector(
+        context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val factor = detector.scaleFactor
+                if (factor.isFinite() && factor > 0f) {
+                    synchronized(cameraLock) {
+                        pendingZoomScale = (pendingZoomScale / factor).coerceIn(0.25f, 4.0f)
+                    }
+                }
+                return true
+            }
+        }
+    )
+
+    private val tapDetector = GestureDetector(
+        context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                synchronized(cameraLock) {
+                    pendingYawDeg = 0f
+                    pendingPitchDeg = 0f
+                    pendingZoomScale = 1f
+                    pendingCameraReset = true
+                }
+                return true
+            }
+        }
+    )
+
     init {
+        holder.setFormat(PixelFormat.OPAQUE)
         holder.addCallback(this)
-        setBackgroundColor(android.graphics.Color.rgb(18, 20, 25))
+        isFocusable = true
+        isClickable = true
+        // Do NOT set a non-transparent View background on SurfaceView: the View layer sits above
+        // the default Z = -2 EGL surface queue and would paint over the window punch-hole.
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            parent?.requestDisallowInterceptTouchEvent(true)
+        }
+        tapDetector.onTouchEvent(event)
+        scaleDetector.onTouchEvent(event)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                activePointerId = event.getPointerId(0)
+                lastTouchX = event.x
+                lastTouchY = event.y
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!scaleDetector.isInProgress && event.pointerCount == 1) {
+                    val idx = event.findPointerIndex(activePointerId)
+                    if (idx >= 0) {
+                        val x = event.getX(idx)
+                        val y = event.getY(idx)
+                        val dx = x - lastTouchX
+                        val dy = y - lastTouchY
+                        lastTouchX = x
+                        lastTouchY = y
+                        val viewSpan = max(1, minOf(width, height)).toFloat()
+                        synchronized(cameraLock) {
+                            pendingYawDeg -= (dx / viewSpan) * 180.0f
+                            pendingPitchDeg += (dy / viewSpan) * 120.0f
+                        }
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val pointerIndex = event.actionIndex
+                if (event.getPointerId(pointerIndex) == activePointerId) {
+                    val newIndex = if (pointerIndex == 0) 1 else 0
+                    if (newIndex < event.pointerCount) {
+                        activePointerId = event.getPointerId(newIndex)
+                        lastTouchX = event.getX(newIndex)
+                        lastTouchY = event.getY(newIndex)
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                activePointerId = MotionEvent.INVALID_POINTER_ID
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return true
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -74,6 +171,7 @@ class AvatarForgeSurfaceView(
     }
 
     private fun stopRenderer() {
+        running.set(false)
         val worker = renderThread ?: return
         if (worker === Thread.currentThread()) return
         try {
@@ -133,6 +231,25 @@ class AvatarForgeSurfaceView(
                         nativeResize(nativeHandle, width, height)
                         lastWidth = width
                         lastHeight = height
+                    }
+                    var deltaYaw = 0f
+                    var deltaPitch = 0f
+                    var zoomScale = 1f
+                    var resetCam = false
+                    synchronized(cameraLock) {
+                        deltaYaw = pendingYawDeg
+                        deltaPitch = pendingPitchDeg
+                        zoomScale = pendingZoomScale
+                        resetCam = pendingCameraReset
+                        pendingYawDeg = 0f
+                        pendingPitchDeg = 0f
+                        pendingZoomScale = 1f
+                        pendingCameraReset = false
+                    }
+                    if (resetCam) {
+                        nativeResetCamera(nativeHandle)
+                    } else if (deltaYaw != 0f || deltaPitch != 0f || zoomScale != 1f) {
+                        nativeOrbitCamera(nativeHandle, deltaYaw, deltaPitch, zoomScale)
                     }
                     val now = System.nanoTime()
                     val delta = ((now - lastFrame).toDouble() / 1_000_000_000.0).coerceIn(0.001, 0.1).toFloat()
@@ -386,6 +503,8 @@ class AvatarForgeSurfaceView(
     }
     private external fun nativeCreate(surface: android.view.Surface, glbPath: String, width: Int, height: Int): Long
     private external fun nativeResize(handle: Long, width: Int, height: Int)
+    private external fun nativeOrbitCamera(handle: Long, deltaYawDeg: Float, deltaPitchDeg: Float, zoomScale: Float)
+    private external fun nativeResetCamera(handle: Long)
     private external fun nativeRender(handle: Long, deltaSeconds: Float): Boolean
     private external fun nativeGetInfo(handle: Long): String
     private external fun nativeGetStats(handle: Long): IntArray
@@ -400,3 +519,4 @@ class AvatarForgeSurfaceView(
         init { System.loadLibrary("mega_hub_avatarforge") }
     }
 }
+

@@ -1338,16 +1338,57 @@ int32_t af_engine_export_glb_to_memory(af_engine* engine, uint8_t** out_bytes, s
  * ============================================================================================ */
 namespace {
 
-/* Region for an imported submesh: the exporter names materials after regions, so an engine-made
-   file round-trips its regions exactly. Anything else (a foreign file, or a renamed material) is
-   skin, which is the honest default - the region drives picking and the region inspector, and a
-   wrong-but-plausible guess would be worse than a neutral one. */
+/* Region for an imported submesh: the exporter names materials after AvatarForge's 13 canonical
+   regions, so an engine-made file round-trips its regions exactly. Foreign materials return -1
+   (AF_KIND_GENERIC) so standard glTF 2.0 assets use standard PBR without skin subsurface scatter. */
 int32_t regionForMaterialName(const char* name) {
-    if (!name || !*name) return REGION_SKIN;
+    if (!name || !*name) return -1;
     for (int r = 0; r < 13; ++r) {
         if (std::strcmp(name, materialForRegion(r).name.c_str()) == 0) return r;
     }
-    return REGION_SKIN;
+    return -1;
+}
+
+void applyNodeWorldToVertex(const Mat4& world, af_vertex* v) {
+    if (!v) return;
+    const Vec3 p = world.transformPoint(Vec3(v->pos[0], v->pos[1], v->pos[2]));
+    v->pos[0] = p.x;
+    v->pos[1] = p.y;
+    v->pos[2] = p.z;
+
+    /* Normal matrix = cofactor (adjugate^T) of upper-left 3x3 so non-uniform scale stays orthogonal. */
+    const float a00 = world.m[0], a01 = world.m[4], a02 = world.m[8];
+    const float a10 = world.m[1], a11 = world.m[5], a12 = world.m[9];
+    const float a20 = world.m[2], a21 = world.m[6], a22 = world.m[10];
+    const float c00 = a11 * a22 - a12 * a21;
+    const float c01 = a12 * a20 - a10 * a22;
+    const float c02 = a10 * a21 - a11 * a20;
+    const float c10 = a02 * a21 - a01 * a22;
+    const float c11 = a00 * a22 - a02 * a20;
+    const float c12 = a01 * a20 - a00 * a21;
+    const float c20 = a01 * a12 - a02 * a11;
+    const float c21 = a02 * a10 - a00 * a12;
+    const float c22 = a00 * a11 - a01 * a10;
+
+    const float nx = c00 * v->normal[0] + c01 * v->normal[1] + c02 * v->normal[2];
+    const float ny = c10 * v->normal[0] + c11 * v->normal[1] + c12 * v->normal[2];
+    const float nz = c20 * v->normal[0] + c21 * v->normal[1] + c22 * v->normal[2];
+    const float nLenSq = nx * nx + ny * ny + nz * nz;
+    if (std::isfinite(nLenSq) && nLenSq >= 1e-12f) {
+        const float inv = 1.0f / std::sqrt(nLenSq);
+        v->normal[0] = nx * inv;
+        v->normal[1] = ny * inv;
+        v->normal[2] = nz * inv;
+    }
+
+    const Vec3 t = world.transformDirection(Vec3(v->tangent[0], v->tangent[1], v->tangent[2]));
+    const float tLenSq = t.x * t.x + t.y * t.y + t.z * t.z;
+    if (std::isfinite(tLenSq) && tLenSq >= 1e-12f) {
+        const float inv = 1.0f / std::sqrt(tLenSq);
+        v->tangent[0] = t.x * inv;
+        v->tangent[1] = t.y * inv;
+        v->tangent[2] = t.z * inv;
+    }
 }
 
 int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
@@ -1365,6 +1406,33 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
     if (asset.pools.empty() || asset.primitives.empty()) {
         e->lastError = "import: the file contains no drawable geometry";
         return static_cast<int32_t>(AF_ERR_UNSUPPORTED);
+    }
+
+    /* Bake static scene-graph node.world transforms into unskinned vertex pools.
+       Skinned meshes apply joint world transforms dynamically during CPU skinning. */
+    if (asset.skins.empty() && !asset.nodes.empty()) {
+        std::vector<Mat4> poolWorld(asset.pools.size(), Mat4::identity());
+        std::vector<bool> poolAssigned(asset.pools.size(), false);
+        for (const auto& prim : asset.primitives) {
+            if (prim.pool < 0 || static_cast<size_t>(prim.pool) >= asset.pools.size()) continue;
+            if (prim.node < 0 || static_cast<size_t>(prim.node) >= asset.nodes.size()) continue;
+            if (!poolAssigned[static_cast<size_t>(prim.pool)]) {
+                poolWorld[static_cast<size_t>(prim.pool)] = asset.nodes[static_cast<size_t>(prim.node)].world;
+                poolAssigned[static_cast<size_t>(prim.pool)] = true;
+            }
+        }
+        for (size_t p = 0; p < asset.pools.size(); ++p) {
+            if (!poolAssigned[p]) continue;
+            const Mat4& w = poolWorld[p];
+            bool isIdentity = true;
+            const Mat4 id = Mat4::identity();
+            for (int k = 0; k < 16; ++k) {
+                if (std::fabs(w.m[k] - id.m[k]) > 1e-6f) { isIdentity = false; break; }
+            }
+            if (!isIdentity) {
+                for (auto& vx : asset.pools[p]) applyNodeWorldToVertex(w, &vx);
+            }
+        }
     }
 
     /* ---- vertices: the pools concatenated, one VBO the way the generated path uses one ---- */
@@ -1399,9 +1467,13 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
         }
         Range r{};
         r.material = prim.material;
-        r.region = REGION_SKIN;
+        r.region = -1;
         if (prim.material >= 0 && static_cast<size_t>(prim.material) < asset.materials.size()) {
-            r.region = regionForMaterialName(asset.materials[static_cast<size_t>(prim.material)].name.c_str());
+            const ImportedMaterial& srcMat = asset.materials[static_cast<size_t>(prim.material)];
+            r.region = regionForMaterialName(srcMat.name.c_str());
+            if (r.region < 0 && srcMat.doubleSided) {
+                r.region = -2; /* foreign double-sided glTF primitive */
+            }
         }
         r.vertexOffset = static_cast<int32_t>(poolBase[static_cast<size_t>(prim.pool)]);
         r.vertexCount = static_cast<int32_t>(asset.pools[static_cast<size_t>(prim.pool)].size());
@@ -1418,6 +1490,23 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
         return static_cast<int32_t>(AF_ERR_UNSUPPORTED);
     }
 
+    auto texHasPixels = [&](int idx) -> bool {
+        if (idx < 0 || static_cast<size_t>(idx) >= asset.textures.size()) return false;
+        const ImportedTexture& t = asset.textures[static_cast<size_t>(idx)];
+        return !t.rgba.empty() && t.width > 0 && t.height > 0;
+    };
+    int selectedBaseTex = -1;
+    int selectedNormalTex = -1;
+    int selectedMrTex = -1;
+    int selectedAoTex = -1;
+    for (const auto& m : asset.materials) {
+        if (selectedBaseTex < 0 && texHasPixels(m.baseColorTexture)) selectedBaseTex = m.baseColorTexture;
+        if (selectedNormalTex < 0 && texHasPixels(m.normalTexture)) selectedNormalTex = m.normalTexture;
+        if (selectedMrTex < 0 && texHasPixels(m.metallicRoughnessTexture)) selectedMrTex = m.metallicRoughnessTexture;
+        if (selectedAoTex < 0 && texHasPixels(m.occlusionTexture)) selectedAoTex = m.occlusionTexture;
+    }
+    if (selectedBaseTex < 0 && texHasPixels(0)) selectedBaseTex = 0;
+
     /* ---- materials ---- */
     std::vector<af_material> materials;
     for (const auto& m : asset.materials) {
@@ -1427,15 +1516,19 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
         am.metallic = m.metallic;
         am.roughness = m.roughness;
         am.ior = 1.4f;
-        am.has_base_color_tex = m.baseColorTexture >= 0 ? 1 : 0;
-        am.has_normal_tex = m.normalTexture >= 0 ? 1 : 0;
-        am.has_mr_tex = m.metallicRoughnessTexture >= 0 ? 1 : 0;
-        am.has_ao_tex = 0;
+        am.has_base_color_tex = (m.baseColorTexture >= 0 && m.baseColorTexture == selectedBaseTex) ? 1 : 0;
+        am.has_normal_tex = (m.normalTexture >= 0 && m.normalTexture == selectedNormalTex) ? 1 : 0;
+        am.has_mr_tex = (m.metallicRoughnessTexture >= 0 && m.metallicRoughnessTexture == selectedMrTex) ? 1 : 0;
+        am.has_ao_tex = (m.occlusionTexture >= 0 && m.occlusionTexture == selectedAoTex) ? 1 : 0;
+        if (m.metallicRoughnessTexture >= 0 && !am.has_mr_tex) {
+            am.metallic = 0.0f;
+            am.roughness = std::min(1.0f, std::max(0.2f, m.roughness * 0.6f));
+        }
         materials.push_back(am);
     }
     if (materials.empty()) {
         af_material am{};
-        std::snprintf(am.name, sizeof(am.name), "skin");
+        std::snprintf(am.name, sizeof(am.name), "default");
         am.base_color_factor[0] = am.base_color_factor[1] = am.base_color_factor[2] = 0.8f;
         am.base_color_factor[3] = 1.0f;
         am.metallic = 0.0f;
@@ -1502,31 +1595,130 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
     e->peakFieldBytes = 0;
     e->tFit = e->tGeometry = e->tUv = e->tTex = e->tRig = 0.0;
 
-    /* Textures: base colour only, and only when the file embedded one that decoded. The other
-       slots keep the generated set if there is one - they belong to the engine's own bake. */
-    for (size_t i = 0; i < asset.textures.size(); ++i) {
-        const ImportedTexture& t = asset.textures[i];
-        if (t.rgba.empty() || t.width <= 0) continue;
-        bool used = false;
-        for (const auto& m : asset.materials) {
-            if (m.baseColorTexture == static_cast<int>(i)) { used = true; break; }
-        }
-        if (!used) continue;
-        e->textures.width = t.width;
-        e->textures.height = t.height;
-        e->textures.baseColor = t.rgba;
-        break;
+    /* Clear previous texture slots before installing the imported asset's decoded PBR maps. */
+    e->textures = TextureSet{};
+    for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
+        e->texViews[slot] = af_texture{};
+        e->texValid[slot] = false;
     }
-    if (e->textures.width > 0 && !e->textures.baseColor.empty()) {
-        af_texture tex{};
-        tex.width = e->textures.width;
-        tex.height = e->textures.height;
-        tex.channels = 4;
-        tex.mip_levels = 1;
-        tex.byte_size = e->textures.baseColor.size();
-        tex.data = e->textures.baseColor.data();
-        e->texViews[AF_TEX_BASE_COLOR] = tex;
-        e->texValid[AF_TEX_BASE_COLOR] = true;
+
+    auto dilateGutterRgba = [](std::vector<uint8_t>* rgba, const std::vector<uint8_t>& seedMask,
+                               int w, int h, int passes) {
+        if (!rgba || w <= 0 || h <= 0 || seedMask.size() != static_cast<size_t>(w) * static_cast<size_t>(h)) return;
+        std::vector<uint8_t> mask = seedMask;
+        std::vector<uint8_t> nextRgba = *rgba;
+        std::vector<uint8_t> nextMask = mask;
+        static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+        static const int dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+        for (int pass = 0; pass < passes; ++pass) {
+            bool changed = false;
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x);
+                    if (mask[idx]) continue;
+                    int sr = 0, sg = 0, sb = 0, cnt = 0;
+                    for (int k = 0; k < 8; ++k) {
+                        const int nx = x + dx[k], ny = y + dy[k];
+                        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+                        const size_t nidx = static_cast<size_t>(ny) * static_cast<size_t>(w) + static_cast<size_t>(nx);
+                        if (!mask[nidx]) continue;
+                        sr += (*rgba)[nidx * 4u + 0u];
+                        sg += (*rgba)[nidx * 4u + 1u];
+                        sb += (*rgba)[nidx * 4u + 2u];
+                        ++cnt;
+                    }
+                    if (cnt > 0) {
+                        nextRgba[idx * 4u + 0u] = static_cast<uint8_t>((sr + cnt / 2) / cnt);
+                        nextRgba[idx * 4u + 1u] = static_cast<uint8_t>((sg + cnt / 2) / cnt);
+                        nextRgba[idx * 4u + 2u] = static_cast<uint8_t>((sb + cnt / 2) / cnt);
+                        nextMask[idx] = 1u;
+                        changed = true;
+                    }
+                }
+            }
+            if (!changed) break;
+            rgba->swap(nextRgba);
+            mask.swap(nextMask);
+            nextRgba = *rgba;
+            nextMask = mask;
+        }
+    };
+
+    std::vector<uint8_t> opaqueChartMask;
+    int chartMaskW = 0, chartMaskH = 0;
+
+    auto installRgbaSlot = [&](int slot, int texIndex, std::vector<uint8_t>* storage, bool forceOpaqueAlpha) {
+        if (texIndex < 0 || static_cast<size_t>(texIndex) >= asset.textures.size()) return;
+        const ImportedTexture& src = asset.textures[static_cast<size_t>(texIndex)];
+        if (src.rgba.empty() || src.width <= 0 || src.height <= 0) return;
+        *storage = src.rgba;
+        if (forceOpaqueAlpha) {
+            const size_t pxCount = static_cast<size_t>(src.width) * static_cast<size_t>(src.height);
+            size_t validCount = 0;
+            std::vector<uint8_t> mask(pxCount, 0u);
+            for (size_t i = 0; i < pxCount; ++i) {
+                if ((*storage)[i * 4u + 3u] > 16u) {
+                    mask[i] = 1u;
+                    ++validCount;
+                }
+            }
+            if (validCount > 0 && validCount < pxCount) {
+                dilateGutterRgba(storage, mask, src.width, src.height, 8);
+                opaqueChartMask = std::move(mask);
+                chartMaskW = src.width;
+                chartMaskH = src.height;
+            }
+            for (size_t p = 3; p < storage->size(); p += 4) (*storage)[p] = 255u;
+        } else if (slot == AF_TEX_METALLIC_ROUGHNESS && !opaqueChartMask.empty() &&
+                   src.width == chartMaskW && src.height == chartMaskH) {
+            dilateGutterRgba(storage, opaqueChartMask, src.width, src.height, 8);
+        }
+        if (e->textures.width <= 0) {
+            e->textures.width = src.width;
+            e->textures.height = src.height;
+        }
+        af_texture view{};
+        view.width = src.width;
+        view.height = src.height;
+        view.channels = 4;
+        view.mip_levels = 1;
+        view.byte_size = storage->size();
+        view.data = storage->data();
+        e->texViews[slot] = view;
+        e->texValid[slot] = true;
+    };
+
+    bool baseColorAllOpaque = true;
+    for (const auto& m : asset.materials) {
+        if (m.baseColorTexture == selectedBaseTex && m.alphaMode != "OPAQUE") {
+            baseColorAllOpaque = false;
+            break;
+        }
+    }
+    installRgbaSlot(AF_TEX_BASE_COLOR, selectedBaseTex, &e->textures.baseColor, baseColorAllOpaque);
+    installRgbaSlot(AF_TEX_NORMAL, selectedNormalTex, &e->textures.normal, false);
+    installRgbaSlot(AF_TEX_METALLIC_ROUGHNESS, selectedMrTex, &e->textures.metallicRoughness, false);
+
+    if (selectedAoTex >= 0 && static_cast<size_t>(selectedAoTex) < asset.textures.size()) {
+        const ImportedTexture& src = asset.textures[static_cast<size_t>(selectedAoTex)];
+        if (!src.rgba.empty() && src.width > 0 && src.height > 0) {
+            const size_t pixels = static_cast<size_t>(src.width) * static_cast<size_t>(src.height);
+            e->textures.occlusion.resize(pixels);
+            for (size_t p = 0; p < pixels; ++p) e->textures.occlusion[p] = src.rgba[p * 4u];
+            if (e->textures.width <= 0) {
+                e->textures.width = src.width;
+                e->textures.height = src.height;
+            }
+            af_texture view{};
+            view.width = src.width;
+            view.height = src.height;
+            view.channels = 1;
+            view.mip_levels = 1;
+            view.byte_size = e->textures.occlusion.size();
+            view.data = e->textures.occlusion.data();
+            e->texViews[AF_TEX_OCCLUSION] = view;
+            e->texValid[AF_TEX_OCCLUSION] = true;
+        }
     }
 
     /* What the file carried that this import does not adopt - said out loud, every time. */
@@ -1739,3 +1931,4 @@ int32_t af_engine_validate_deformed_mesh(const af_engine* engine, char* out_repo
 }
 
 } /* extern "C" */
+

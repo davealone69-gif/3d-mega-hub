@@ -52,6 +52,13 @@ namespace af {
 // Exposes the importer's exact RIFF/WEBP signature check to host regression tests.
 bool glbLooksLikeWebp(const uint8_t* data, std::size_t size);
 
+using PlatformImageDecodeFn = bool (*)(const uint8_t* data, std::size_t size,
+                                       DecodedImage* out, std::string* error);
+
+// Optional fallback decoder (used on Android API 26..29 via BitmapFactory JNI when AImageDecoder
+// is unavailable, or by host test harnesses).
+void setFallbackImageDecoder(PlatformImageDecodeFn fn);
+
 /*
  * One drawable range: a glTF primitive, expressed as an index range into a shared vertex pool.
  *
@@ -75,6 +82,7 @@ struct ImportedPrimitive {
 
 struct ImportedMaterial {
     std::string name;
+    std::string alphaMode = "OPAQUE";
     float baseColor[4] = {0.8f, 0.8f, 0.8f, 1.0f};
     float metallic = 1.0f;
     float roughness = 1.0f;
@@ -83,6 +91,7 @@ struct ImportedMaterial {
     int baseColorTexture = -1;   /* index into GlbAsset::textures, -1 when absent */
     int metallicRoughnessTexture = -1;
     int normalTexture = -1;
+    int occlusionTexture = -1;
     int emissiveTexture = -1;
 };
 
@@ -188,3 +197,4 @@ bool resolveWorldTransforms(GlbAsset* asset, std::string* error);
 
 } /* namespace af */
 #endif /* AF_GLB_READ_H */
+

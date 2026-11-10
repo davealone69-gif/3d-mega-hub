@@ -104,6 +104,7 @@ public:
     }
 
     RendererStats stats() const override { return stats_; }
+    std::vector<uint8_t> readbackPixels() const override { return backend_->readbackPixels(); }
 
 private:
     /* Sends the current tier's three fields into the backend, leaving every other setting alone. */
@@ -158,11 +159,20 @@ private:
 
 }  /* namespace */
 
+#ifndef __ANDROID__
+Renderer* createVulkanRenderer(ANativeWindow*, const RendererOptions&, std::string* error) {
+    if (error) *error = "Vulkan backend disabled in non-Android headless build";
+    return nullptr;
+}
+#endif
+
 Renderer* Renderer::create(ANativeWindow* window, const RendererOptions& options, std::string* error) {
+#ifdef __ANDROID__
     if (!window) {
         if (error) *error = "no native window (the SurfaceView is not ready yet)";
         return nullptr;
     }
+#endif
 
     std::string vulkanError = "the Vulkan backend is switched off in the viewer settings";
     Renderer* backend = nullptr;
@@ -184,3 +194,4 @@ Renderer* Renderer::create(ANativeWindow* window, const RendererOptions& options
 }
 
 } /* namespace af */
+

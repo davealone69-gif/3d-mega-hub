@@ -22,6 +22,10 @@ struct NativeAvatarSession {
     af::Renderer* renderer = nullptr;
     int width = 0;
     int height = 0;
+    af::CameraState camera{};
+    af::CameraState initialCamera{};
+    float minDistance = 0.05f;
+    float maxDistance = 100.0f;
     std::string verificationReport;
     ~NativeAvatarSession() {
         // Renderer may still reference both the engine buffers and the native window.
@@ -109,11 +113,42 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
         }
     }
 
+    const int32_t submeshCount = af_engine_submesh_count(session->engine);
+    const af_submesh* submeshes = af_engine_submeshes(session->engine);
+    if (submeshCount <= 0 || !submeshes) {
+        throwState(env, "AvatarForge imported no renderable submeshes");
+        return 0;
+    }
+    bool allForeignSubmeshes = true;
+    for (int32_t i = 0; i < submeshCount; ++i) {
+        if (submeshes[i].region >= 0) {
+            allForeignSubmeshes = false;
+            break;
+        }
+    }
+
     af::RendererOptions options{};
-    options.preferVulkan = false; // Target handset uses the GLES backend.
-    options.quality = af::QualityPreset::MEDIUM;
-    options.msaaSamples = 2;
-    options.enableBloom = false;
+    options.preferVulkan = false; // Samsung Galaxy S24 (SM-S921B) uses the dedicated GLES 3.2 path.
+    options.quality = af::QualityPreset::HIGH;
+    options.msaaSamples = 4;
+    options.shadowMapSize = 2048;
+    options.shadowSoftness = 1.65f;
+    options.enableBloom = true;
+    options.enableSss = true;
+    if (allForeignSubmeshes) {
+        // Standard glTF 2.0 assets (§3.4) face +Z; studio portrait key + fill lighting for yawDeg = 0.
+        options.sunAzimuthDeg = 152.0f;
+        options.sunElevationDeg = 28.0f;
+        options.sunIntensity = 1.35f;
+        options.environmentIntensity = 0.82f;
+        options.exposure = 0.82f;
+    } else {
+        options.sunAzimuthDeg = 34.0f;
+        options.sunElevationDeg = 28.0f;
+        options.sunIntensity = 1.35f;
+        options.environmentIntensity = 0.82f;
+        options.exposure = 0.82f;
+    }
     std::string rendererError;
     session->renderer = af::Renderer::create(session->window, options, &rendererError);
     if (!session->renderer) {
@@ -129,12 +164,6 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
 
     // Fit the imported asset, not a hard-coded 1.75 m avatar. This handles tiny props,
     // large scenes and GLBs whose origin is far from their actual geometry.
-    const int32_t submeshCount = af_engine_submesh_count(session->engine);
-    const af_submesh* submeshes = af_engine_submeshes(session->engine);
-    if (submeshCount <= 0 || !submeshes) {
-        throwState(env, "AvatarForge imported no renderable submeshes");
-        return 0;
-    }
     float boundsMin[3] = { 1.0e30f, 1.0e30f, 1.0e30f };
     float boundsMax[3] = { -1.0e30f, -1.0e30f, -1.0e30f };
     for (int32_t i = 0; i < submeshCount; ++i) {
@@ -151,24 +180,32 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     const float dz = boundsMax[2] - boundsMin[2];
     const float radius = std::max(0.0001f, 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz));
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
-    const float halfVertical = 32.0f * 3.14159265358979323846f / 360.0f;
-    const float halfHorizontal = std::atan(std::tan(halfVertical) * aspect);
-    const float limitingHalfAngle = std::max(0.01f, std::min(halfVertical, halfHorizontal));
+    const float halfVertical = 28.0f * 3.14159265358979323846f / 360.0f;
+    const float tanHalfV = std::max(0.01f, std::tan(halfVertical));
+    const float tanHalfH = std::max(0.01f, tanHalfV * aspect);
+    const float halfPlanExtent = std::max(0.0001f, 0.5f * std::max(dx, dz));
+    const float halfHeightExtent = std::max(0.0001f, 0.5f * dy);
+    const float fitDistH = halfPlanExtent / tanHalfH + 0.5f * dz;
+    const float fitDistV = halfHeightExtent / tanHalfV + 0.5f * dz;
     af::CameraState camera{};
+    camera.yawDeg = allForeignSubmeshes ? 0.0f : 180.0f;
     camera.targetX = cx;
     camera.targetY = cy;
     camera.targetZ = cz;
-    camera.fovDeg = 32.0f;
-    camera.distance = radius / std::sin(limitingHalfAngle) * 1.15f;
+    camera.fovDeg = 28.0f;
+    camera.distance = std::max(fitDistH, fitDistV) * 1.12f;
+    session->camera = camera;
+    session->initialCamera = camera;
+    session->minDistance = std::max(0.02f, radius * 0.25f);
+    session->maxDistance = std::max(session->minDistance * 8.0f, camera.distance * 6.0f);
     // buildCameraUbo derives near/far from the imported model bounds each frame.
     // Keep clipping-plane policy in one place instead of maintaining a second camera contract.
     session->renderer->setCamera(camera);
     return reinterpret_cast<jlong>(session.release());
 }
 
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerated(
-    JNIEnv* env, jobject, jobject surface, jint width, jint height) {
+namespace {
+jlong createGeneratedSession(JNIEnv* env, jobject surface, jint width, jint height, bool debugMagenta) {
     if (!surface || width <= 0 || height <= 0) {
         throwState(env, "Generated-avatar verification requires a valid Surface and non-zero size");
         return 0;
@@ -267,11 +304,20 @@ Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerat
 
     af::RendererOptions options{};
     options.preferVulkan = false;
-    options.quality = af::QualityPreset::MEDIUM;
-    options.msaaSamples = 2;
-    options.enableBloom = false;
+    options.quality = af::QualityPreset::HIGH;
+    options.msaaSamples = 4;
+    options.shadowMapSize = 2048;
+    options.shadowSoftness = 1.65f;
+    options.enableBloom = !debugMagenta;
+    options.enableSss = true;
+    options.sunAzimuthDeg = 34.0f;
+    options.sunElevationDeg = 28.0f;
+    options.sunIntensity = 1.35f;
+    options.environmentIntensity = 0.82f;
+    options.exposure = 0.82f;
     options.groundPlane = false; // Pixel threshold must measure the avatar, not a studio floor.
     options.verifyFramePixels = true;
+    options.debugMagenta = debugMagenta;
     std::string rendererError;
     session->renderer = af::Renderer::create(session->window, options, &rendererError);
     if (!session->renderer) {
@@ -334,6 +380,19 @@ Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerat
         " blendshapes=" + std::to_string(engineStats.blendshape_count) +
         " " + meshReport;
     return reinterpret_cast<jlong>(session.release());
+}
+} // namespace
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerated(
+    JNIEnv* env, jobject, jobject surface, jint width, jint height) {
+    return createGeneratedSession(env, surface, width, height, false);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGeneratedDebug(
+    JNIEnv* env, jobject, jobject surface, jint width, jint height, jboolean debugMagenta) {
+    return createGeneratedSession(env, surface, width, height, debugMagenta == JNI_TRUE);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -458,7 +517,35 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetStats(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeOrbitCamera(
+    JNIEnv*, jobject, jlong handle, jfloat deltaYawDeg, jfloat deltaPitchDeg, jfloat zoomScale) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    if (std::isfinite(deltaYawDeg)) {
+        session->camera.yawDeg = std::fmod(session->camera.yawDeg + deltaYawDeg, 360.0f);
+    }
+    if (std::isfinite(deltaPitchDeg)) {
+        session->camera.pitchDeg = std::max(-85.0f, std::min(85.0f, session->camera.pitchDeg + deltaPitchDeg));
+    }
+    if (std::isfinite(zoomScale) && zoomScale > 0.0f) {
+        session->camera.distance = std::max(session->minDistance,
+                                            std::min(session->maxDistance, session->camera.distance * zoomScale));
+    }
+    session->renderer->setCamera(session->camera);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResetCamera(
+    JNIEnv*, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->camera = session->initialCamera;
+    session->renderer->setCamera(session->camera);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeDestroy(
     JNIEnv*, jobject, jlong handle) {
     delete reinterpret_cast<NativeAvatarSession*>(handle);
 }
+

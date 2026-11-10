@@ -32,7 +32,7 @@ target_include_directories(afcore
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_compile_options(afcore PRIVATE ${AF_KERNEL_FLAGS} -Wall -Wextra)
-target_link_libraries(afcore PRIVATE z)
+target_link_libraries(afcore PRIVATE z ${CMAKE_DL_LIBS})
 if(ANDROID)
     # AImageDecoder is API 30+; symbols are resolved dynamically to preserve minSdk 26.
     target_link_libraries(afcore PRIVATE dl log)
@@ -98,4 +98,14 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_camera_frustum_test PRIVATE afcore)
     add_test(NAME camera_frustum_regression COMMAND af_camera_frustum_test)
+
+    add_executable(af_imported_glb_pbr_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/imported_glb_pbr_test.cpp)
+    target_include_directories(af_imported_glb_pbr_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/render
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_imported_glb_pbr_test PRIVATE afcore)
+    add_test(NAME imported_glb_pbr_regression COMMAND af_imported_glb_pbr_test)
 endif()
+

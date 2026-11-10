@@ -39,13 +39,13 @@ jobs:
       - name: Build host regression executable
         run: |
           cmake --build build/avatarforge-host \
-            --target af_glb_extension_test af_camera_frustum_test \
+            --target af_glb_extension_test af_camera_frustum_test af_imported_glb_pbr_test \
             --parallel 2
-      - name: Run WebP and camera regression tests
+      - name: Run WebP, PBR import and camera regression tests
         run: |
           ctest --test-dir build/avatarforge-host \
             --output-on-failure \
-            -R "glb_extension_regression|camera_frustum_regression"
+            -R "glb_extension_regression|camera_frustum_regression|imported_glb_pbr_regression"
 
   android-generated-avatar-test:
     name: Build debug APK and verify generated avatar pixels
@@ -66,6 +66,11 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace :app:assembleDebug
+      - name: Enable KVM hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
       - name: Run PixelCopy diagnostic on Android emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -83,7 +88,7 @@ jobs:
           mkdir -p avatarforge-diagnostic-output
           if [ -s app/build/outputs/apk/debug/app-debug.apk ]; then
             cp app/build/outputs/apk/debug/app-debug.apk avatarforge-diagnostic-output/3D-Mega-Hub-generated-avatar-diagnostic-debug.apk
-            sha256sum avatarforge-diagnostic-output/3D-Mega-Hub-magenta-diagnostic-debug.apk > avatarforge-diagnostic-output/SHA256SUMS
+            sha256sum avatarforge-diagnostic-output/3D-Mega-Hub-generated-avatar-diagnostic-debug.apk > avatarforge-diagnostic-output/SHA256SUMS
           fi
           if [ -d app/build/outputs/androidTest-results ]; then
             cp -R app/build/outputs/androidTest-results avatarforge-diagnostic-output/
@@ -98,3 +103,4 @@ jobs:
           path: avatarforge-diagnostic-output/*
           if-no-files-found: warn
           retention-days: 14
+

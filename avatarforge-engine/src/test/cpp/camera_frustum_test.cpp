@@ -94,7 +94,15 @@ int main() {
     check("all eight AABB corners have positive clipW", cornersWithPositiveW == 8);
     check("all eight AABB corners pass camera depth range", cornersInDepthRange == 8);
 
+    // Regression: origin-centered foreign GLBs (e.g. Y in [-0.5, +0.5]) must anchor ground at modelMin[1].
+    scene.modelMin[1] = -0.4999f;
+    scene.modelMax[1] =  0.4999f;
+    af::buildCameraUbo(&scene, camera, options, environment, sh, 1080, 1920, false);
+    check("ground plane Y tracks negative modelMin[1]",
+          std::fabs(scene.camera.ground[0] - (-0.4999f)) < 1e-5f);
+
     std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED",
                 failures, failures == 1 ? "" : "s");
     return failures ? 1 : 0;
 }
+
