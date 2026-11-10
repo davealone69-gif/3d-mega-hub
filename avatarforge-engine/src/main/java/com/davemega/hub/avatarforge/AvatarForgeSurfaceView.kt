@@ -1,9 +1,12 @@
 package com.davemega.hub.avatarforge
 
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.os.Build
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -13,6 +16,7 @@ import android.view.PixelCopy
 import android.view.ScaleGestureDetector
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.provider.MediaStore
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
@@ -321,7 +325,8 @@ class AvatarForgeSurfaceView(
         screenshotPath: String = "",
         error: String = ""
     ) {
-        context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE).edit()
+        val preferences = context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE)
+        preferences.edit()
             .putString("status", status)
             .putString("api_version", apiVersion)
             .putInt("frames", frames)
@@ -335,7 +340,53 @@ class AvatarForgeSurfaceView(
             .putInt("pixel_count", pixelCount)
             .putString("screenshot_path", screenshotPath)
             .putString("error", error)
+            .putLong("updated_at_epoch_ms", System.currentTimeMillis())
             .commit()
+
+        // Keep a durable, machine-readable report in Downloads, not only SharedPreferences.
+        val report = org.json.JSONObject()
+            .put("schema", "com.davemega.hub.renderer-diagnostics.v1")
+            .put("updatedAtEpochMs", System.currentTimeMillis())
+            .put("asset", glbFile.name)
+            .put("assetBytes", glbFile.length())
+            .put("status", status)
+            .put("backend", "OpenGL ES")
+            .put("apiVersion", apiVersion)
+            .put("surfaceWidth", surfaceWidth)
+            .put("surfaceHeight", surfaceHeight)
+            .put("frames", frames)
+            .put("drawCalls", drawCalls)
+            .put("triangles", triangles)
+            .put("presentedFrames", presentedFrames)
+            .put("boundsInFrustum", boundsInFrustum)
+            .put("outsideCorners", outsideCorners)
+            .put("glError", "0x" + glError.toString(16))
+            .put("eglError", "0x" + eglError.toString(16))
+            .put("visiblePixels", pixelCount)
+            .put("minimumVisiblePixels", MIN_VISIBLE_PIXELS)
+            .put("screenshotPathAppPrivate", screenshotPath)
+            .put("screenshotDownloadsUri", preferences.getString("downloads_screenshot_uri", null))
+            .put("error", error)
+            .put("downloadsDirectory", DiagnosticDownloads.locationLabel())
+        runCatching {
+            val uri = DiagnosticDownloads.save(
+                context,
+                "renderer_diagnostics.json",
+                "application/json"
+            ) { output ->
+                output.write(report.toString(2).toByteArray(Charsets.UTF_8))
+            }
+            preferences.edit()
+                .putString("downloads_report_uri", uri.toString())
+                .remove("downloads_report_error")
+                .commit()
+            Log.i(TAG, "Diagnostic report saved: $uri")
+        }.onFailure { failure ->
+            preferences.edit()
+                .putString("downloads_report_error", failure.message ?: failure.javaClass.simpleName)
+                .commit()
+            Log.e(TAG, "Could not save diagnostic report to Downloads", failure)
+        }
     }
 
     private fun requestVisiblePixelCopy(
@@ -468,10 +519,22 @@ class AvatarForgeSurfaceView(
                     recycleBitmap()
                     pixelCopyComplete.set(true)
                     val screenshot = if (saved) outputFile!!.absolutePath else "UNAVAILABLE"
+                    val downloadsScreenshotUri = if (saved) runCatching {
+                        DiagnosticDownloads.save(context, outputName, "image/png") { output ->
+                            outputFile!!.inputStream().buffered().use { it.copyTo(output) }
+                        }
+                    }.onFailure { failure ->
+                        Log.e(TAG, "Could not save renderer screenshot to Downloads", failure)
+                    }.getOrNull() else null
+                    context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE).edit()
+                        .putString("downloads_screenshot_uri", downloadsScreenshotUri?.toString())
+                        .commit()
+                    val downloadsLabel = downloadsScreenshotUri?.let { "; saved to ${DiagnosticDownloads.locationLabel()}/$outputName" }
+                        ?: "; Downloads screenshot export failed (see renderer_diagnostics.json)"
                     val message = if (passed) {
-                        "REAL + VERIFIED: PixelCopy saw $visiblePixels geometry pixels (background RGB=$backgroundRed,$backgroundGreen,$backgroundBlue) after $presentedFrames successful EGL swaps; screenshot=$screenshot"
+                        "REAL + VERIFIED: PixelCopy saw $visiblePixels geometry pixels (background RGB=$backgroundRed,$backgroundGreen,$backgroundBlue) after $presentedFrames successful EGL swaps; screenshot=$screenshot$downloadsLabel"
                     } else {
-                        "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot"
+                        "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot$downloadsLabel"
                     }
                     recordSmokeResult(if (passed) "PIXELS_VERIFIED" else "FAILED",
                         apiVersion, frames, drawCalls, triangles, presentedFrames, boundsInFrustum,
