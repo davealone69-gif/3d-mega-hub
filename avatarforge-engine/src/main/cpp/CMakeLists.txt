@@ -105,6 +105,7 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/avatar_lod_test.cpp)
     target_include_directories(af_avatar_lod_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/render
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_avatar_lod_test PRIVATE afcore)
     add_test(NAME avatar_lod_regression COMMAND af_avatar_lod_test)
