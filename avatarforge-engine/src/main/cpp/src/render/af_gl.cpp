@@ -387,7 +387,7 @@ bool GlRenderer::createPrograms(std::string* error) {
         if (linked != GL_TRUE) {
             GLint logLength = 0;
             glGetProgramiv(debugMagentaProgram_, GL_INFO_LOG_LENGTH, &logLength);
-            std::string log(static_cast<size_t>(logLength > 1 ? logLength : 1), '\\0');
+            std::string log(static_cast<size_t>(logLength > 1 ? logLength : 1), '\0');
             glGetProgramInfoLog(debugMagentaProgram_, logLength, nullptr, log.data());
             if (error) *error = "Debug magenta shader link failed: " + log;
             glDeleteProgram(debugMagentaProgram_);
