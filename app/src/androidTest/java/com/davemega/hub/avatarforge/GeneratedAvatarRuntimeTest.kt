@@ -486,7 +486,8 @@ class GeneratedAvatarRuntimeTest {
     ): CaptureDiagnostics {
         if (bitmap == null) {
             return CaptureDiagnostics(
-                source, null, 0L, -1, -1, false,
+                source, pixelCopyStatus, captureTimestampElapsedRealtimeNanos,
+                rendererFrameIndex, rendererPresentedFrames, false,
                 0, 0, "null", false,
                 1f, 0f, 0, List(256) { 0 }, 0, 0, 0, 0, 0f, 0
             )
