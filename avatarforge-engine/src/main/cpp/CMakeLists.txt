@@ -12,7 +12,7 @@ set(AF_KERNEL_FLAGS ${AF_OPT_FLAGS} -fno-math-errno -fno-finite-math-only -ffp-c
 add_library(afcore SHARED
     src/af_anatomy.cpp
     src/af_body.cpp
-    src/af_avatar_lod.cpp
+    src/render/af_avatar_lod.cpp
     src/af_engine.cpp
     src/af_field.cpp
     src/af_glb.cpp
