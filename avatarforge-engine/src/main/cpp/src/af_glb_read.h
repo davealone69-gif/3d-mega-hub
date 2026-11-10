@@ -42,11 +42,15 @@
 #include "af_png_decode.h"
 #include "../include/afcore.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace af {
+
+// Exposes the importer's exact RIFF/WEBP signature check to host regression tests.
+bool glbLooksLikeWebp(const uint8_t* data, std::size_t size);
 
 /*
  * One drawable range: a glTF primitive, expressed as an index range into a shared vertex pool.
