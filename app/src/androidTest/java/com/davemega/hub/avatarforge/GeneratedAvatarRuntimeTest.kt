@@ -291,7 +291,7 @@ class GeneratedAvatarRuntimeTest {
             val pixelCopyDiag = capture.pixelCopyDiagnostics
             val nativeDiag = capture.nativeFallbackDiagnostics
             val diagnostics = "capture=${finalDiag.source} usedFallback=${capture.usedFallback} " +
-                "pixelCopy=${pixelCopyDiag} nativeFallback=${nativeDiag ?: "not-run"} " +
+                "pixelCopyStatus=${pixelCopyResult.get()} pixelCopy=${pixelCopyDiag} nativeFallback=${nativeDiag ?: "not-run"} " +
                 "final=${finalDiag} bitmap=${surfaceWidth}x${surfaceHeight} totalPixels=$totalPixels " +
                 "frameCount=${statsForReport[0]} successfulPresentedFrames=${statsForReport[12]} " +
                 "drawCalls=${statsForReport[1]} triangles=${statsForReport[2]} vertices=${statsForReport[3]} " +
@@ -378,21 +378,22 @@ class GeneratedAvatarRuntimeTest {
         }
 
         // Primary capture is immutable evidence. Never recycle or reassign it during fallback.
-        val pixelCopyBitmap = runCatching {
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            val latch = CountDownLatch(1)
+        // Retain the allocated bitmap even when PixelCopy reports an error or times out:
+        // its contents are still useful evidence of what the attempted capture produced.
+        val pixelCopyBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val copyLatch = CountDownLatch(1)
+        runCatching {
             instrumentation.runOnMainSync {
-                PixelCopy.request(view, bitmap, { result ->
+                PixelCopy.request(view, pixelCopyBitmap, { result ->
                     pixelCopyStatus.set(result)
-                    latch.countDown()
+                    copyLatch.countDown()
                 }, Handler(Looper.getMainLooper()))
             }
-            check(latch.await(15, TimeUnit.SECONDS)) { "PixelCopy callback timed out" }
-            check(pixelCopyStatus.get() == PixelCopy.SUCCESS) {
-                "PixelCopy failed with status=${pixelCopyStatus.get()}"
-            }
-            bitmap
-        }.getOrNull()
+        }.onFailure {
+            pixelCopyStatus.compareAndSet(Int.MIN_VALUE, -1)
+        }
+        val pixelCopyCompleted = runCatching { copyLatch.await(15, TimeUnit.SECONDS) }.getOrDefault(false)
+        if (!pixelCopyCompleted) pixelCopyStatus.compareAndSet(Int.MIN_VALUE, -2)
 
         val pixelCopyDiagnostics = diagnose(pixelCopyBitmap, "pixelcopy")
         pixelCopyBitmap?.let { savePng(it, File(outputDir, "raw_pixelcopy.png")) }
