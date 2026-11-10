@@ -19,6 +19,8 @@
 #include "afcore.h"
 #include "af_glb_read.h"
 #include "af_png.h"
+#include "af_scene.h"
+#include "af_scene_bridge.h"
 
 #include <cmath>
 #include <cstdint>
@@ -227,6 +229,27 @@ int main(int argc, char** argv) {
     check(std::fabs(sm[0].bounds_min[1] - (-0.75f)) < 1e-4f &&
           std::fabs(sm[0].bounds_max[1] - 0.25f) < 1e-4f,
           "node scale+translation baked into static imported submesh bounds");
+
+    /* Exercise the same scene bridge the GLES backend calls, against the real imported submesh. */
+    af_scene_bridge* bridge = af_scene_bridge_create();
+    af::Camera sceneCamera;
+    sceneCamera.position = af::Vec3(0.0f, 0.5f, 3.0f);
+    sceneCamera.target = af::Vec3(0.0f, -0.25f, 0.0f);
+    sceneCamera.aspect = 1.0f;
+    const af::Mat4 sceneViewProjection = sceneCamera.viewProjection();
+    const float sceneEye[3] = {
+        sceneCamera.position.x, sceneCamera.position.y, sceneCamera.position.z
+    };
+    af_scene_draw sceneDraws[1]{};
+    int32_t sceneDrawCount = 0, sceneCulledCount = 0;
+    const int32_t sceneRc = bridge
+        ? af_scene_bridge_update(bridge, engine, sceneViewProjection.m, sceneEye, 1.0f,
+                                 sceneDraws, 1, &sceneDrawCount, &sceneCulledCount)
+        : AF_ERR_OUT_OF_MEMORY;
+    check(sceneRc == AF_OK && sceneDrawCount == 1 &&
+          sceneDraws[0].instance == 0 && sceneDraws[0].index_count == 3,
+          "imported GLB submesh reaches the renderer scene visibility draw list");
+    af_scene_bridge_destroy(bridge);
 
     // 3. Foreign material maps to region -1 (AF_KIND_GENERIC), not REGION_SKIN
     check(sm[0].region == -1, "foreign unnamed material maps to region -1 (AF_KIND_GENERIC)");

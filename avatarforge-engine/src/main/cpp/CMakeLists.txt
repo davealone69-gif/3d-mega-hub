@@ -24,6 +24,7 @@ add_library(afcore SHARED
     src/af_prompt.cpp
     src/af_rig.cpp
     src/af_scene.cpp
+    src/af_scene_bridge.cpp
     src/af_profiler.cpp
     src/af_spec.cpp
     src/af_texture.cpp
@@ -45,7 +46,6 @@ if(ANDROID)
     add_library(afrender SHARED
         src/render/af_render.cpp
         src/render/af_render_capi.cpp
-        src/af_scene_bridge.cpp
         src/render/af_gl.cpp
         src/render/af_vk.cpp
         src/render/af_shaders.cpp)

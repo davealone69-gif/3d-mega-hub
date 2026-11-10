@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <new>
+#include <utility>
 
 struct af_scene_bridge {
     const af_engine* engine = nullptr;
