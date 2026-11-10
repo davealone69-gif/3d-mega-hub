@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -62,6 +63,7 @@ private fun MegaHubApp() {
     var voiceStatus by remember { mutableStateOf("Android text-to-speech is available on this device.") }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
     var ttsReady by remember { mutableStateOf(false) }
+    var previewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
 
     DisposableEffect(context) {
         val engine = TextToSpeech(context) { result ->
@@ -80,6 +82,20 @@ private fun MegaHubApp() {
             avatarUri = uri
             avatarName = uri.lastPathSegment?.substringAfterLast('/') ?: "Imported avatar file"
             prefs.edit().putString("avatar_uri", uri.toString()).putString("avatar_name", avatarName).apply()
+            loadAvatarIntoPreview(context, uri)
+        }
+    }
+
+    fun loadAvatarIntoPreview(context: Context, uri: Uri) {
+        thread {
+            val bytes = try {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            } catch (e: Exception) {
+                null
+            }
+            if (bytes != null) {
+                (context as? ComponentActivity)?.runOnUiThread { previewView?.loadGlb(bytes) }
+            }
         }
     }
 
@@ -168,8 +184,18 @@ private fun MegaHubApp() {
                 }
                 HubPage.AVATAR -> {
                     Text("Avatar library", style = MaterialTheme.typography.headlineSmall)
-                    Text("Import a .glb or .gltf file from device storage. Import stores access to the original file; rendering and editing are not yet connected.")
+                    Text("Import a .glb or .gltf file from device storage. The Filament preview renders the imported model and reports real pixel visibility.")
                     Button(onClick = { avatarPicker.launch(arrayOf("model/gltf-binary", "model/gltf+json", "application/octet-stream", "*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Import 3D model") }
+                    OutlinedButton(onClick = {
+                        thread {
+                            val bytes = try {
+                                context.assets.open("models/female.glb").use { it.readBytes() }
+                            } catch (e: Exception) { null }
+                            if (bytes != null) {
+                                (context as? ComponentActivity)?.runOnUiThread { previewView?.loadGlb(bytes) }
+                            }
+                        }
+                    }, modifier = Modifier.fillMaxWidth()) { Text("Use sample model") }
                     HubCard("Selected asset", avatarName, avatarUri?.toString() ?: "No file selected")
                     if (avatarUri != null) {
                         OutlinedButton(onClick = {
@@ -177,7 +203,17 @@ private fun MegaHubApp() {
                             prefs.edit().remove("avatar_uri").remove("avatar_name").apply()
                         }) { Text("Remove from library") }
                     }
-                    HubCard("Rendering status", "NOT CONNECTED", "The current Filament preview is a renderer diagnostic, not a GLB avatar viewer.")
+                    var rendererStatus by remember { mutableStateOf("Rendering surface not created yet.") }
+                    AndroidView(
+                        factory = { ctx ->
+                            FilamentPreviewView(ctx).also { preview ->
+                                preview.setStatusListener { status -> rendererStatus = status }
+                                previewView = preview
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(260.dp)
+                    )
+                    HubCard("Rendering status", rendererStatus, "Visible geometry is required for PixelCopy background-subtraction checks.")
                 }
                 HubPage.AI -> {
                     Text("Local AI assistant", style = MaterialTheme.typography.headlineSmall)
