@@ -25,7 +25,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import org.json.JSONArray
 import org.json.JSONObject
-import kotlinx.coroutines.runBlocking
 
 private const val VISIBILITY_THRESHOLD = 5000
 
@@ -274,17 +273,15 @@ class GeneratedAvatarRuntimeTest {
             assertEquals("GL readback width differs from the live SurfaceView", surfaceWidth, stats[8])
             assertEquals("GL readback height differs from the live SurfaceView", surfaceHeight, stats[9])
 
-            val capture = runBlocking {
-                captureWithEvidence(
-                    context = context,
-                    view = view,
-                    width = surfaceWidth,
-                    height = surfaceHeight,
-                    handle = handle,
-                    pixelCopyStatus = pixelCopyResult,
-                    instrumentation = instrumentation
-                )
-            }
+            val capture = captureWithEvidence(
+                context = context,
+                view = view,
+                width = surfaceWidth,
+                height = surfaceHeight,
+                handle = handle,
+                pixelCopyStatus = pixelCopyResult,
+                instrumentation = instrumentation
+            )
             captureEvidence = capture
             capturedBitmap = capture.bitmap
             val statsForReport = nativeGetVerificationStats(handle)
@@ -367,7 +364,7 @@ class GeneratedAvatarRuntimeTest {
         }
     }
 
-    private suspend fun captureWithEvidence(
+    private fun captureWithEvidence(
         context: android.content.Context,
         view: SurfaceView,
         width: Int,
