@@ -254,8 +254,10 @@ class AvatarForgeRendererSmokeTest {
             "Imported GLB did not create an AvatarForgeSurfaceView after scrolling the Avatar Studio viewport into view.",
             viewport
         )
+        val avatarForgeView = requireNotNull(viewport) { "Imported AvatarForge viewport was not created." }
         assertTrue("AvatarForge SurfaceView is not attached to the Activity window",
-            viewport!!.isAttachedToWindow && viewport.isShown && viewport.width > 100 && viewport.height > 100)
+            avatarForgeView.isAttachedToWindow && avatarForgeView.isShown &&
+                avatarForgeView.width > 100 && avatarForgeView.height > 100)
 
         val deadline = SystemClock.elapsedRealtime() + 90_000L
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -279,8 +281,8 @@ class AvatarForgeRendererSmokeTest {
         assertTrue("Renderer reported an EGL presentation error", prefs.getInt("egl_error", -1) == 0)
 
         val location = IntArray(2)
-        viewport.getLocationOnScreen(location)
-        val bounds = Rect(location[0], location[1], location[0] + viewport.width, location[1] + viewport.height)
+        avatarForgeView.getLocationOnScreen(location)
+        val bounds = Rect(location[0], location[1], location[0] + avatarForgeView.width, location[1] + avatarForgeView.height)
         val screenshot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
         assertNotNull("Could not capture emulator screen", screenshot)
         val image = screenshot!!
