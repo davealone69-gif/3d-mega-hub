@@ -125,7 +125,7 @@ jobs:
           arch: x86_64
           profile: pixel_2
           disable-animations: true
-          emulator-options: -memory 2048 -cores 2 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data
+          emulator-options: -memory 4096 -cores 2 -no-window -no-audio -no-boot-anim -gpu swangle -no-snapshot -wipe-data
           emulator-boot-timeout: 900
           script: bash .github/scripts/emulator-smoke.sh
       - uses: actions/upload-artifact@v7
