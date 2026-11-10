@@ -70,8 +70,13 @@ if grep -q "com\.davemega\.hub" emulator-diagnostics/lastanr.txt; then
   exit 1
 fi
 
-adb shell run-as com.davemega.hub cat shared_prefs/renderer_diagnostics.xml > emulator-diagnostics/renderer-preferences.xml
-grep -q "Filament OpenGL ES frame submitted" emulator-diagnostics/renderer-preferences.xml
+# Require the renderer's own persisted-and-logged first successful Filament frame checkpoint.
+# Logcat is authoritative here; run-as XML access was brittle across Android user/profile layouts.
+if ! grep -q "Renderer checkpoint: Filament OpenGL ES frame submitted" emulator-diagnostics/app-logcat.txt; then
+  echo "GLB loaded, but no successful Filament frame checkpoint was observed."
+  adb logcat -b all -d > emulator-diagnostics/full-logcat.txt || true
+  exit 1
+fi
 adb exec-out screencap -p > emulator-diagnostics/avatar-studio-screen.png
 test -s emulator-diagnostics/avatar-studio-screen.png
 {
