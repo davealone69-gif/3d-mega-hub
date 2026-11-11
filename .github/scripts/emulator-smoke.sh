@@ -59,6 +59,28 @@ if grep -E "FATAL EXCEPTION|Fatal signal|Process: com.davemega.hub" emulator-dia
   exit 1
 fi
 
+if grep -q "com\.davemega\.hub" emulator-diagnostics/lastanr.txt; then
+  echo "Android reports a previous ANR for 3D Mega Hub."
+  exit 1
+fi
+
+# GLB import and GPU submission precede the first presented frame. Wait for the
+# renderer-owned checkpoint instead of sampling logcat once and racing the render thread.
+RENDERER_FRAME=0
+for attempt in $(seq 1 60); do
+  adb logcat -b all -d > emulator-diagnostics/app-logcat.txt
+  if grep -q "Renderer checkpoint: Filament OpenGL ES frame submitted" emulator-diagnostics/app-logcat.txt; then
+    RENDERER_FRAME=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$RENDERER_FRAME" != "1" ]]; then
+  echo "GLB loaded, but no successful Filament frame checkpoint appeared within 60 seconds."
+  adb logcat -b all -d > emulator-diagnostics/full-logcat.txt || true
+  exit 1
+fi
+
 # A renderer smoke test must reject an ANR or a sustained UI stall, even if the GLB
 # eventually loads. The previous smoke script only checked for a late frame submission.
 # Cold start, class loading and first GLB upload can create a one-off Choreographer
@@ -82,27 +104,6 @@ if [[ -z "$POST_PID" || "$POST_PID" != "$PID" ]]; then
 fi
 if ! adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | grep -q "com.davemega.hub"; then
   echo "3D-Mega-Hub stopped being the resumed app during the post-render observation window."
-  exit 1
-fi
-if grep -q "com\.davemega\.hub" emulator-diagnostics/lastanr.txt; then
-  echo "Android reports a previous ANR for 3D Mega Hub."
-  exit 1
-fi
-
-# GLB import and GPU submission precede the first presented frame. Wait for the
-# renderer-owned checkpoint instead of sampling logcat once and racing the render thread.
-RENDERER_FRAME=0
-for attempt in $(seq 1 60); do
-  adb logcat -b all -d > emulator-diagnostics/app-logcat.txt
-  if grep -q "Renderer checkpoint: Filament OpenGL ES frame submitted" emulator-diagnostics/app-logcat.txt; then
-    RENDERER_FRAME=1
-    break
-  fi
-  sleep 1
-done
-if [[ "$RENDERER_FRAME" != "1" ]]; then
-  echo "GLB loaded, but no successful Filament frame checkpoint appeared within 60 seconds."
-  adb logcat -b all -d > emulator-diagnostics/full-logcat.txt || true
   exit 1
 fi
 adb exec-out screencap -p > emulator-diagnostics/avatar-studio-screen.png
