@@ -291,18 +291,53 @@ class AvatarForgeRendererSmokeTest {
            it is not valid evidence for a native GLES texture sample. */
         val surfaceView = avatarForgeView as? SurfaceView
             ?: throw AssertionError("AvatarForgeSurfaceView is not backed by Android SurfaceView")
-        val image = Bitmap.createBitmap(surfaceView.width, surfaceView.height, Bitmap.Config.ARGB_8888)
-        val pixelCopyLatch = CountDownLatch(1)
+        // SurfaceView presentation and PixelCopy readback are asynchronous. A swapped
+        // frame does not guarantee the compositor has exposed its buffer yet, particularly
+        // on software-rendered CI emulators. Retry only documented transient readback errors.
+        val surfaceReadyDeadline = SystemClock.elapsedRealtime() + 10_000L
+        while ((!surfaceView.holder.surface.isValid || !surfaceView.isShown ||
+                !surfaceView.isAttachedToWindow) &&
+            SystemClock.elapsedRealtime() < surfaceReadyDeadline) {
+            SystemClock.sleep(100L)
+        }
+        assertTrue("AvatarForge SurfaceView surface never became valid for PixelCopy",
+            surfaceView.holder.surface.isValid && surfaceView.isShown && surfaceView.isAttachedToWindow)
+        SystemClock.sleep(500L)
+
+        var image: Bitmap? = null
         var pixelCopyResult = PixelCopy.ERROR_UNKNOWN
-        PixelCopy.request(surfaceView, image, { result ->
-            pixelCopyResult = result
-            pixelCopyLatch.countDown()
-        }, Handler(Looper.getMainLooper()))
-        assertTrue("PixelCopy did not return the actual AvatarForge SurfaceView buffer",
-            pixelCopyLatch.await(15, TimeUnit.SECONDS))
-        assertTrue("PixelCopy failed for AvatarForge SurfaceView: result=$pixelCopyResult",
-            pixelCopyResult == PixelCopy.SUCCESS)
-        val crop = Rect(0, 0, image.width, image.height)
+        val retryDelaysMs = longArrayOf(0L, 250L, 500L, 1_000L)
+        for ((attempt, delayMs) in retryDelaysMs.withIndex()) {
+            if (delayMs > 0L) SystemClock.sleep(delayMs)
+            val candidate = Bitmap.createBitmap(surfaceView.width, surfaceView.height, Bitmap.Config.ARGB_8888)
+            val pixelCopyLatch = CountDownLatch(1)
+            var attemptResult = PixelCopy.ERROR_UNKNOWN
+            instrumentation.runOnMainSync {
+                PixelCopy.request(surfaceView, candidate, { result ->
+                    attemptResult = result
+                    pixelCopyLatch.countDown()
+                }, Handler(Looper.getMainLooper()))
+            }
+            val callbackArrived = pixelCopyLatch.await(5, TimeUnit.SECONDS)
+            if (callbackArrived) pixelCopyResult = attemptResult
+            if (callbackArrived && attemptResult == PixelCopy.SUCCESS) {
+                image = candidate
+                break
+            }
+            candidate.recycle()
+            assertTrue(
+                "PixelCopy callback did not complete on attempt ${attempt + 1}/${retryDelaysMs.size}; surfaceValid=${surfaceView.holder.surface.isValid} size=${surfaceView.width}x${surfaceView.height}",
+                callbackArrived
+            )
+            assertTrue("PixelCopy failed with non-retryable result=$attemptResult on attempt ${attempt + 1}",
+                attemptResult == PixelCopy.ERROR_TIMEOUT || attemptResult == PixelCopy.ERROR_SOURCE_NO_DATA)
+        }
+        assertTrue(
+            "PixelCopy could not capture the actual AvatarForge SurfaceView after ${retryDelaysMs.size} attempts; lastResult=$pixelCopyResult",
+            image != null
+        )
+        val capturedImage = requireNotNull(image)
+        val crop = Rect(0, 0, capturedImage.width, capturedImage.height)
         assertTrue("AvatarForge SurfaceView capture has invalid dimensions: $crop",
             crop.width() > 0 && crop.height() > 0)
 
@@ -313,12 +348,12 @@ class AvatarForgeRendererSmokeTest {
         val output = File(externalDirectory, "avatarforge-renderer-smoke.png")
         FileOutputStream(output).use { stream ->
             assertTrue("Could not encode captured AvatarForge SurfaceView",
-                image.compress(Bitmap.CompressFormat.PNG, 100, stream))
+                capturedImage.compress(Bitmap.CompressFormat.PNG, 100, stream))
         }
         assertTrue("Captured renderer screenshot is missing", output.isFile && output.length() > 0L)
 
         if (glb.name.contains("webp-extension")) {
-            val texturedCenter = image.getPixel(crop.centerX(), crop.centerY())
+            val texturedCenter = capturedImage.getPixel(crop.centerX(), crop.centerY())
             val red = (texturedCenter shr 16) and 0xff
             val green = (texturedCenter shr 8) and 0xff
             val blue = texturedCenter and 0xff
@@ -339,7 +374,7 @@ class AvatarForgeRendererSmokeTest {
                 while (y < cornerY + cornerSizeY) {
                     var x = cornerX
                     while (x < cornerX + cornerSizeX) {
-                        cornerSamples.add(image.getPixel(x, y))
+                        cornerSamples.add(capturedImage.getPixel(x, y))
                         x += (cornerSizeX / 8).coerceAtLeast(1)
                     }
                     y += (cornerSizeY / 8).coerceAtLeast(1)
@@ -364,7 +399,7 @@ class AvatarForgeRendererSmokeTest {
             val y = crop.top + ((gy + 0.5f) * crop.height() / gridHeight).toInt()
             for (gx in 0 until gridWidth) {
                 val x = crop.left + ((gx + 0.5f) * crop.width() / gridWidth).toInt()
-                val pixel = image.getPixel(x, y)
+                val pixel = capturedImage.getPixel(x, y)
                 val red = (pixel shr 16) and 0xff
                 val green = (pixel shr 8) and 0xff
                 val blue = pixel and 0xff
