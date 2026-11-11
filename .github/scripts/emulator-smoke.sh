@@ -71,15 +71,37 @@ if grep -E "ANR in |Input dispatching timed out|Skipped ([3-9][0-9]{2,}|[1-9][0-
   echo "ANR or sustained main-thread frame stall detected after renderer readiness."
   exit 1
 fi
+if grep -E "FATAL EXCEPTION|Fatal signal|Process: com.davemega.hub" emulator-diagnostics/post-render-logcat.txt; then
+  echo "Application crash detected after renderer readiness."
+  exit 1
+fi
+POST_PID="$(adb shell pidof -s com.davemega.hub | tr -d '\\r')"
+if [[ -z "$POST_PID" || "$POST_PID" != "$PID" ]]; then
+  echo "Application process died or restarted during the post-render observation window."
+  exit 1
+fi
+if ! adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | grep -q "com.davemega.hub"; then
+  echo "3D-Mega-Hub stopped being the resumed app during the post-render observation window."
+  exit 1
+fi
 if grep -q "com\.davemega\.hub" emulator-diagnostics/lastanr.txt; then
   echo "Android reports a previous ANR for 3D Mega Hub."
   exit 1
 fi
 
-# Require the renderer's own persisted-and-logged first successful Filament frame checkpoint.
-# Logcat is authoritative here; run-as XML access was brittle across Android user/profile layouts.
-if ! grep -q "Renderer checkpoint: Filament OpenGL ES frame submitted" emulator-diagnostics/app-logcat.txt; then
-  echo "GLB loaded, but no successful Filament frame checkpoint was observed."
+# GLB import and GPU submission precede the first presented frame. Wait for the
+# renderer-owned checkpoint instead of sampling logcat once and racing the render thread.
+RENDERER_FRAME=0
+for attempt in $(seq 1 60); do
+  adb logcat -b all -d > emulator-diagnostics/app-logcat.txt
+  if grep -q "Renderer checkpoint: Filament OpenGL ES frame submitted" emulator-diagnostics/app-logcat.txt; then
+    RENDERER_FRAME=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$RENDERER_FRAME" != "1" ]]; then
+  echo "GLB loaded, but no successful Filament frame checkpoint appeared within 60 seconds."
   adb logcat -b all -d > emulator-diagnostics/full-logcat.txt || true
   exit 1
 fi
