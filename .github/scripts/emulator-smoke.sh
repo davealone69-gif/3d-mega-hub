@@ -97,7 +97,7 @@ if grep -E "FATAL EXCEPTION|Fatal signal|Process: com.davemega.hub" emulator-dia
   echo "Application crash detected after renderer readiness."
   exit 1
 fi
-POST_PID="$(adb shell pidof -s com.davemega.hub | tr -d '\\r')"
+POST_PID="$(adb shell pidof -s com.davemega.hub | tr -d '\r')"
 if [[ -z "$POST_PID" || "$POST_PID" != "$PID" ]]; then
   echo "Application process died or restarted during the post-render observation window."
   exit 1
