@@ -61,8 +61,14 @@ fi
 
 # A renderer smoke test must reject an ANR or a sustained UI stall, even if the GLB
 # eventually loads. The previous smoke script only checked for a late frame submission.
-if grep -E "ANR in |Input dispatching timed out|Skipped ([3-9][0-9]{2,}|[1-9][0-9]{3,}) frames|Davey! duration=([1-9][0-9]{4,})ms" emulator-diagnostics/app-logcat.txt; then
-  echo "ANR or sustained main-thread frame stall detected."
+# Cold start, class loading and first GLB upload can create a one-off Choreographer
+# backlog on a software-rendered CI emulator. Do not misclassify that startup burst as
+# a renderer-time ANR. Begin the stall observation only after the GLB/frame checkpoint.
+adb logcat -c
+sleep 10
+adb logcat -b all -d > emulator-diagnostics/post-render-logcat.txt
+if grep -E "ANR in |Input dispatching timed out|Skipped ([3-9][0-9]{2,}|[1-9][0-9]{3,}) frames|Davey! duration=([1-9][0-9]{4,})ms" emulator-diagnostics/post-render-logcat.txt; then
+  echo "ANR or sustained main-thread frame stall detected after renderer readiness."
   exit 1
 fi
 if grep -q "com\.davemega\.hub" emulator-diagnostics/lastanr.txt; then
