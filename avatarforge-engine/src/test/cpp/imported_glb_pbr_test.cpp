@@ -182,6 +182,31 @@ std::vector<uint8_t> buildSyntheticForeignGlb() {
     return buildGlb(jsonBuf, bin);
 }
 
+std::vector<float> capturePositions(const af_engine* engine) {
+    const int32_t count = af_engine_vertex_count(engine);
+    const af_vertex* vertices = af_engine_vertices(engine);
+    if (count <= 0 || !vertices) return {};
+    std::vector<float> positions;
+    positions.reserve(static_cast<size_t>(count) * 3u);
+    for (int32_t i = 0; i < count; ++i) {
+        positions.push_back(vertices[i].pos[0]);
+        positions.push_back(vertices[i].pos[1]);
+        positions.push_back(vertices[i].pos[2]);
+    }
+    return positions;
+}
+
+bool positionsDiffer(const std::vector<float>& a, const std::vector<float>& b) {
+    if (a.empty() || a.size() != b.size()) return false;
+    float maxDelta = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (!std::isfinite(a[i]) || !std::isfinite(b[i])) return false;
+        const float delta = std::fabs(a[i] - b[i]);
+        if (delta > maxDelta) maxDelta = delta;
+    }
+    return maxDelta > 1e-5f;
+}
+
 bool fakeFallbackWebpDecoder(const uint8_t* data, std::size_t size,
                              af::DecodedImage* out, std::string*) {
     if (!data || size < 12 || !out) return false;
@@ -208,6 +233,68 @@ int main(int argc, char** argv) {
     af_texture preNormal{};
     check(af_engine_texture(engine, AF_TEX_NORMAL, &preNormal) == AF_OK && preNormal.data != nullptr,
           "procedural normal texture is populated before import");
+
+    // The generated avatar must move through its own skeleton, not just export a static mesh.
+    const int32_t generatedJointCount = af_engine_joint_count(engine);
+    check(generatedJointCount > 0, "generated avatar has a live skeleton");
+    const float walkDuration = af_engine_clip_duration(engine, AF_CLIP_WALK);
+    check(std::isfinite(walkDuration) && walkDuration > 0.0f, "built-in walk clip has a finite duration");
+    check(af_engine_apply_clip(engine, AF_CLIP_REST, 0.0f) == AF_OK, "generated avatar accepts its rest pose");
+    const std::vector<float> restPositions = capturePositions(engine);
+    check(!restPositions.empty(), "generated rest pose exposes live vertex positions");
+
+    check(af_engine_apply_clip(engine, AF_CLIP_WALK, walkDuration * 0.25f) == AF_OK,
+          "generated avatar samples the first walk pose");
+    const std::vector<float> walkPositionsA = capturePositions(engine);
+    check(positionsDiffer(restPositions, walkPositionsA),
+          "walk pose deforms generated vertex positions relative to rest pose");
+
+    check(af_engine_apply_clip(engine, AF_CLIP_WALK, walkDuration * 0.75f) == AF_OK,
+          "generated avatar samples a later walk pose");
+    const std::vector<float> walkPositionsB = capturePositions(engine);
+    check(positionsDiffer(walkPositionsA, walkPositionsB),
+          "different walk timestamps produce different deformed geometry");
+    char animationValidation[1024] = {};
+    check(af_engine_validate_deformed_mesh(engine, animationValidation,
+              static_cast<int32_t>(sizeof(animationValidation))) == AF_OK,
+          "animated generated mesh passes finite-position, skin-weight, joint and bounds validation");
+
+    check(af_engine_apply_clip(engine, AF_CLIP_REST, 0.0f) == AF_OK,
+          "generated avatar returns to its rest pose before GLB export");
+    uint8_t* generatedGlbBytes = nullptr;
+    size_t generatedGlbSize = 0;
+    const int32_t exportRc = af_engine_export_glb_to_memory(engine, &generatedGlbBytes, &generatedGlbSize);
+    check(exportRc == AF_OK && generatedGlbBytes != nullptr && generatedGlbSize > 0,
+          "generated avatar exports a non-empty self-contained GLB");
+    if (exportRc == AF_OK && generatedGlbBytes != nullptr && generatedGlbSize > 0) {
+        af::GlbAsset exportedAsset;
+        std::string exportParseError;
+        const int32_t parseRc = af::importGlb(generatedGlbBytes, generatedGlbSize,
+                                               &exportedAsset, &exportParseError);
+        check(parseRc == AF_OK, "exported generated-avatar GLB parses through the production reader");
+        if (parseRc == AF_OK) {
+            check(!exportedAsset.skins.empty(), "generated GLB contains its exported skeleton/skin");
+            check(!exportedAsset.animations.empty(), "generated GLB contains animation clips");
+            bool hasAnimationChannels = false;
+            for (const auto& animation : exportedAsset.animations) {
+                if (!animation.channels.empty()) {
+                    hasAnimationChannels = true;
+                    break;
+                }
+            }
+            check(hasAnimationChannels, "generated GLB animation clips contain playable transform channels");
+        }
+
+        // Foreign GLB import is intentionally static today. Prove that a rigged export is not
+        // silently advertised as animated after crossing the import boundary.
+        const int32_t reimportRc = af_engine_import_glb_from_memory(engine, generatedGlbBytes, generatedGlbSize);
+        check(reimportRc == AF_OK, "generated rigged GLB can be re-imported as foreign geometry");
+        if (reimportRc == AF_OK) {
+            check(af_engine_joint_count(engine) == 0,
+                  "foreign GLB import does not falsely adopt the embedded skeleton");
+        }
+    }
+    if (generatedGlbBytes != nullptr) af_arena_free(generatedGlbBytes);
 
     const std::vector<uint8_t> glb = buildSyntheticForeignGlb();
     check(af_engine_import_glb_from_memory(engine, glb.data(), glb.size()) == AF_OK,
