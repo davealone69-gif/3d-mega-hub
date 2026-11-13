@@ -7,31 +7,33 @@ chmod +x ./gradlew
 TEST_STATUS=0
 ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.AvatarForgeRendererSmokeTest --stacktrace || TEST_STATUS=$?
 
+# connectedDebugAndroidTest tears down the instrumented target/test packages after
+# the suite. The app process and app-private files are therefore not valid
+# postconditions here. The renderer tests assert PixelCopy success and screenshot
+# creation while the app is installed; the app also exports durable evidence to
+# shared Downloads before instrumentation cleanup.
 adb logcat -d -v threadtime > avatarforge-render-smoke-evidence/logcat.txt 2>&1 || true
 adb logcat -d -v threadtime -s AvatarForge:V > avatarforge-render-smoke-evidence/avatarforge-logcat.txt 2>&1 || true
 adb shell dumpsys activity activities > avatarforge-render-smoke-evidence/activities.txt 2>&1 || true
-adb shell run-as com.davemega.hub cat shared_prefs/avatarforge_renderer_smoke.xml > avatarforge-render-smoke-evidence/renderer-state.xml 2>&1 || true
 adb exec-out screencap -p > avatarforge-render-smoke-evidence/final-screen.png 2>/dev/null || true
-adb pull /sdcard/Android/data/com.davemega.hub/files/avatarforge-renderer-smoke.png avatarforge-render-smoke-evidence/avatarforge-viewport.png >/dev/null 2>&1 || true
-adb pull /sdcard/Android/data/com.davemega.hub/files/generated_avatar_diagnostic.png avatarforge-render-smoke-evidence/generated_avatar_diagnostic.png >/dev/null 2>&1 || true
-adb pull /sdcard/Android/data/com.davemega.hub/files/failed_render.png avatarforge-render-smoke-evidence/failed_render.png >/dev/null 2>&1 || true
+
+DIAGNOSTICS_DIR="/sdcard/Download/3D Mega Hub Diagnostics"
+adb pull "$DIAGNOSTICS_DIR/renderer_diagnostics.json" avatarforge-render-smoke-evidence/renderer_diagnostics.json >/dev/null 2>&1 || true
+adb pull "$DIAGNOSTICS_DIR/imported_glb_diagnostic.png" avatarforge-render-smoke-evidence/imported_glb_diagnostic.png >/dev/null 2>&1 || true
+adb pull "$DIAGNOSTICS_DIR/generated_avatar_diagnostic.png" avatarforge-render-smoke-evidence/generated_avatar_diagnostic.png >/dev/null 2>&1 || true
+adb pull "$DIAGNOSTICS_DIR/failed_render.png" avatarforge-render-smoke-evidence/failed_render.png >/dev/null 2>&1 || true
 
 if [[ "$TEST_STATUS" -ne 0 ]]; then
   echo "FAIL: instrumented AvatarForge GLES GLB renderer test failed with exit $TEST_STATUS."
   exit "$TEST_STATUS"
 fi
 
-PID="$(adb shell pidof -s com.davemega.hub | tr -d '\r' || true)"
-if [[ -z "$PID" ]]; then
-  echo "FAIL: app process is not alive after renderer instrumentation."
+if ! grep -Eq 'run finished: 3 tests, 0 failed, 0 ignored' avatarforge-render-smoke-evidence/logcat.txt; then
+  echo "FAIL: instrumentation log does not prove all three renderer tests passed."
   exit 1
 fi
-if ! adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | grep -q "com.davemega.hub"; then
-  echo "FAIL: 3D-Mega-Hub is not the resumed app after renderer instrumentation."
-  exit 1
-fi
-if ! grep -Eq 'PIXELS_VERIFIED|FRAME_PRESENTED' avatarforge-render-smoke-evidence/renderer-state.xml; then
-  echo "FAIL: persisted AvatarForge renderer state contains neither PIXELS_VERIFIED nor FRAME_PRESENTED."
+if ! grep -q '"status"[[:space:]]*:[[:space:]]*"PIXELS_VERIFIED"' avatarforge-render-smoke-evidence/renderer_diagnostics.json; then
+  echo "FAIL: persisted renderer JSON does not prove PIXELS_VERIFIED."
   exit 1
 fi
 for marker in "GLB accessor semantic=POSITION" "GLB packed vertex pool" "af_vertex layout" "GPU Vertex 0" "MVP clip vertex 0" "DrawElements submesh="; do
@@ -40,8 +42,12 @@ for marker in "GLB accessor semantic=POSITION" "GLB packed vertex pool" "af_vert
     exit 1
   fi
 done
-if [[ ! -s avatarforge-render-smoke-evidence/avatarforge-viewport.png ]]; then
-  echo "FAIL: renderer screenshot artifact is missing."
+if [[ ! -s avatarforge-render-smoke-evidence/imported_glb_diagnostic.png ]]; then
+  echo "FAIL: durable imported-GLB PixelCopy screenshot is missing."
   exit 1
 fi
-echo "PASS: instrumented AvatarForge GLES GLB render test completed; app PID=$PID."
+if [[ -s avatarforge-render-smoke-evidence/failed_render.png ]]; then
+  echo "FAIL: renderer exported failed_render.png; inspect the captured failure."
+  exit 1
+fi
+echo "PASS: all three instrumented renderer tests passed; imported GLB PixelCopy JSON and PNG evidence captured."
