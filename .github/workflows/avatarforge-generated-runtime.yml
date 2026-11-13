@@ -66,10 +66,18 @@ jobs:
             ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace
             test_status=$?
             mkdir -p artifacts/avatarforge/runtime-captures
-            # The passing instrumentation test writes raw PixelCopy/native readback PNGs
-            # and JSON diagnostics to app-specific external storage. Pull the whole folder
-            # so successful renders are reviewable, not only failed_render.png on failures.
-            adb pull /sdcard/Android/data/com.davemega.hub/files/. artifacts/avatarforge/runtime-captures/ || true
+            # Capture the emulator display independently of app storage as a fallback.
+            # The instrumentation test's actual avatar PNGs/JSON live in internal app files;
+            # retrieve them through run-as, which works with the debuggable test APK and
+            # avoids Android 11+ scoped-storage restrictions on /Android/data.
+            adb exec-out screencap -p > artifacts/avatarforge/runtime-captures/emulator-screen.png || true
+            adb exec-out run-as com.davemega.hub tar -cf - files/avatarforge-diagnostics \
+              > artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar || true
+            if [ -s artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar ]; then
+              tar -xf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar \
+                -C artifacts/avatarforge/runtime-captures/
+            fi
+            find artifacts/avatarforge/runtime-captures -type f -printf '%p %s bytes\\n'
             exit $test_status
 
       - name: Upload instrumentation reports and screenshots
