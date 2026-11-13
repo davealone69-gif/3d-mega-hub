@@ -65,8 +65,11 @@ jobs:
             set +e
             ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace
             test_status=$?
-            mkdir -p artifacts/avatarforge
-            adb pull /sdcard/Android/data/com.davemega.hub/files/failed_render.png artifacts/avatarforge/failed_render.png || true
+            mkdir -p artifacts/avatarforge/runtime-captures
+            # The passing instrumentation test writes raw PixelCopy/native readback PNGs
+            # and JSON diagnostics to app-specific external storage. Pull the whole folder
+            # so successful renders are reviewable, not only failed_render.png on failures.
+            adb pull /sdcard/Android/data/com.davemega.hub/files/. artifacts/avatarforge/runtime-captures/ || true
             exit $test_status
 
       - name: Upload instrumentation reports and screenshots
