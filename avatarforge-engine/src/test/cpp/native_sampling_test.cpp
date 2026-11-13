@@ -3,6 +3,7 @@
 #include "af_anatomy.h"
 #include "af_body.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
