@@ -21,6 +21,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.davemega.hub.MainActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -69,6 +70,25 @@ private data class CaptureResult(
 
 @RunWith(AndroidJUnit4::class)
 class GeneratedAvatarRuntimeTest {
+    @Before
+    fun clearDiagnosticOutput() {
+        val directory = File(
+            InstrumentationRegistry.getInstrumentation().targetContext.filesDir,
+            "avatarforge-diagnostics"
+        )
+        directory.deleteRecursively()
+        check(directory.mkdirs() || directory.isDirectory) {
+            "Cannot create internal avatar diagnostic directory: ${directory.absolutePath}"
+        }
+    }
+
+    private fun diagnosticsDir(context: android.content.Context): File =
+        File(context.filesDir, "avatarforge-diagnostics").apply {
+            check(mkdirs() || isDirectory) {
+                "Cannot create internal avatar diagnostic directory: ${absolutePath}"
+            }
+        }
+
     private external fun nativeCreateGenerated(surface: android.view.Surface, width: Int, height: Int): Long
     private external fun nativeCreateGeneratedDebug(
         surface: android.view.Surface,
@@ -286,7 +306,7 @@ class GeneratedAvatarRuntimeTest {
                 captured, "textureview-window", result.get(), captureTimestamp,
                 statsTimestamp, stats.getOrNull(0) ?: -1, stats.getOrNull(12) ?: -1
             )
-            val outputDir = requireNotNull(context.getExternalFilesDir(null))
+            val outputDir = diagnosticsDir(context)
             savePng(captured, File(outputDir, "raw_textureview_window.png"))
             saveDiagnosticsJson(File(outputDir, "textureview_capture_diagnostics.json"), listOf(diag))
             assertTrue(
@@ -438,9 +458,7 @@ class GeneratedAvatarRuntimeTest {
             }
 
             if (finalDiag.geometryPixels < VISIBILITY_THRESHOLD) {
-                val outputDir = requireNotNull(context.getExternalFilesDir(null)) {
-                    "External app files directory is unavailable"
-                }
+                val outputDir = diagnosticsDir(context)
                 val screenshot = File(outputDir, "failed_render.png")
                 FileOutputStream(screenshot).use { stream ->
                     requireNotNull(capturedBitmap).compress(Bitmap.CompressFormat.PNG, 100, stream)
@@ -475,8 +493,8 @@ class GeneratedAvatarRuntimeTest {
                     }
                 }
                 capturedBitmap?.let { image ->
-                    val outputDir = context.getExternalFilesDir(null)
-                    if (outputDir != null) {
+                    val outputDir = diagnosticsDir(context)
+                    if (outputDir.isDirectory) {
                         val screenshot = File(outputDir, "failed_render.png")
                         runCatching {
                             FileOutputStream(screenshot).use { stream ->
@@ -514,9 +532,7 @@ class GeneratedAvatarRuntimeTest {
         pixelCopyStatus: AtomicInteger,
         instrumentation: Instrumentation
     ): CaptureResult {
-        val outputDir = requireNotNull(context.getExternalFilesDir(null)) {
-            "External app files directory is unavailable"
-        }
+        val outputDir = diagnosticsDir(context)
 
         // Primary capture is immutable evidence. Never recycle or reassign it during fallback.
         // Retain the allocated bitmap even when PixelCopy reports an error or times out:
