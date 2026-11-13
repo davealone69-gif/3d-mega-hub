@@ -349,8 +349,15 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
         /* UV units per metre for this chart: the shelf cell (minus its gutter) divided by the
            chart's projected extent. Using the same density for w and h keeps the chart
            undistorted even when the atlas is not square. */
-        const float sx = chartSize.x > 1e-9f ? (pl.w - gutterUV * 2.0f) / chartSize.x : 0.0f;
-        const float sy = chartSize.y > 1e-9f ? (pl.h - gutterUV * 2.0f) / chartSize.y : 0.0f;
+        /* Rotation swaps the projected axes. Scale against the post-rotation extents,
+           otherwise tall charts are stretched and their baked texels no longer correspond to
+           the geometry. This produces obvious diagonal/checker distortion on large garments. */
+        const float mappedExtentX = pl.rotated ? chartSize.y : chartSize.x;
+        const float mappedExtentY = pl.rotated ? chartSize.x : chartSize.y;
+        const float sx = mappedExtentX > 1e-9f
+            ? (pl.w - gutterUV * 2.0f) / mappedExtentX : 0.0f;
+        const float sy = mappedExtentY > 1e-9f
+            ? (pl.h - gutterUV * 2.0f) / mappedExtentY : 0.0f;
 
         for (int32_t i = 0; i < ch.faceCount; ++i) {
             const uint32_t f = static_cast<uint32_t>(chartFaces[static_cast<size_t>(ch.firstFace + i)]);
