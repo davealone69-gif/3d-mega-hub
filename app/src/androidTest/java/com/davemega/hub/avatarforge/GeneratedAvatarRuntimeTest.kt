@@ -21,7 +21,6 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.davemega.hub.MainActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -70,18 +69,6 @@ private data class CaptureResult(
 
 @RunWith(AndroidJUnit4::class)
 class GeneratedAvatarRuntimeTest {
-    @Before
-    fun clearDiagnosticOutput() {
-        val directory = File(
-            InstrumentationRegistry.getInstrumentation().targetContext.filesDir,
-            "avatarforge-diagnostics"
-        )
-        directory.deleteRecursively()
-        check(directory.mkdirs() || directory.isDirectory) {
-            "Cannot create internal avatar diagnostic directory: ${directory.absolutePath}"
-        }
-    }
-
     private fun diagnosticsDir(context: android.content.Context): File =
         File(context.filesDir, "avatarforge-diagnostics").apply {
             check(mkdirs() || isDirectory) {
