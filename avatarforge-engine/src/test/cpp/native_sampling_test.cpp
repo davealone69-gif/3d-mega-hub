@@ -217,6 +217,36 @@ int main() {
         require(p.isFinite(), "refined avatar contains a non-finite vertex");
     }
 
+    // The reference dress is floor-length and flared. Prove the garment field creates
+    // actual fabric volume OUTSIDE the body, rather than merely clipping the body offset.
+    {
+        af_spec dressSpec{};
+        af_spec_init(&dressSpec);
+        dressSpec.sex = AF_SEX_FEMALE;
+        const af::BodyMetrics dressMetrics = af::Anatomy::solve(dressSpec);
+        af::BodyField dressField(dressMetrics);
+        af::ApparelOptions dressOptions;
+        dressOptions.outfit = 2; // AF_OUTFIT_DRESS
+        dressOptions.latticeCell = 0.008f;
+        dressField.setApparel(dressOptions);
+
+        const af::Vec3 skirtProbe(
+            dressMetrics.waist.rx * 2.25f,
+            dressMetrics.height * 0.04f,
+            dressMetrics.waist.centreZ);
+        require(dressField.body(skirtProbe) > 0.0f,
+                "dress flare probe unexpectedly lies inside the underlying body");
+        require(dressField.clothUpperPublic(skirtProbe) < 0.0f,
+                "dress skirt does not create flared fabric volume outside the body");
+
+        const af::Vec3 belowHemProbe(
+            dressMetrics.waist.rx * 2.25f,
+            dressMetrics.y.soleY + dressMetrics.height * 0.005f,
+            dressMetrics.waist.centreZ);
+        require(dressField.clothUpperPublic(belowHemProbe) > 0.0f,
+                "floor-length dress skirt extends below its defined hem plane");
+    }
+
     // Hanging hairstyles must be volumetric, not a zero-thickness SDF curtain.
     af::BodyField hairField(qualityMetrics);
     af::ApparelOptions longHair;
