@@ -132,6 +132,8 @@ int main() {
     const float probeX[] = {0.025f, 0.060f, 0.120f, 0.200f, 0.300f};
     const float probeZ[] = {-0.12f, -0.04f, 0.04f, 0.12f};
     float maximumMirrorError = 0.0f;
+    float maximumMirrorX = 0.0f, maximumMirrorY = 0.0f, maximumMirrorZ = 0.0f;
+    float maximumMirrorLeft = 0.0f, maximumMirrorRight = 0.0f;
     for (float y : probeY) {
         for (float x : probeX) {
             for (float z : probeZ) {
@@ -139,9 +141,24 @@ int main() {
                 const float right = qualityField.body(af::Vec3(-x, y, z));
                 require(std::isfinite(left) && std::isfinite(right),
                         "bilateral body probe produced a non-finite SDF value");
-                maximumMirrorError = std::max(maximumMirrorError, std::fabs(left - right));
+                const float mirrorError = std::fabs(left - right);
+                if (mirrorError > maximumMirrorError) {
+                    maximumMirrorError = mirrorError;
+                    maximumMirrorX = x;
+                    maximumMirrorY = y;
+                    maximumMirrorZ = z;
+                    maximumMirrorLeft = left;
+                    maximumMirrorRight = right;
+                }
             }
         }
+    }
+    if (maximumMirrorError >= 0.004f) {
+        std::fprintf(stderr,
+                     "DIAGNOSTIC: mirror max error=%.6f m at (+/-%.4f, %.4f, %.4f), "
+                     "left=%.6f right=%.6f\\n",
+                     maximumMirrorError, maximumMirrorX, maximumMirrorY, maximumMirrorZ,
+                     maximumMirrorLeft, maximumMirrorRight);
     }
     require(maximumMirrorError < 0.004f,
             "left/right body SDF differs by more than 4 mm in the symmetric rest pose");
