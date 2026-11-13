@@ -30,6 +30,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
+      - name: Verify dependency-free GLB anatomy probe
+        run: |
+          python3 -m py_compile tools/glb_anatomy_probe.py tools/test_glb_anatomy_probe.py
+          python3 tools/test_glb_anatomy_probe.py
       - name: Configure native host tests
         run: |
           cmake -S avatarforge-engine/src/main/cpp \
