@@ -78,6 +78,12 @@ jobs:
                 -C artifacts/avatarforge/runtime-captures/
             fi
             find artifacts/avatarforge/runtime-captures -type f -printf '%p %s bytes\\n'
+            {
+              echo "build_commit=${GITHUB_SHA}"
+              echo "capture_time_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              find artifacts/avatarforge/runtime-captures -type f ! -name evidence-manifest.txt -print0 | sort -z | xargs -0 -r sha256sum
+            } > artifacts/avatarforge/runtime-captures/evidence-manifest.txt
+            cat artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             exit $test_status
 
       - name: Upload instrumentation reports and screenshots
