@@ -1351,10 +1351,9 @@ float BodyField::hairShape(const Vec3& p) const {
     const float tilt = 0.30f + 0.20f * (m_.sex == AF_SEX_FEMALE ? 1.0f : 0.0f);
     const Vec3 hp(0.0f, browRidge_.y + headH * 0.05f, browRidge_.z + m_.head.rz * 0.10f);
     const float front = (p - hp).x * 0.0f + (p - hp).y * std::cos(tilt) - (p - hp).z * std::sin(tilt);
-    /* -Z is the face/front. Keep the rear/top half of the skull as hair and clip the
-       facial half. The previous negative sign retained the front half, laying a cap
-       across the forehead and eyes (the exact helmet/mask defect seen in runtime captures). */
-    d = smax(d, front, 0.004f);
+    /* With -Z forward, this plane is positive over the crown and negative at the face.
+       Keep the crown side and clip the facial side so the eyes and forehead stay exposed. */
+    d = smax(d, -front, 0.004f);
     /* Below the ears the head is bare; the mass must not wrap the jaw. */
     const float jawCut = eyeCentre_[0].y - headH * 0.14f - p.y;
     if (length <= 0.0f) d = smax(d, jawCut, 0.006f);
@@ -1364,7 +1363,7 @@ float BodyField::hairShape(const Vec3& p) const {
         const Vec3 c(0.0f, (crown + m_.y.eyeY) * 0.5f, m_.head.centreZ + m_.head.rz * 0.12f);
         const float v = sdEllipsoid(p - c, Vec3(m_.head.rx * 1.02f + volume, headH * 0.52f + volume,
                                                m_.head.rz * 1.02f + volume * 1.2f));
-        d = smin(d, smax(v, front, 0.004f), 0.010f);
+        d = smin(d, smax(v, -front, 0.004f), 0.010f);
     }
     /* A crest keeps only a strip along the midline; used by the mohawk. */
     if (crest > 0.0f) d = smax(d, std::fabs(p.x) - crest, 0.008f);
