@@ -71,18 +71,13 @@ jobs:
             # retrieve them through run-as, which works with the debuggable test APK and
             # avoids Android 11+ scoped-storage restrictions on /Android/data.
             adb exec-out screencap -p > artifacts/avatarforge/runtime-captures/emulator-screen.png || true
-            adb exec-out run-as com.davemega.hub tar -cf - files/avatarforge-diagnostics \
-              > artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar || true
-            if [ -s artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar ]; then
-              tar -xf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar \
-                -C artifacts/avatarforge/runtime-captures/
-            fi
+            adb shell pm list packages | grep -F com.davemega.hub > artifacts/avatarforge/runtime-captures/installed-packages.txt || true
+            adb exec-out sh -c 'run-as com.davemega.hub sh -c "cd files/avatarforge-diagnostics && tar -cf - ."' > artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar 2> artifacts/avatarforge/runtime-captures/run-as-error.txt || true
+            test ! -s artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar || tar -xf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar -C artifacts/avatarforge/runtime-captures/
             find artifacts/avatarforge/runtime-captures -type f -printf '%p %s bytes\\n'
-            {
-              echo "build_commit=${GITHUB_SHA}"
-              echo "capture_time_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              find artifacts/avatarforge/runtime-captures -type f ! -name evidence-manifest.txt -print0 | sort -z | xargs -0 -r sha256sum
-            } > artifacts/avatarforge/runtime-captures/evidence-manifest.txt
+            echo "build_commit=${GITHUB_SHA}" > artifacts/avatarforge/runtime-captures/evidence-manifest.txt
+            echo "capture_time_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
+            find artifacts/avatarforge/runtime-captures -type f ! -name evidence-manifest.txt -print0 | sort -z | xargs -0 -r sha256sum >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             cat artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             exit $test_status
 
