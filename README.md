@@ -83,20 +83,21 @@ Work through these steps in order, on the single canonical branch. Do not skip a
 |---|---|---|
 | Canonical branch selected | **REAL + VERIFIED** | One working branch and PR #9 selected; `main` untouched |
 | Branch/PR audit | **REAL + VERIFIED** | Detailed dispositions recorded in [PROJECT_STATUS.md](PROJECT_STATUS.md) |
-| Native host regression | **PASS on exact HEAD** | Native host regression job completed successfully on `1deaf264032195989257845b884a5829f06fe9cf`; Android native sampling regression also passed |
-| Android unit tests | **PASS on exact HEAD** | Unit-test job completed successfully on `1deaf264032195989257845b884a5829f06fe9cf` |
-| Screenshot API correction | **COMMITTED; RUNTIME CI IN PROGRESS** | Instrumentation uses `UiAutomation.takeScreenshot()`; generated-avatar runtime job is still running |
-| Emulator smoke correction | **COMMITTED; RUNTIME CI IN PROGRESS** | Uses successful `am start -W` and a live process PID; emulator install/launch job is still running |
-| Debug APK build, lint and R8 | **IN PROGRESS on exact HEAD** | Android CI run `43527371054`; debug build, lint and R8 jobs have not completed |
-| Imported-GLB GLES instrumentation | **IN PROGRESS on exact HEAD** | Android CI instrumented GLES GLB render smoke job is still running; require actual pixel evidence |
-| Generated-avatar runtime instrumentation | **IN PROGRESS on exact HEAD** | Runtime run `43527371068`; generated avatar must pass real surface pixel capture and evidence checks |
-| Diagnostic APK / generated pixel gate | **IN PROGRESS on exact HEAD** | Run `43527371100`; native host tests passed, APK/pixel job remains running |
-| Emulator install/launch and render | **IN PROGRESS on exact HEAD** | Release/emulator run `43527371065`; both jobs remain in progress |
+| Native host regression | **PASS** | Native host regression and Android native sampling passed on application source `1deaf264032195989257845b884a5829f06fe9cf` |
+| Android unit tests | **PASS** | Unit tests passed on application source `1deaf264032195989257845b884a5829f06fe9cf` |
+| Debug APK build | **PASS** | Diagnostic workflow produced a 71,377,227-byte debug APK; artifact SHA-256: `3d833528d116fe0660a347d6a3bff0e9c6e7c8dc1d53b82125f15718917de8ee` |
+| R8/minification | **PASS** | Release minification job passed on application source `1deaf264032195989257845b884a5829f06fe9cf` |
+| Android lint | **CANCELLED** | The CI job was cancelled before completion; no pass claim |
+| Basic generated-avatar pixel gate | **PASS on emulator** | `generatedAvatarMustProduceVisiblePixels` passed (1 test, 0 failures) on Android 11 emulator; this is not the production exported-GLB SurfaceView end-to-end test |
+| Production generated-GLB-to-GLES SurfaceView | **PARTIAL / CANCELLED** | The end-to-end test generated and exported the GLB, began the production SurfaceView render test, but the workflow was cancelled before test completion and before evidence PNG/JSON could be collected |
+| Imported-GLB GLES instrumentation | **CANCELLED** | The instrumented render job did not complete; no pass claim |
+| Emulator install/launch smoke | **CANCELLED** | Release/emulator workflow was cancelled before its final result |
+| CI concurrency correction | **COMMITTED; NEW PR RUNS PENDING** | Removed duplicate push triggers from the generated-runtime and diagnostic workflows and made PR concurrency groups unique, preventing the same push+PR pair from cancelling one another |
 | Samsung SM-S921B runtime | **UNVERIFIED** | Requires installation and testing on the physical phone |
 | Production signing | **BLOCKED** | Requires owner-provided production keystore in protected CI secrets |
 | Merge to `main` | **BLOCKED BY GATES** | Do not merge until steps 1-6 are satisfied |
 
-**Application-source evidence snapshot (2026-11-14):** the application-source SHA under validation is `1deaf264032195989257845b884a5829f06fe9cf`. This README-only follow-up changes documentation, not application source. Four workflow runs are active for the application-source SHA: Android CI `43527371054`, generated-avatar runtime `43527371068`, diagnostic APK/pixel verification `43527371100`, and release-preview/emulator smoke `43527371065`. At the time of this update, native host regression and Android unit tests have completed successfully; the remaining jobs are still running. These are CI results, not Samsung phone verification.
+**Evidence snapshot (2026-11-14):** application source SHA `1deaf264032195989257845b884a5829f06fe9cf` has passing native host tests, Android native sampling tests, unit tests, debug APK assembly, R8/minification and the basic generated-avatar emulator pixel gate. The production exported-GLB-to-GLES SurfaceView test started but did not finish; its workflow was cancelled before capture evidence was collected. Android lint, imported-GLB render smoke and release/emulator smoke were also cancelled. The current branch additionally contains CI-only concurrency corrections at HEAD `f23d35ab9865c878daffde6dbe6bcd6cbebce241`; fresh PR validation is pending. Emulator results are not Samsung phone verification.
 
 CI status can change after this README is updated. Check the latest [GitHub Actions runs](https://github.com/davealone69-gif/3d-mega-hub/actions) and the [canonical PR](https://github.com/davealone69-gif/3d-mega-hub/pull/9) before making a release decision.
 
@@ -131,6 +132,7 @@ The owner has already supplied `mylove.glb` as the reference model for improving
 - **Second known copy:** `/3d-mega-hub-diagnostics/3d-mega-hub/app/src/main/assets/mylove.glb` (same reported size)
 - **Reference role:** ground truth for measurable proportions, silhouette, anatomy, mesh density, material/texture characteristics, rig and morph structure where those features exist.
 - **Inspection status: PARTIAL / BLOCKED.** Dropbox metadata and file identity are verified, but the 9.29 MB binary has not yet been transferred into the analysis workspace. No mesh, rig, morph, texture, colour or landmark measurements from this file are verified. Do not invent or copy guessed values into the generator.
+- **Transfer limitation:** the available Dropbox text-fetch action has a 5 MiB maximum and cannot read this 9.29 MB binary. Dropbox's download-link action exposes a temporary URL but does not return file bytes to the analysis workspace; the direct transfer attempt was rejected by the runtime URL-access gate. The linked-chat attachment itself was not surfaced as a readable file in the current conversation/library search.
 - **Next action:** obtain the actual GLB bytes from the linked-chat/file source, run the repository's `tools/glb_anatomy_probe.py` against it, inspect the GLB JSON/BIN payload and record source SHA-256 plus measured scene bounds, primitives/triangles, node transforms, skins/joints, morph targets, materials, embedded images and named landmarks. Compare candidate and reference in the same coordinate convention and state whether each measurement is world-space/rest-pose or skinned/deformed.
 - **Use rule:** derive a versioned reference profile and regression targets from measured data. Do not blindly replace the procedural generator with the reference mesh, and do not commit or redistribute the private reference asset without explicit approval.
 
