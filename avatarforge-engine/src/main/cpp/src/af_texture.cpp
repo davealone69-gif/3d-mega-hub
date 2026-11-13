@@ -238,8 +238,11 @@ void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
     if (s.region == REGION_SKIN) {
         const float distToHead = (p - Vec3(0, m.y.chinY + (m.y.crownY - m.y.chinY) * 0.45f, 0)).length();
         const bool face = distToHead < (m.y.crownY - m.y.chinY) * 0.95f && p.z < -m.head.rz * 0.35f;
-        const float poreCell = face ? 0.00055f : 0.0011f;
-        const float poreDepth = face ? 0.00022f : 0.00016f;
+        /* Keep pores resolvable after atlas filtering and mobile mip selection. Sub-texel
+           relief at the previous 0.55 mm / 0.22 mm settings became high-frequency normal-map
+           sparkle at full-body viewing distance instead of skin texture. */
+        const float poreCell = face ? 0.0012f : 0.0020f;
+        const float poreDepth = face ? 0.00007f : 0.00005f;
         const float pores = poreNoise(n, p, poreCell);
         const float crease = fbm(n, p * 130.0f, 3);
         /* Joint creases: grooves perpendicular to the limb axis near elbows/knees. */
