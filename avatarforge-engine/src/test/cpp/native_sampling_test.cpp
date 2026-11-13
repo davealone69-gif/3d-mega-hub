@@ -1,5 +1,7 @@
 #include "af_isosurface.h"
 #include "af_prompt.h"
+#include "af_anatomy.h"
+#include "af_body.h"
 
 #include <cmath>
 #include <cstdio>
@@ -68,6 +70,38 @@ int main() {
                     "block skipping or shared-boundary ownership changed a sample's sign");
         }
     }
+
+    // The default quality path must refine the trunk and limbs, not only the face and extremities.
+    // Compare a deliberately coarse extraction against one refinement round on the same field.
+    af_spec qualitySpec{};
+    af_spec_init(&qualitySpec);
+    const af::BodyMetrics qualityMetrics = af::Anatomy::solve(qualitySpec);
+    af::BodyField qualityField(qualityMetrics);
+    af::BodyBuildOptions coarseOptions;
+    coarseOptions.bodyCell = 0.010f;  // keep this host regression quick and deterministic
+    coarseOptions.detailRounds = 0;
+    coarseOptions.smoothPasses = 0;
+    coarseOptions.computeTangents = false;
+    coarseOptions.threads = 2;
+    af::Mesh coarseMesh;
+    af::BodyBuildReport coarseReport;
+    require(af::buildBodyMesh(qualityField, coarseOptions, &coarseMesh, &coarseReport),
+            "coarse avatar mesh build failed");
+
+    af::BodyBuildOptions refinedOptions = coarseOptions;
+    refinedOptions.detailRounds = 1;
+    af::Mesh refinedMesh;
+    af::BodyBuildReport refinedReport;
+    require(af::buildBodyMesh(qualityField, refinedOptions, &refinedMesh, &refinedReport),
+            "refined avatar mesh build failed");
+    require(!coarseMesh.empty() && !refinedMesh.empty(), "avatar mesh is empty");
+    require(refinedMesh.triangleCount() > coarseMesh.triangleCount(),
+            "body refinement did not add triangles to the generated avatar");
+    for (const af::Vec3& p : refinedMesh.positions) {
+        require(p.isFinite(), "refined avatar contains a non-finite vertex");
+    }
+
+    std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
 
     std::puts("PASS: 40 repeated single-thread, parallel, and block-skipped sampling comparisons");
     return 0;

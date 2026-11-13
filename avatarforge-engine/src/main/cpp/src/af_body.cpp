@@ -504,9 +504,11 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
     if (mesh.empty()) return false;
 
     /* --------------------------------------------------------------- detail refinement ------- */
-    /* Two rounds take the coarse 11.5 mm lattice to 2.9 mm in the detail regions, which is the
-       spacing the face, hands and feet need while leaving the torso at the coarse (and cheap)
-       resolution. */
+    /* The main body receives one conforming refinement pass (8 mm -> 4 mm) so the torso,
+       shoulders, arms and legs do not retain the visibly coarse extraction silhouette. The
+       head, hands and feet keep the existing two-round adaptive detail budget (8 mm -> 2 mm).
+       The extra body pass is deliberately limited to the body bounds; it does not multiply the
+       already-detailed face or extremities by another four. */
     /*
      * Where the fine lattice is spent. These regions are tight on purpose: the head, the hands
      * beyond the wrist and the feet beyond the ankle. A generous sphere around the wrist would
@@ -526,6 +528,21 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
     };
 
     struct DetailRegion { Vec3 centre, radii; };
+
+    /* The original refinement mask omitted the entire trunk/limb domain. Keep its bounds as a
+       separate box mask so the first round can refine the main silhouette without also forcing
+       another subdivision over the head, hands or feet. The box is exactly the one used by the
+       body field and therefore follows stature and anthropometric overrides. */
+    Vec3 bodyCoreLo, bodyCoreHi;
+    field.boundsBody(&bodyCoreLo, &bodyCoreHi);
+    const Vec3 bodyCoreCentre = (bodyCoreLo + bodyCoreHi) * 0.5f;
+    const Vec3 bodyCoreHalf = (bodyCoreHi - bodyCoreLo) * 0.501f;
+    auto inBodyCore = [&](const Vec3& p) {
+        return std::fabs(p.x - bodyCoreCentre.x) <= bodyCoreHalf.x &&
+               std::fabs(p.y - bodyCoreCentre.y) <= bodyCoreHalf.y &&
+               std::fabs(p.z - bodyCoreCentre.z) <= bodyCoreHalf.z;
+    };
+
     std::vector<DetailRegion> detail;
     {
         const float headH = m.y.crownY - m.y.chinY;
@@ -611,7 +628,9 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
                        at the current spacing - measured by projecting the centroid onto the true
                        isosurface and comparing. A smooth cheek or a flat torso closes without
                        refining, a nostril, finger or ear refines at once. */
-                bool want = alwaysFine(r);
+                /* First pass: refine every surface triangle in the trunk/limb bounds.
+                   Later passes remain selective and are reserved for the head, hands and feet. */
+                bool want = alwaysFine(r) || (round == 0 && inBodyCore(c));
                 if (!want && inDetailRegion(c)) {
                     const Vec3 projected = projectToSurface(unionField, c, cell * 0.35f, cell * 0.5f, 2);
                     const float deviation = (projected - c).length();
