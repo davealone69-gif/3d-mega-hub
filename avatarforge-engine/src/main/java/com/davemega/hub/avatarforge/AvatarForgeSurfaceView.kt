@@ -28,6 +28,7 @@ class AvatarForgeSurfaceView(
     private val onStatus: (String) -> Unit
 ) : SurfaceView(context), SurfaceHolder.Callback {
     private val running = AtomicBoolean(false)
+    private val startPending = AtomicBoolean(false)
     private val pixelCopyPending = AtomicBoolean(false)
     private val pixelCopyComplete = AtomicBoolean(false)
     private val pixelCopyAttempts = AtomicInteger(0)
@@ -138,14 +139,8 @@ class AvatarForgeSurfaceView(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.i(TAG, "surfaceCreated valid=${holder.surface.isValid}")
-        // Do not mark the new Surface ready until the previous worker has released
-        // its EGL/native-window session. Otherwise it could observe surfaceReady=true
-        // again and keep drawing into the old Surface.
-        stopRenderer()
-        if (renderThread?.isAlive == true) {
-            onStatus("Previous AvatarForge GLES renderer did not stop; refusing to attach a second render worker.")
-            return
-        }
+        // A Surface callback runs on the UI thread. Stop the old worker without joining it:
+        // native renderer teardown may wait for GPU work and must never block input dispatch.
         surfaceReady = true
         pixelCopyPending.set(false)
         pixelCopyComplete.set(false)
@@ -171,35 +166,43 @@ class AvatarForgeSurfaceView(
     }
 
     private fun stopRenderer() {
+        // surfaceDestroyed/surfaceCreated are dispatched on the main thread. The render
+        // worker owns EGL, ANativeWindow and engine teardown, so only signal it here.
+        // startRenderer() serializes any replacement session behind worker completion.
         running.set(false)
-        val worker = renderThread ?: return
-        if (worker === Thread.currentThread()) return
-        try {
-            worker.join(5_000L)
-        } catch (interrupted: InterruptedException) {
-            Thread.currentThread().interrupt()
-        }
-        if (!worker.isAlive && renderThread === worker) {
-            renderThread = null
-        } else if (worker.isAlive) {
-            Log.e(TAG, "GLES render thread did not stop within 5 seconds; refusing to start a duplicate")
-        }
     }
+
+    private fun surfaceHolderIsUsable(holder: SurfaceHolder): Boolean =
+        holder.surface.isValid && surfaceReady
 
     private fun startRenderer(surfaceHolder: SurfaceHolder) {
         val previous = renderThread
         if (previous != null && previous.isAlive) {
-            try {
-                previous.join(5_000L)
-            } catch (interrupted: InterruptedException) {
-                Thread.currentThread().interrupt()
+            // Never join a render worker from the UI thread. Renderer destruction can wait
+            // for outstanding GPU commands; a five-second join here is enough to trigger
+            // Android's input-dispatch ANR during Activity/Surface recreation.
+            if (startPending.compareAndSet(false, true)) {
+                Thread({
+                    try {
+                        previous.join()
+                    } catch (interrupted: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    } finally {
+                        mainHandler.post {
+                            startPending.set(false)
+                            if (surfaceReady && surfaceHolderIsUsable(surfaceHolder)) {
+                                startRenderer(surfaceHolder)
+                            }
+                        }
+                    }
+                }, "AvatarForge-GLES-Restart").apply {
+                    isDaemon = true
+                    start()
+                }
             }
-            if (previous.isAlive) {
-                onStatus("Previous AvatarForge GLES renderer is still shutting down; refusing a duplicate render thread.")
-                return
-            }
-            if (renderThread === previous) renderThread = null
+            return
         }
+        if (renderThread === previous) renderThread = null
         if (!running.compareAndSet(false, true)) return
         val worker = Thread({
             var nativeHandle = 0L
