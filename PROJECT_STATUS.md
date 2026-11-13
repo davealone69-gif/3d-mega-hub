@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-11-11.
+Last updated: 2026-11-13.
 
 ## Repository and active branch
 
@@ -116,3 +116,19 @@ The live GitHub inventory returned 15 branches. Keep exactly one active work tar
 - Samsung SM-S921B rendering and visible-pixel verification remain **UNVERIFIED**. Production signing remains **BLOCKED** pending the user's production keystore and protected CI secrets.
 
 Do not merge to `main` until fresh exact-head CI, emulator install/launch, real GLES pixel evidence and review are complete. The user's physical-phone test remains a separate final gate.
+
+
+## Owner phone-test update and revised priority (2026-11-13)
+
+The owner reports testing the latest installed APK on the physical phone:
+- Avatar renderer displays the avatar.
+- The generation button changes avatar features, including male/female when given suitable prompts.
+- GLB import button works.
+- Skin-tone and hair changes have not yet been tested.
+- Overall avatar visual quality is too poor to judge appearance changes reliably.
+
+**Evidence classification:** OWNER-TESTED for those reported functions on the APK the owner installed. The exact APK SHA-256 and source commit are not yet known. Do not claim that the current PR head or a specific CI artifact is the tested build. Do not generalise these results to all GLBs, lifecycle states or device conditions.
+
+**Priority is now avatar quality first.** This supersedes the earlier README instruction to defer avatar quality until every renderer gate is complete. Preserve the working renderer, generation action and import path. Diagnose the generated model from parser/spec through anatomy, mesh, face, hair, clothing, materials/textures and export. Prioritise actual geometry/silhouette defects over lighting-only polish. Add deterministic data-level regression tests and matched before/after GLB/render captures. Then verify skin-tone and hair controls independently, followed by the Generate -> Export -> Reopen -> Import -> Render workflow.
+
+No implementation change, build, CI rerun or new phone test is claimed by this handover update. Exact-head CI, emulator tests, artifact signing and release gates remain separate. Production signing remains BLOCKED until the owner configures a production keystore in protected CI secrets. main remains unchanged.
