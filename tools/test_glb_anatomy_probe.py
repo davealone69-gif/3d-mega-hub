@@ -24,7 +24,7 @@ def make_fixture(path, scale=1.0):
         "Left_Temple": (-.2, 1.8, 0), "Right_Temple": (.2, 1.8, 0),
         "Left_Shoulder": (-.3, 1.4, 0), "Right_Shoulder": (.3, 1.4, 0),
         "Left_Hip": (-.2, .9, 0), "Right_Hip": (.2, .9, 0),
-        "Left_Fingertip": (-.9, 1.2, 0), "Right_Fingertip": (.9, 1.2, 0),
+        "Left_Fingertip": (-.9, 1.2, 0), "Right_Fingertip": (.9, 1.2, 0),\n        "Left_Ankle": (-.08, .1, 0), "Right_Ankle": (.08, .1, 0),
     }
     for name, xyz in landmarks.items():
         nodes.append({"name": name, "translation": [v*scale for v in xyz]})
@@ -66,7 +66,7 @@ def main():
         assert abs(ref["ratios"]["interpupillary_over_head_width"] - 0.5) < 1e-6
         assert abs(ref["ratios"]["arm_span_over_body_height"] - 0.9) < 1e-6
         assert candidate["bounds_m"]["height"] > ref["bounds_m"]["height"]
-        assert not ref["missing_landmarks"]
+        assert not ref["missing_landmarks"], ref["missing_landmarks"]
         print("PASS: GLB parsing, world transforms, named landmarks, and proportion ratios")
 
 
