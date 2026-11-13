@@ -118,8 +118,8 @@ int main() {
             require(qualityField.hand(chain.fingerTip[finger], side) < 0.0f,
                     "finger tip centre is outside its hand SDF");
         }
-        require(qualityField.foot(chain.toeTip, side) < 0.0f,
-                "toe tip centre is outside its foot SDF");
+        require(qualityField.foot(chain.ball, side) < 0.0f,
+                "metatarsal/forefoot anchor is outside its foot SDF");
     }
 
     // The procedural body is intended to be bilaterally symmetric in its rest pose.
