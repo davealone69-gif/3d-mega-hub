@@ -1377,12 +1377,21 @@ float BodyField::hairShape(const Vec3& p) const {
         const float topY = crown - headH * 0.05f;
         const float botY = crown - length;
         const float t = saturate((topY - p.y) / maxf(1e-3f, topY - botY));
-        const float backZ = m_.head.centreZ + m_.head.rz * (0.35f + 0.55f * t);
-        const float halfW = m_.head.rx * (0.95f + 0.45f * t);
-        /* Only behind the head, and only from the crown down. */
-        const float curtain = maxf(maxf(std::fabs(p.x) - halfW, backZ - p.z),
-                                   maxf(p.y - topY, botY - p.y));
-        d = smin(d, smax(curtain, -(0.0f), 0.001f), 0.012f);
+        /* Build a real three-dimensional hair volume behind the skull. The previous
+           max-field was intersected with zero, leaving a nearly zero-thickness curtain:
+           it could look like a dark sheet in profile and disappear at oblique angles.
+           A rounded solid follows the taper of the hanging section and survives mesh
+           extraction at the mobile voxel pitch. */
+        const float midT = 0.5f;
+        const float midBackZ = m_.head.centreZ + m_.head.rz * (0.35f + 0.55f * midT);
+        const float halfW = m_.head.rx * (0.95f + 0.45f * midT);
+        const float halfDepth = maxf(m_.head.rz * 0.34f, 0.022f);
+        const Vec3 curtainCentre(0.0f, (topY + botY) * 0.5f,
+                                 midBackZ + halfDepth);
+        const Vec3 curtainHalf(halfW, (topY - botY) * 0.5f, halfDepth);
+        const float curtain = sdRoundBox(p - curtainCentre, curtainHalf,
+                                         minf(0.025f, halfDepth * 0.45f));
+        d = smin(d, curtain, 0.012f);
     }
     /* Ponytail: a tapered rope from the crown, sweeping down and back. */
     if (tail > 0.0f) {
