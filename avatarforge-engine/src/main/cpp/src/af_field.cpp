@@ -230,7 +230,11 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
         const float sx = (s == 0) ? 1.0f : -1.0f;
         jawCorner_[s] = {sx * m_.jaw.rx * 1.02f, m_.y.chinY + headH * 0.20f, zFront * 0.42f};
         cheek_[s] = {sx * m_.head.rx * 0.90f, m_.y.chinY + headH * 0.30f, zFront * 0.70f};
-        eyeCentre_[s] = {sx * m_.eyeSeparation * 0.5f, m_.y.eyeY, zFront * 0.80f};
+        /* Bring the globe slightly through the orbital plane. At 0.80 * skull depth,
+           the default eye radius was almost entirely buried by the cranium, leaving a blank
+           face in full-body captures. Keep the same spacing/height but expose a readable
+           corneal silhouette without enlarging the eyes into a caricature. */
+        eyeCentre_[s] = {sx * m_.eyeSeparation * 0.5f, m_.y.eyeY, -m_.head.rz * 0.91f};
         earCentre_[s] = {sx * m_.head.rx * 1.05f, m_.y.eyeY - headH * 0.055f, zFront * 0.10f};
     }
     (void)headC; (void)neckBase; (void)neckTop;
