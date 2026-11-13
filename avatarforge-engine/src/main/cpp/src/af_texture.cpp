@@ -393,24 +393,27 @@ void evaluateCloth(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOu
                    const MaterialDef& mat) {
     /* A woven twill: two interleaved thread systems. The pattern is aligned to the body frame
        (world X/Z for horizontal fabrics) which keeps the weave coherent across the torso. */
-    const float yarn = 0.0035f;
+    /* Keep the weave above the atlas' practical sampling floor. The former 3.5 mm
+       high-contrast pattern plus 900 cycles/metre fuzz aliased into moire bands on the
+       generated garment. A softer 6.5 mm weave reads as fabric without overpowering it. */
+    const float yarn = 0.0065f;
     const Vec3 q = s.position / yarn;
     const float warp = std::sin(q.x * 6.2831853f) * 0.5f + 0.5f;
     const float weft = std::sin(q.z * 6.2831853f) * 0.5f + 0.5f;
     const float twill = (warp + weft) * 0.5f;
-    const float fuzz = fbm(ctx.noise, s.position * 900.0f, 2, 2.1f, 0.5f);
-    Vec3 albedo = mat.baseColor * (0.82f + 0.30f * twill) * (0.94f + 0.12f * fuzz);
-    /* Dye variation and worn edges. */
-    albedo *= 1.0f + 0.06f * fbm(ctx.noise, s.position * 8.0f, 3);
+    const float fuzz = fbm(ctx.noise, s.position * 240.0f, 2, 2.1f, 0.5f);
+    Vec3 albedo = mat.baseColor * (0.94f + 0.08f * twill) * (0.98f + 0.04f * fuzz);
+    /* Restrained dye variation; keep the garment colour coherent at full-body viewing distance. */
+    albedo *= 1.0f + 0.025f * fbm(ctx.noise, s.position * 8.0f, 3);
     out->albedo = albedo;
-    out->roughness = saturate(mat.roughness - 0.10f * twill + 0.05f * fuzz);
+    out->roughness = saturate(mat.roughness - 0.035f * twill + 0.02f * fuzz);
     out->metallic = 0.0f;
     out->thickness = 0.008f;
     out->scatterRadius = 0.004f;
     out->tint = 0.0f;
     out->occlusion = saturate(0.5f + 0.6f * s.curvature);
-    /* Weave relief: a sinusoidal height field, gradient computed analytically. */
-    const float amp = 0.00035f;
+    /* Subtle weave relief; avoid sub-millimetre normals that shimmer after atlas filtering. */
+    const float amp = 0.00010f;
     out->reliefGradient = Vec3(std::cos(q.x * 6.2831853f) * amp * 6.2831853f / yarn,
                                std::cos(q.z * 6.2831853f) * amp * 6.2831853f / yarn * 0.5f, 0.0f);
     (void)upper;
