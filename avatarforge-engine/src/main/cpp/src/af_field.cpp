@@ -432,7 +432,11 @@ float BodyField::armChain(const Vec3& p, const Chain& c) const {
     /* Ulna groove (subtractive) - a cheap trick that instantly makes an arm look anatomical. */
     {
         const Vec3 foreDir = (c.wrist - c.elbow).normalizedOr({0, -1, 0});
-        const Vec3 grooveAxis = foreDir.cross(Vec3(sx, 0, 0)).normalizedOr({0, 0, 1});
+        // A cross product is an axial vector: reflecting the limb across X flips its
+        // Y/Z components as well. Multiply by the side sign to convert it back into a
+        // mirror-equivariant direction, so both forearm grooves occupy corresponding
+        // anatomical positions in the rest pose.
+        const Vec3 grooveAxis = (foreDir.cross(Vec3(sx, 0, 0)) * sx).normalizedOr({0, 0, 1});
         const float groove = sdCapsule(p, c.elbow + grooveAxis * (m_.forearmR * 0.62f),
                                        c.wrist + grooveAxis * (m_.wristR * 0.62f), 0.009f);
         d = smax(d, -groove, 0.020f);
