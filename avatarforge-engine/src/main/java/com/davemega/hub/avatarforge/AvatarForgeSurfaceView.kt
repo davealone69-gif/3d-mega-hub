@@ -507,7 +507,12 @@ class AvatarForgeSurfaceView(
                             maxOf(redDelta, greenDelta, blueDelta) >= 16
                     }
                     val passed = visiblePixels >= MIN_VISIBLE_PIXELS
-                    val outputName = if (passed) "generated_avatar_diagnostic.png" else "failed_render.png"
+                    val generatedDiagnostic = glbFile.name.startsWith("diagnostic-seed-1337-")
+                    val outputName = when {
+                        !passed -> "failed_render.png"
+                        generatedDiagnostic -> "generated_avatar_diagnostic.png"
+                        else -> "imported_glb_diagnostic.png"
+                    }
                     val outputFile = context.getExternalFilesDir(null)?.let { File(it, outputName) }
                     val saved = outputFile != null && runCatching {
                         FileOutputStream(outputFile).use { stream ->
