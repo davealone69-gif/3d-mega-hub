@@ -101,7 +101,24 @@ int main() {
         require(p.isFinite(), "refined avatar contains a non-finite vertex");
     }
 
+    // Hanging hairstyles must be volumetric, not a zero-thickness SDF curtain.
+    af::BodyField hairField(qualityMetrics);
+    af::ApparelOptions longHair;
+    longHair.hair = 4;  // AF_HAIR_LONG
+    longHair.latticeCell = 0.008f;
+    hairField.setApparel(longHair);
+    const float headHeight = qualityMetrics.y.crownY - qualityMetrics.y.chinY;
+    const float hairTop = qualityMetrics.y.crownY - headHeight * 0.05f;
+    const float hairBottom = qualityMetrics.y.crownY - headHeight * 2.6f;
+    const float hairMidY = (hairTop + hairBottom) * 0.5f;
+    const float hairBackZ = qualityMetrics.head.centreZ + qualityMetrics.head.rz * 0.625f;
+    const float hairDepth = std::max(qualityMetrics.head.rz * 0.34f, 0.022f);
+    const af::Vec3 hairCore(0.0f, hairMidY, hairBackZ + hairDepth);
+    require(hairField.hairPublic(hairCore) < -0.015f,
+            "long hairstyle hanging section is not a solid 3D volume");
+
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
+    std::puts("PASS: long hairstyle has measurable volumetric depth behind the skull");
 
     std::puts("PASS: 40 repeated single-thread, parallel, and block-skipped sampling comparisons");
     return 0;
