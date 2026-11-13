@@ -25,9 +25,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.io.FileOutputStream
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -89,6 +92,145 @@ class GeneratedAvatarRuntimeTest {
     private external fun nativeGetReadbackPixels(handle: Long): ByteArray?
     private external fun nativeDestroyGenerated(handle: Long)
 
+
+    @Test(timeout = 900000)
+    fun generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val prompt = "Adult woman, average build, warm medium-dark skin, long hair, floor-length dress"
+        val spec = AvatarSpec(
+            sex = Sex.FEMALE,
+            build = Build.AVERAGE,
+            hairStyle = HairStyle.LONG,
+            outfit = Outfit.DRESS,
+            seed = 1337,
+            heightM = 1.75f,
+            skinMelanin = 0.82f,
+            hairTone = floatArrayOf(0.030f, 0.004f, 0.010f),
+            clothTone = floatArrayOf(0.035f, 0.004f, 0.012f),
+            prompt = prompt,
+            outfitExplicit = true
+        )
+        val result = runBlocking {
+            AvatarForgeEngine.generate(
+                context = context,
+                spec = spec,
+                prompt = prompt,
+                outputName = "diagnostic-seed-1337-mylove-reference-${System.currentTimeMillis()}.glb",
+                requestedMemoryBudgetBytes = 768L * 1024L * 1024L
+            )
+        }
+        assertTrue("Generated GLB was not validated after skinning", result.deformedMeshValidated)
+        assertTrue("Generated GLB has no triangles", result.triangleCount > 0)
+        assertTrue("Prompt parser matched no reference-style attributes", result.promptMatchedAttributes > 0)
+
+        val outputDir = diagnosticsDir(context)
+        val archivedGlb = File(outputDir, "generated_reference_style.glb")
+        result.file.copyTo(archivedGlb, overwrite = true)
+        fun sha256(file: File): String {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().buffered().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            return digest.digest().joinToString("") { "%02x".format(it) }
+        }
+        val evidence = JSONObject()
+            .put("schema", "com.davemega.hub.avatarforge.generated-glb-e2e.v1")
+            .put("prompt", prompt)
+            .put("seed", spec.seed)
+            .put("sex", "FEMALE")
+            .put("hairStyle", "LONG")
+            .put("outfit", "DRESS")
+            .put("skinMelanin", spec.skinMelanin.toDouble())
+            .put("heightM", spec.heightM.toDouble())
+            .put("generatedAtEpochMs", System.currentTimeMillis())
+            .put("glbName", archivedGlb.name)
+            .put("glbBytes", archivedGlb.length())
+            .put("glbSha256", sha256(archivedGlb))
+            .put("vertices", result.vertexCount)
+            .put("triangles", result.triangleCount)
+            .put("joints", result.jointCount)
+            .put("blendshapes", result.blendshapeCount)
+            .put("submeshes", result.submeshCount)
+            .put("promptMatchedAttributes", result.promptMatchedAttributes)
+            .put("deformedMeshValidated", result.deformedMeshValidated)
+        val evidenceFile = File(outputDir, "generated_glb_e2e.json")
+        fun saveEvidence() {
+            FileOutputStream(evidenceFile).use { stream ->
+                stream.write(evidence.toString(2).toByteArray(Charsets.UTF_8))
+                stream.flush()
+            }
+        }
+        saveEvidence()
+
+        val preferences = context.getSharedPreferences("avatarforge_renderer_smoke", android.content.Context.MODE_PRIVATE)
+        preferences.edit().clear().commit()
+        val scenario = ActivityScenario.launch(MainActivity::class.java)
+        val visible = CountDownLatch(1)
+        val failed = CountDownLatch(1)
+        val latestStatus = AtomicReference("Waiting for production GLES SurfaceView")
+        var surfaceView: AvatarForgeSurfaceView? = null
+        try {
+            scenario.onActivity { activity ->
+                val root = activity.findViewById<ViewGroup>(android.R.id.content)
+                val view = AvatarForgeSurfaceView(activity, result.file, verifyVisiblePixels = true) { status ->
+                    latestStatus.set(status)
+                    if (status.startsWith("REAL + VERIFIED:")) visible.countDown()
+                    if (status.startsWith("AvatarForge renderer failed") || status.startsWith("FAILED:")) failed.countDown()
+                }
+                root.addView(view, FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                ))
+                surfaceView = view
+            }
+
+            val rendered = visible.await(120, TimeUnit.SECONDS)
+            if (!rendered) failed.await(1, TimeUnit.SECONDS)
+            val status = latestStatus.get()
+            val pixelCount = preferences.getInt("pixel_count", 0)
+            val screenshotPath = preferences.getString("screenshot_path", null)
+            val screenshotSource = screenshotPath?.let(::File)
+            evidence.put("rendererStatus", status)
+                .put("visiblePixels", pixelCount)
+                .put("rendererApiVersion", preferences.getString("api_version", ""))
+                .put("rendererFrames", preferences.getInt("frames", 0))
+                .put("presentedFrames", preferences.getInt("presented_frames", 0))
+                .put("drawCalls", preferences.getInt("draw_calls", 0))
+                .put("rendererTriangles", preferences.getInt("triangles", 0))
+                .put("boundsInFrustum", preferences.getBoolean("bounds_in_frustum", false))
+                .put("captureUpdatedAtEpochMs", preferences.getLong("updated_at_epoch_ms", 0L))
+                .put("screenshotPathAppPrivate", screenshotPath ?: JSONObject.NULL)
+            if (rendered && screenshotSource != null && screenshotSource.isFile) {
+                val archivedScreenshot = File(outputDir, "generated_avatar_from_glb.png")
+                screenshotSource.copyTo(archivedScreenshot, overwrite = true)
+                evidence.put("screenshotName", archivedScreenshot.name)
+                    .put("screenshotBytes", archivedScreenshot.length())
+                    .put("screenshotSha256", sha256(archivedScreenshot))
+            }
+            saveEvidence()
+            assertTrue("Production GLB-to-GLES render did not become visibly verified. $status", rendered)
+            assertTrue("Production renderer visible-pixel threshold not met: $pixelCount", pixelCount >= VISIBILITY_THRESHOLD)
+            assertTrue("Production renderer did not submit draw calls", preferences.getInt("draw_calls", 0) > 0)
+            assertTrue("Production renderer did not present multiple frames", preferences.getInt("presented_frames", 0) >= 3)
+            assertTrue("Generated GLB screenshot was not saved", screenshotSource?.isFile == true)
+        } catch (failure: Throwable) {
+            evidence.put("failure", failure.message ?: failure.javaClass.simpleName)
+                .put("lastRendererStatus", latestStatus.get())
+            saveEvidence()
+            throw failure
+        } finally {
+            scenario.onActivity { activity ->
+                surfaceView?.let { view -> (view.parent as? ViewGroup)?.removeView(view) }
+            }
+            scenario.close()
+        }
+    }
 
     @Test(timeout = 600000)
     fun generatedAvatarDebugShaderMustProduceMagentaPixels() {
