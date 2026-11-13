@@ -24,7 +24,8 @@ def make_fixture(path, scale=1.0):
         "Left_Temple": (-.2, 1.8, 0), "Right_Temple": (.2, 1.8, 0),
         "Left_Shoulder": (-.3, 1.4, 0), "Right_Shoulder": (.3, 1.4, 0),
         "Left_Hip": (-.2, .9, 0), "Right_Hip": (.2, .9, 0),
-        "Left_Fingertip": (-.9, 1.2, 0), "Right_Fingertip": (.9, 1.2, 0),\n        "Left_Ankle": (-.08, .1, 0), "Right_Ankle": (.08, .1, 0),
+        "Left_Fingertip": (-.9, 1.2, 0), "Right_Fingertip": (.9, 1.2, 0),
+        "Left_Ankle": (-.08, .1, 0), "Right_Ankle": (.08, .1, 0),
     }
     for name, xyz in landmarks.items():
         nodes.append({"name": name, "translation": [v*scale for v in xyz]})
