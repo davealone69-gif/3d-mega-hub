@@ -76,6 +76,9 @@ public:
     float hand(const Vec3& p, int side) const;
     /** One foot including toes, cut at the ankle. */
     float foot(const Vec3& p, int side) const;
+    /** Diagnostic access to each limb field for bilateral regression probes. */
+    float armChainPublic(const Vec3& p, int side) const { return armChain(p, chain(side)); }
+    float legChainPublic(const Vec3& p, int side) const { return legChain(p, chain(side)); }
 
     /** Dominant primitive region at a point; REGION_SKIN when nothing more specific matches. */
     int classifyRegion(const Vec3& p) const;
