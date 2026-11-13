@@ -1319,14 +1319,19 @@ float BodyField::hairShape(const Vec3& p) const {
     float bun = 0.0f, tail = 0.0f, braids = 0.0f;
     switch (apparel_.hair) {
         case 1: thickness = 0.006f; break;                                  /* buzz       */
-        case 2: thickness = 0.013f; volume = 0.010f; break;                  /* short      */
-        case 3: thickness = 0.016f; volume = 0.018f; length = headH * 0.55f; break;
-        case 4: thickness = 0.018f; volume = 0.024f; length = headH * 2.6f; break;   /* long */
-        case 5: thickness = 0.014f; volume = 0.012f; tail = 0.30f; break;    /* ponytail   */
-        case 6: thickness = 0.014f; volume = 0.014f; bun = 0.055f; break;    /* bun        */
-        case 7: thickness = 0.014f; volume = 0.012f; braids = 0.36f; break;  /* braids     */
-        case 8: thickness = 0.030f; volume = 0.055f; break;                  /* afro       */
-        case 9: thickness = 0.026f; volume = 0.006f; crest = 0.030f; break;  /* mohawk     */
+        /* Keep ordinary styles close to the skull. The old broad ellipsoid added 10-24 mm
+           around the whole cranium, turning short/medium/long styles into a smooth helmet.
+           The skull offset above already supplies the hair cap; this is only a restrained
+           silhouette allowance for the temples and crown. Distinct hanging shapes are built
+           below from their own curves. */
+        case 2: thickness = 0.010f; volume = 0.0025f; break;                 /* short      */
+        case 3: thickness = 0.012f; volume = 0.0030f; length = headH * 0.55f; break;
+        case 4: thickness = 0.014f; volume = 0.0035f; length = headH * 2.6f; break; /* long */
+        case 5: thickness = 0.011f; volume = 0.0025f; tail = 0.30f; break;   /* ponytail   */
+        case 6: thickness = 0.011f; volume = 0.0025f; bun = 0.055f; break;   /* bun        */
+        case 7: thickness = 0.011f; volume = 0.0025f; braids = 0.36f; break; /* braids     */
+        case 8: thickness = 0.030f; volume = 0.032f; break;                  /* afro       */
+        case 9: thickness = 0.018f; volume = 0.0020f; crest = 0.030f; break; /* mohawk     */
         default: return 1e9f;
     }
 
