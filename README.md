@@ -96,7 +96,7 @@ Work through these steps in order, on the single canonical branch. Do not skip a
 | Production signing | **BLOCKED** | Requires owner-provided production keystore in protected CI secrets |
 | Merge to `main` | **BLOCKED BY GATES** | Do not merge until steps 1-6 are satisfied |
 
-**Exact-head evidence snapshot (2026-11-14):** canonical branch HEAD is `1deaf264032195989257845b884a5829f06fe9cf`. Four workflow runs are active for this SHA: Android CI `43527371054`, generated-avatar runtime `43527371068`, diagnostic APK/pixel verification `43527371100`, and release-preview/emulator smoke `43527371065`. At the time of this update, native host regression and Android unit tests have completed successfully; the remaining jobs are still running. These are CI results, not Samsung phone verification.
+**Application-source evidence snapshot (2026-11-14):** the application-source SHA under validation is `1deaf264032195989257845b884a5829f06fe9cf`. This README-only follow-up changes documentation, not application source. Four workflow runs are active for the application-source SHA: Android CI `43527371054`, generated-avatar runtime `43527371068`, diagnostic APK/pixel verification `43527371100`, and release-preview/emulator smoke `43527371065`. At the time of this update, native host regression and Android unit tests have completed successfully; the remaining jobs are still running. These are CI results, not Samsung phone verification.
 
 CI status can change after this README is updated. Check the latest [GitHub Actions runs](https://github.com/davealone69-gif/3d-mega-hub/actions) and the [canonical PR](https://github.com/davealone69-gif/3d-mega-hub/pull/9) before making a release decision.
 
