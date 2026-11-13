@@ -683,6 +683,11 @@ class GeneratedAvatarRuntimeTest {
         diagnostics.forEach { item ->
             json.put(JSONObject().apply {
                 put("source", item.source)
+                put("pixelCopyStatus", item.pixelCopyStatus ?: JSONObject.NULL)
+                put("captureTimestampElapsedRealtimeNanos", item.captureTimestampElapsedRealtimeNanos)
+                put("rendererStatsTimestampElapsedRealtimeNanos", item.rendererStatsTimestampElapsedRealtimeNanos)
+                put("rendererFrameIndex", item.rendererFrameIndex)
+                put("rendererPresentedFrames", item.rendererPresentedFrames)
                 put("width", item.width)
                 put("height", item.height)
                 put("config", item.config)
