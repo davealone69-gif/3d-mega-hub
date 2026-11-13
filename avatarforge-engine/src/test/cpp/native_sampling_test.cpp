@@ -122,6 +122,37 @@ int main() {
                 "metatarsal/forefoot anchor is outside its foot SDF");
     }
 
+    // Isolate the arm field before testing the full body union. The elbow/upper-forearm
+    // probe is the historical failure location; this catches side-dependent frame errors
+    // directly instead of allowing the torso union to hide or amplify them.
+    {
+        const af::Vec3 probe(0.2000f, 1.0763f, -0.0400f);
+        const float leftArm = qualityField.armChainPublic(probe, 1);
+        const float rightArm = qualityField.armChainPublic(
+            af::Vec3(-probe.x, probe.y, probe.z), -1);
+        require(std::isfinite(leftArm) && std::isfinite(rightArm),
+                "mirrored arm-chain probe produced a non-finite SDF value");
+        require(std::fabs(leftArm - rightArm) < 1e-5f,
+                "mirrored arm-chain fields differ at the historical shoulder/upper-arm probe");
+
+        const af::Chain& leftChain = qualityField.chain(1);
+        const af::Chain& rightChain = qualityField.chain(-1);
+        const float armY[] = {leftChain.shoulder.y, leftChain.elbow.y,
+                              leftChain.wrist.y};
+        const float armX[] = {0.10f, 0.16f, 0.20f, 0.24f, 0.30f};
+        const float armZ[] = {-0.08f, -0.04f, 0.0f, 0.04f, 0.08f};
+        float maxArmMirrorError = 0.0f;
+        for (float y : armY) for (float x : armX) for (float z : armZ) {
+            const float a = qualityField.armChainPublic(af::Vec3(x, y, z), 1);
+            const float b = qualityField.armChainPublic(af::Vec3(-x, y, z), -1);
+            maxArmMirrorError = std::max(maxArmMirrorError, std::fabs(a - b));
+        }
+        std::fprintf(stderr, "DIAGNOSTIC: arm-chain mirror max error=%.9f m\\n",
+                     maxArmMirrorError);
+        require(maxArmMirrorError < 1e-5f,
+                "left/right arm-chain SDF is not mirror-equivariant");
+    }
+
     // The procedural body is intended to be bilaterally symmetric in its rest pose.
     // Sample the real field on mirrored points; permit small deterministic noise, not gross drift.
     const float probeY[] = {
