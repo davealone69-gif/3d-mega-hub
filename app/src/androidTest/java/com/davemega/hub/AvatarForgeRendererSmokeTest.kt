@@ -267,7 +267,7 @@ class AvatarForgeRendererSmokeTest {
 
         val deadline = SystemClock.elapsedRealtime() + 90_000L
         while (SystemClock.elapsedRealtime() < deadline) {
-            if (prefs.getString("status", "") == "FRAME_PRESENTED" ||
+            if (prefs.getString("status", "") == "PIXELS_VERIFIED" ||
                 prefs.getString("status", "") == "FAILED") break
             SystemClock.sleep(500L)
         }
@@ -275,8 +275,13 @@ class AvatarForgeRendererSmokeTest {
         val status = prefs.getString("status", "")
         assertTrue(
             "AvatarForge native GLES renderer did not verify a real frame for ${glb.name}. status=$status error=${prefs.getString("error", "")} api=${prefs.getString("api_version", "")}",
-            status == "FRAME_PRESENTED"
+            status == "PIXELS_VERIFIED"
         )
+        assertTrue("Imported GLB did not exceed the visible-pixel threshold: ${prefs.getInt("pixel_count", 0)}",
+            prefs.getInt("pixel_count", 0) >= 5_000)
+        val diagnosticScreenshotPath = prefs.getString("screenshot_path", "") ?: ""
+        assertTrue("Imported GLB diagnostic screenshot is missing: $diagnosticScreenshotPath",
+            File(diagnosticScreenshotPath).isFile && File(diagnosticScreenshotPath).length() > 0L)
         val apiVersion = prefs.getString("api_version", "") ?: ""
         assertTrue("Renderer did not report OpenGL ES 3.1 or newer: $apiVersion", apiVersion.matches(Regex("OpenGL ES 3\\.[1-9].*")))
         assertTrue("Renderer reported fewer than three successful EGL swaps", prefs.getInt("presented_frames", 0) >= 3)
