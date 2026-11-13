@@ -83,16 +83,20 @@ Work through these steps in order, on the single canonical branch. Do not skip a
 |---|---|---|
 | Canonical branch selected | **REAL + VERIFIED** | One working branch and PR #9 selected; `main` untouched |
 | Branch/PR audit | **REAL + VERIFIED** | Detailed dispositions recorded in [PROJECT_STATUS.md](PROJECT_STATUS.md) |
-| Native host regression | **PASS** | Latest audited CI run reported this job successful |
-| Screenshot API correction | **COMMITTED, CI PENDING** | Instrumentation now uses `UiAutomation.takeScreenshot()`; rerun exact-head instrumentation |
-| Emulator smoke correction | **COMMITTED, CI PENDING** | Uses successful `am start -W` and a live process PID rather than brittle `dumpsys` text matching; downstream renderer checks remain |
-| Debug APK, unit tests, lint and R8 | **PENDING / RUNNING AT LAST CHECK** | Require completed successful jobs for the latest commit |
-| Imported-GLB GLES instrumentation | **NEW PIXEL GATE COMMITTED; CI UNVERIFIED** | Debug imports now request PixelCopy verification; test requires PIXELS_VERIFIED, at least 5,000 geometry pixels and a saved screenshot |
-| Generated-avatar runtime instrumentation | **PENDING / RUNNING AT LAST CHECK** | Must complete, not merely build |
-| Emulator install/launch and render | **PENDING / RUNNING AT LAST CHECK** | Require completed install, launch and renderer checks |
+| Native host regression | **PASS on exact HEAD** | Native host regression job completed successfully on `1deaf264032195989257845b884a5829f06fe9cf`; Android native sampling regression also passed |
+| Android unit tests | **PASS on exact HEAD** | Unit-test job completed successfully on `1deaf264032195989257845b884a5829f06fe9cf` |
+| Screenshot API correction | **COMMITTED; RUNTIME CI IN PROGRESS** | Instrumentation uses `UiAutomation.takeScreenshot()`; generated-avatar runtime job is still running |
+| Emulator smoke correction | **COMMITTED; RUNTIME CI IN PROGRESS** | Uses successful `am start -W` and a live process PID; emulator install/launch job is still running |
+| Debug APK build, lint and R8 | **IN PROGRESS on exact HEAD** | Android CI run `43527371054`; debug build, lint and R8 jobs have not completed |
+| Imported-GLB GLES instrumentation | **IN PROGRESS on exact HEAD** | Android CI instrumented GLES GLB render smoke job is still running; require actual pixel evidence |
+| Generated-avatar runtime instrumentation | **IN PROGRESS on exact HEAD** | Runtime run `43527371068`; generated avatar must pass real surface pixel capture and evidence checks |
+| Diagnostic APK / generated pixel gate | **IN PROGRESS on exact HEAD** | Run `43527371100`; native host tests passed, APK/pixel job remains running |
+| Emulator install/launch and render | **IN PROGRESS on exact HEAD** | Release/emulator run `43527371065`; both jobs remain in progress |
 | Samsung SM-S921B runtime | **UNVERIFIED** | Requires installation and testing on the physical phone |
 | Production signing | **BLOCKED** | Requires owner-provided production keystore in protected CI secrets |
 | Merge to `main` | **BLOCKED BY GATES** | Do not merge until steps 1-6 are satisfied |
+
+**Exact-head evidence snapshot (2026-11-14):** canonical branch HEAD is `1deaf264032195989257845b884a5829f06fe9cf`. Four workflow runs are active for this SHA: Android CI `43527371054`, generated-avatar runtime `43527371068`, diagnostic APK/pixel verification `43527371100`, and release-preview/emulator smoke `43527371065`. At the time of this update, native host regression and Android unit tests have completed successfully; the remaining jobs are still running. These are CI results, not Samsung phone verification.
 
 CI status can change after this README is updated. Check the latest [GitHub Actions runs](https://github.com/davealone69-gif/3d-mega-hub/actions) and the [canonical PR](https://github.com/davealone69-gif/3d-mega-hub/pull/9) before making a release decision.
 
@@ -116,6 +120,20 @@ CI status can change after this README is updated. Check the latest [GitHub Acti
 These are **OWNER-TESTED** results for the APK the owner installed. The exact APK SHA-256 and source commit used for that phone test have not been supplied, so do not attribute the result to a specific repository head or call the current PR head device-verified.
 
 The next implementation priority is **avatar visual quality**, not another renderer rebuild. Preserve the working native GLES renderer, prompt generation path and GLB import. Change them only when a reproducible defect is demonstrated.
+
+### User reference asset: `mylove.glb`
+
+The owner has already supplied `mylove.glb` as the reference model for improving the generated avatar. Do not ask for another upload while this source remains available.
+
+- **Dropbox source:** `/mylove.glb`
+- **Known file size:** 9,287,272 bytes (8.86 MiB)
+- **Dropbox content hash:** `388a94e7495e809577356ba6cf9890a13fe38f8cd4c63ba3228109d19a24b398`
+- **Second known copy:** `/3d-mega-hub-diagnostics/3d-mega-hub/app/src/main/assets/mylove.glb` (same reported size)
+- **Reference role:** ground truth for measurable proportions, silhouette, anatomy, mesh density, material/texture characteristics, rig and morph structure where those features exist.
+- **Inspection status: PARTIAL / BLOCKED.** Dropbox metadata and file identity are verified, but the 9.29 MB binary has not yet been transferred into the analysis workspace. No mesh, rig, morph, texture, colour or landmark measurements from this file are verified. Do not invent or copy guessed values into the generator.
+- **Next action:** obtain the actual GLB bytes from the linked-chat/file source, run the repository's `tools/glb_anatomy_probe.py` against it, inspect the GLB JSON/BIN payload and record source SHA-256 plus measured scene bounds, primitives/triangles, node transforms, skins/joints, morph targets, materials, embedded images and named landmarks. Compare candidate and reference in the same coordinate convention and state whether each measurement is world-space/rest-pose or skinned/deformed.
+- **Use rule:** derive a versioned reference profile and regression targets from measured data. Do not blindly replace the procedural generator with the reference mesh, and do not commit or redistribute the private reference asset without explicit approval.
+
 
 ### Stage 1: establish and improve avatar quality
 
