@@ -153,16 +153,19 @@ def side_of(name):
 
 
 LANDMARK_PATTERNS = {
-    "head": r"head|skull",
+    "head_top": r"head.?top|crown|skull.?top",
+    "chin": r"chin|jaw.?tip",
     "neck": r"neck",
     "left_eye": r"eye.*left|left.*eye|eye_l|eyel",
     "right_eye": r"eye.*right|right.*eye|eye_r|eyer",
+    "left_head_side": r"left.*temple|temple.*left|head_l",
+    "right_head_side": r"right.*temple|temple.*right|head_r",
     "left_shoulder": r"left.*shoulder|shoulder.*left|clavicle_l|upperarm_l",
     "right_shoulder": r"right.*shoulder|shoulder.*right|clavicle_r|upperarm_r",
     "left_hip": r"left.*hip|hip.*left|upleg_l|thigh_l",
     "right_hip": r"right.*hip|hip.*right|upleg_r|thigh_r",
-    "left_wrist": r"left.*wrist|wrist.*left|hand_l",
-    "right_wrist": r"right.*wrist|wrist.*right|hand_r",
+    "left_fingertip": r"left.*(finger.?tip|fingertip)|finger.?tip.*left|index.?distal_l|hand.?tip_l",
+    "right_fingertip": r"right.*(finger.?tip|fingertip)|finger.?tip.*right|index.?distal_r|hand.?tip_r",
     "left_ankle": r"left.*ankle|ankle.*left|foot_l",
     "right_ankle": r"right.*ankle|ankle.*right|foot_r",
 }
@@ -275,18 +278,20 @@ def analyse(path):
               "shoulder_width_over_hip_width": None,
               "interpupillary_over_head_width": None,
               "arm_span_over_body_height": None}
-    if "head" in resolved and "neck" in resolved:
-        ratios["head_height_over_body_height"] = abs(resolved["head"][1]-resolved["neck"][1])/height
-    if "left_shoulder" in resolved and "right_shoulder" in resolved and "left_hip" in resolved and "right_hip" in resolved:
+    if "head_top" in resolved and "chin" in resolved:
+        ratios["head_height_over_body_height"] = abs(resolved["head_top"][1]-resolved["chin"][1])/height
+    if all(k in resolved for k in ("left_shoulder", "right_shoulder", "left_hip", "right_hip")):
         sw = math.dist(resolved["left_shoulder"], resolved["right_shoulder"])
         hw = math.dist(resolved["left_hip"], resolved["right_hip"])
         if hw > 1e-8:
             ratios["shoulder_width_over_hip_width"] = sw/hw
-    if "left_eye" in resolved and "right_eye" in resolved:
+    if all(k in resolved for k in ("left_eye", "right_eye", "left_head_side", "right_head_side")):
         eye = math.dist(resolved["left_eye"], resolved["right_eye"])
-        ratios["interpupillary_over_head_width"] = eye/dims[0]
-    if "left_wrist" in resolved and "right_wrist" in resolved:
-        ratios["arm_span_over_body_height"] = math.dist(resolved["left_wrist"], resolved["right_wrist"])/height
+        head_width = math.dist(resolved["left_head_side"], resolved["right_head_side"])
+        if head_width > 1e-8:
+            ratios["interpupillary_over_head_width"] = eye/head_width
+    if "left_fingertip" in resolved and "right_fingertip" in resolved:
+        ratios["arm_span_over_body_height"] = math.dist(resolved["left_fingertip"], resolved["right_fingertip"])/height
 
     return {
         "file": str(path), "generator": doc.get("asset", {}).get("generator"),
