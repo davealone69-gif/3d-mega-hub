@@ -629,7 +629,7 @@ float BodyField::handShape(const Vec3& p, const Chain& c) const {
     /* Thenar (thumb) pad and hypothenar pad remain separate anatomical volumes. */
     d = smin(d, blob(Vec3(alongAcross, alongDown, alongNormal),
                      Vec3(m_.palmWidth * 0.42f, m_.handLength * 0.05f, -m_.palmThickness * 0.10f),
-                     Vec3(m_.palmWidth * 0.32f, m_.handLength * 0.16f, m_.palmThickness * 0.52f)), 0.012f;
+                     Vec3(m_.palmWidth * 0.32f, m_.handLength * 0.16f, m_.palmThickness * 0.52f)), 0.012f);
 
     /* Wrist stump for the cut plane. */
     d = smin(d, sdCapsule(p, c.wrist - dirDown * 0.02f, c.wrist + dirDown * 0.012f, m_.wristR), 0.012f);
