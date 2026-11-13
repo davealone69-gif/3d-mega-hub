@@ -139,6 +139,7 @@ class AvatarForgeSurfaceView(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.i(TAG, "surfaceCreated valid=${holder.surface.isValid}")
+        stopRenderer()
         // A Surface callback runs on the UI thread. Stop the old worker without joining it:
         // native renderer teardown may wait for GPU work and must never block input dispatch.
         surfaceReady = true
