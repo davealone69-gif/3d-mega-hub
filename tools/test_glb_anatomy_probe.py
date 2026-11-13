@@ -19,7 +19,7 @@ def make_fixture(path, scale=1.0):
     binary = vertex_bytes + index_bytes
     nodes = [{"name": "BodyMesh", "mesh": 0}]
     landmarks = {
-        "Crown": (0, 1.9, 0), "Chin": (0, 1.7, 0),
+        "Crown": (0, 1.9, 0), "Chin": (0, 1.7, 0), "Neck": (0, 1.65, 0),
         "Left_Eye": (-.1, 1.82, 0), "Right_Eye": (.1, 1.82, 0),
         "Left_Temple": (-.2, 1.8, 0), "Right_Temple": (.2, 1.8, 0),
         "Left_Shoulder": (-.3, 1.4, 0), "Right_Shoulder": (.3, 1.4, 0),
