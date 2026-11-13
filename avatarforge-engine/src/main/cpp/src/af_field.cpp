@@ -1110,9 +1110,9 @@ float BodyField::clothUpper(const Vec3& p) const {
     bool  gearPlates = false;
     switch (apparel_.outfit) {
         case 1:  /* T-shirt   */ thickness = 0.005f; sleeveReach = m_.upperArmLen * 0.35f; break;
-        case 2:  /* Dress     */ thickness = 0.004f; hemY = m_.y.hipY - 0.02f * H;
+        case 2:  /* Full-length dress */ thickness = 0.004f; hemY = m_.y.hipY - 0.02f * H;
                                  topY = m_.y.shoulderY + 0.020f; sleeveReach = 0.0f;
-                                 skirtHemY = m_.y.hipY - m_.thighLen * 0.62f; break;
+                                 skirtHemY = m_.y.soleY + 0.010f * H; break;
         case 3:  /* Suit      */ thickness = 0.011f; sleeveReach = m_.upperArmLen + m_.forearmLen * 0.92f;
                                  hemY = m_.y.hipY + 0.02f * H; break;
         case 4:  /* Jeans + jacket */ thickness = 0.014f; sleeveReach = m_.upperArmLen + m_.forearmLen * 0.80f;
@@ -1148,11 +1148,11 @@ float BodyField::clothUpper(const Vec3& p) const {
     domain = smax(domain, -armsCut(p, thickness), 0.008f);
     domain = smin(domain, sleeveSolid(p, thickness, sleeveReach), 0.012f);
 
-    /*
-     * Dresses flare: below the hip the domain widens with depth, kept as a separate cone so the
-     * upper body stays fitted. The skirt is closed at the bottom because it is a solid - the legs
-     * inside it are hidden, which is exactly what a skirt does.
-     */
+    /* A dress skirt must be a real volume outside the body. Previously the cone was
+       only unioned into the clipping domain for body(p)-thickness, so points beyond the body
+       were still rejected and the supposed flare never existed. Build the skirt as the volume
+       inside its flared cone but outside the body, then union it with the fitted upper garment. */
+    float skirtShell = 1e9f;
     if (skirtHemY > 0.0f) {
         const float waistY = m_.y.hipY;
         const float kw = m_.waist.rx * 1.16f;
@@ -1160,14 +1160,16 @@ float BodyField::clothUpper(const Vec3& p) const {
         const float krx = kw * flare;
         const float krz = m_.waist.rz * 1.30f * flare;
         const float nkx = p.x / krx;
-        const float nkz = p.z / krz;
+        const float nkz = (p.z - m_.waist.centreZ) / krz;
         const float k2 = std::pow(std::pow(std::fabs(nkx), e) + std::pow(std::fabs(nkz), e), 1.0f / e);
         const float skirt = maxf((k2 - 1.0f) * minf(krx, krz), maxf(skirtHemY - p.y, p.y - waistY));
-        domain = smin(domain, skirt, 0.012f);
+        skirtShell = smax(skirt, -body(p), 0.004f);
     }
 
-    /* The inflated body, clipped to the domain. Hard maximum: a hem is an edge, not a fillet. */
-    return smax(body(p) - thickness, domain, 0.0018f);
+    /* The fitted upper garment remains an offset of the body. The independent skirt shell
+       is unioned afterwards so its silhouette can extend beyond the body. */
+    const float upperGarment = smax(body(p) - thickness, domain, 0.0018f);
+    return minf(upperGarment, skirtShell);
 }
 
 float BodyField::clothLower(const Vec3& p) const {
@@ -1176,7 +1178,7 @@ float BodyField::clothLower(const Vec3& p) const {
     float thickness = 0.0f;
     float hemY = 0.0f;
     switch (apparel_.outfit) {
-        case 2:  thickness = 0.004f; hemY = m_.y.hipY - m_.thighLen * 0.62f; break;  /* dress: tights */
+        case 2:  thickness = 0.004f; hemY = m_.y.soleY + 0.010f * H; break; /* full-length dress lining */
         case 3:  thickness = 0.010f; hemY = m_.y.ankleY + 0.045f; break;             /* trousers      */
         case 4:  thickness = 0.014f; hemY = m_.y.ankleY + 0.030f; break;             /* jeans         */
         case 5:  thickness = 0.018f; hemY = m_.y.ankleY + 0.10f; break;              /* greaves       */
