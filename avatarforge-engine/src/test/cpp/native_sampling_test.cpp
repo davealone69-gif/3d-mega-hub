@@ -78,6 +78,73 @@ int main() {
     af_spec_init(&qualitySpec);
     const af::BodyMetrics qualityMetrics = af::Anatomy::solve(qualitySpec);
     af::BodyField qualityField(qualityMetrics);
+
+    // Anatomical field diagnostics: visible-pixel tests cannot detect missing eyes,
+    // collapsed extremities, or left/right shape drift. Probe the actual SDF used by meshing.
+    require(qualityMetrics.y.crownY > qualityMetrics.y.eyeY &&
+            qualityMetrics.y.eyeY > qualityMetrics.y.chinY &&
+            qualityMetrics.y.chinY > qualityMetrics.y.neckBaseY &&
+            qualityMetrics.y.neckBaseY > qualityMetrics.y.waistY &&
+            qualityMetrics.y.waistY > qualityMetrics.y.hipY &&
+            qualityMetrics.y.hipY > qualityMetrics.y.kneeY &&
+            qualityMetrics.y.kneeY > qualityMetrics.y.ankleY,
+            "solved anatomical landmarks are not in cranio-caudal order");
+    require(qualityField.head(af::Vec3(0.0f,
+                (qualityMetrics.y.crownY + qualityMetrics.y.chinY) * 0.5f, 0.0f)) < 0.0f,
+            "head SDF has no solid cranium at its anatomical centre");
+
+    // Both eye centres must be real eye geometry and must retain distinct material regions.
+    const af::Vec3 leftEye = qualityField.eyeCentre(1);
+    const af::Vec3 rightEye = qualityField.eyeCentre(-1);
+    require(leftEye.x > 0.0f && rightEye.x < 0.0f &&
+            std::fabs(leftEye.x + rightEye.x) < 1e-5f &&
+            std::fabs(leftEye.y - rightEye.y) < 1e-5f &&
+            std::fabs(leftEye.z - rightEye.z) < 1e-5f,
+            "eye anchors are not correctly mirrored across the facial midline");
+    require(qualityField.classifyRegion(leftEye) == af::REGION_EYE_L,
+            "left eyeball centre is missing or assigned to the wrong material region");
+    require(qualityField.classifyRegion(rightEye) == af::REGION_EYE_R,
+            "right eyeball centre is missing or assigned to the wrong material region");
+
+    // Finger and toe centre-lines must remain inside their generated hand/foot SDFs.
+    // This catches disconnected or collapsed extremity geometry before rendering.
+    for (int side : {-1, 1}) {
+        const af::Chain& chain = qualityField.chain(side);
+        require(qualityField.body(chain.shoulder) < 0.0f,
+                "shoulder anchor is outside the body SDF");
+        require(qualityField.body(chain.hipJoint) < 0.0f,
+                "hip joint anchor is outside the body SDF");
+        for (int finger = 0; finger < 5; ++finger) {
+            require(qualityField.hand(chain.fingerTip[finger], side) < 0.0f,
+                    "finger tip centre is outside its hand SDF");
+        }
+        require(qualityField.foot(chain.toeTip, side) < 0.0f,
+                "toe tip centre is outside its foot SDF");
+    }
+
+    // The procedural body is intended to be bilaterally symmetric in its rest pose.
+    // Sample the real field on mirrored points; permit small deterministic noise, not gross drift.
+    const float probeY[] = {
+        qualityMetrics.y.hipY, qualityMetrics.y.waistY,
+        qualityMetrics.y.bustY, qualityMetrics.y.shoulderY,
+        qualityMetrics.y.kneeY, qualityMetrics.y.ankleY
+    };
+    const float probeX[] = {0.025f, 0.060f, 0.120f, 0.200f, 0.300f};
+    const float probeZ[] = {-0.12f, -0.04f, 0.04f, 0.12f};
+    float maximumMirrorError = 0.0f;
+    for (float y : probeY) {
+        for (float x : probeX) {
+            for (float z : probeZ) {
+                const float left = qualityField.body(af::Vec3(x, y, z));
+                const float right = qualityField.body(af::Vec3(-x, y, z));
+                require(std::isfinite(left) && std::isfinite(right),
+                        "bilateral body probe produced a non-finite SDF value");
+                maximumMirrorError = std::max(maximumMirrorError, std::fabs(left - right));
+            }
+        }
+    }
+    require(maximumMirrorError < 0.004f,
+            "left/right body SDF differs by more than 4 mm in the symmetric rest pose");
     af::BodyBuildOptions coarseOptions;
     coarseOptions.bodyCell = 0.010f;  // keep this host regression quick and deterministic
     coarseOptions.detailRounds = 0;
