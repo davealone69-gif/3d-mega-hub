@@ -30,11 +30,35 @@ See [PROJECT_STATUS.md](PROJECT_STATUS.md) for the detailed branch-by-branch aud
 - **AvatarForge generation:** isolated `:avatarforge-engine` Android library, JNI bridge and C++ generation kernel. Avatar Studio exposes prompt generation, cancellation, resource/thermal checks, native-result validation and atomic publication of validated GLBs.
 - **3D viewer:** the bundled sample uses the separate Filament preview. Imported and generated self-contained GLBs use `AvatarForgeSurfaceView` and the integrated native AvatarForge renderer.
 - **Graphics backend:** the imported/generated avatar path explicitly forces native GLES. Skinned GLBs apply the initial rest pose and refresh bounds before camera framing. Vulkan is not selected for this phone-first route.
-- **Debug verification:** debuggable builds include a seed-1337 generated-avatar diagnostic that validates the deformed mesh, imports the exported GLB through the real GLES route, waits for successful EGL swaps and verifies background-subtracted PixelCopy geometry. A PNG result is saved. A scoped AndroidX FileProvider exposes only app-private external-files captures for sharing, including `failed_render.png`.
+- **Debug verification:** debuggable builds run visible-pixel verification for both imported GLBs and the deterministic seed-1337 generated-avatar diagnostic. The native GLES path waits for successful EGL swaps, captures the actual SurfaceView with PixelCopy, estimates the background from the four corners, counts foreground geometry pixels, applies the 5,000-pixel minimum and saves a PNG plus machine-readable JSON. Imported captures use `imported_glb_diagnostic.png`; generated captures use `generated_avatar_diagnostic.png`; failures use `failed_render.png`. Release/non-debug builds do not automatically capture every import. A scoped AndroidX FileProvider exposes only app-private external-files captures for sharing.
 - **Avatar imports:** selected GLBs are copied into app-private storage, size-limited and structurally validated before use. External-resource `.gltf` files are rejected.
 - **Local AI:** Ollama remains an external service, not an embedded LLM. Plain HTTP is restricted to loopback; remote endpoints require HTTPS.
 - **Voice:** Android TextToSpeech output is connected. Viseme extraction and avatar lip-sync are not connected.
 
+## Diagnostic-driven validation policy
+
+**A passing diagnostic is reusable evidence for the exact APK, asset and device state it measured. It is not a reason to rebuild repeatedly.**
+
+- If source code, build configuration, native libraries or packaged assets have not changed, do not rebuild just to repeat a passing diagnostic. Reuse the report and only rerun a diagnostic when the asset, device state, renderer lifecycle or suspected failure condition changes.
+- After a coherent batch of source changes, perform one consolidated validation cycle against the exact resulting commit: native/unit tests, Android build/lint/R8, relevant renderer instrumentation, emulator install/launch and artifact capture. Do not build between individual edits in the same batch.
+- A successful build proves compilation/package assembly only. A renderer diagnostic proves only the checks it actually performs. The diagnostic must identify its APK/source commit, asset hash, device/API/backend, capture method, thresholds and result before it can be reused as evidence.
+- A previous APK's passing diagnostics do not validate changed source code. A newly built APK still needs one install/runtime validation on the target device before that new APK is called phone-verified.
+- A generated-avatar diagnostic must not be used as a substitute for imported-GLB verification. Imported GLBs must independently pass actual surface capture and visible-pixel checks.
+- FRAME_PRESENTED means EGL presented frames; it does not mean visible geometry was verified. PIXELS_VERIFIED requires a successful PixelCopy capture and at least 5,000 foreground geometry pixels after background subtraction. FAILED, capture timeout, missing screenshot or missing report must remain failures, not be silently converted into passes.
+- In debug builds, imported GLBs now use the same PixelCopy visible-pixel gate as the generated diagnostic. This closes the previous evidence gap where ordinary imported-model reports could show visiblePixels: 0 simply because pixel verification had not been enabled. A zero count from a report without pixel verification enabled is NOT MEASURED, not proof of an invisible model.
+- Preserve failure artifacts and diagnose them before another code change. Do not rerun an unchanged failing test repeatedly unless the next run changes one defined variable or captures missing evidence.
+
+### Diagnostic evidence levels
+
+| Result | What it proves | What it does not prove |
+|---|---|---|
+| STARTING | Renderer worker began | EGL or model loading |
+| RENDERER_ACTIVE | Native renderer session and GLES context initialized | Geometry drawn or visible |
+| FRAME_PRESENTED | Required EGL swaps, draw calls, triangles and frustum checks observed | Pixels reached the displayed surface |
+| PIXELS_VERIFIED | PixelCopy captured foreground geometry above threshold | Model quality, correct appearance controls, animation or long-session stability |
+| FAILED | A required diagnostic stage failed | Root cause, until failure details are inspected |
+
+Diagnostic JSON should be treated as evidence, not a generic green light. A pass is scoped to the tested APK, asset and environment.
 ## Sample-model limitation
 
 The bundled `female.glb` is a renderer fixture, not proof of a complete rigged avatar. Inspection of the exact bundled file shows one mesh, one node, seven morph targets, zero skins, zero animations and zero embedded images. It can exercise GLB loading/rendering, but does not prove skeletal animation, facial animation, texture quality or generated-avatar quality.
@@ -45,8 +69,8 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 
 Work through these steps in order, on the single canonical branch. Do not skip a failed gate or mark a later step complete on the strength of an earlier one.
 
-1. **Finish exact-head CI.** Run the complete Android workflow against the latest canonical commit: debug APK assembly, unit tests, Android lint, R8/minification, native host regression, imported-GLB GLES instrumentation, generated-avatar runtime instrumentation, and emulator install/launch smoke. Fix failures in this same branch and rerun the affected jobs.
-2. **Prove real renderer output.** Require the instrumentation tests to load an actual GLB through the app's native GLES path, compile/link shaders, upload geometry and textures, draw frames, complete EGL swaps, and produce a PixelCopy image with geometry pixels above the test threshold. Preserve raw captures and diagnostics on failure. No fake success values, mocked renderer, or weakened pixel threshold.
+1. **Finish one consolidated exact-head validation cycle after the current coherent change batch.** Run native host regression, Android unit tests, debug APK assembly, lint, R8/minification, imported-GLB visible-pixel instrumentation, generated-avatar visible-pixel instrumentation, and emulator install/launch smoke together. Do not run a build after each small edit. Inspect all failed jobs and artifacts before deciding whether another source change is justified.
+2. **Use diagnostics before rebuilding.** For runtime-only questions, inspect the existing JSON, PNG, logs and device/asset identity first. Reuse a passing report when the APK, asset and relevant environment are unchanged. Only rebuild after a source/configuration/asset change or when the existing evidence is insufficient to isolate the issue. A diagnostic pass does not waive the one consolidated validation needed for a new code revision. No fake success values, mocked renderer, or weakened pixel threshold.
 3. **Prove emulator runtime.** Install the exact CI APK, launch the real app, open the relevant viewer route, load the fixture/imported GLB, and verify process stability, frame production, no ANR and a non-empty screenshot. A successful Gradle build alone is not an emulator pass.
 4. **Prove the Samsung device.** Install that same candidate APK on the Samsung SM-S921B. Verify visible pixels, imported and generated GLB loading, app pause/resume, surface recreation, memory/resource handling and thermal behaviour. Record the APK SHA-256 and device evidence. Until this is done, physical-device rendering remains **UNVERIFIED**.
 5. **Complete release signing.** Configure the owner's production keystore through protected CI secrets. Build and verify the signed release APK and AAB, check package/version/signature and record artifact SHA-256 values. A debug key or ephemeral CI preview key is not a production release.
@@ -63,7 +87,7 @@ Work through these steps in order, on the single canonical branch. Do not skip a
 | Screenshot API correction | **COMMITTED, CI PENDING** | Instrumentation now uses `UiAutomation.takeScreenshot()`; rerun exact-head instrumentation |
 | Emulator smoke correction | **COMMITTED, CI PENDING** | Uses successful `am start -W` and a live process PID rather than brittle `dumpsys` text matching; downstream renderer checks remain |
 | Debug APK, unit tests, lint and R8 | **PENDING / RUNNING AT LAST CHECK** | Require completed successful jobs for the latest commit |
-| Imported-GLB GLES instrumentation | **PENDING / RUNNING AT LAST CHECK** | Must produce real visible-pixel evidence |
+| Imported-GLB GLES instrumentation | **NEW PIXEL GATE COMMITTED; CI UNVERIFIED** | Debug imports now request PixelCopy verification; test requires PIXELS_VERIFIED, at least 5,000 geometry pixels and a saved screenshot |
 | Generated-avatar runtime instrumentation | **PENDING / RUNNING AT LAST CHECK** | Must complete, not merely build |
 | Emulator install/launch and render | **PENDING / RUNNING AT LAST CHECK** | Require completed install, launch and renderer checks |
 | Samsung SM-S921B runtime | **UNVERIFIED** | Requires installation and testing on the physical phone |
