@@ -131,7 +131,7 @@ fun AvatarStudioScreen(
                     if (importedGlb != null && importedGlb.isFile) {
                         AndroidView(
                             factory = { viewContext ->
-                                AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = pixelDiagnosticPath == importedGlb.absolutePath) { status ->
+                                AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = isDebuggable) { status ->
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                                         rendererStatus = status
                                         val savedPath = context.getSharedPreferences("avatarforge_renderer_smoke", Context.MODE_PRIVATE)
