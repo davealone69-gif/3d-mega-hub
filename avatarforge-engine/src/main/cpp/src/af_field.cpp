@@ -1482,8 +1482,12 @@ int BodyField::classifyRegion(const Vec3& p) const {
     if (tongueShape(p) < kOnSurface) return REGION_TONGUE;
     if (lipsShape(p) < kOnSurface) return REGION_LIPS;
     if (browShape(p) < kOnSurface) return REGION_LASH;
-    for (int side = 0; side < 2; ++side) {
-        if (eyeballShape(p, side) < kOnSurface) return (side == 0) ? REGION_EYE_L : REGION_EYE_R;
+    // eyeballShape accepts anatomical side values (+1 = left, -1 = right).
+    // Passing loop indices 0/1 silently reversed the eye material assignment.
+    for (int side : {-1, 1}) {
+        if (eyeballShape(p, side) < kOnSurface) {
+            return (side > 0) ? REGION_EYE_L : REGION_EYE_R;
+        }
     }
     /* Nails: dorsal side of each distal phalanx. */
     for (int side = -1; side <= 1; side += 2) {
