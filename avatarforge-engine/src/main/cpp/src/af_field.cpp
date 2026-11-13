@@ -385,8 +385,11 @@ float BodyField::torso(const Vec3& p) const {
     {
         const float striation = noise_.ridged(p * 26.0f, 3, 2.05f, 0.55f) - 0.42f;
         const float pores = noise_.cell(p, 78.0f) - 0.45f;
-        const float amp = 0.0016f * (1.0f - saturate(m_.bodyFat)) + 0.0009f;
-        d -= (striation * 0.75f + pores * 0.35f) * amp;
+        /* Keep geometric displacement comfortably below the extraction cell size.
+           Fine pores belong in the baked tangent-space normal map; pushing them into the SDF
+           creates sub-cell ridges that alias into speckled triangles on mobile GPUs. */
+        const float amp = 0.00032f * (1.0f - saturate(m_.bodyFat)) + 0.00018f;
+        d -= (striation * 0.20f + pores * 0.10f) * amp;
     }
     return d;
 }
@@ -541,18 +544,23 @@ float BodyField::footShape(const Vec3& p, const Chain& c) const {
     const float heelLen = std::fabs(ballL.z - heelL.z) * 0.42f;
     const float footLen = std::fabs(ballL.z - heelL.z);
 
-    float d = sdRoundBox(q - Vec3(heelL.x, ground + heelHalfH + heelRound, heelL.z + heelLen * 0.20f),
-                         Vec3(halfW * 0.72f, heelHalfH, heelLen), heelRound);
-    d = smin(d, sdRoundBox(q - Vec3(archZ * 0.0f + ballL.x * 0.35f, ground + archHalfH + archRound, archZ),
-                           Vec3(halfW * 0.80f, archHalfH, footLen * 0.26f), archRound), 0.016f);
-    d = smin(d, sdRoundBox(q - Vec3(ballL.x + sx * 0.002f, ground + ballHalfH + ballRound,
+    /* Use overlapping ellipsoids rather than rounded boxes. The previous box-based
+       heel/arch/ball stack produced broad planar patches and a visibly squared-off foot in
+       close-up renders. Ellipsoids preserve the heel-to-ball volume while giving the dorsal
+       surface and side walls continuous curvature. */
+    float d = sdEllipsoid(q - Vec3(heelL.x, ground + heelHalfH + heelRound, heelL.z + heelLen * 0.20f),
+                          Vec3(halfW * 0.72f, heelHalfH + heelRound, heelLen + heelRound));
+    d = smin(d, sdEllipsoid(q - Vec3(ballL.x * 0.35f, ground + archHalfH + archRound, archZ),
+                            Vec3(halfW * 0.80f, archHalfH + archRound, footLen * 0.26f + archRound)), 0.010f);
+    d = smin(d, sdEllipsoid(q - Vec3(ballL.x + sx * 0.002f, ground + ballHalfH + ballRound,
                                     ballL.z + footLen * 0.06f),
-                           Vec3(halfW * 1.02f, ballHalfH, footLen * 0.20f), ballRound), 0.014f);
+                            Vec3(halfW * 1.02f, ballHalfH + ballRound, footLen * 0.20f + ballRound)), 0.009f);
 
-    /* Forefoot / midfoot bridge so the ball and heel do not read as separate blocks. */
-    d = smin(d, sdRoundBox(q - Vec3(ballL.x * 0.6f, ground + archHalfH * 0.92f + archRound,
+    /* Smooth midfoot bridge: no flat box faces or visible block transitions. */
+    d = smin(d, sdEllipsoid(q - Vec3(ballL.x * 0.6f, ground + archHalfH * 0.92f + archRound,
                                     (ballL.z + heelL.z) * 0.5f),
-                           Vec3(halfW * 0.78f, archHalfH * 0.92f, footLen * 0.30f), archRound), 0.018f);
+                            Vec3(halfW * 0.78f, archHalfH * 0.92f + archRound,
+                                 footLen * 0.30f + archRound)), 0.010f);
 
     /* Longitudinal arch (subtractive: smax(d, -shape, k) carves instead of adding) and the
        metatarsal ridge. The arch ellipsoid is centred just above the contact plane so the cut
@@ -607,27 +615,21 @@ float BodyField::handShape(const Vec3& p, const Chain& c) const {
     const Vec3 palmNormal(-sx, 0.0f, 0.0f);
     const Vec3 across = palmNormal.cross(dirDown).normalizedOr({0, 0, 1});
 
-    /* Palm: a flattened rounded box (thinner at the wrist, wider at the knuckles). */
-    float d = sdRoundBox(p - c.palmCentre,
-                         Vec3(m_.palmWidth * 0.5f, m_.handLength * 0.26f, m_.palmThickness * 0.5f),
-                         m_.palmThickness * 0.45f);
-    {
-        /* Rotate the palm block into the hand frame by blending three sliver boxes; cheaper
-           and more stable than building a rotated box SDF with sheared basis. */
-        const Vec3 q = p - c.palmCentre;
-        const float alongDown = q.dot(dirDown);
-        const float alongAcross = q.dot(across);
-        const float alongNormal = q.dot(palmNormal);
-        const float halfLen = m_.handLength * 0.26f;
-        const float taper = 1.0f + 0.10f * saturate(-alongDown / maxf(halfLen, 1e-4f));
-        d = smin(d, sdRoundBox(Vec3(alongAcross, alongDown, alongNormal),
-                               Vec3(m_.palmWidth * 0.5f * taper, halfLen, m_.palmThickness * 0.5f),
-                               m_.palmThickness * 0.45f), 0.012f);
-        /* Thenar (thumb) pad and hypothenar pad - both read strongly at any distance. */
-        d = smin(d, blob(Vec3(alongAcross, alongDown, alongNormal),
-                         Vec3(m_.palmWidth * 0.42f, m_.handLength * 0.05f, -m_.palmThickness * 0.10f),
-                         Vec3(m_.palmWidth * 0.32f, m_.handLength * 0.16f, m_.palmThickness * 0.52f)), 0.018f);
-    }
+    /* Palm in its anatomical local frame. A tapered ellipsoid avoids the broad planar
+       patches created by the old rounded-box palm while keeping a wider knuckle end. */
+    const Vec3 q = p - c.palmCentre;
+    const float alongDown = q.dot(dirDown);
+    const float alongAcross = q.dot(across);
+    const float alongNormal = q.dot(palmNormal);
+    const float halfLen = m_.handLength * 0.26f;
+    const float taper = 1.0f + 0.08f * saturate(-alongDown / maxf(halfLen, 1e-4f));
+    float d = sdEllipsoid(Vec3(alongAcross, alongDown, alongNormal),
+                          Vec3(m_.palmWidth * 0.47f * taper, halfLen,
+                               m_.palmThickness * 0.58f));
+    /* Thenar (thumb) pad and hypothenar pad remain separate anatomical volumes. */
+    d = smin(d, blob(Vec3(alongAcross, alongDown, alongNormal),
+                     Vec3(m_.palmWidth * 0.42f, m_.handLength * 0.05f, -m_.palmThickness * 0.10f),
+                     Vec3(m_.palmWidth * 0.32f, m_.handLength * 0.16f, m_.palmThickness * 0.52f)), 0.012f;
 
     /* Wrist stump for the cut plane. */
     d = smin(d, sdCapsule(p, c.wrist - dirDown * 0.02f, c.wrist + dirDown * 0.012f, m_.wristR), 0.012f);
