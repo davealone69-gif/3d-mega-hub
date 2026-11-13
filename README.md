@@ -85,47 +85,49 @@ CI status can change after this README is updated. Check the latest [GitHub Acti
 
 [Download the previously published debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk). This is an older troubleshooting build, not the current integration candidate and not a production release.
 
-## Renderer completion first, avatar quality second
+## Current priority: avatar quality first
 
-**Priority correction (2026-11-11):** finish and verify the remaining renderer and GLB pipeline before spending effort on avatar-generation quality. Prompt variation has now been observed by the owner using the two diagnostic prompts below; the generated characters are visibly different but poor quality. Do not let avatar-quality work displace renderer completion.
+**Priority correction (2026-11-13):** the owner has now physically tested the latest APK and reports that the renderer displays avatars, the generation button changes avatar features (including male/female), and GLB import works. Skin-tone and hair changes have not yet been tested. The owner also reports that the avatar quality is currently too poor to judge appearance changes reliably.
 
-### Stage A: finish the renderer and model pipeline
+These are **OWNER-TESTED** results for the APK the owner installed. The exact APK SHA-256 and source commit used for that phone test have not been supplied, so do not attribute the result to a specific repository head or call the current PR head device-verified.
 
-Work only on `integration/avatarforge-renderer-port`, with PR #9 as the sole active review.
+The next implementation priority is **avatar visual quality**, not another renderer rebuild. Preserve the working native GLES renderer, prompt generation path and GLB import. Change them only when a reproducible defect is demonstrated.
 
-1. **Exact-head Android CI.** Complete debug APK assembly, unit tests, lint, R8/minification, native host tests and all instrumentation against the latest branch head. Distinguish runner cancellations from actual test failures.
-2. **Imported GLB path.** Verify self-contained GLB import, validation, app-private copy, reload and error handling. External-resource `.gltf` remains explicitly unsupported unless separately implemented and tested.
-3. **Native GLES rendering.** Verify shader compile/link, vertex/index/texture upload, draw calls, EGL swaps and PixelCopy geometry on the real imported/generated GLB route. Preserve captures and diagnostics.
-4. **Model/material correctness.** Verify transforms, normals, bounds, materials, textures, alpha handling, camera framing and visible output across representative GLBs. Do not infer texture/material support from geometry-only fixtures.
-5. **Lifecycle and resilience.** Verify surface create/destroy/recreate, pause/resume, repeated model replacement, cancellation, malformed/oversized files, resource cleanup and no crashes/ANRs.
-6. **Animation and skinning.** Establish actual support boundaries with fixtures containing skins, joints, animations and morph targets. Verify pose evaluation and deformation, not merely successful parsing. Clearly mark unsupported features.
-7. **Emulator and physical device.** Complete emulator install/launch/render checks, then test the exact candidate on Samsung SM-S921B for visible output, import, surface recreation, memory and thermal behaviour. Record APK SHA-256 and evidence.
+### Stage 1: establish and improve avatar quality
 
-### Stage B: improve avatar generation after Stage A
+1. Capture reproducible before-images and exported GLBs for controlled male and female prompts. Record the source commit, prompt, seed, model dimensions, triangle/vertex counts, material assignments, texture dimensions and GLB SHA-256.
+2. Trace the full generation path from parsed prompt -> `af_spec` -> anthropometry/body field -> mesh extraction/refinement -> hair/face/clothing regions -> material/texture bake -> GLB export. Do not assume a parser or renderer issue from appearance alone.
+3. Diagnose the visible quality defects by category: body silhouette/proportions, head and facial anatomy, eyes/mouth/ears, hands/feet, hair geometry, clothing construction, topology/normals, UVs/textures, material response and lighting. Separate geometry defects from material/rendering defects.
+4. Prioritise the highest-impact geometry and silhouette defects first. A shader/lighting polish must not be used to disguise weak geometry. Avoid wholesale replacement of the procedural generator.
+5. Add deterministic native regression tests for male/female baselines, spec values, mesh validity, region/material coverage, bounds, finite normals/UVs, and export/import round-trip. Tests must assert actual generated data, not just non-empty output.
+6. Make small, measurable changes and preserve before/after GLB plus rendered captures. Compare under identical camera, lighting, renderer, seed and output resolution.
+7. Rebuild and run CI on the exact branch head. The owner must install and test the resulting APK before the improved quality is called phone-verified.
 
-The owner tested the following prompts and reports that the displayed models change, but both results are poor quality:
+### Stage 2: verify appearance controls
 
-1. `Adult man, muscular build, tall, dark skin, short black hair, red shirt`
-2. `Adult woman, slim build, short, pale skin, long brown hair, blue dress`
+Only once the base model is good enough to judge, verify each control independently:
+- skin tone: light, medium and dark prompts, checking parsed melanin/spec values, exported material/texture values and visible output;
+- hair: style, length and colour, checking both parser output and actual exported geometry/materials;
+- clothing colour/style and other appearance attributes;
+- male/female differences under matched stature/build prompts.
 
-Preserve the working procedural generator. Once Stage A is complete:
+Record unsupported prompt tokens honestly. Deterministic keyword parsing is not an embedded LLM and must not be presented as general natural-language understanding.
 
-1. Add parser/spec differential tests for the two prompts, including sequential parsing into a reused spec to detect stale state.
-2. Verify each prompt's attributes propagate into exported GLB geometry and material values. File hashes alone are insufficient.
-3. Improve anatomy, silhouette, face, hands, feet, hair, clothing and material quality in measurable increments.
-4. Show recognised and ignored prompt tokens in the UI. Do not imply unsupported words were understood.
-5. Re-run controlled GLB and GLES image comparisons after each generation change.
+### Stage 3: end-to-end asset workflow
 
-### Evidence ledger
+After quality and appearance controls are stable, verify Generate -> Save/Export -> close/reopen -> import the exact generated GLB -> render. Preserve the existing working import path and test malformed/oversized input separately.
 
-| Item | Status | Evidence / next action |
+### Owner-tested evidence ledger
+
+| Item | Status | Evidence / limitation |
 |---|---|---|
-| Prompt changes produce visibly different displayed models | **OWNER-OBSERVED** | Owner reports two prompts changed the displayed character; quality is poor |
-| Deterministic native prompt parser exists | **REAL + VERIFIED (SOURCE)** | `af_prompt.cpp` contains explicit attribute vocabularies and spec assignments |
-| Renderer and imported-GLB path complete | **PARTIAL** | Exact-head imported-GLB GLES instrumentation and remaining lifecycle/material coverage still required |
-| GLES generated-avatar diagnostic | **REAL + VERIFIED (EMULATOR, PRIOR HEAD)** | Prior CI proved generated geometry rendered; does not close imported-GLB or physical-device gates |
-| Samsung SM-S921B runtime | **UNVERIFIED** | Requires exact candidate APK installed and tested on the phone |
-| Avatar visual quality | **POOR / NEEDS IMPROVEMENT** | Owner's direct comparison; defer quality work until Stage A is complete |
-| AI/natural-language understanding | **MISSING** | Current implementation is deterministic keyword parsing, not an LLM or generative AI model |
+| Avatar visible in renderer on owner's phone | **OWNER-TESTED** | Owner reports latest installed APK displays the avatar; exact APK SHA-256/source commit not supplied |
+| Generation button changes avatar features | **OWNER-TESTED** | Owner reports prompt-driven feature changes, including male/female |
+| GLB import | **OWNER-TESTED** | Owner reports import button works; complete file/lifecycle matrix remains unverified |
+| Skin-tone changes | **NOT YET TESTED** | Do not claim verified |
+| Hair style/colour changes | **NOT YET TESTED** | Do not claim verified |
+| Avatar visual quality | **NEEDS IMPROVEMENT** | Owner reports quality too poor to judge appearance changes reliably |
+| Exact current PR-head phone verification | **UNVERIFIED** | Need identify tested APK commit and SHA-256, then test exact candidate |
+| Native/CI regression and release gates | **SEPARATE GATES** | Continue exact-head build/test evidence; production signing remains dependent on owner keystore |
 
-Do not mark renderer completion from a successful build or a single generated-avatar screenshot. Each supported path and lifecycle gate needs its own real evidence. Do not mark avatar quality improved without before/after GLB and rendered-image comparisons.
+Do not mark avatar quality improved without matched before/after GLB and rendered-image comparisons. Do not mark a new APK phone-verified until the owner tests that exact artifact.
