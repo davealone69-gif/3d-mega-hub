@@ -55,7 +55,7 @@ class AvatarForgeRendererSmokeTest {
         verifyImportedGlbThroughTheApp(glb)
     }
 
-    @Test
+    @Test(timeout = 720_000)
     fun generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -80,7 +80,12 @@ class AvatarForgeRendererSmokeTest {
         assertNotNull("Generated-avatar diagnostic button disappeared", diagnosticButton)
         diagnosticButton!!.click()
 
-        val deadline = SystemClock.elapsedRealtime() + 300_000L
+        // This exercises the complete native generation -> validated GLB export -> GLES import
+        // path. On software-rendered CI emulators native generation can take substantially longer
+        // than on a physical device; keep a bounded 10-minute budget rather than misreporting a
+        // still-running native generation as a renderer failure after five minutes.
+        val generationStartedAt = SystemClock.elapsedRealtime()
+        val deadline = generationStartedAt + 600_000L
         while (SystemClock.elapsedRealtime() < deadline) {
             val status = prefs.getString("status", "")
             if (status == "PIXELS_VERIFIED" || status == "FAILED") break
@@ -89,7 +94,7 @@ class AvatarForgeRendererSmokeTest {
 
         val status = prefs.getString("status", "")
         assertTrue(
-            "Generated-avatar in-app GLES diagnostic did not verify visible geometry. status=$status error=${prefs.getString("error", "")} generation=${prefs.getString("generation_report", "")}",
+            "Generated-avatar in-app GLES diagnostic did not verify visible geometry within the 10-minute generation budget. elapsedMs=${SystemClock.elapsedRealtime() - generationStartedAt} status=$status error=${prefs.getString("error", "")} generation=${prefs.getString("generation_report", "")}",
             status == "PIXELS_VERIFIED"
         )
         val report = prefs.getString("generation_report", "") ?: ""
