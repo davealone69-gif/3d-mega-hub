@@ -165,6 +165,15 @@ The bundled `female.glb` is a renderer fixture, not proof of a complete rigged a
 
 The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646465941fa1b7317d8e415` (Git blob `a1c00c6b31f6ab0db3b2e68243526cb2d0e15967`). The donor README at that revision states the generated base rigs are original work released under CC0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## Latest renderer investigation — 2026-11-15
+
+- **Working branch:** `integration/avatarforge-renderer-port` · **PR:** [#9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) · **stable `main`:** unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
+- PR #8 is **CLOSED / UNMERGED**, head `fix/mega-hub-candidate-hardening` at `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. It is not the active implementation path.
+- PR #9 exact inspected head before this change: `a42411302b7f9e9eabe171f844d8b4d646f1c23b`. It is the only open implementation PR and is 346 commits ahead of `main`.
+- Exact-head CI evidence on that prior head: Android CI passed (run `43616973631`); native host regression passed; generated-avatar runtime and diagnostic APK workflows failed because the production GLES SurfaceView did not reach visible-pixel verification (runs `43616973663`, `43616973704`). The instrumentation's final status was only `AvatarForge renderer stopped.`
+- **Code change:** commit `78cb75d81557623622f6989a285ebf958dea2844` preserves the original renderer exception through teardown instead of overwriting it with the generic stopped message. Cleanup failures are retained too.
+- **Important boundary:** this is a diagnostic-observability fix, not proof that the GLES renderer is fixed. The actual renderer failure remains **UNVERIFIED** until a new exact-head CI run exposes its original cause and the renderer passes the visible-pixel gate. Samsung SM-S921B verification remains **UNVERIFIED**; production signing remains **BLOCKED**.
+
 ## Execution plan
 
 Work through these steps in order, on the single canonical branch. Do not skip a failed gate or mark a later step complete on the strength of an earlier one.
