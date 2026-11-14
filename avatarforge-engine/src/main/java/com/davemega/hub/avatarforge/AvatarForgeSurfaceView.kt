@@ -207,6 +207,7 @@ class AvatarForgeSurfaceView(
         if (!running.compareAndSet(false, true)) return
         val worker = Thread({
             var nativeHandle = 0L
+            var failureStatus: String? = null
             try {
                 recordSmokeResult("STARTING")
                 onStatus("Starting AvatarForge GLES renderer and importing ${glbFile.name}…")
@@ -294,15 +295,31 @@ class AvatarForgeSurfaceView(
                 }
             } catch (failure: Throwable) {
                 val message = failure.message ?: failure.javaClass.simpleName
+                failureStatus = "AvatarForge renderer failed: $message"
                 recordSmokeResult("FAILED", error = message)
                 Log.e(TAG, "Renderer failed: $message", failure)
-                onStatus("AvatarForge renderer failed: $message")
             } finally {
-                if (nativeHandle != 0L) runCatching { nativeDestroy(nativeHandle) }
-                    .onFailure { onStatus("AvatarForge cleanup failed: ${it.message}") }
+                val cleanupFailure = if (nativeHandle != 0L) {
+                    runCatching { nativeDestroy(nativeHandle) }.exceptionOrNull()
+                } else {
+                    null
+                }
                 running.set(false)
                 if (renderThread === Thread.currentThread()) renderThread = null
-                onStatus(if (surfaceReady) "AvatarForge renderer stopped." else "AvatarForge surface released.")
+
+                // Do not overwrite the actual renderer failure with the generic stopped state.
+                // The instrumentation gate and the app status panel need the first real cause.
+                val terminalMessages = mutableListOf<String>()
+                failureStatus?.let(terminalMessages::add)
+                cleanupFailure?.let {
+                    terminalMessages.add("AvatarForge cleanup failed: ${it.message ?: it.javaClass.simpleName}")
+                }
+                val finalStatus = when {
+                    terminalMessages.isNotEmpty() -> terminalMessages.joinToString("; ")
+                    surfaceReady -> "AvatarForge renderer stopped."
+                    else -> "AvatarForge surface released."
+                }
+                onStatus(finalStatus)
             }
         }, "AvatarForge-GLES-Render")
         worker.priority = Thread.NORM_PRIORITY
