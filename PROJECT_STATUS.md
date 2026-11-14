@@ -2,6 +2,15 @@
 
 Last updated: 2026-11-13.
 
+## Latest engineering update — 2026-11-15
+
+- Active implementation: `integration/avatarforge-renderer-port`, PR #9. Stable `main` remains at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
+- PR #8 is closed and unmerged; its head is `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. Do not use it as the work branch.
+- Inspected PR #9 head `a42411302b7f9e9eabe171f844d8b4d646f1c23b`: Android CI and native host regression passed, but both generated-avatar GLES instrumentation workflows failed the visible-pixel gate. Their terminal message was overwritten to the generic `AvatarForge renderer stopped.`, concealing the first renderer exception.
+- **Implemented:** `78cb75d81557623622f6989a285ebf958dea2844` keeps the renderer failure and any teardown failure in the final status. This improves diagnosis only; it does not claim a renderer fix.
+- **Next:** run the consolidated exact-head validation on the new commit, inspect the now-preserved first renderer error and fix that root cause. Do not weaken the visible-pixel threshold or convert frame submission into a pixel pass.
+- **UNVERIFIED:** actual GLES visible-pixel rendering on the new commit; physical Samsung SM-S921B runtime. **BLOCKED:** production signing until the owner's keystore is configured in protected CI.
+
 ## Repository and active branch
 
 - Repository: [davealone69-gif/3d-mega-hub](https://github.com/davealone69-gif/3d-mega-hub)
