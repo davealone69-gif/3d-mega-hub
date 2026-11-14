@@ -43,6 +43,7 @@ class AvatarForgeSurfaceView(
     private val pixelCopyAttempts = AtomicInteger(0)
     private val pixelCopyActiveAttempt = AtomicInteger(0)
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var assetDigest = ""
     @Volatile private var surfaceReady = false
     @Volatile private var surfaceWidth = 0
     @Volatile private var surfaceHeight = 0
@@ -552,6 +553,8 @@ class AvatarForgeSurfaceView(
             .put("updatedAtEpochMs", System.currentTimeMillis())
             .put("sessionResult", if (failure == null) "ENDED" else "FAILED")
             .put("failure", failure ?: "")
+            .put("assetSha256", evidenceAssetSha256())
+            .put("build", evidenceBuild())
         val text = runCatching { report.toString(2) }.getOrElse { failure2 ->
             Log.e(TAG, "Could not serialise renderer telemetry", failure2)
             return
@@ -567,6 +570,30 @@ class AvatarForgeSurfaceView(
             }
         }.onFailure { Log.e(TAG, "Could not save renderer telemetry to Downloads", it) }
         Log.i(TAG, "TELEMETRY " + report.toString())
+    }
+
+    /* Build, device and asset identity for the saved reports (see EvidenceIdentity). Hashing reads
+       whole files, so the UI thread only ever receives values that the render thread has already
+       computed; the render thread computes them with its first report, before the import. */
+    private fun onUiThread(): Boolean = Looper.myLooper() == Looper.getMainLooper()
+
+    private fun evidenceBuild(): Any {
+        val identity = runCatching {
+            if (onUiThread()) EvidenceIdentity.buildIfReady() else EvidenceIdentity.build(context)
+        }.getOrNull()
+        return identity ?: org.json.JSONObject.NULL
+    }
+
+    /* The digest is kept for the life of the view, so the final report still carries it when the
+       file has been removed in the meantime. */
+    private fun evidenceAssetSha256(): String {
+        val known = assetDigest
+        if (known.isNotEmpty()) return known
+        val computed = runCatching {
+            if (onUiThread()) EvidenceIdentity.assetSha256IfReady(glbFile) else EvidenceIdentity.assetSha256(glbFile)
+        }.getOrDefault("")
+        if (computed.isNotEmpty()) assetDigest = computed
+        return computed
     }
 
     private fun recordSmokeResult(
@@ -608,6 +635,8 @@ class AvatarForgeSurfaceView(
             .put("updatedAtEpochMs", System.currentTimeMillis())
             .put("asset", glbFile.name)
             .put("assetBytes", glbFile.length())
+            .put("assetSha256", evidenceAssetSha256())
+            .put("build", evidenceBuild())
             .put("status", status)
             .put("backend", "OpenGL ES")
             .put("apiVersion", apiVersion)

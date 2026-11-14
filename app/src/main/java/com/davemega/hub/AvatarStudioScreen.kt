@@ -35,6 +35,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.davemega.hub.avatarforge.AvatarForgeEngine
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
 import com.davemega.hub.avatarforge.AvatarSpec
+import com.davemega.hub.avatarforge.EvidenceIdentity
 import com.davemega.hub.avatarforge.Build
 import com.davemega.hub.avatarforge.HairStyle
 import com.davemega.hub.avatarforge.Outfit
@@ -149,7 +150,10 @@ fun AvatarStudioScreen(
                                     importedGlb,
                                     verifyVisiblePixels = isDebuggable,
                                     onTelemetry = { snapshot ->
-                                        val lines = snapshot.summaryLines()
+                                        // Runs on the render thread; the build and asset digests
+                                        // were computed there when the session started.
+                                        val lines = snapshot.summaryLines() +
+                                            EvidenceIdentity.summaryLines(viewContext, importedGlb)
                                         android.os.Handler(android.os.Looper.getMainLooper()).post {
                                             if (viewportActive.get()) telemetryLines = lines
                                         }

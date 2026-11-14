@@ -64,6 +64,7 @@ for name in renderer_diagnostics.json renderer_telemetry.json; do
     echo "::endgroup::"
   fi
 done
+bash .github/scripts/identity-check.sh "$OUT/renderer_telemetry.json" || true
 echo "::group::Crashes, ANRs and fatal signals seen by the emulator"
 grep -E "FATAL EXCEPTION|Fatal signal|ANR in com\.davemega\.hub|Process: com\.davemega\.hub|is not responding|Input dispatching timed out|keyDispatchingTimedOut" "$OUT/logcat.txt" | tail -n 20 \
   || echo "none found in logcat"
