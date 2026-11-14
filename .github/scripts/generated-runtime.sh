@@ -53,7 +53,7 @@ echo "::endgroup::"
 # Put the measured renderer evidence in the job log itself so a result can be read without
 # downloading the artifact.
 echo "::group::Measured renderer evidence (logcat, tag AvatarForge)"
-grep -E "TELEMETRY |EVIDENCE|SLOW_START|STALL |SHUTDOWN_CUTOFF|surfaceDestroyed renderer|FRAME_PRESENTED|Renderer failed|Avatar LOD|GPU upload" \
+grep -E "TELEMETRY |EVIDENCE|SLOW_START|STALL |SHUTDOWN_CUTOFF|PixelCopy attempt|FRAME_PRESENTED|Renderer failed|Avatar LOD|GPU upload" \
   "$OUT/avatarforge-logcat.txt" | sed -E 's/^[0-9-]+ +[0-9:.]+ +[0-9]+ +[0-9]+ +//' | tail -n 60 || true
 echo "::endgroup::"
 for name in renderer_diagnostics.json renderer_telemetry.json; do
@@ -65,7 +65,7 @@ for name in renderer_diagnostics.json renderer_telemetry.json; do
   fi
 done
 echo "::group::Crashes, ANRs and fatal signals seen by the emulator"
-grep -E "FATAL EXCEPTION|Fatal signal|ANR in com\.davemega\.hub|Process: com\.davemega\.hub" "$OUT/logcat.txt" | tail -n 20 \
+grep -E "FATAL EXCEPTION|Fatal signal|ANR in com\.davemega\.hub|Process: com\.davemega\.hub|is not responding|Input dispatching timed out|keyDispatchingTimedOut" "$OUT/logcat.txt" | tail -n 20 \
   || echo "none found in logcat"
 echo "::endgroup::"
 

@@ -4,6 +4,11 @@ set -uo pipefail
 mkdir -p avatarforge-render-smoke-evidence
 chmod +x ./gradlew
 
+# Start from an empty, large log buffer: the importer is verbose, and the default buffer had
+# already dropped the measured evidence of a failed run by the time it was collected.
+adb logcat -c || true
+adb logcat -G 16M || true
+
 TEST_STATUS=0
 ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.AvatarForgeRendererSmokeTest --stacktrace || TEST_STATUS=$?
 
@@ -26,11 +31,11 @@ adb pull "$DIAGNOSTICS_DIR/renderer_telemetry.json" avatarforge-render-smoke-evi
 
 # Put the measured renderer evidence in the job log itself so it can be read without the artifact.
 echo "::group::Measured renderer evidence (logcat, tag AvatarForge)"
-grep -E "TELEMETRY |EVIDENCE|SLOW_START|STALL |SHUTDOWN_CUTOFF|surfaceDestroyed renderer|FRAME_PRESENTED|Renderer failed|Avatar LOD" \
+grep -E "TELEMETRY |EVIDENCE|SLOW_START|STALL |SHUTDOWN_CUTOFF|PixelCopy attempt|FRAME_PRESENTED|Renderer failed|Avatar LOD" \
   avatarforge-render-smoke-evidence/avatarforge-logcat.txt | sed -E 's/^[0-9-]+ +[0-9:.]+ +[0-9]+ +[0-9]+ +//' | tail -n 60 || true
 echo "::endgroup::"
 echo "::group::Crashes, ANRs and fatal signals seen by the emulator"
-grep -E "FATAL EXCEPTION|Fatal signal|ANR in com\.davemega\.hub|Process: com\.davemega\.hub" avatarforge-render-smoke-evidence/logcat.txt | tail -n 20 \
+grep -E "FATAL EXCEPTION|Fatal signal|ANR in com\.davemega\.hub|Process: com\.davemega\.hub|is not responding|Input dispatching timed out|keyDispatchingTimedOut" avatarforge-render-smoke-evidence/logcat.txt | tail -n 20 \
   || echo "none found in logcat"
 echo "::endgroup::"
 

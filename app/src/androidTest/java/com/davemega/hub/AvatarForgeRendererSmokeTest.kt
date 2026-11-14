@@ -14,6 +14,8 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
@@ -27,6 +29,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import org.junit.After
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -34,6 +37,30 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AvatarForgeRendererSmokeTest {
+    /**
+     * Every test hands the next one an idle GPU. A viewport left open keeps drawing; with a
+     * million-triangle avatar on a software-rendered emulator that is several seconds of GPU time
+     * per frame, which starved the next test's window until Android ended the run with an
+     * input-dispatch timeout (keyDispatchingTimedOut).
+     */
+    @After
+    fun closeTheAppAndWaitForTheRendererToBeReleased() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+            Stage.values().filter { it != Stage.DESTROYED }.forEach { stage ->
+                monitor.getActivitiesInStage(stage).forEach { it.finish() }
+            }
+        }
+        val deadline = SystemClock.elapsedRealtime() + 120_000L
+        var counters = AvatarForgeRendererRuntime.sessionCounters()
+        while (counters.live != 0L && SystemClock.elapsedRealtime() < deadline) {
+            SystemClock.sleep(250L)
+            counters = AvatarForgeRendererRuntime.sessionCounters()
+        }
+        android.util.Log.i("AvatarForge", "TEST_CLEANUP_EVIDENCE created=${counters.created} destroyed=${counters.destroyed} live=${counters.live}")
+    }
+
     @Test
     fun importedBundledGlbUsesAvatarForgeGlesAndProducesVisibleGeometry() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

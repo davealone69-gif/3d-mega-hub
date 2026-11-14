@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.opengl.GLES20
 import android.os.Debug
 import android.os.Handler
 import android.os.Looper
@@ -16,8 +17,6 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import java.io.File
 import java.io.FileOutputStream
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -48,9 +47,6 @@ class AvatarForgeSurfaceView(
     @Volatile private var surfaceWidth = 0
     @Volatile private var surfaceHeight = 0
     @Volatile private var renderThread: Thread? = null
-    /* Counted down by the render worker once its native session (and with it the EGL surface)
-       has been destroyed. */
-    @Volatile private var surfaceRelease: CountDownLatch? = null
 
     private val cameraLock = Any()
     private var pendingYawDeg = 0f
@@ -177,35 +173,18 @@ class AvatarForgeSurfaceView(
         pixelCopyPending.set(false)
         pixelCopyComplete.set(true)
         stopRenderer()
-        awaitSurfaceRelease()
-    }
-
-    /**
-     * Android releases the Surface as soon as surfaceDestroyed() returns. Give the render worker a
-     * short, bounded chance to finish the frame it is drawing and destroy its EGL surface first, so
-     * that an ordinary shutdown ends without a failed swap.
-     *
-     * This is deliberately not a join. A renderer that is slow, or blocked inside the driver, must
-     * never hold the UI thread: when the wait expires the worker simply finishes later. That is
-     * safe because the native session holds its own ANativeWindow reference, and the frame Android
-     * cut off is reported as such instead of being counted as a renderer error.
-     */
-    private fun awaitSurfaceRelease() {
-        val latch = surfaceRelease ?: return
-        val waitStarted = System.nanoTime()
-        val released = try {
-            latch.await(SURFACE_RELEASE_WAIT_MS, TimeUnit.MILLISECONDS)
-        } catch (interrupted: InterruptedException) {
-            Thread.currentThread().interrupt()
-            false
-        }
-        Log.i(TAG, "surfaceDestroyed rendererReleasedSurface=$released waitedMs=${(System.nanoTime() - waitStarted) / 1_000_000L}")
     }
 
     private fun stopRenderer() {
         // surfaceDestroyed/surfaceCreated are dispatched on the main thread. The render
         // worker owns EGL, ANativeWindow and engine teardown, so only signal it here.
         // startRenderer() serializes any replacement session behind worker completion.
+        //
+        // The UI thread deliberately does not wait for the worker, not even briefly. On a slow
+        // GPU a frame can take seconds, and anything that holds the UI thread while the GPU is
+        // busy moves the app towards an input-dispatch ANR. The native session keeps its own
+        // ANativeWindow reference, so the worker can finish after the Surface is gone; the frame
+        // Android cuts off is then reported as a cut-off frame, not as a renderer error.
         running.set(false)
     }
 
@@ -241,8 +220,6 @@ class AvatarForgeSurfaceView(
         }
         if (renderThread === previous) renderThread = null
         if (!running.compareAndSet(false, true)) return
-        val released = CountDownLatch(1)
-        surfaceRelease = released
         val worker = Thread({
             var nativeHandle = 0L
             var terminalFailure: String? = null
@@ -380,8 +357,16 @@ class AvatarForgeSurfaceView(
                     }
                     if (verifyVisiblePixels && presentedThisFrame && presentedFrames >= 3 &&
                         drawCalls > 0 && triangles > 0 && boundsInFrustum && !pixelCopyComplete.get()) {
+                        /* PixelCopy copies whichever buffer was queued last and gives the GPU only
+                           500 ms to finish it. On a slow GPU the frame just queued is still being
+                           drawn, so the copy timed out although the frame was correct. Finish this
+                           frame's GPU work first, then hold the next frame until the copy has been
+                           answered: the verdict is then about this frame on any GPU. Debug builds
+                           only; the pause lasts as long as one PixelCopy. */
+                        GLES20.glFinish()
                         requestVisiblePixelCopy(apiVersion, frames, drawCalls, triangles, presentedFrames,
                             boundsInFrustum, outsideCorners, glError, eglError)
+                        while (pixelCopyPending.get() && running.get() && surfaceReady) Thread.sleep(5)
                     }
                     val remaining = 16_666_667L - (System.nanoTime() - now)
                     if (remaining > 0L) Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
@@ -406,8 +391,6 @@ class AvatarForgeSurfaceView(
                 var cleanupFailure: String? = null
                 if (nativeHandle != 0L) runCatching { nativeDestroy(nativeHandle) }
                     .onFailure { cleanupFailure = "AvatarForge cleanup failed: ${it.message}" }
-                /* The EGL surface and the ANativeWindow reference are gone from here on. */
-                released.countDown()
                 if (finalSnapshot != null) {
                     latestTelemetry = finalSnapshot
                     runCatching { onTelemetry?.invoke(finalSnapshot) }
@@ -751,6 +734,7 @@ class AvatarForgeSurfaceView(
                                 presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
                             onStatus(message)
                         } else {
+                            Log.w(TAG, "PixelCopy attempt $attempt failed (result=$copyResult); retrying after next presented frame")
                             onStatus("PixelCopy attempt $attempt failed (result=$copyResult); retrying after next presented frame")
                         }
                         return@request
@@ -863,8 +847,6 @@ class AvatarForgeSurfaceView(
         private const val NO_VALID_FRAME_TIMEOUT_NS = 15_000_000_000L
         /** After a session has rendered, report (not kill) a gap this long with no valid frame. */
         private const val STALL_TIMEOUT_NS = 15_000_000_000L
-        /* Upper bound for the UI thread in surfaceDestroyed(); far below any ANR threshold. */
-        private const val SURFACE_RELEASE_WAIT_MS = 250L
         private const val TELEMETRY_PERIOD_NS = 1_000_000_000L
         private const val FRAME_WINDOW = 240
         /** Must match nativeGetMetrics in avatarforge_renderer_jni.cpp. */
