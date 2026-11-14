@@ -12,23 +12,66 @@ All implementation, fixes, tests and handover updates are to be made on one bran
 
 Do not create another implementation branch. Do not split work across competing branches. Do not force-push. Keep historical branches as recovery references until the canonical branch is verified and the owner explicitly authorises branch deletion.
 
-## Latest handover: 2026-11-14
+## Latest handover: 2026-11-15
 
-**Overall status: PARTIAL.** This update records email evidence only. It does not claim a new build, runtime test, merge, or phone verification.
+**Overall avatar-comparison status: MEASURED_WITH_GAPS.** This update records the supplied Goku report and follow-up email. It does not claim independent local re-hashing, a new build, renderer runtime verification, anatomical validation, or phone verification.
 
-- The default female LOD0 GLB export is reported unchanged and validated. A full SHA-256 has reportedly been recorded by the agent for the canonical handover, but the email did not include the digest value. Do not invent or transcribe a hash until the actual value and artifact identity are available.
-- The maximum-cardinality one-to-one mirror matcher remains running at 100% CPU and approximately 1.1 GiB RSS. The agent reports no error or output yet. It has not produced a final mirror result or LOD verdict. Preserve this run; do not replace it with a surface-distance metric or report it as passed.
-- The actual app-generated avatar GLB comparison target is still missing from the agent's workspace. Seed-1337 was explicitly identified as a bad test fixture and must not be compared with `mylove.glb` as if it were the real generated avatar. The owner has already supplied `mylove.glb`; do not ask for it again. The missing item is the actual GLB exported by the app, or a confirmed exact export variant/path.
-- The five-project donor audit remains PARTIAL: no donor was found to be a ready-to-integrate photorealistic animated-avatar engine; no donor code was copied or merged; no Android device runtime or photo-reference quality test was performed. The audit's detailed findings and limitations are recorded in the 2026-11-14 email handover.
-- Existing architecture and verification boundaries below remain in force. In particular, source/export validation is not Android renderer verification, and the Samsung SM-S921B runtime remains UNVERIFIED unless the owner tests the exact APK.
+### Preserved generated LOD0 artifact
+
+The supplied report identifies the generated artifact as:
+
+- **Path in Goku's workspace:** `/workspace/3d-mega-hub-canonical/exports/avatar_default_female_LOD0.glb`
+- **Size:** 83,430,312 bytes
+- **SHA-256:** `56b072cb43203fe9c2ca0b231d28a3601b59914465647fa1da95a6890daccd6c`
+- **Reported verification:** exact size and SHA-256 match the required preserved artifact identity.
+
+The report also identifies the reference copy as `/home/ubuntu/upload/eYPzGGq49EUyWbNcDwqwN2/mylove.glb`, 9,287,272 bytes, SHA-256 `8ef94a008b79a2ec8524962d810d92716f03f8476726dd8d8b7fc77227426a26`. This is a separately identified copy. Do not conflate its hash with the previously recorded Dropbox content hash, and do not redistribute or commit the private reference asset.
+
+**Evidence boundary:** these identities and hash checks are reported in the supplied agent report; they have not been independently recomputed in this repository workspace during this README update. The generated GLB remains preserved and must not be modified.
+
+### Alignment method (reported)
+
+- Triangle-plane intersections are taken at (Y = Y_{min} + fH).
+- X/Z remain raw model axes except for the explicitly yaw-aligned generated model.
+- (H) is each model's full-scene Y extent: generated **1.814858 m**, reference **0.999842 m**.
+- PCA major-axis estimation uses covariance of unique, triangle-referenced world-space vertices: **550,098 generated** and **64,914 reference**.
+- Generated PCA angle: **−175.62054°** (equivalent modulo 180° to +4.37946°).
+- Reference PCA angle: **+178.33226°** (equivalent modulo 180° to −1.66774°).
+- Relative yaw applied to generated geometry: **+6.04720° about Y**, with reference orientation fixed.
+- Rotation convention: (x'=\cos\theta\,x+\sin\theta\,z), (z'=-\sin\theta\,x+\cos\theta\,z).
+
+This is a whole-mesh, pose-sensitive alignment estimate, not independently validated anatomical registration. The raw-axis baseline is retained below; the aligned values are a re-slice after rotating the generated geometry.
+
+### Cross-section measurements
+
+All values are dimensionless spans divided by each model's stated (H). The pre-alignment pairs below are the supplied raw-axis generated/reference measurements. The post-alignment values are supplied generated/reference span-to-height ratios.
+
+| Height fraction | Pre-alignment generated X/Z | Pre-alignment reference X/Z | Post-alignment X ratio | Post-alignment Z ratio |
+|---|---:|---:|---:|---:|
+| 0.10 | 0.1481 / 0.0581 | 0.4006 / 0.2347 | 0.368340 | 0.288012 |
+| 0.25 | 0.1725 / 0.0862 | 0.4579 / 0.1978 | 0.375506 | 0.483192 |
+| 0.50 | 0.2848 / 0.1760 | 0.5449 / 0.1435 | 0.520323 | 1.261601 |
+| 0.75 | 0.2399 / 0.1409 | 0.6283 / 0.2095 | 0.380263 | 0.682615 |
+| 0.90 | 0.1064 / 0.1399 | 0.1866 / 0.1548 | 0.586120 | 0.929235 |
+
+The earlier descriptive whole-mesh normalized X/Z spans were generated **0.3085 / 0.2101** and reference **0.7996 / 0.3579**. These are descriptive geometry measurements, not anatomy-labelled regions or pass/fail thresholds.
+
+### Remaining comparison gaps
+
+- **Torso-only comparison: INCOMPLETE.** Available topology/contour components do not provide a defensible limb mask. No arbitrary mask or anatomical landmark labels were introduced.
+- **Slice residual classifications:** compatibility notes only; not an anatomical verdict.
+- **Rotation validity:** not independently validated against anatomical landmarks; differing poses and whole-mesh geometry can affect PCA.
+- **Height registration:** the common definition is documented as full-scene Y extent, but it does not establish equivalent anatomical landmarks.
+- **Mirror matching:** remains a separate analysis. The previously reported maximum-cardinality matcher did not match all IDs; that result is not proof of anatomical asymmetry. Keep the provisional 4 mm criterion unchanged and separate from this cross-section comparison.
+- **Device verification:** UNVERIFIED unless the exact APK is installed and tested on the owner's Samsung device.
 
 ### Immediate next actions
 
-1. Let the existing one-to-one mirror matcher finish and capture its complete output, exit status, input identities and resource/runtime details. Do not substitute a different metric mid-run.
-2. Record the exact LOD0 GLB path, byte size and SHA-256 in the evidence ledger. Preserve the artifact.
-3. Locate/export the real app-generated avatar GLB and record its exact path, byte size and SHA-256. Do not use the known-bad seed-1337 fixture as a proxy.
-4. Only then run the intended reference comparison against `mylove.glb`, keeping the reference's private asset status and no-redistribution restriction intact.
-5. Continue all implementation on the canonical integration branch. Keep `main` unchanged. Do not call the work complete until exact-head build/runtime evidence and owner phone verification exist.
+1. Preserve both GLB identities and keep the generated artifact unchanged.
+2. Complete the remaining supplied report sections for height registration, per-slice residual classifications and any limitations. Do not invent missing classifications.
+3. Do not fabricate a torso-only result. Only proceed if a defensible, documented mask or independent anatomical landmarks become available.
+4. Keep the 4 mm mirror analysis separate; do not loosen its threshold or convert unmatched IDs into an anatomical verdict.
+5. Update this handover only when additional measurements or independently verified artifact/build/runtime evidence are available.
 
 ## Consolidation decisions
 
