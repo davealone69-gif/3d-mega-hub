@@ -190,9 +190,21 @@ class GeneratedAvatarRuntimeTest {
                 surfaceView = view
             }
 
-            val rendered = visible.await(120, TimeUnit.SECONDS)
-            if (!rendered) failed.await(1, TimeUnit.SECONDS)
+            /* Software-rendered CI emulators need tens of seconds for the first frames of a
+               full-screen, high-quality avatar. Wait for a real verdict - verified pixels or a
+               reported renderer failure - instead of a fixed sleep, and stop early on failure. */
+            var rendered = false
+            val verdictDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(300)
+            while (System.nanoTime() < verdictDeadline) {
+                if (visible.await(500, TimeUnit.MILLISECONDS)) {
+                    rendered = true
+                    break
+                }
+                if (failed.count == 0L) break
+            }
             val status = latestStatus.get()
+            val rendererError = preferences.getString("error", "") ?: ""
+            val telemetry = AvatarForgeSurfaceView.latestTelemetry?.takeIf { it.assetName == result.file.name }
             val pixelCount = preferences.getInt("pixel_count", 0)
             val screenshotPath = preferences.getString("screenshot_path", null)
             val screenshotSource = screenshotPath?.let(::File)
@@ -206,6 +218,9 @@ class GeneratedAvatarRuntimeTest {
                 .put("boundsInFrustum", preferences.getBoolean("bounds_in_frustum", false))
                 .put("captureUpdatedAtEpochMs", preferences.getLong("updated_at_epoch_ms", 0L))
                 .put("screenshotPathAppPrivate", screenshotPath ?: JSONObject.NULL)
+                .put("rendererError", rendererError)
+                .put("telemetry", telemetry?.toJson() ?: JSONObject.NULL)
+            android.util.Log.i("AvatarForge", "PRODUCTION_SURFACE_EVIDENCE $evidence")
             if (rendered && screenshotSource != null && screenshotSource.isFile) {
                 val archivedScreenshot = File(outputDir, "generated_avatar_from_glb.png")
                 screenshotSource.copyTo(archivedScreenshot, overwrite = true)
@@ -214,14 +229,22 @@ class GeneratedAvatarRuntimeTest {
                     .put("screenshotSha256", sha256(archivedScreenshot))
             }
             saveEvidence()
-            assertTrue("Production GLB-to-GLES render did not become visibly verified. $status", rendered)
+            assertTrue(
+                "Production GLB-to-GLES render did not become visibly verified. status=[$status] rendererError=[$rendererError] telemetry=${telemetry?.toJson()}",
+                rendered
+            )
             assertTrue("Production renderer visible-pixel threshold not met: $pixelCount", pixelCount >= VISIBILITY_THRESHOLD)
             assertTrue("Production renderer did not submit draw calls", preferences.getInt("draw_calls", 0) > 0)
             assertTrue("Production renderer did not present multiple frames", preferences.getInt("presented_frames", 0) >= 3)
             assertTrue("Generated GLB screenshot was not saved", screenshotSource?.isFile == true)
+            assertTrue("Production renderer telemetry was not measured for the generated GLB", telemetry != null)
+            assertTrue("Production renderer raised GL errors: ${telemetry?.toJson()}", telemetry?.glErrorFrames == 0)
+            assertTrue("Production renderer had EGL swap failures: ${telemetry?.toJson()}", telemetry?.eglErrorFrames == 0)
+            assertTrue("Production renderer had failed draw calls: ${telemetry?.toJson()}", telemetry?.failedDrawCalls == 0)
         } catch (failure: Throwable) {
             evidence.put("failure", failure.message ?: failure.javaClass.simpleName)
                 .put("lastRendererStatus", latestStatus.get())
+                .put("rendererError", preferences.getString("error", "") ?: "")
             saveEvidence()
             throw failure
         } finally {
@@ -230,6 +253,26 @@ class GeneratedAvatarRuntimeTest {
             }
             scenario.close()
         }
+
+        /* The surface is gone; the render thread must now release the renderer, engine and
+           ANativeWindow. A slow software frame may still be in flight, so poll for the release. */
+        val releaseDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120)
+        var counters = AvatarForgeRendererRuntime.sessionCounters()
+        while (counters.live != 0L && System.nanoTime() < releaseDeadline) {
+            Thread.sleep(250)
+            counters = AvatarForgeRendererRuntime.sessionCounters()
+        }
+        val finalTelemetry = AvatarForgeSurfaceView.latestTelemetry?.takeIf { it.assetName == result.file.name }
+        evidence.put("nativeSessionsCreated", counters.created)
+            .put("nativeSessionsDestroyed", counters.destroyed)
+            .put("nativeSessionsLive", counters.live)
+            .put("finalTelemetry", finalTelemetry?.toJson() ?: JSONObject.NULL)
+        saveEvidence()
+        android.util.Log.i("AvatarForge", "PRODUCTION_SURFACE_FINAL_EVIDENCE $evidence")
+        assertTrue(
+            "Native AvatarForge render sessions were not released after the production surface closed: $counters",
+            counters.live == 0L && counters.created > 0L
+        )
     }
 
     @Test(timeout = 600000)

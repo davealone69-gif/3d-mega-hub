@@ -17,6 +17,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import com.davemega.hub.avatarforge.AvatarForgeRendererRuntime
+import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
+import com.davemega.hub.avatarforge.RendererTelemetry
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -434,5 +437,126 @@ class AvatarForgeRendererSmokeTest {
             coverage >= 0.02f && centralChangedSamples >= 80 &&
                 maxChangedX - minChangedX >= 14 && maxChangedY - minChangedY >= 14
         )
+
+        /* ---- Camera controls: real injected touch input must move the native camera, the
+           renderer must keep presenting valid frames, and the picture must actually change. ---- */
+        val beforeDrag = waitForTelemetry("a measured snapshot of ${glb.name} before the camera drag", 30_000L) {
+            it.assetName == glb.name && it.framesPresented >= 3L
+        }
+        val location = IntArray(2)
+        instrumentation.runOnMainSync { surfaceView.getLocationOnScreen(location) }
+        val centreX = location[0] + surfaceView.width / 2
+        val centreY = location[1] + surfaceView.height / 2
+        val halfDrag = surfaceView.width / 8
+        repeat(3) {
+            device.swipe(centreX - halfDrag, centreY, centreX + halfDrag, centreY, 12)
+            SystemClock.sleep(300L)
+        }
+        val afterDrag = waitForTelemetry("the camera yaw to change after three horizontal drags on ${glb.name}", 45_000L) {
+            it.assetName == glb.name &&
+                kotlin.math.abs(it.cameraYawDeg - beforeDrag.cameraYawDeg) > 5.0 &&
+                it.framesPresented > beforeDrag.framesPresented
+        }
+        assertTrue("Renderer raised GL errors while orbiting: ${afterDrag.toJson()}", afterDrag.glErrorFrames == 0)
+        assertTrue("Renderer had EGL swap failures while orbiting: ${afterDrag.toJson()}", afterDrag.eglErrorFrames == 0)
+        assertTrue("Renderer had failed draw calls while orbiting: ${afterDrag.toJson()}", afterDrag.failedDrawCalls == 0)
+        assertTrue("Renderer stalled while orbiting: ${afterDrag.toJson()}", afterDrag.stallEvents == 0)
+        assertTrue("Renderer reported no draw calls after orbiting: ${afterDrag.toJson()}", afterDrag.drawCalls > 0)
+
+        // Let at least two more frames present with the moved camera, then compare the picture.
+        waitForTelemetry("two further presented frames after the camera drag", 45_000L) {
+            it.assetName == glb.name && it.framesPresented >= afterDrag.framesPresented + 2L
+        }
+        val orbited = captureSurface(surfaceView)
+        var differingSamples = 0
+        for (gy in 0 until gridHeight) {
+            val y = ((gy + 0.5f) * orbited.height / gridHeight).toInt().coerceIn(0, orbited.height - 1)
+            val referenceY = crop.top + ((gy + 0.5f) * crop.height() / gridHeight).toInt()
+            for (gx in 0 until gridWidth) {
+                val x = ((gx + 0.5f) * orbited.width / gridWidth).toInt().coerceIn(0, orbited.width - 1)
+                val referenceX = crop.left + ((gx + 0.5f) * crop.width() / gridWidth).toInt()
+                val first = capturedImage.getPixel(referenceX, referenceY)
+                val second = orbited.getPixel(x, y)
+                val channelDelta = maxOf(
+                    kotlin.math.abs(((first shr 16) and 0xff) - ((second shr 16) and 0xff)),
+                    kotlin.math.abs(((first shr 8) and 0xff) - ((second shr 8) and 0xff)),
+                    kotlin.math.abs((first and 0xff) - (second and 0xff))
+                )
+                if (channelDelta > 24) differingSamples++
+            }
+        }
+        FileOutputStream(File(externalDirectory, "avatarforge-renderer-smoke-orbited.png")).use { stream ->
+            orbited.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        }
+        val cameraEvidence = org.json.JSONObject()
+            .put("asset", glb.name)
+            .put("yawBeforeDeg", beforeDrag.cameraYawDeg)
+            .put("yawAfterDeg", afterDrag.cameraYawDeg)
+            .put("framesPresentedBefore", beforeDrag.framesPresented)
+            .put("framesPresentedAfter", afterDrag.framesPresented)
+            .put("differingGridSamples", differingSamples)
+            .put("gridSamples", gridWidth * gridHeight)
+            .put("telemetryAfterDrag", afterDrag.toJson())
+        android.util.Log.i("AvatarForge", "CAMERA_EVIDENCE $cameraEvidence")
+        assertTrue(
+            "Orbiting the camera did not change the rendered picture: $cameraEvidence",
+            differingSamples >= (gridWidth * gridHeight) / 100
+        )
+
+        /* ---- Native lifetime: closing the screen must release the renderer, engine and window. ---- */
+        instrumentation.runOnMainSync { activity.finish() }
+        val releaseDeadline = SystemClock.elapsedRealtime() + 60_000L
+        var counters = AvatarForgeRendererRuntime.sessionCounters()
+        while (counters.live != 0L && SystemClock.elapsedRealtime() < releaseDeadline) {
+            SystemClock.sleep(250L)
+            counters = AvatarForgeRendererRuntime.sessionCounters()
+        }
+        android.util.Log.i("AvatarForge", "SESSION_EVIDENCE asset=${glb.name} created=${counters.created} destroyed=${counters.destroyed} live=${counters.live}")
+        assertTrue(
+            "Native AvatarForge render sessions were not released after the Activity finished: $counters",
+            counters.live == 0L && counters.created > 0L
+        )
+    }
+
+    private fun waitForTelemetry(
+        what: String,
+        timeoutMs: Long,
+        accept: (RendererTelemetry) -> Boolean
+    ): RendererTelemetry {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        var last: RendererTelemetry? = AvatarForgeSurfaceView.latestTelemetry
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val current = AvatarForgeSurfaceView.latestTelemetry
+            if (current != null) {
+                last = current
+                if (accept(current)) return current
+            }
+            SystemClock.sleep(250L)
+        }
+        throw AssertionError("Timed out after $timeoutMs ms waiting for $what. Last measured telemetry: ${last?.toJson()}")
+    }
+
+    /** PixelCopy of the SurfaceView's own buffer, retrying only the documented transient results. */
+    private fun captureSurface(surfaceView: SurfaceView): Bitmap {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        var lastResult = PixelCopy.ERROR_UNKNOWN
+        for (delayMs in longArrayOf(0L, 250L, 500L, 1_000L, 2_000L)) {
+            if (delayMs > 0L) SystemClock.sleep(delayMs)
+            val candidate = Bitmap.createBitmap(surfaceView.width, surfaceView.height, Bitmap.Config.ARGB_8888)
+            val latch = CountDownLatch(1)
+            var result = PixelCopy.ERROR_UNKNOWN
+            instrumentation.runOnMainSync {
+                PixelCopy.request(surfaceView, candidate, { copyResult ->
+                    result = copyResult
+                    latch.countDown()
+                }, Handler(Looper.getMainLooper()))
+            }
+            if (latch.await(5, TimeUnit.SECONDS)) {
+                lastResult = result
+                if (result == PixelCopy.SUCCESS) return candidate
+            }
+            candidate.recycle()
+        }
+        throw AssertionError("PixelCopy could not capture the AvatarForge SurfaceView after the camera drag; lastResult=$lastResult")
     }
 }
