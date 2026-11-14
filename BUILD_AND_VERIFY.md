@@ -70,6 +70,7 @@ A gate proves only what it ran on. An emulator pass is not a phone pass.
 | Generated avatar through the production surface | same | Generate, export, import and render full-screen through `AvatarForgeSurfaceView`, with PixelCopy proof |
 | Native exception barrier | `avatarforge-generated-runtime.yml` | Real C++ exceptions thrown inside the JNI barrier arrive as Java exceptions with the right text, and native code keeps running afterwards |
 | Debug APK inspection | `avatarforge-diagnostic-apk.yml` | The debug APK that is published for the phone test is read back before the emulator tests run: application ID, version, SDK levels, debuggable flag, ABIs, library set, library dependencies, signature and signing certificate. A mismatch fails the job. The log prints `APK_INSPECTION`, and `APK_CHAIN` shows that the inspected file and the uploaded file are the same |
+| Downloaded-APK verification | `avatarforge-diagnostic-apk.yml` | A separate job downloads the published artifact on another machine, inspects the APK again, and checks that it is the file that was built, inspected and run by the production render test of the same commit and workflow run. Any broken link fails the job |
 | Report identity | every emulator job that renders | The job log prints the identity block from the saved report and compares the APK SHA-256 the app reports for itself with the APK file that was installed. Printed as evidence, not enforced |
 | Signed release preview | `release-preview.yml` | Package name, versions, SDK levels, ABI set, required libraries and both signatures are read back from the APK and AAB and compared with the Gradle configuration. A second clean build, made without the Gradle build cache, must be byte-identical for both files; when it is not, the gate fails and names the part of the file that differs |
 | Emulator launch, debug and signed release | `release-preview.yml` | Install, launch, Filament sample loads and presents a frame, no crash or ANR. The signed, minified release APK is the same file whose hash was verified |
@@ -101,17 +102,36 @@ These are the owner's rules for using diagnostics as evidence. They are kept as 
 | PIXELS_VERIFIED | PixelCopy captured foreground geometry above threshold | Model quality, correct appearance controls, animation or long-session stability |
 | FAILED | A required diagnostic stage failed | Root cause, until failure details are inspected |
 
-A test APK counts as ready for the phone only when all five conditions hold for one commit:
+### Test APK readiness gate
 
-1. The production generated-GLB-to-GLES `SurfaceView` instrumentation test passes on that commit.
-2. Every required Android build job passes on that commit.
-3. A fresh APK artifact comes from a workflow run of that commit.
-4. The APK itself is verified: application ID, signing certificate and SHA-256, with the artifact URL recorded.
-5. The run's commit, the test result, the artifact and the APK inspection all point at the same commit.
+The owner's gate, kept as written:
 
-A commit that changes only documentation does not change the APK's source. The README names the commit that the evidence belongs to, and `git diff --stat <that commit>..HEAD` shows that only documents changed after it.
+> A test APK is **READY** only when every condition below is independently proven for the same current PR head commit:
+>
+> 1. The production generated-GLB-to-GLES `SurfaceView` runtime instrumentation test passes on that exact head. A generated-avatar unit test, basic pixel test, imported-GLB test, emulator install-only smoke, or unrelated green check is not a substitute.
+> 2. Every required Android build job passes on that exact head, including the required Android compilation, unit/lint/R8/native and renderer test jobs configured for this PR.
+> 3. A fresh APK artifact is produced by a workflow run for that exact head. A stale artifact or artifact from a different SHA is rejected.
+> 4. Download the artifact and verify the APK itself: package/application ID, signing certificate/signature, and APK SHA-256. Record the exact artifact URL, source commit, package, signing identity and digest.
+> 5. Correlate workflow run head SHA, test result, artifact provenance and APK inspection. If any link is missing or ambiguous, status remains **PARTIAL**, **UNVERIFIED** or **BLOCKED**, never READY.
+>
+> Do not merge PR #9 to `main`. Do not send a readiness notification until all five conditions are satisfied. On the first fully verified ready APK, notify the owner with the exact commit SHA, direct artifact download link, APK SHA-256 and production render-test evidence, then stop monitoring.
 
-Each CI job builds its own debug APK and signs it with a debug key created on that runner, so debug APKs from different jobs have different SHA-256 values even for the same commit. Only the artifact named in the README matches the SHA-256 published there.
+How the workflows prove each condition:
+
+| Condition | Proof | Where to read it |
+|---:|---|---|
+| 1 | `GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` passes | `avatarforge-diagnostic-apk.yml`, job "Build debug APK and verify generated avatar pixels": `PIXELS_VERIFIED` and the test's PASS line |
+| 2 | Unit tests, lint, R8, debug APK, native regression and the render smoke pass | `android.yml`, all six jobs |
+| 3 | The debug APK is uploaded by the run that built and tested it | Artifact `3D-Mega-Hub-generated-avatar-diagnostic-debug-apk` of that run |
+| 4 | A second job downloads the artifact on another machine and inspects the APK: application ID, version, SDK levels, ABIs, library dependencies, signature, certificate, SHA-256 | Job "Download the published debug APK and verify it": `APK_INSPECTION` |
+| 5 | The same job checks that the downloaded file is the file the build job inspected, the file named in `SHA256SUMS`, and the APK the app reported for itself while the production render test ran, and that the build record names this commit and this workflow run | `DOWNLOAD_VERIFY … chain_complete=true` |
+
+Two limits follow from how Git and GitHub work, and they are stated wherever a result is reported:
+
+- A commit cannot contain the results of its own workflow runs. The record for a head commit is written into the pull request description after its runs have finished. The README gives the results for the commit before it, and `git diff --stat <that commit>..HEAD` shows what changed since.
+- A workflow started by a pull request builds GitHub's merge of the head into the base branch, and reports that merge commit as its source. A workflow started by hand on the branch builds the head commit itself. The debug APK for the phone comes from a run started on the branch, so its record names the head commit.
+
+Each CI job builds its own debug APK and signs it with a debug key created on that runner, so debug APKs from different jobs have different SHA-256 values even for the same commit. Only the one artifact named in the readiness record matches the SHA-256 published there.
 
 ## Local commands
 
@@ -146,7 +166,7 @@ A release build without all four signing values stops with a `BLOCKED` message. 
 
 ## Phone gate: Samsung SM-S921B
 
-Only the owner can run this. Use the debug APK named under "Artifacts" in the [README](README.md): it is the file that passed the emulator gates, and its SHA-256, application ID and signing certificate are recorded there. The debug build is the one that carries the on-screen diagnostics and the visible-pixel check.
+Only the owner can run this. Use the debug APK named in the readiness record at the top of the open pull request: it is the file that passed the emulator gates for the head commit, and its SHA-256, application ID and signing certificate are recorded there. The debug build is the one that carries the on-screen diagnostics and the visible-pixel check.
 
 1. Install the APK. Each CI debug APK is signed with its own throwaway key, so Android refuses to install it over an earlier build: uninstall the earlier build first.
 2. Open **Avatar**. The bundled sample should appear in the viewport.
