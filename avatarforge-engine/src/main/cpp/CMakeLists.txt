@@ -125,5 +125,14 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_imported_glb_pbr_test PRIVATE afcore)
     add_test(NAME imported_glb_pbr_regression COMMAND af_imported_glb_pbr_test)
+
+    # Evidence probe: generates an avatar through the same sequence as the Android JNI layer and
+    # measures orientation, mirror symmetry and the export/import round trip. It takes about a
+    # minute, so it is built with the host tests but deliberately not registered with CTest.
+    add_executable(af_host_probe
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/host_avatar_probe.cpp)
+    target_include_directories(af_host_probe PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_host_probe PRIVATE afcore)
 endif()
 
