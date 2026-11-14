@@ -40,13 +40,13 @@ jobs:
       - name: Build host regression executable
         run: |
           cmake --build build/avatarforge-host \
-            --target af_glb_extension_test af_camera_frustum_test af_scene_visibility_test af_avatar_lod_test af_imported_glb_pbr_test \
+            --target af_glb_extension_test af_camera_frustum_test af_scene_visibility_test af_avatar_lod_test af_imported_glb_pbr_test af_glb_import_robustness_test \
             --parallel 2
-      - name: Run WebP, PBR import and camera regression tests
+      - name: Run WebP, PBR import, camera and importer-robustness regression tests
         run: |
           ctest --test-dir build/avatarforge-host \
             --output-on-failure \
-            -R "glb_extension_regression|camera_frustum_regression|scene_visibility_regression|avatar_lod_regression|imported_glb_pbr_regression"
+            -R "glb_extension_regression|camera_frustum_regression|scene_visibility_regression|avatar_lod_regression|imported_glb_pbr_regression|glb_import_robustness"
 
   android-generated-avatar-test:
     name: Build debug APK and verify generated avatar pixels
@@ -67,6 +67,8 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace :app:assembleDebug
+      - name: Inspect the debug APK that is published for the phone test
+        run: bash .github/scripts/inspect-debug-apk.sh app/build/outputs/apk/debug/app-debug.apk apk-inspection
       - name: Enable KVM hardware acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -101,6 +103,15 @@ jobs:
           if [ -s app/build/outputs/apk/debug/app-debug.apk ]; then
             cp app/build/outputs/apk/debug/app-debug.apk avatarforge-diagnostic-output/3D-Mega-Hub-generated-avatar-diagnostic-debug.apk
             sha256sum avatarforge-diagnostic-output/3D-Mega-Hub-generated-avatar-diagnostic-debug.apk > avatarforge-diagnostic-output/SHA256SUMS
+          fi
+          if [ -s apk-inspection/APK_INSPECTION.txt ]; then
+            cp -R apk-inspection avatarforge-diagnostic-output/
+            # The inspected file, the file the emulator tests installed and the uploaded file must
+            # be one and the same. Printed as evidence for the log.
+            inspected="$(sed -n 's/^sha256=//p' apk-inspection/APK_INSPECTION.txt | head -n 1)"
+            uploaded="$(cut -d' ' -f1 avatarforge-diagnostic-output/SHA256SUMS 2>/dev/null | head -n 1 || true)"
+            if [ -n "$inspected" ] && [ "$inspected" = "$uploaded" ]; then same=true; else same=false; fi
+            echo "APK_CHAIN inspected_sha256=$inspected uploaded_sha256=$uploaded same_file=$same"
           fi
           if [ -d app/build/outputs/androidTest-results ]; then
             cp -R app/build/outputs/androidTest-results avatarforge-diagnostic-output/

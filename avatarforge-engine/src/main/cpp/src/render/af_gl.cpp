@@ -297,7 +297,14 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
     }
 #endif
     if (display_ == EGL_NO_DISPLAY) { *error = "eglGetDisplay failed"; return false; }
-    if (!eglInitialize(display_, nullptr, nullptr)) { *error = "eglInitialize failed"; return false; }
+    if (!eglInitialize(display_, nullptr, nullptr)) {
+        /* Android counts eglInitialize/eglTerminate per process. Forget the display so that teardown
+         * does not call eglTerminate for an initialisation that never succeeded: that would release
+         * a reference owned by another user of the display (the UI toolkit or Filament). */
+        display_ = EGL_NO_DISPLAY;
+        *error = "eglInitialize failed";
+        return false;
+    }
 
     /* Require ES 3.1: ES3_BIT_KHR with a 3.x context, plus a depth buffer for the shadow pass and
        a window surface that EGL itself considers RGB-capable. Multisampling is done with

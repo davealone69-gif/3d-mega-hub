@@ -137,6 +137,17 @@ if(BUILD_TESTING AND NOT ANDROID)
     target_link_libraries(af_imported_glb_pbr_test PRIVATE afcore)
     add_test(NAME imported_glb_pbr_regression COMMAND af_imported_glb_pbr_test)
 
+    # The importer must reject or accept every mutated file without crashing, and an accepted
+    # file must never carry an index or submesh range outside its buffers.
+    add_executable(af_glb_import_robustness_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/glb_import_robustness_test.cpp)
+    target_include_directories(af_glb_import_robustness_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_glb_import_robustness_test PRIVATE afcore)
+    add_test(NAME glb_import_robustness
+        COMMAND af_glb_import_robustness_test
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../../../app/src/main/assets/models/female.glb 8000 1337)
+
     # Evidence probe: generates an avatar through the same sequence as the Android JNI layer and
     # measures orientation, mirror symmetry and the export/import round trip. It takes about a
     # minute, so it is built with the host tests but deliberately not registered with CTest.

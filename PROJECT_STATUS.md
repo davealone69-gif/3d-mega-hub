@@ -8,8 +8,8 @@ Last updated: 2026-11-14. The README carries the current results; this file hold
 |---|---|
 | Repository | [davealone69-gif/3d-mega-hub](https://github.com/davealone69-gif/3d-mega-hub) |
 | `main` | `aaee4443dbf53ef4707cce01d99f71a59e903ec7` (2026-10-29). Not modified. |
-| Integration branch | [`integration/avatarforge-renderer-port`](https://github.com/davealone69-gif/3d-mega-hub/tree/integration/avatarforge-renderer-port) at `a424113`. The single line that goes to `main`. |
-| Working branch of this handover | `arena/1a5b3043-3d-mega-hub`, a fast-forward of the integration branch. Lands through [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). |
+| Integration branch | [`integration/avatarforge-renderer-port`](https://github.com/davealone69-gif/3d-mega-hub/tree/integration/avatarforge-renderer-port) at `c08d377`. The single line that goes to `main`. It moved from `a424113` to `c08d377` on 2026-11-14 (seven commits, 18:21–18:32 UTC) while the working branch was in progress. |
+| Working branch of this handover | `arena/1a5b3043-3d-mega-hub`. It contains the integration branch up to `c08d377` (merge commit `79fb562`), so it lands as a fast-forward through [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). |
 | PR #9 | Open. Integration branch to `main`. The only review path to `main`. |
 | PR #8 | Closed on 2026-11-09 without merging (head `41c3069`). Superseded by PR #9. Its Filament-only viewer conflicts with the selected renderer split. |
 | `test/photo-realistic-avatar-overlay` | Merged into the working branch with history (adds the photo-overlay quality backlog only). |
@@ -27,13 +27,14 @@ Last updated: 2026-11-14. The README carries the current results; this file hold
 | GLB exporter | **REAL + VERIFIED** | Khronos validator: 0 errors, 0 warnings after `fb0878e` |
 | Asset pipeline: copy, validate, hash | **REAL + VERIFIED** on emulator | Imports are copied to app storage and structurally validated; generated GLB hashes are recorded in the evidence |
 | Camera: orbit, zoom, reset | **REAL + VERIFIED** on emulator for orbit | A touch drag changes the measured yaw and the rendered pixels. Pinch and double-tap are implemented and not exercised by a test |
-| Diagnostics | **REAL + VERIFIED** on emulator | Every number is measured on the render thread or counted by the renderer; see BUILD_AND_VERIFY.md |
+| Diagnostics | **REAL + VERIFIED** on emulator | Every number is measured on the render thread or counted by the renderer. Saved reports name the installed APK by SHA-256, the device and the asset by SHA-256; see BUILD_AND_VERIFY.md |
+| Native crash containment | **REAL + VERIFIED** on emulator | Injected C++ exceptions arrive as Java exceptions and the process keeps running |
 | Signed APK and AAB | **REAL + VERIFIED** with a one-run CI key | Read-back verification and byte-identical rebuild. Production signing is **BLOCKED** on the owner keystore |
 | Samsung SM-S921B | **UNVERIFIED** for this code | Requires the owner's test of the exact APK |
 
 ## Root causes established
 
-1. **Red renderer gate on `a424113`.** The session ended itself unless three frames were presented within 15 seconds of creation, and the render thread then replaced the failure text with "AvatarForge renderer stopped." On the software-rendered emulator the first frame of the 1.6-million-triangle avatar takes 10.4 s and the median interval between later frames is 5.1 s (run `43635337124`), so three frames cannot arrive in 15 seconds. The rule is now: fail only when no valid frame at all arrives in 15 seconds; a slow renderer keeps running and reports its measured numbers; the failure text is kept.
+1. **Red renderer gate on `a424113`.** The session ended itself unless three frames were presented within 15 seconds of creation, and the render thread then replaced the failure text with "AvatarForge renderer stopped." The integration head's own log shows it (run `43627204964`, job `132545683617`): the session was ended after two correct frames, "frames=2 presented=2 framePresented=true draws=29 triangles=1626176 boundsInFrustum=true ... glError=0x0 eglError=0x0". On the software-rendered emulator the first frame of that avatar takes 10.4 s and the median interval between later frames is 5.1 s (run `43635337124`), so three frames cannot arrive in 15 seconds. The rule is now: fail only when no valid frame at all arrives in 15 seconds; a slow renderer keeps running and reports its measured numbers; the failure text is kept.
 2. **`Manipulator.nCreateBuilder` implementation not found.** `ModelViewer` from filament-utils was constructed after `Filament.init()` without `Utils.init()`, so `libfilament-utils-jni.so` was never loaded (commit `4fa9178` records it; `3856bb6` removed `ModelViewer`; `5974328` added the R8 keep rule). No code imports `filament.utils` any more, and the dependency and its native library are now removed from the build.
 3. **Invalid glTF from the exporter.** 542 Khronos validator errors: three-element bounds on scalar animation-time accessors, and no bounds on morph-target position accessors. Fixed in `fb0878e`.
 4. **Diagnostics that were not measurements.** Frame time and frame rate came from a clamped delta handed to the animation system, CPU time and texture bytes were never written, and the production path did not collect GL errors. All are now measured or counted.
@@ -41,7 +42,10 @@ Last updated: 2026-11-14. The README carries the current results; this file hold
 6. **APK not reproducible.** Two clean builds differed only in signing block `0x504b4453`, the dependency list that the Android Gradle plugin encrypts with a random key. It is now left out of the APK (it stays in the AAB).
 7. **PixelCopy timeouts on a slow GPU.** The copy was requested immediately after the swap, while the software GPU was still drawing the queued frame, and PixelCopy answered with its timeout code (`result=2`) on every attempt. The render thread now finishes the frame's GPU work before the request and holds the next frame until the copy is answered.
 8. **Input-dispatch timeout between tests.** One instrumented test left its viewport open, still drawing a 1.1-million-triangle avatar, which starved the next test's window on the software GPU. Each test now closes the app and waits for the native session to be released.
-9. **Signing password in the job log.** The one-run preview keystore password was written to the job environment unmasked and printed by later steps. It is now masked. The key was discarded with the runner and never uploaded.
+9. **Reports that could not be attributed.** A saved renderer report named the asset and its size and nothing else, so the owner's phone test of 2026-11-13 could not be tied to a commit. Reports now carry the SHA-256 of the installed APK, the device model and Android version, and the SHA-256 of the asset; the panel shows the same lines.
+10. **C++ exceptions at the JNI boundary.** The engine's C API caught its own exceptions; the renderer entry points did not, and an exception that unwinds into the JVM aborts the app. They now run inside one barrier that turns the exception into a Java exception.
+11. **Vulkan in an OpenGL ES app.** `libafrender.so` compiled the unused Vulkan backend and linked `libvulkan.so`. The backend is now built only with `-DAF_ENABLE_VULKAN=ON`, and the release gate reads the dependencies back.
+12. **Signing password in the job log.** The one-run preview keystore password was written to the job environment unmasked and printed by later steps. It is now masked. The key was discarded with the runner and never uploaded.
 
 ## Branch review
 
@@ -76,7 +80,7 @@ Older branches are kept as recovery points. They are not work targets.
 |---|---|
 | Filament | `filament-android` and `gltfio-android` 1.71.6 (Apache 2.0). `filament-utils-android` is not used. |
 | AvatarForge Android library | `:avatarforge-engine`: C++ generation core, GLB importer and exporter, native OpenGL ES renderer, JNI, Kotlin facade and resource governor |
-| Viewer for imported and generated GLBs | `AvatarForgeSurfaceView`, native OpenGL ES. The Vulkan backend is compiled and never selected. |
+| Viewer for imported and generated GLBs | `AvatarForgeSurfaceView`, native OpenGL ES. The Vulkan backend source is kept but not compiled in, and no packaged library links `libvulkan.so`. |
 | Viewer for the bundled sample | `FilamentPreviewView` |
 | Bundled fixture | `app/src/main/assets/models/female.glb`, byte-identical to 3DDD revision `be5bf17d8afe46247646465941fa1b7317d8e415` (Git blob `a1c00c6b31f6ab0db3b2e68243526cb2d0e15967`). One mesh, seven morph targets, no skin, no animation, no images. Seven Khronos validator errors (morph targets without bounds). A renderer fixture, not a reference avatar. |
 | Toolchain | AGP 8.7.3, Kotlin 2.1.0, Gradle 8.11.1, NDK 26.1.10909125, CMake 3.22.1, compile and target SDK 35, min SDK 26 |
@@ -112,6 +116,14 @@ The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `wo
 > - **Verified on prior exact head `2a5485c17ec656659c4841826a1048d1577b7301`:** signed ephemeral preview APK/AAB build and signature verification (run `43626247432`, job `132542586035`); Android emulator install/launch smoke (job `132542586459`); native host regression (run `43626247376`, job `132542664347`). These results do not validate the later GLES source change.
 > - **Latest source head:** `ae43e0e271684d56336005450765a4577aafc591`. Fresh exact-head CI must validate the GLES capability change. **UNVERIFIED:** real imported/generated avatar visible pixels and Samsung SM-S921B runtime. **BLOCKED:** production signing pending owner keystore in protected CI secrets.
 > - Keep `main` unchanged; no merge until exact-head renderer evidence passes.
+
+What was checked about that update:
+
+- Its CI claims hold. Run `43626247432` on `2a5485c` succeeded with jobs `132542586035` and `132542586459`; job `132542664347` of run `43626247376` succeeded (the run as a whole was cancelled).
+- `78cb75d` and this branch fixed the same masking of the failure text. The merge keeps this branch's teardown and takes from `78cb75d` the rule that a renderer failure and a teardown failure are reported together.
+- With the failure text visible, the integration head `c08d377` showed the cause in its own log (run `43627204964`, job `132545683617`): "No drawable EGL-presented model frame within 15 seconds (frames=2 presented=2 framePresented=true draws=29 triangles=1626176 boundsInFrustum=true outsideCorners=0 glError=0x0 eglError=0x0)". The renderer had presented two correct frames; the rule demanded three. That is root cause 1, and `c08d377` still fails both pixel gates because it does not change the rule.
+- `ae43e0e` is kept: the indexed query matches whole extension names, and the anisotropy capability is now queried instead of assumed. The reason given for it is not correct. OpenGL ES 3.x keeps `glGetString(GL_EXTENSIONS)`; only desktop core profiles removed it. No measured session reports a GL error with either form of the query (`glErrorFrames` 0, `lastGlError` 0x0). The code comment was corrected in `6b05ee4`.
+
 
 **2026-11-13, owner phone test.** The owner tested an installed APK on the phone: the renderer displayed the avatar, the generation button changed avatar features including male and female, and GLB import worked. Skin-tone and hair changes were not tested. Avatar quality was too poor to judge appearance changes. The APK's SHA-256 and commit were not recorded, so this is **PARTIAL** evidence for an earlier build and **UNVERIFIED** for the current code. The avatar-quality plan that followed is in [docs/AVATAR_QUALITY_PLAN.md](docs/AVATAR_QUALITY_PLAN.md).
 

@@ -137,7 +137,7 @@ What this establishes:
 
 - The earlier report that "maximum-cardinality matching did not match all IDs" is the expected outcome. The two sides have different numbers of positions, and 12,809 positions have no partner within 4 mm on the other side. No matcher can pair them.
 - This is a property of the tessellation. It is not proof of anatomical asymmetry: the surface is symmetric about `X = 0` (see the yaw table above).
-- The exact size of the maximum matching is still **MISSING**. The earlier run never reported one, and a Hopcroft-Karp run on the 5.9 million candidate pairs did not finish in the time available here. The figure above is a proven lower bound on the unmatched count, not the count.
+- The exact size of the maximum matching is still **MISSING**. The earlier run never reported one. Two exact attempts on the 5.9 million candidate pairs were made here and neither finished: a Hopcroft-Karp run was stopped after 900 seconds, and a run of SciPy's `maximum_bipartite_matching` was stopped at its 1,500-second limit. The figure above is a proven lower bound on the unmatched count, not the count.
 
 ### Where the differences are
 
@@ -329,7 +329,7 @@ The photo-overlay quality backlog, including the ten-band reference envelope, th
 | Item | Where it was looked for | Result |
 |---|---|---|
 | "D2 findings" | Every revision of every Markdown file on all 16 remote branches; all 11 pull request descriptions and comments; Dropbox search; the Dropbox notes `FINDINGS.md`, `VERIFICATION_RESULTS.md` and `RENDERER_AUDIT.md` (2026-10-30, AvatarForge project, findings numbered `AF-…`) | **MISSING**. The only match for "D2" in the history is inside the word "LOD2". |
-| "README merge preview" | Same places | **MISSING**. The only README divergence in git was between the integration branch and `test/photo-realistic-avatar-overlay`, which has been reconciled by a conflict-free merge. |
+| "README merge preview" | Same places | **MISSING** under that name. Two README changes existed outside the working branch, and both are reconciled: the one on `test/photo-realistic-avatar-overlay` (merged without conflict in `6d0194b`) and the integration branch's update of 2026-11-14 18:22–18:32 UTC (merged in `79fb562`; its content is quoted in [PROJECT_STATUS.md](../PROJECT_STATUS.md)). Whether either is the preview that was meant is **UNVERIFIED**. |
 | Output of the earlier one-to-one mirror matcher | Same places | **MISSING**. The bound in this document was computed afresh. |
 
 Google Drive could not be searched: its connection failed authentication on every attempt. If any of these items exist there or in the earlier agent workspace, they need to be supplied before they can be reconciled.
