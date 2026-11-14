@@ -12,6 +12,24 @@ All implementation, fixes, tests and handover updates are to be made on one bran
 
 Do not create another implementation branch. Do not split work across competing branches. Do not force-push. Keep historical branches as recovery references until the canonical branch is verified and the owner explicitly authorises branch deletion.
 
+## Latest handover: 2026-11-14
+
+**Overall status: PARTIAL.** This update records email evidence only. It does not claim a new build, runtime test, merge, or phone verification.
+
+- The default female LOD0 GLB export is reported unchanged and validated. A full SHA-256 has reportedly been recorded by the agent for the canonical handover, but the email did not include the digest value. Do not invent or transcribe a hash until the actual value and artifact identity are available.
+- The maximum-cardinality one-to-one mirror matcher remains running at 100% CPU and approximately 1.1 GiB RSS. The agent reports no error or output yet. It has not produced a final mirror result or LOD verdict. Preserve this run; do not replace it with a surface-distance metric or report it as passed.
+- The actual app-generated avatar GLB comparison target is still missing from the agent's workspace. Seed-1337 was explicitly identified as a bad test fixture and must not be compared with `mylove.glb` as if it were the real generated avatar. The owner has already supplied `mylove.glb`; do not ask for it again. The missing item is the actual GLB exported by the app, or a confirmed exact export variant/path.
+- The five-project donor audit remains PARTIAL: no donor was found to be a ready-to-integrate photorealistic animated-avatar engine; no donor code was copied or merged; no Android device runtime or photo-reference quality test was performed. The audit's detailed findings and limitations are recorded in the 2026-11-14 email handover.
+- Existing architecture and verification boundaries below remain in force. In particular, source/export validation is not Android renderer verification, and the Samsung SM-S921B runtime remains UNVERIFIED unless the owner tests the exact APK.
+
+### Immediate next actions
+
+1. Let the existing one-to-one mirror matcher finish and capture its complete output, exit status, input identities and resource/runtime details. Do not substitute a different metric mid-run.
+2. Record the exact LOD0 GLB path, byte size and SHA-256 in the evidence ledger. Preserve the artifact.
+3. Locate/export the real app-generated avatar GLB and record its exact path, byte size and SHA-256. Do not use the known-bad seed-1337 fixture as a proxy.
+4. Only then run the intended reference comparison against `mylove.glb`, keeping the reference's private asset status and no-redistribution restriction intact.
+5. Continue all implementation on the canonical integration branch. Keep `main` unchanged. Do not call the work complete until exact-head build/runtime evidence and owner phone verification exist.
+
 ## Consolidation decisions
 
 The live branch and pull-request audit selected `integration/avatarforge-renderer-port` as the canonical integration line.
@@ -70,7 +88,7 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 
 Work through these steps in order, on the single canonical branch. Do not skip a failed gate or mark a later step complete on the strength of an earlier one.
 
-1. **Finish one consolidated exact-head validation cycle after the current coherent change batch.** Run native host regression, Android unit tests, debug APK assembly, lint, R8/minification, imported-GLB visible-pixel instrumentation, generated-avatar visible-pixel instrumentation, and emulator install/launch smoke together. Do not run a build after each small edit. Inspect all failed jobs and artifacts before deciding whether another source change is justified.
+1. **Finish one consolidated exact-head validation cycle after the current coherent change batch.** Run native host regression, Android unit tests, debug APK assembly, lint, R8/minification, imported-GLB visible-pixel instrumentation, generated-avatar visible-pixel instrumentation, and emulator install/launch smoke together. Do not run a build after each small edit in the same batch. Inspect all failed jobs and artifacts before deciding whether another source change is justified.
 2. **Use diagnostics before rebuilding.** For runtime-only questions, inspect the existing JSON, PNG, logs and device/asset identity first. Reuse a passing report when the APK, asset and relevant environment are unchanged. Only rebuild after a source/asset change or when existing evidence is insufficient. A diagnostic pass does not waive the one consolidated validation needed for a new code revision. No fake success values, mocked renderer, or weakened pixel threshold.
 3. **Prove emulator runtime.** Install the exact CI APK, launch the real app, open the relevant viewer route, load the fixture/imported GLB, and verify process stability, frame production, no ANR and a non-empty screenshot. A successful Gradle build alone is not an emulator pass.
 4. **Prove the Samsung device.** Install that same candidate APK on the Samsung SM-S921B. Verify visible pixels, imported and generated GLB loading, app pause/resume, surface recreation, memory/resource handling and thermal behaviour. Record the APK SHA-256 and device evidence. Until this is done, physical-device rendering remains **UNVERIFIED**.
