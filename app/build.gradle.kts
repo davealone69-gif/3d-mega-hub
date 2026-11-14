@@ -83,6 +83,15 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+
+    // The Android Gradle plugin stores an encrypted copy of the dependency list in the APK Signing
+    // Block for Google Play. It is encrypted with a fresh random key on every build, so two builds
+    // of the same commit can never be byte-identical. Play reads the list from the bundle, so keep
+    // it in the AAB and leave it out of the APK.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = true
+    }
 }
 
 tasks.configureEach {
