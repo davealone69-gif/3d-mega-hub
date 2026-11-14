@@ -169,10 +169,15 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 
 - **Working branch:** `integration/avatarforge-renderer-port` · **PR:** [#9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) · **stable `main`:** unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
 - PR #8 is **CLOSED / UNMERGED**, head `fix/mega-hub-candidate-hardening` at `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. It is not the active implementation path.
-- PR #9 exact inspected head before this change: `a42411302b7f9e9eabe171f844d8b4d646f1c23b`. It is the only open implementation PR and is 346 commits ahead of `main`.
-- Exact-head CI evidence on that prior head: Android CI passed (run `43616973631`); native host regression passed; generated-avatar runtime and diagnostic APK workflows failed because the production GLES SurfaceView did not reach visible-pixel verification (runs `43616973663`, `43616973704`). The instrumentation's final status was only `AvatarForge renderer stopped.`
-- **Code change:** commit `78cb75d81557623622f6989a285ebf958dea2844` preserves the original renderer exception through teardown instead of overwriting it with the generic stopped message. Cleanup failures are retained too.
-- **Important boundary:** this is a diagnostic-observability fix, not proof that the GLES renderer is fixed. The actual renderer failure remains **UNVERIFIED** until a new exact-head CI run exposes its original cause and the renderer passes the visible-pixel gate. Samsung SM-S921B verification remains **UNVERIFIED**; production signing remains **BLOCKED**.
+- PR #9 exact source before this diagnostic patch: `a42411302b7f9e9eabe171f844d8b4d646f1c23b`; the observability patch is `78cb75d81557623622f6989a285ebf958dea2844`.
+- **Code change:** the worker now preserves the first renderer exception and any teardown exception instead of replacing the real cause with the generic stopped message.
+- **Latest exact head:** `2a5485c17ec656659c4841826a1048d1577b7301`. Fresh CI evidence for this exact head:
+  - **PASS:** signed release-preview APK and AAB build, signature verification and provenance (run `43626247432`, job `132542586035`). The signing identity is ephemeral and valid for this CI run only, not production.
+  - **PASS:** Android emulator install/launch smoke (run `43626247432`, job `132542586459`).
+  - **PASS:** native host regression tests (run `43626247376`, job `132542664347`).
+  - **IN PROGRESS at last inspection:** debug APK, R8/minification, unit tests, lint, imported-GLB GLES smoke, PixelCopy diagnostic and generated-avatar runtime/pixel verification (runs `43626247376`, `43626247379`, `43626247386`). No pass is claimed for these unfinished jobs.
+- **UNVERIFIED:** actual GLES visible-pixel rendering on exact head `2a5485c` until the instrumentation workflows complete and their screenshots/reports are inspected. Samsung SM-S921B physical-device runtime also remains **UNVERIFIED**.
+- **BLOCKED:** production APK/AAB signing until the owner's keystore is configured in protected CI secrets. The successful ephemeral preview signing is not a substitute.
 
 ## Execution plan
 
