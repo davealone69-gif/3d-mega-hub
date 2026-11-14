@@ -98,3 +98,29 @@ The user supplied the following whole-mesh X-width / Z-depth envelope measuremen
 **Symmetry gate:** inspect LOD0 vertex positions for exact mirrored pairs across X before changing anatomy. Preserve the previously agreed maximum mirror-pair tolerance of 0.004 model units. Report unmatched vertices and maximum residual with their coordinates; do not average away or silently repair failures. Apply one geometry fix at a time, then run the relevant native regression and generated-avatar diagnostic before the next fix.
 
 **Reference provenance:** Dropbox contains two user-owned copies of `mylove.glb`, each 9,287,272 bytes; the diagnostics-folder copy was last modified 2026-11-10. The raw GLB binary still must be inspected in the implementation workspace before freezing a reference manifest or changing geometry. The ten-band envelope alone is not a substitute for that inspection.
+
+
+## External audit evidence reviewed — 2026-11-14
+
+Source: MINE email, **“Five-project Android 3D/avatar audit — findings and evidence — 2026-11-14”**, received 2026-11-14 04:14:45 UTC, with `3d-mega-hub-audit-support-2026-11-14.zip` (413,014 bytes). The report is evidence from isolated source reviews and host/CPU experiments; it is not device or GPU proof.
+
+### Findings that change the implementation order
+
+1. **Hub GLB display path is the first integration gate.** The audit inspected Hub commit `2a1352c5994a42a586a929d995a33fcb4f6ebd67`: the picker persisted the selected URI but did not pass it to the renderer; the Filament preview was not mounted in the UI and created an empty scene/clear frame. Treat this as a finding pinned to that audited commit, not as a claim about later commits. Recheck the current test-branch source before changing or closing AVQ-00.
+2. **Imported GLB rigging is not yet equivalent to generated-avatar rigging.** The audit found AvatarForge's `native/src/af_glb_read.cpp` parses geometry, node transforms, skins, inverse binds and animation channels, but `native/src/af_engine.cpp` does not apply imported skins/clips and clears generated rig state during import. Generated-avatar rigging in `native/src/af_rig.cpp` and clip playback in `native/src/render/af_gl.cpp` is a separate path. Do not claim imported animated GLB support from parser coverage alone.
+3. **Photo reconstruction/compositing is missing.** The audit found reference-image analysis estimates procedural parameters; it is not photo reconstruction or a photo-plate compositor. AVQ-06 therefore needs a separately implemented and tested compositing path, not a UI-only overlay.
+4. **Donor projects are not ready-made photorealistic avatar engines.** The five reviewed projects (Animation Maker, The3Deer, Function3DAnimator, Nish and SDAI-KMP) yielded limited patterns/fixtures only. Do not transplant their renderers or treat their builds/CPU experiments as proof of avatar quality. Review licenses and provenance before any reuse.
+5. **Mesh indexing is only a candidate optimization.** The attachment reports about 49–50% smaller position+index payloads in two CPU-only experiments. Any adoption must preserve complete vertex tuples (positions, normals, UV seams, materials, joints and weights) and pass deformation, target-device memory/frame-time and visual-fidelity tests.
+
+### Evidence boundaries from the email
+
+- AvatarForge host harness: 454 checks passed in an isolated committed snapshot; host C++ only.
+- The donor builds/tests varied; no Android device was exercised, no emulator rendered the app, and no GPU performance proof was produced.
+- No avatar was composited against a real-photo reference in that audit.
+- The attached ZIP contains donor reports, probes and a synthetic indexed-surface GLB/PNG. It does **not** contain the user's `mylove.glb` reference.
+
+### Updated sequencing gate
+
+Before any visual-quality score or body-proportion edit, verify on this branch that a real GLB is loaded from the selected URI and produces non-clear-frame pixels through the actual mounted renderer. Separately prove the generated-avatar path and imported-GLB path so one cannot mask defects in the other. Then inspect the user's existing `mylove.glb` mesh/accessors/materials in the working environment, build its reference manifest, and run the symmetry and ten-band measurements against actual geometry. Only after those gates should anatomy, face, skin/hair and photo-overlay changes be accepted.
+
+**No Android device/runtime pass is claimed by this audit.** User phone verification remains required for a final REAL + VERIFIED status.
