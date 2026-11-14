@@ -59,6 +59,7 @@ See [PROJECT_STATUS.md](PROJECT_STATUS.md) for the detailed branch-by-branch aud
 | FAILED | A required diagnostic stage failed | Root cause, until failure details are inspected |
 
 Diagnostic JSON should be treated as evidence, not a generic green light. A pass is scoped to the tested APK, asset and environment.
+
 ## Sample-model limitation
 
 The bundled `female.glb` is a renderer fixture, not proof of a complete rigged avatar. Inspection of the exact bundled file shows one mesh, one node, seven morph targets, zero skins, zero animations and zero embedded images. It can exercise GLB loading/rendering, but does not prove skeletal animation, facial animation, texture quality or generated-avatar quality.
@@ -70,7 +71,7 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 Work through these steps in order, on the single canonical branch. Do not skip a failed gate or mark a later step complete on the strength of an earlier one.
 
 1. **Finish one consolidated exact-head validation cycle after the current coherent change batch.** Run native host regression, Android unit tests, debug APK assembly, lint, R8/minification, imported-GLB visible-pixel instrumentation, generated-avatar visible-pixel instrumentation, and emulator install/launch smoke together. Do not run a build after each small edit. Inspect all failed jobs and artifacts before deciding whether another source change is justified.
-2. **Use diagnostics before rebuilding.** For runtime-only questions, inspect the existing JSON, PNG, logs and device/asset identity first. Reuse a passing report when the APK, asset and relevant environment are unchanged. Only rebuild after a source/configuration/asset change or when the existing evidence is insufficient to isolate the issue. A diagnostic pass does not waive the one consolidated validation needed for a new code revision. No fake success values, mocked renderer, or weakened pixel threshold.
+2. **Use diagnostics before rebuilding.** For runtime-only questions, inspect the existing JSON, PNG, logs and device/asset identity first. Reuse a passing report when the APK, asset and relevant environment are unchanged. Only rebuild after a source/asset change or when existing evidence is insufficient. A diagnostic pass does not waive the one consolidated validation needed for a new code revision. No fake success values, mocked renderer, or weakened pixel threshold.
 3. **Prove emulator runtime.** Install the exact CI APK, launch the real app, open the relevant viewer route, load the fixture/imported GLB, and verify process stability, frame production, no ANR and a non-empty screenshot. A successful Gradle build alone is not an emulator pass.
 4. **Prove the Samsung device.** Install that same candidate APK on the Samsung SM-S921B. Verify visible pixels, imported and generated GLB loading, app pause/resume, surface recreation, memory/resource handling and thermal behaviour. Record the APK SHA-256 and device evidence. Until this is done, physical-device rendering remains **UNVERIFIED**.
 5. **Complete release signing.** Configure the owner's production keystore through protected CI secrets. Build and verify the signed release APK and AAB, check package/version/signature and record artifact SHA-256 values. A debug key or ephemeral CI preview key is not a production release.
@@ -83,23 +84,33 @@ Work through these steps in order, on the single canonical branch. Do not skip a
 |---|---|---|
 | Canonical branch selected | **REAL + VERIFIED** | One working branch and PR #9 selected; `main` untouched |
 | Branch/PR audit | **REAL + VERIFIED** | Detailed dispositions recorded in [PROJECT_STATUS.md](PROJECT_STATUS.md) |
-| Native host regression | **PASS** | Native host regression and Android native sampling passed on application source `1deaf264032195989257845b884a5829f06fe9cf` |
-| Android unit tests | **PASS** | Unit tests passed on application source `1deaf264032195989257845b884a5829f06fe9cf` |
-| Debug APK build | **PASS** | Diagnostic workflow produced a 71,377,227-byte debug APK; artifact SHA-256: `3d833528d116fe0660a347d6a3bff0e9c6e7c8dc1d53b82125f15718917de8ee` |
-| R8/minification | **PASS** | Release minification job passed on application source `1deaf264032195989257845b884a5829f06fe9cf` |
-| Android lint | **CANCELLED** | The CI job was cancelled before completion; no pass claim |
-| Basic generated-avatar pixel gate | **PASS on emulator** | Run `43528943730`, source `e9e7d76ef4a3f12c5c6a79951b5a1a99570c6228`: `generatedAvatarMustProduceVisiblePixels` passed (1 test, 0 failures) on Android 11 emulator. APK: 71,377,227 bytes; SHA-256 `9c49b7514bbda66bdbe7e9a648e455d4793f601f184f4b86913a7631ca3ed43b`. This is not the production exported-GLB SurfaceView end-to-end test |
-| Production generated-GLB-to-GLES SurfaceView | **PARTIAL / CANCELLED** | The end-to-end test generated and exported the GLB, began the production SurfaceView render test, but the workflow was cancelled before test completion and before evidence PNG/JSON could be collected |
-| Imported-GLB GLES instrumentation | **CANCELLED** | The instrumented render job did not complete; no pass claim |
-| Emulator install/launch smoke | **CANCELLED** | Release/emulator workflow was cancelled before its final result |
-| CI concurrency correction | **COMMITTED; NEW PR RUNS PENDING** | Removed duplicate push triggers from the generated-runtime and diagnostic workflows and made PR concurrency groups unique, preventing the same push+PR pair from cancelling one another |
+| Native host regression | **PASS (older exact source)** | Passed on application source `1deaf264032195989257845b884a5829f06fe9cf`; do not attribute to current head |
+| Android unit tests | **PASS (older exact source)** | Passed on application source `1deaf264032195989257845b884a5829f06fe9cf`; do not attribute to current head |
+| Debug APK build | **PASS (older exact source)** | Diagnostic workflow produced a 71,377,227-byte debug APK; historical artifact SHA-256: `3d833528d116fe0660a347d6a3bff0e9c6e7c8dc1d53b82125f15718917de8ee` |
+| R8/minification | **PASS (older exact source)** | Passed on application source `1deaf264032195989257845b884a5829f06fe9cf`; not current-head evidence |
+| Android lint | **CANCELLED (prior cycle)** | No pass claim |
+| Basic generated-avatar pixel gate | **PASS (older exact source only)** | Run `43528943730`, source `e9e7d76ef4a3f12c5c6a79951b5a1a99570c6228`: basic generated-avatar pixel test passed on Android 11 emulator. This is not the production exported-GLB SurfaceView end-to-end test |
+| Production generated-GLB-to-GLES SurfaceView | **FAILED on prior head** | Run `43534561147`, job `132260325291`, head `705165eebdaa525d75be861763c9a11205f33634`: `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` failed. LOD2 generation reduced the model to 325,491 triangles, but the production renderer presented only 2 frames in 15 seconds. This fails the required gate |
+| Required Android build jobs | **FAILED on prior head** | Run `43534561148` at the same prior head: unit tests, lint, R8, debug APK build and native regression passed, but instrumented GLES renderer smoke failed; bundled-GLB instrumentation also hit `keyDispatchingTimedOut` |
+| Fresh APK artifact | **PARTIAL on prior head** | Fresh debug APK artifact existed for the prior head and ZIP digest matched GitHub artifact digest. Extracted APK SHA-256 was calculated, but package and APK signing-block verification was not complete. It is not a ready APK |
+| Current branch head after this README update | **NEW HEAD; VALIDATION PENDING** | This documentation commit intentionally changes the PR head. All previous run results are historical and cannot satisfy the exact-current-head readiness gate. Re-run required workflows on the new head |
 | Samsung SM-S921B runtime | **UNVERIFIED** | Requires installation and testing on the physical phone |
 | Production signing | **BLOCKED** | Requires owner-provided production keystore in protected CI secrets |
-| Merge to `main` | **BLOCKED BY GATES** | Do not merge until steps 1-6 are satisfied |
+| Merge to `main` | **BLOCKED BY GATES** | Do not merge until every required gate passes |
 
-**Evidence snapshot (2026-11-14):** source `1deaf264032195989257845b884a5829f06fe9cf` retains the earlier passing native host, Android native sampling, unit, debug build and R8 evidence. A fresh exact-branch run `43528943730` at source `e9e7d76ef4a3f12c5c6a79951b5a1a99570c6228` passed native host regression and built a 71,377,227-byte debug APK; its basic generated-avatar emulator pixel test passed (1 test, 0 failures) on Android 11. APK SHA-256: `9c49b7514bbda66bdbe7e9a648e455d4793f601f184f4b86913a7631ca3ed43b`. This is a basic generated-avatar pixel gate, not proof of exported-GLB production SurfaceView rendering or visual quality. Separate production generated-avatar instrumentation run `43528943695` is still in progress at the time of this update. Android lint/imported-GLB render smoke and release/emulator smoke remain cancelled in the earlier cycle. Emulator results are not Samsung phone verification.
+## Strict PR #9 test APK readiness gate
 
-CI status can change after this README is updated. Check the latest [GitHub Actions runs](https://github.com/davealone69-gif/3d-mega-hub/actions) and the [canonical PR](https://github.com/davealone69-gif/3d-mega-hub/pull/9) before making a release decision.
+A test APK is **READY** only when every condition below is independently proven for the same current PR head commit:
+
+1. The production generated-GLB-to-GLES `SurfaceView` runtime instrumentation test passes on that exact head. A generated-avatar unit test, basic pixel test, imported-GLB test, emulator install-only smoke, or unrelated green check is not a substitute.
+2. Every required Android build job passes on that exact head, including the required Android compilation, unit/lint/R8/native and renderer test jobs configured for this PR.
+3. A fresh APK artifact is produced by a workflow run for that exact head. A stale artifact or artifact from a different SHA is rejected.
+4. Download the artifact and verify the APK itself: package/application ID, signing certificate/signature, and APK SHA-256. Record the exact artifact URL, source commit, package, signing identity and digest.
+5. Correlate workflow run head SHA, test result, artifact provenance and APK inspection. If any link is missing or ambiguous, status remains **PARTIAL**, **UNVERIFIED** or **BLOCKED**, never READY.
+
+Do not merge PR #9 to `main`. Do not send a readiness notification until all five conditions are satisfied. On the first fully verified ready APK, notify the owner with the exact commit SHA, direct artifact download link, APK SHA-256 and production render-test evidence, then stop monitoring. Until then, keep checking the latest branch head and its associated Actions runs on the scheduled cadence; report failures internally/in the README and continue without a readiness notification.
+
+**Latest monitor snapshot before this README-only commit (2026-11-14):** PR #9 was open and targeted `main`; branch head was `705165eebdaa525d75be861763c9a11205f33634`. The production generated-GLB-to-GLES SurfaceView test failed in run `43534561147`; required Android CI run `43534561148` failed its instrumented GLES renderer smoke. A fresh debug APK existed, but APK package/signature verification was incomplete. Therefore the prior head was **NOT READY**. This README update creates a new head, so the next scheduled check must start from the new head and must not reuse the prior head's evidence as a pass.
 
 ## Known boundaries and missing features
 
@@ -140,7 +151,6 @@ The owner has already supplied `mylove.glb` as the reference model for improving
 - **Transfer limitation:** the available Dropbox text-fetch action has a 5 MiB maximum and cannot read this 9.29 MB binary. Dropbox's download-link action exposes a temporary URL but does not return file bytes to the analysis workspace; the direct transfer attempt was rejected by the runtime URL-access gate. The linked-chat attachment itself was not surfaced as a readable file in the current conversation/library search.
 - **Next measurement required:** obtain horizontal cross-section extents (X width and Z depth at normalized Y heights), preferably for 10 equal Y slices, plus decoded image channel statistics and material-to-texture slot mapping. Compare those profiles against a generated avatar captured with the same coordinate convention. The current repository probe reports five descriptive slices and named landmarks only when node names exist; it does not identify anatomy from unnamed vertices.
 - **Use rule:** derive a versioned reference profile and regression targets from measured data. Do not blindly replace the procedural generator with the reference mesh, and do not commit or redistribute the private reference asset without explicit approval.
-
 
 ### Stage 1: establish and improve avatar quality
 
