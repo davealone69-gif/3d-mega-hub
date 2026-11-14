@@ -165,6 +165,20 @@ The bundled `female.glb` is a renderer fixture, not proof of a complete rigged a
 
 The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646465941fa1b7317d8e415` (Git blob `a1c00c6b31f6ab0db3b2e68243526cb2d0e15967`). The donor README at that revision states the generated base rigs are original work released under CC0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## Latest renderer investigation — 2026-11-15
+
+- **Working branch:** `integration/avatarforge-renderer-port` · **PR:** [#9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) · **stable `main`:** unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
+- PR #8 is **CLOSED / UNMERGED**, head `fix/mega-hub-candidate-hardening` at `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. It is not the active implementation path.
+- **Failure-observability fix:** `78cb75d81557623622f6989a285ebf958dea2844` preserves the first renderer exception and any teardown exception instead of overwriting them with a generic stopped status.
+- **GLES capability fix:** `ae43e0e271684d56336005450765a4577aafc591` replaces invalid legacy `glGetString(GL_EXTENSIONS)` calls with GLES 3.x `glGetStringi` enumeration. Float-colour-buffer and anisotropy capability flags now reflect actual extension support; anisotropy limit is queried once rather than once per texture.
+- **Last completed exact-head CI evidence (`2a5485c17ec656659c4841826a1048d1577b7301)):**
+  - **PASS:** signed preview APK and AAB build, signature verification and provenance (run `43626247432`, job `132542586035`). Ephemeral CI key only, not production signing.
+  - **PASS:** Android emulator install/launch smoke (run `43626247432`, job `132542586459`).
+  - **PASS:** native host regression (run `43626247376`, job `132542664347`).
+  - Renderer pixel tests and Android CI had not completed when this evidence was recorded.
+- **Latest source head:** `ae43e0e271684d56336005450765a4577aafc591`. Fresh exact-head CI is required after the GLES capability change. **UNVERIFIED:** visible model pixels and Samsung SM-S921B runtime. **BLOCKED:** production signing until the owner's keystore is configured in protected CI secrets.
+- Do not merge to `main` or weaken the real visible-pixel gate.
+
 ## Execution plan
 
 Work through these steps in order, on the single canonical branch. Do not skip a failed gate or mark a later step complete on the strength of an earlier one.

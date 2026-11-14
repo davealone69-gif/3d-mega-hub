@@ -103,6 +103,16 @@ The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `wo
 
 ## History
 
+**2026-11-14 18:21–18:32 UTC (dated 2026-11-15 in the owner's local time), parallel update on the integration branch.** Seven commits (`78cb75d` to `c08d377`) were pushed to `integration/avatarforge-renderer-port` while the working branch was in progress. They are merged into the working branch with their history. The update is kept here as written:
+
+> - Active implementation: `integration/avatarforge-renderer-port`, PR #9. Stable `main` remains unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
+> - PR #8 is closed and unmerged; its head is `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. Do not use it as the work branch.
+> - **Implemented:** `78cb75d81557623622f6989a285ebf958dea2844` preserves the original renderer and teardown failures in the final worker status. Diagnostic observability only, not a renderer fix.
+> - **Implemented:** `ae43e0e271684d56336005450765a4577aafc591` fixes GLES 3.x extension enumeration. GLES 3.0+ requires `glGetStringi(GL_EXTENSIONS, index)`; the removed legacy extension-string query could return `GL_INVALID_ENUM` and incorrectly disable ES 3.1 extension detection. Float colour-buffer and anisotropy support are now reported from actual capabilities.
+> - **Verified on prior exact head `2a5485c17ec656659c4841826a1048d1577b7301`:** signed ephemeral preview APK/AAB build and signature verification (run `43626247432`, job `132542586035`); Android emulator install/launch smoke (job `132542586459`); native host regression (run `43626247376`, job `132542664347`). These results do not validate the later GLES source change.
+> - **Latest source head:** `ae43e0e271684d56336005450765a4577aafc591`. Fresh exact-head CI must validate the GLES capability change. **UNVERIFIED:** real imported/generated avatar visible pixels and Samsung SM-S921B runtime. **BLOCKED:** production signing pending owner keystore in protected CI secrets.
+> - Keep `main` unchanged; no merge until exact-head renderer evidence passes.
+
 **2026-11-13, owner phone test.** The owner tested an installed APK on the phone: the renderer displayed the avatar, the generation button changed avatar features including male and female, and GLB import worked. Skin-tone and hair changes were not tested. Avatar quality was too poor to judge appearance changes. The APK's SHA-256 and commit were not recorded, so this is **PARTIAL** evidence for an earlier build and **UNVERIFIED** for the current code. The avatar-quality plan that followed is in [docs/AVATAR_QUALITY_PLAN.md](docs/AVATAR_QUALITY_PLAN.md).
 
 **2026-11-14, integration branch at `a424113`.** Nine checks passed and two failed, both in `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` (root cause 1). An earlier head, `705165e`, had failed the same way ("presented only 2 frames in 15 seconds") and had also hit `keyDispatchingTimedOut` (root cause 8).

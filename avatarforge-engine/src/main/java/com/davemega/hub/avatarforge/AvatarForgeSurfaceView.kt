@@ -390,11 +390,16 @@ class AvatarForgeSurfaceView(
                 } else null
                 var cleanupFailure: String? = null
                 if (nativeHandle != 0L) runCatching { nativeDestroy(nativeHandle) }
-                    .onFailure { cleanupFailure = "AvatarForge cleanup failed: ${it.message}" }
+                    .onFailure { cleanupFailure = "AvatarForge cleanup failed: ${it.message ?: it.javaClass.simpleName}" }
+                /* The first real cause and a teardown failure are reported together. Neither may
+                   replace the other, and neither may be replaced by the generic stopped state. */
+                val terminalStatus = listOfNotNull(terminalFailure, cleanupFailure)
+                    .joinToString("; ")
+                    .takeIf { it.isNotEmpty() }
                 if (finalSnapshot != null) {
                     latestTelemetry = finalSnapshot
                     runCatching { onTelemetry?.invoke(finalSnapshot) }
-                    persistTelemetry(finalSnapshot, terminalFailure ?: cleanupFailure)
+                    persistTelemetry(finalSnapshot, terminalStatus)
                 }
                 running.set(false)
                 if (renderThread === Thread.currentThread()) renderThread = null
@@ -402,8 +407,7 @@ class AvatarForgeSurfaceView(
                    "stopped" line here used to overwrite the failure message, which is how the
                    production-surface CI test came to fail with no visible cause. */
                 onStatus(
-                    terminalFailure
-                        ?: cleanupFailure
+                    terminalStatus
                         ?: if (surfaceReady) "AvatarForge renderer stopped." else "AvatarForge surface released."
                 )
             }

@@ -62,6 +62,19 @@ namespace {
 #define AF_GL_LOGE(...) do { std::fprintf(stderr, "[AvatarForge ERROR] " __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
 #endif
 
+/* GLES 3.x removed the legacy space-separated GL_EXTENSIONS string. Enumerate extensions
+   with glGetStringi so ES 3.1 devices correctly expose optional framebuffer/texture features. */
+bool hasGlExtension(const char* requested) {
+    if (!requested || !*requested) return false;
+    GLint count = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+    for (GLint i = 0; i < count; ++i) {
+        const auto* extension = reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, GLuint(i)));
+        if (extension && std::strcmp(extension, requested) == 0) return true;
+    }
+    return false;
+}
+
 /* Optional synthetic unlit shader controlled at runtime via RendererOptions::debugMagenta. */
 static constexpr const char* kDebugMagentaVertexShader = R"AFGLSL(#version 310 es
 precision highp float;
@@ -356,11 +369,9 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
     materialStride_ = alignUp(sizeof(MaterialUbo), uboAlignment_);
 
     /* Floating-point colour attachments: ES 3.2 has them in core, ES 3.0/3.1 need the extension. */
-    bool floatColour = (major > 3 || (major == 3 && minor >= 2));
-    if (!floatColour) {
-        const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
-        floatColour = ext && std::strstr(ext, "GL_EXT_color_buffer_float") != nullptr;
-    }
+    bool floatColour = (major > 3 || (major == 3 && minor >= 2)) ||
+                       hasGlExtension("GL_EXT_color_buffer_float");
+    const bool anisotropy = hasGlExtension("GL_EXT_texture_filter_anisotropic");
     hdrInternalFormat_ = floatColour ? GL_RGBA16F : GL_RGBA8;
 
     info_.backend = "gles31";
@@ -370,8 +381,7 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
     info_.supportsFloatHdr = floatColour;
     info_.supportsMsaa = true;
     info_.supportsShadows = true;
-    info_.supportsAnisotropy = true;   /* queried properly below; ES 3.0 has anisotropy via the
-                                          same enum, and the sampler clamps to the driver limit */
+    info_.supportsAnisotropy = anisotropy;
     return true;
 }
 
@@ -1008,6 +1018,11 @@ void GlRenderer::uploadAtlas(std::string* error) {
     if (!engine_) return;
     const GLubyte white[4] = {255, 255, 255, 255};
     uint64_t atlasBytes = 0;   /* requested texel bytes including the generated mip chain */
+    GLfloat maxAniso = 1.0f;
+    if (info_.supportsAnisotropy) {
+        glGetFloatv(0x84FF /* GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT */, &maxAniso);
+        maxAniso = std::max(1.0f, std::min(16.0f, maxAniso));
+    }
     for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
         af_texture tex{};
         if (af_engine_texture(engine_, slot, &tex) != AF_OK ||
@@ -1047,12 +1062,8 @@ void GlRenderer::uploadAtlas(std::string* error) {
             }
         }
 
-        const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
-        if (ext && std::strstr(ext, "GL_EXT_texture_filter_anisotropic")) {
-            GLfloat maxAniso = 1.0f;
-            glGetFloatv(0x84FF /* GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT */, &maxAniso);
-            glTexParameterf(GL_TEXTURE_2D, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY_EXT */,
-                            std::min(16.0f, maxAniso));
+        if (info_.supportsAnisotropy) {
+            glTexParameterf(GL_TEXTURE_2D, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY_EXT */, maxAniso);
         }
     }
     atlasUploaded_ = true;
