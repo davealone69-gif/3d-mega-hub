@@ -1,134 +1,110 @@
-# Project Status
+# Project status
 
-Last updated: 2026-11-13.
+Last updated: 2026-11-14. The README carries the current results; this file holds the detail behind them and the history that must not be lost.
 
-## Repository and active branch
+## Repository and branches
 
-- Repository: [davealone69-gif/3d-mega-hub](https://github.com/davealone69-gif/3d-mega-hub)
-- Default branch: `main`; protected baseline remains unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
-- Single integration branch: [`integration/avatarforge-renderer-port`](https://github.com/davealone69-gif/3d-mega-hub/tree/integration/avatarforge-renderer-port).
-- Review PR: [#9](https://github.com/davealone69-gif/3d-mega-hub/pull/9).
-- The three-commit Samsung photoreal/WebP/GLES update and the FileProvider/launcher-icon consolidation are included in the final integration source.
-- PR #8 (`fix/mega-hub-candidate-hardening`) is a superseded, older Filament-only candidate. Do not merge it into the current integration.
-- No force-push or merge to `main` has been performed.
-
-## Consolidation audit
-
-The repository had 14 branches at the time of the audit. The working source was consolidated into the single integration branch without replacing the newer GLES path with older experimental implementations.
-
-| Branch / workstream | Disposition |
+| Item | State |
 |---|---|
-| `work/samsung-s24-photoreal-patch` | Its three WebP/GLES commits were fast-forwarded into the canonical integration branch. Its ref is now a stale pre-finalization pointer; do not continue work there. |
-| `integration/avatarforge-renderer-port` | Canonical integration base and target branch. Retains native AvatarForge GLES for imported/generated GLBs and separate Filament preview for the bundled sample. |
-| `work/fileprovider-renderer-diagnostics` | Selectively ported the FileProvider capability. Its replacement foundation `MainActivity` and non-connected capability/diagnostic overlay were deliberately not copied. The real Avatar Studio now shares the actual PixelCopy file. |
-| `agent/android-build-check-2026-11-03` | Ported its launcher vector asset and manifest icon reference. Existing current `.gitignore` already excludes generated Gradle/build outputs and signing-key files. |
-| `fix/mega-hub-candidate-hardening` / PR #8 | Not merged. Its viewer architecture routes all GLBs through Filament and conflicts with the newer selected split: Filament sample preview plus AvatarForge GLES for imported/generated GLBs. Its hardening notes remain historical evidence only where explicitly referenced. |
-| `feature/first-working-gles-scene` | Earlier standalone GLES test scene. Superseded by the integrated AvatarForge GLES surface and runtime tests. |
-| `fix/filament-engine-jni-init`, `work/filament-renderer-live-diagnostics`, `work/engine-integration-candidate`, `work/filament-gles-renderer` | Older ancestors of the current integration line; their incorporated work is already present. No duplicate cherry-picks required. |
-| `work/avatarforge-core-integration` | Earlier divergent engine snapshot. Not copied over the newer integrated engine; doing so would roll back generation-core changes. |
-| `work/android-shell-foundation` | Divergent early shell/wrapper foundation. Not copied over the later application and pinned toolchain. |
-| `trae/agent-hDYcEF` | Contains generated `.gradle` cache/lock artifacts and older viewer edits. Cache files are not source and were not imported. |
+| Repository | [davealone69-gif/3d-mega-hub](https://github.com/davealone69-gif/3d-mega-hub) |
+| `main` | `aaee4443dbf53ef4707cce01d99f71a59e903ec7` (2026-10-29). Not modified. |
+| Integration branch | [`integration/avatarforge-renderer-port`](https://github.com/davealone69-gif/3d-mega-hub/tree/integration/avatarforge-renderer-port) at `a424113`. The single line that goes to `main`. |
+| Working branch of this handover | `arena/1a5b3043-3d-mega-hub`, a fast-forward of the integration branch. Lands through [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). |
+| PR #9 | Open. Integration branch to `main`. The only review path to `main`. |
+| PR #8 | Closed on 2026-11-09 without merging (head `41c3069`). Superseded by PR #9. Its Filament-only viewer conflicts with the selected renderer split. |
+| `test/photo-realistic-avatar-overlay` | Merged into the working branch with history (adds the photo-overlay quality backlog only). |
+| Force-pushes | None. |
 
-Older branch refs are retained as historical recovery points; they are not parallel active work targets. Continue work only on `integration/avatarforge-renderer-port`. Keep `main` stable.
+## Component baseline
+
+| Component | Status | Evidence |
+|---|---|---|
+| Android shell: builds and launches | **REAL + VERIFIED** on CI and emulator | Debug APK, lint, unit tests and R8 pass; debug and signed release APKs install and launch on an API 30 emulator |
+| AvatarForge engine: native generation, export, import | **REAL + VERIFIED** on host and emulator | Six native regression tests pass; an avatar is generated, validated, exported and re-imported on the emulator |
+| GLES renderer: real geometry | **REAL + VERIFIED** on emulator | Imported and generated GLBs draw through native OpenGL ES 3.1; PixelCopy of the real SurfaceView finds the geometry |
+| Filament: native initialisation and lifecycle | **REAL + VERIFIED** on emulator, including the minified release APK | The bundled sample loads and presents a frame in both builds |
+| GLB importer | **REAL + VERIFIED**, static meshes only | Geometry, PBR materials, PNG and WebP textures. Skeletons and clips in a file are not applied; morph targets are not read |
+| GLB exporter | **REAL + VERIFIED** | Khronos validator: 0 errors, 0 warnings after `fb0878e` |
+| Asset pipeline: copy, validate, hash | **REAL + VERIFIED** on emulator | Imports are copied to app storage and structurally validated; generated GLB hashes are recorded in the evidence |
+| Camera: orbit, zoom, reset | **REAL + VERIFIED** on emulator for orbit | A touch drag changes the measured yaw and the rendered pixels. Pinch and double-tap are implemented and not exercised by a test |
+| Diagnostics | **REAL + VERIFIED** on emulator | Every number is measured on the render thread or counted by the renderer; see BUILD_AND_VERIFY.md |
+| Signed APK and AAB | **REAL + VERIFIED** with a one-run CI key | Read-back verification and byte-identical rebuild. Production signing is **BLOCKED** on the owner keystore |
+| Samsung SM-S921B | **UNVERIFIED** for this code | Requires the owner's test of the exact APK |
+
+## Root causes established
+
+1. **Red renderer gate on `a424113`.** The session ended itself unless three frames were presented within 15 seconds of creation, and the render thread then replaced the failure text with "AvatarForge renderer stopped." On the software-rendered emulator the first frame of the 1.6-million-triangle avatar takes 10.4 s and the median interval between later frames is 5.1 s (run `43635337124`), so three frames cannot arrive in 15 seconds. The rule is now: fail only when no valid frame at all arrives in 15 seconds; a slow renderer keeps running and reports its measured numbers; the failure text is kept.
+2. **`Manipulator.nCreateBuilder` implementation not found.** `ModelViewer` from filament-utils was constructed after `Filament.init()` without `Utils.init()`, so `libfilament-utils-jni.so` was never loaded (commit `4fa9178` records it; `3856bb6` removed `ModelViewer`; `5974328` added the R8 keep rule). No code imports `filament.utils` any more, and the dependency and its native library are now removed from the build.
+3. **Invalid glTF from the exporter.** 542 Khronos validator errors: three-element bounds on scalar animation-time accessors, and no bounds on morph-target position accessors. Fixed in `fb0878e`.
+4. **Diagnostics that were not measurements.** Frame time and frame rate came from a clamped delta handed to the animation system, CPU time and texture bytes were never written, and the production path did not collect GL errors. All are now measured or counted.
+5. **32-bit packaging.** The app had no ABI filter, so Filament's 32-bit libraries would have been packaged without the engine's. The app now packages `arm64-v8a` and `x86_64` only, and the release gate checks that every packaged ABI carries the same libraries.
+6. **APK not reproducible.** Two clean builds differed only in signing block `0x504b4453`, the dependency list that the Android Gradle plugin encrypts with a random key. It is now left out of the APK (it stays in the AAB).
+7. **PixelCopy timeouts on a slow GPU.** The copy was requested immediately after the swap, while the software GPU was still drawing the queued frame, and PixelCopy answered with its timeout code (`result=2`) on every attempt. The render thread now finishes the frame's GPU work before the request and holds the next frame until the copy is answered.
+8. **Input-dispatch timeout between tests.** One instrumented test left its viewport open, still drawing a 1.1-million-triangle avatar, which starved the next test's window on the software GPU. Each test now closes the app and waits for the native session to be released.
+9. **Signing password in the job log.** The one-run preview keystore password was written to the job environment unmasked and printed by later steps. It is now masked. The key was discarded with the runner and never uploaded.
+
+## Branch review
+
+The six branches named for review were compared with the integration branch by ancestry and by file content.
+
+| Branch | Tip | Relation to the integration branch | Disposition |
+|---|---|---|---|
+| `work/engine-integration-candidate` | `7ba8526` | Ancestor; no commits of its own | Already contained |
+| `work/filament-gles-renderer` | `3856bb6` | Ancestor; no commits of its own | Already contained |
+| `work/filament-renderer-live-diagnostics` | `2a1352c` | Ancestor; no commits of its own | Already contained |
+| `fix/filament-engine-jni-init` | `5974328` | Ancestor; no commits of its own | Already contained |
+| `work/avatarforge-core-integration` | `731bd31` | One commit of its own: an earlier import of the AvatarForge generation core | Superseded. Every file it has exists in the integration branch; inside `avatarforge-engine`, 23 of its files were changed later and 28 files were added. Copying it back would roll the engine back |
+| `feature/first-working-gles-scene` | `31ea0b0` | Seven commits of its own, branched from `main` | Superseded. It draws a hard-coded 36-vertex cube with OpenGL ES 2.0 and shows a measured frame rate. It does not load GLBs. Its camera gestures and live diagnostics exist in the integrated renderer with real geometry |
+
+Other branches, from the 2026-11-11 audit, unchanged:
+
+| Branch | Disposition |
+|---|---|
+| `work/samsung-s24-photoreal-patch` | Its WebP and GLES commits are in the integration branch. |
+| `work/fileprovider-renderer-diagnostics` | The FileProvider capability was ported selectively. Its replacement activity and disconnected overlay were not. |
+| `agent/android-build-check-2026-11-03` | Launcher icon and manifest reference are in the integration branch. |
+| `docs/glb-display-generation-baseline` (PR #11, closed) | README-only; its facts were already recorded. |
+| `fix/mega-hub-candidate-hardening` (PR #8 and PR #10, closed) | Older Filament-only candidate. Not merged. |
+| `work/android-shell-foundation` | Early shell foundation. PR #1 from it was merged into `main` on 2026-10-29; the branch itself is superseded. |
+| `trae/agent-hDYcEF` | Generated Gradle cache files and older viewer edits. Not source; not imported. |
+
+Older branches are kept as recovery points. They are not work targets.
 
 ## Integrated source
 
-| Component | Source / evidence |
+| Component | Source |
 |---|---|
-| Filament host/viewer | Separate bundled-sample preview, Filament Android/gltfio 1.71.5 |
-| AvatarForge Android library | `:avatarforge-engine`, JNI/C++ generation kernel, Kotlin facade and resource governor |
-| Imported/generated avatar viewer | `AvatarForgeSurfaceView`, native GLES route; Vulkan is not selected for this phone-first path |
-| Bundled GLB fixture | `app/src/main/assets/models/female.glb` |
-| Fixture provenance | 3DDD revision `be5bf17d8afe46247646465941fa1b7317d8e415`; Git blob `a1c00c6b31f6ab0db3b2e68243526cb2d0e15967` |
-| Filament licence | Apache License 2.0 |
-| Fixture licence statement | 3DDD README at the pinned revision states generated base rigs are original work released under CC0 |
-| Diagnostic image sharing | AndroidX FileProvider restricted to app-specific external-files storage; real PixelCopy capture path is shared with ClipData and temporary read permission |
+| Filament | `filament-android` and `gltfio-android` 1.71.6 (Apache 2.0). `filament-utils-android` is not used. |
+| AvatarForge Android library | `:avatarforge-engine`: C++ generation core, GLB importer and exporter, native OpenGL ES renderer, JNI, Kotlin facade and resource governor |
+| Viewer for imported and generated GLBs | `AvatarForgeSurfaceView`, native OpenGL ES. The Vulkan backend is compiled and never selected. |
+| Viewer for the bundled sample | `FilamentPreviewView` |
+| Bundled fixture | `app/src/main/assets/models/female.glb`, byte-identical to 3DDD revision `be5bf17d8afe46247646465941fa1b7317d8e415` (Git blob `a1c00c6b31f6ab0db3b2e68243526cb2d0e15967`). One mesh, seven morph targets, no skin, no animation, no images. Seven Khronos validator errors (morph targets without bounds). A renderer fixture, not a reference avatar. |
+| Toolchain | AGP 8.7.3, Kotlin 2.1.0, Gradle 8.11.1, NDK 26.1.10909125, CMake 3.22.1, compile and target SDK 35, min SDK 26 |
 
-The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `work/android-engine-dev`. It diverges from the standalone AvatarForge RB-01 line (`0e78216643d1a305be7d278011d6732e56d62d62` / merge `fc30efd0db3d7892cfee388a783508ea18f32471`). Multiple generation-core files differ in both directions. Do not wholesale replace either tree; any donor update must be a controlled core-only port with API review and native tests. AvatarForge remains a separate project.
+The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `work/android-engine-dev`. It diverges from the standalone AvatarForge RB-01 line (`0e78216643d1a305be7d278011d6732e56d62d62`, merge `fc30efd0db3d7892cfee388a783508ea18f32471`); generation-core files differ in both directions. Do not replace either tree wholesale. AvatarForge remains a separate project.
 
-## Current implementation
+## Missing features
 
-- AvatarForge generation is an isolated Android library with JNI/C++ generation, cancellation, resource/thermal checks, deformed-mesh validation and atomic publication of validated GLBs.
-- Imported/generated self-contained GLBs use the native GLES renderer. The bundled sample stays on the separate Filament preview.
-- Skinned GLBs apply the rest pose before camera framing. CPU deformation refreshes indexed submesh bounds before frustum checks.
-- WebP image decoding and `EXT_texture_webp` source resolution include core-source fallback. Geometry uploads are checked/retried.
-- Debug builds provide seed-1337 generated-avatar diagnostics, successful EGL swap checks, in-frustum checks and background-subtracted PixelCopy. The capture is saved as `generated_avatar_diagnostic.png` or `failed_render.png`.
-- Avatar Studio shares the actual capture only after the file exists. FileProvider path is app-private external-files storage, not broad shared storage.
-- GLB imports are copied to app-private storage, size-limited and structurally validated before publication. External-resource `.gltf` remains unsupported.
-- Ollama is an external service, not an embedded LLM. Cleartext HTTP is limited to loopback; remote endpoints require HTTPS.
-- Android TextToSpeech output is connected. Viseme extraction and avatar lip-sync are not connected.
-
-## Verification ledger
-
-| Gate | Status | Evidence / next requirement |
-|---|---|---|
-| Ollama endpoint utility | **REAL + VERIFIED on earlier revision** | Kotlin compiler smoke and Android unit tests passed on revision `34201cb`; phone-to-Ollama connection remains unverified. |
-| GLB validator | **REAL + VERIFIED on earlier revision** | Kotlin/synthetic GLB checks and unit tests passed on `34201cb`; bundled fixture passed structural validation. |
-| Native generation and atomic GLB publication | **PARTIAL** | Earlier release preview built the engine; exact consolidated HEAD requires fresh CI/build evidence. |
-| WebP decoding/source fallback | **IMPLEMENTED, UNVERIFIED on consolidated HEAD** | Source and host regression tests are present; run exact-head CTest and Android build. |
-| PixelCopy diagnostic and GLES renderer | **IMPLEMENTED, DEVICE UNVERIFIED** | Source requires successful EGL swaps, draw/triangle counts, in-frustum bounds and more than 5,000 background-subtracted pixels. Inspect actual saved capture. |
-| FileProvider capture sharing | **IMPLEMENTED, BUILD UNVERIFIED** | Provider and scoped XML plus share action are present. Must verify Android manifest merge, install, chooser and receiving app read access. |
-| Launcher icon | **IMPLEMENTED, BUILD UNVERIFIED** | Vector drawable and manifest reference are present. |
-| Android unit tests / lint / debug APK / R8 | **PARTIAL** | Passed on earlier revisions; exact consolidated HEAD needs fresh run. |
-| Emulator install/launch/GLES smoke | **UNVERIFIED** | Prior emulator attempt timed out during boot; corrected smoke workflow exists but needs a successful run and screenshot inspection. |
-| Samsung SM-S921B runtime / visible pixels | **UNVERIFIED** | Requires installing this exact consolidated APK on the phone and exercising rendering, generation, import, lifecycle, memory and thermal behaviour. |
-| Production APK/AAB signing | **BLOCKED** | User-owned release keystore and protected CI secrets are not configured. Never substitute debug or ephemeral preview keys. |
-| Embedded LLM | **MISSING** | Ollama remains external. |
-| Photo-to-identity reconstruction | **MISSING** | Deterministic prompt parsing is not image reconstruction. |
-| Voice lip-sync / visemes | **MISSING** | TTS exists; viseme extraction and avatar synchronization do not. |
-| External-resource `.gltf` | **MISSING** | Self-contained GLB only. |
-
-## Fixture and release limitations
-
-The bundled `female.glb` is a renderer fixture, not a complete rigged avatar: one mesh, one node, seven morph targets, zero skins, zero animations and zero embedded images. It does not prove skeletal animation, facial animation, texture quality or generated-avatar quality.
-
-Production release signing remains blocked until a user-owned keystore is configured through protected CI secrets. Preview signing is not a production signing identity.
-
-## Next single gate
-
-Run the exact consolidated branch through host CTest, Android unit tests, lint, debug APK, R8/minification, signed preview APK/AAB, corrected emulator GLES smoke and artifact/signature checks. Inspect the captured model pixels. Then install and test that exact APK on Samsung SM-S921B. Until the phone test passes, the app is not a green build and renderer status remains **UNVERIFIED**.
-
-## Repository consolidation audit (2026-11-11)
-
-The live GitHub inventory returned 15 branches. Keep exactly one active work target: `integration/avatarforge-renderer-port`. `main` remains the stable baseline and has not been modified by this consolidation.
-
-| Branch | Audit disposition |
+| Feature | Status |
 |---|---|
-| `integration/avatarforge-renderer-port` | **CANONICAL.** Continue all implementation, fixes and evidence updates here. PR #9 is the review path to `main`. |
-| `work/samsung-s24-photoreal-patch` | Behind canonical; its WebP/GLES work is already in the canonical line. No cherry-pick. |
-| `work/fileprovider-renderer-diagnostics` | Five-commit divergent foundation rewrite. The useful FileProvider capability is already selectively implemented in canonical Avatar Studio; its replacement Compose-only MainActivity and disconnected overlay are not to be merged. |
-| `agent/android-build-check-2026-11-03` | Launcher icon and manifest reference are already present in canonical. No additional source change required. |
-| `docs/glb-display-generation-baseline` / PR #11 | README-only update is redundant with the current canonical README, which already records the user-confirmed `mylove.glb` display result, fixture facts and separation of viewing from generation quality. Do not merge the stale baseline README over the current project handover. |
-| `fix/mega-hub-candidate-hardening` / closed PR #10 | Divergent older candidate. Its Filament-based generated-avatar capture path conflicts with the selected canonical split (AvatarForge GLES for imported/generated GLBs; Filament only for the bundled sample). The canonical engine already contains post-skin deformation validation and refreshed submesh bounds. Do not wholesale merge the older app, renderer or engine files. Preserve as a historical comparison until branch cleanup is approved. |
-| `feature/first-working-gles-scene` | Earlier standalone GLES scene, superseded by the integrated AvatarForge GLES viewport. |
-| `work/avatarforge-core-integration` | Earlier engine snapshot, not a safe replacement for the later canonical generation core. |
-| `work/android-shell-foundation` | Early divergent shell and wrapper foundation, superseded by the integrated app/toolchain. |
-| `trae/agent-hDYcEF` | Contains generated Gradle cache/lock files and older viewer edits; no cache files are to be imported. |
-| `fix/filament-engine-jni-init`, `work/engine-integration-candidate`, `work/filament-gles-renderer`, `work/filament-renderer-live-diagnostics` | Ancestor branches behind the canonical integration; no unique forward commits against canonical. |
+| Skeletal animation, posing and facial animation of the avatar shown in the app | **MISSING**. Imported GLBs are static, and generated avatars are shown through export and import. |
+| Voice lip-sync and visemes | **MISSING**. Text-to-speech output works. |
+| Embedded language model | **MISSING**. Ollama is an external service. |
+| Photo-to-identity reconstruction | **MISSING**. Prompts are parsed deterministically. |
+| External-resource `.gltf` | **MISSING**. Self-contained GLB only. |
+| Renderer recovery after a lost GL context while the surface stays alive | **MISSING**. The session reports the stall and is rebuilt when the surface is recreated. |
 
-### Exact-head validation follow-up
+## Known defects, recorded and not changed
 
-- The previously recorded baseline CI set for commit `46b13ee87f0daeaf5e89ae752575243b07e98a22` passed Android lint, unit tests, debug APK assembly, R8/minification, native host regression, and signed preview APK/AAB generation.
-- Emulator install and launch succeeded, but the smoke script then exited with code 1. This is a failed smoke gate, not a successful renderer test.
-- The generated-avatar and AvatarForge GLES instrumentation jobs failed before execution because `AvatarForgeRendererSmokeTest.kt` called a no-argument `UiDevice.takeScreenshot()` method unavailable in the pinned UI Automator 2.3.0 dependency. The test was corrected on this branch to use `InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()`, which returns the Bitmap used by the existing pixel assertions.
-- The corrected test change is committed as `42da0e396555eb6fb340a072b5d9396184e0164e`. The emulator smoke script was also corrected in `5b8f6c1aef6e1a88c3d5e3352300f6febcfe4baa`: it now trusts the successful `am start -W` result plus a live process PID instead of a brittle `dumpsys` text-format grep. Existing GLB-load, frame, ANR and screenshot checks remain in place. **Fresh CI for these exact commits is required; no pass is claimed yet.**
-- PR #11 was closed as superseded after confirming its unique GLB fixture facts and user-confirmed display note are already present in the canonical README. Its older baseline README was not merged.
-- Samsung SM-S921B rendering and visible-pixel verification remain **UNVERIFIED**. Production signing remains **BLOCKED** pending the user's production keystore and protected CI secrets.
+- Left and right are not named consistently in the generation core. See [docs/AVATAR_GEOMETRY_EVIDENCE.md](docs/AVATAR_GEOMETRY_EVIDENCE.md).
+- Generated avatars face `−Z`; glTF's front is `+Z`. The app compensates for its own files only.
+- The debug-only PixelCopy check encodes a PNG and writes files on the UI thread once per session.
+- An exported GLB is not byte-identical between a Linux host and Android (284 bytes apart for the diagnostic avatar).
 
-Do not merge to `main` until fresh exact-head CI, emulator install/launch, real GLES pixel evidence and review are complete. The user's physical-phone test remains a separate final gate.
+## History
 
+**2026-11-13, owner phone test.** The owner tested an installed APK on the phone: the renderer displayed the avatar, the generation button changed avatar features including male and female, and GLB import worked. Skin-tone and hair changes were not tested. Avatar quality was too poor to judge appearance changes. The APK's SHA-256 and commit were not recorded, so this is **PARTIAL** evidence for an earlier build and **UNVERIFIED** for the current code. The avatar-quality plan that followed is in [docs/AVATAR_QUALITY_PLAN.md](docs/AVATAR_QUALITY_PLAN.md).
 
-## Owner phone-test update and revised priority (2026-11-13)
+**2026-11-14, integration branch at `a424113`.** Nine checks passed and two failed, both in `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` (root cause 1). An earlier head, `705165e`, had failed the same way ("presented only 2 frames in 15 seconds") and had also hit `keyDispatchingTimedOut` (root cause 8).
 
-The owner reports testing the latest installed APK on the physical phone:
-- Avatar renderer displays the avatar.
-- The generation button changes avatar features, including male/female when given suitable prompts.
-- GLB import button works.
-- Skin-tone and hair changes have not yet been tested.
-- Overall avatar visual quality is too poor to judge appearance changes reliably.
-
-**Evidence classification:** OWNER-TESTED for those reported functions on the APK the owner installed. The exact APK SHA-256 and source commit are not yet known. Do not claim that the current PR head or a specific CI artifact is the tested build. Do not generalise these results to all GLBs, lifecycle states or device conditions.
-
-**Priority is now avatar quality first.** This supersedes the earlier README instruction to defer avatar quality until every renderer gate is complete. Preserve the working renderer, generation action and import path. Diagnose the generated model from parser/spec through anatomy, mesh, face, hair, clothing, materials/textures and export. Prioritise actual geometry/silhouette defects over lighting-only polish. Add deterministic data-level regression tests and matched before/after GLB/render captures. Then verify skin-tone and hair controls independently, followed by the Generate -> Export -> Reopen -> Import -> Render workflow.
-
-No implementation change, build, CI rerun or new phone test is claimed by this handover update. Exact-head CI, emulator tests, artifact signing and release gates remain separate. Production signing remains BLOCKED until the owner configures a production keystore in protected CI secrets. main remains unchanged.
+**2026-11-11, consolidation.** The repository had 15 branches. `integration/avatarforge-renderer-port` was selected as the single integration line; dispositions are in the tables above. Commit `46b13ee` passed lint, unit tests, debug APK, R8, native regression and the signed preview; its emulator smoke failed and was corrected in `42da0e3` and `5b8f6c1`.
