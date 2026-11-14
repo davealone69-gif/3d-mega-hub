@@ -14,64 +14,102 @@ Do not create another implementation branch. Do not split work across competing 
 
 ## Latest handover: 2026-11-15
 
-**Overall avatar-comparison status: MEASURED_WITH_GAPS.** This update records the supplied Goku report and follow-up email. It does not claim independent local re-hashing, a new build, renderer runtime verification, anatomical validation, or phone verification.
+**Overall avatar-comparison status: MEASURED_WITH_GAPS. No verdict.** This update records the complete supplied aligned cross-section report. Artifact identities, geometry measurements and classifications below are agent-reported; they have not been independently recomputed in this repository workspace. This is not a build, renderer-runtime or phone-verification claim.
 
-### Preserved generated LOD0 artifact
+### Step 1 — preserved artifact identities
 
-The supplied report identifies the generated artifact as:
+| Artifact | Reported path | Bytes | SHA-256 | Status |
+|---|---|---:|---|---|
+| Generated female LOD0 | `/workspace/3d-mega-hub-canonical/exports/avatar_default_female_LOD0.glb` | 83,430,312 | `56b072cb43203fe9c2ca0b231d28a3601b59914465647fa1da95a6890daccd6c` | Report says required size/hash match |
+| Reference `mylove.glb` | `/home/ubuntu/upload/eYPzGGq49EUyWbNcDwqwN2/mylove.glb` | 9,287,272 | `8ef94a008b79a2ec8524962d810d92716f03f8476726dd8d8b7fc77227426a26` | Read-only identity recorded |
 
-- **Path in Goku's workspace:** `/workspace/3d-mega-hub-canonical/exports/avatar_default_female_LOD0.glb`
-- **Size:** 83,430,312 bytes
-- **SHA-256:** `56b072cb43203fe9c2ca0b231d28a3601b59914465647fa1da95a6890daccd6c`
-- **Reported verification:** exact size and SHA-256 match the required preserved artifact identity.
+The reference copy's reported SHA-256 is distinct from the previously recorded Dropbox content hash. Do not conflate the two identifiers. The reference asset is private: do not commit, publish or redistribute it without explicit approval. The generated artifact is preserved and must not be modified.
 
-The report also identifies the reference copy as `/home/ubuntu/upload/eYPzGGq49EUyWbNcDwqwN2/mylove.glb`, 9,287,272 bytes, SHA-256 `8ef94a008b79a2ec8524962d810d92716f03f8476726dd8d8b7fc77227426a26`. This is a separately identified copy. Do not conflate its hash with the previously recorded Dropbox content hash, and do not redistribute or commit the private reference asset.
+### Step 2 — Y-axis alignment
 
-**Evidence boundary:** these identities and hash checks are reported in the supplied agent report; they have not been independently recomputed in this repository workspace during this README update. The generated GLB remains preserved and must not be modified.
+PCA major-axis angles in XZ, modulo 180°:
 
-### Alignment method (reported)
+| Measurement | Generated | Reference |
+|---|---:|---:|
+| PCA angle | −175.62054° (equivalent +4.37946°) | +178.33226° (equivalent −1.66774°) |
+| Unique triangle-referenced world-space vertices used | 550,098 | 64,914 |
 
-- Triangle-plane intersections are taken at (Y = Y_{min} + fH).
-- X/Z remain raw model axes except for the explicitly yaw-aligned generated model.
-- (H) is each model's full-scene Y extent: generated **1.814858 m**, reference **0.999842 m**.
-- PCA major-axis estimation uses covariance of unique, triangle-referenced world-space vertices: **550,098 generated** and **64,914 reference**.
-- Generated PCA angle: **−175.62054°** (equivalent modulo 180° to +4.37946°).
-- Reference PCA angle: **+178.33226°** (equivalent modulo 180° to −1.66774°).
-- Relative yaw applied to generated geometry: **+6.04720° about Y**, with reference orientation fixed.
-- Rotation convention: (x'=\cos\theta\,x+\sin\theta\,z), (z'=-\sin\theta\,x+\cos\theta\,z).
+A relative **+6.04720° yaw about Y** was applied to generated geometry; reference orientation was fixed. Rotation convention:
 
-This is a whole-mesh, pose-sensitive alignment estimate, not independently validated anatomical registration. The raw-axis baseline is retained below; the aligned values are a re-slice after rotating the generated geometry.
+`x′ = cos(θ)·x + sin(θ)·z`
+`z′ = −sin(θ)·x + cos(θ)·z`
 
-### Cross-section measurements
+This is a whole-mesh, pose-sensitive PCA estimate, not independently validated anatomical registration. The raw-axis baseline is retained in Step 5; aligned measurements re-slice the generated geometry after rotation.
 
-All values are dimensionless spans divided by each model's stated (H). The pre-alignment pairs below are the supplied raw-axis generated/reference measurements. The post-alignment values are supplied generated/reference span-to-height ratios.
+### Step 3 — common height definition
 
-| Height fraction | Pre-alignment generated X/Z | Pre-alignment reference X/Z | Post-alignment X ratio | Post-alignment Z ratio |
-|---|---:|---:|---:|---:|
-| 0.10 | 0.1481 / 0.0581 | 0.4006 / 0.2347 | 0.368340 | 0.288012 |
-| 0.25 | 0.1725 / 0.0862 | 0.4579 / 0.1978 | 0.375506 | 0.483192 |
-| 0.50 | 0.2848 / 0.1760 | 0.5449 / 0.1435 | 0.520323 | 1.261601 |
-| 0.75 | 0.2399 / 0.1409 | 0.6283 / 0.2095 | 0.380263 | 0.682615 |
-| 0.90 | 0.1064 / 0.1399 | 0.1866 / 0.1548 | 0.586120 | 0.929235 |
+Both models use the same definition: full-scene world-space `Ymax − Ymin` after node transforms. Each slice is measured upward from that model's own `Ymin`. No scale or vertical registration was applied.
 
-The earlier descriptive whole-mesh normalized X/Z spans were generated **0.3085 / 0.2101** and reference **0.7996 / 0.3579**. These are descriptive geometry measurements, not anatomy-labelled regions or pass/fail thresholds.
+| Model | Y minimum | Y maximum | H |
+|---|---:|---:|---:|
+| Generated | 0.000000 m | 1.814858 m | 1.814858 m |
+| Reference | −0.499926 m | 0.499917 m | 0.999842 m |
 
-### Remaining comparison gaps
+All reported widths and depths are dimensionless spans divided by that model's own `H`. Slice planes use `Y = Ymin + fraction × H`.
 
-- **Torso-only comparison: INCOMPLETE.** Available topology/contour components do not provide a defensible limb mask. No arbitrary mask or anatomical landmark labels were introduced.
-- **Slice residual classifications:** compatibility notes only; not an anatomical verdict.
-- **Rotation validity:** not independently validated against anatomical landmarks; differing poses and whole-mesh geometry can affect PCA.
-- **Height registration:** the common definition is documented as full-scene Y extent, but it does not establish equivalent anatomical landmarks.
-- **Mirror matching:** remains a separate analysis. The previously reported maximum-cardinality matcher did not match all IDs; that result is not proof of anatomical asymmetry. Keep the provisional 4 mm criterion unchanged and separate from this cross-section comparison.
-- **Device verification:** UNVERIFIED unless the exact APK is installed and tested on the owner's Samsung device.
+### Step 4 — torso-only analysis
 
-### Immediate next actions
+<badge color="warning">INCOMPLETE</badge>
 
-1. Preserve both GLB identities and keep the generated artifact unchanged.
-2. Complete the remaining supplied report sections for height registration, per-slice residual classifications and any limitations. Do not invent missing classifications.
-3. Do not fabricate a torso-only result. Only proceed if a defensible, documented mask or independent anatomical landmarks become available.
-4. Keep the 4 mm mirror analysis separate; do not loosen its threshold or convert unmatched IDs into an anatomical verdict.
-5. Update this handover only when additional measurements or independently verified artifact/build/runtime evidence are available.
+No defensible limb mask could be derived from mesh geometry alone. Contour-component counts at normalized heights were:
+
+| Y/H | Generated components | Reference components |
+|---:|---:|---:|
+| 0.10 | 2 | 26 |
+| 0.25 | 2 | 41 |
+| 0.50 | 1 | 25 |
+| 0.75 | 1 | 103 |
+| 0.90 | 9 | 35 |
+
+A largest-contour or central-contour rule would not reliably separate torso from limbs. No proxy mask was substituted. Therefore, these results are whole-mesh cross-sections, not torso-only measurements.
+
+### Step 5 — complete whole-mesh cross-section measurements
+
+Each pair below is `X-span/H / Z-span/H`. Ratios are **generated ÷ reference**. Reference values remain unchanged by the generated-model yaw.
+
+| Y/H | Raw generated X/Z | Reference X/Z | Raw ratio X/Z | Aligned generated X/Z | Aligned ratio X/Z |
+|---:|---:|---:|---:|---:|---:|
+| 0.10 | 0.148075 / 0.058122 | 0.400646 / 0.234685 | 0.369591 / 0.247660 | 0.147574 / 0.067592 | 0.368340 / 0.288012 |
+| 0.25 | 0.172452 / 0.086226 | 0.457947 / 0.197762 | 0.376576 / 0.436009 | 0.171962 / 0.095557 | 0.375506 / 0.483192 |
+| 0.50 | 0.284834 / 0.176016 | 0.544902 / 0.143478 | 0.522725 / 1.226780 | 0.283525 / 0.181012 | 0.520323 / 1.261601 |
+| 0.75 | 0.239902 / 0.140886 | 0.628299 / 0.209534 | 0.381828 / 0.672378 | 0.238919 / 0.143031 | 0.380263 / 0.682615 |
+| 0.90 | 0.106442 / 0.139914 | 0.186629 / 0.154751 | 0.570340 / 0.904123 | 0.109387 / 0.143800 | 0.586120 / 0.929235 |
+
+These are descriptive geometric spans. They do not establish named anatomy, anatomical similarity, or a pass/fail threshold.
+
+### Step 6 — residual compatibility, not a verdict
+
+The supplied report classifies the remaining differences as follows:
+
+| Y/H | Reported compatibility | Limitation |
+|---:|---|---|
+| 0.10 | Compatible with height-registration residuals | Cause not established |
+| 0.25 | Compatible with height-registration residuals | Cause not established |
+| 0.50 | Unresolved between residual yaw and height registration | Cannot distinguish causes from these measurements |
+| 0.75 | Compatible with height-registration residuals | Cause not established |
+| 0.90 | Compatible with height registration; residual yaw not ruled out | Cause not established |
+
+No cause is established and no pass/fail is assigned. In particular, the PCA yaw is not proof that the remaining differences are anatomical or that the models are correctly anatomically registered.
+
+### Separate mirror-matching boundary
+
+The mirror matcher remains a separate analysis. Previously reported maximum-cardinality matching did not match all IDs; this is not proof of anatomical asymmetry. Keep the provisional 4 mm criterion unchanged. It is not a threshold derived from this cross-section report and must not be loosened or treated as a substitute for anatomical validation.
+
+### Evidence boundaries and next actions
+
+- Preserve the generated LOD0 GLB exactly; do not alter or replace the recorded artifact.
+- Keep `mylove.glb` private and read-only.
+- Do not claim torso-only measurements unless a defensible, documented mask or independent anatomical landmarks become available.
+- Do not turn compatibility labels into causal findings or an anatomical verdict.
+- Keep mirror matching and its provisional 4 mm criterion separate from the cross-section analysis.
+- No new Android build, emulator runtime test, or physical-device test is established by this report. Samsung SM-S921B verification remains **UNVERIFIED** unless the exact APK is installed and tested on the phone.
+
+**Status: MEASURED_WITH_GAPS — no verdict.**
 
 ## Consolidation decisions
 
