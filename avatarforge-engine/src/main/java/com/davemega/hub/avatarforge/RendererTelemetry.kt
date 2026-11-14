@@ -61,6 +61,11 @@ class FrameSampleWindow(capacity: Int) {
  * renderer; counts come from the renderer's own statistics. Durations that have not been measured
  * are reported as -1.0, and GPU byte figures are the sizes the renderer requested from the driver,
  * not physical GPU memory.
+ *
+ * Every requested frame is counted exactly once: `framesRequested = framesPresented +
+ * framesNotPresented + framesCutOffByShutdown`. A cut-off frame is one whose swap failed after
+ * Android had already asked the session to stop and released the Surface; it is not an error, so
+ * [eglErrorFrames] and [errorCount] cover only failures while the session was meant to be rendering.
  */
 data class RendererTelemetry(
     val backend: String,
@@ -76,6 +81,8 @@ data class RendererTelemetry(
     val framesNotPresented: Long,
     val framesWithoutValidContent: Long,
     val stallEvents: Int,
+    val framesCutOffByShutdown: Int,
+    val shutdownEglError: Int,
     val frameSamples: Int,
     val fps: Double,
     val frameIntervalP50Ms: Double,
@@ -136,6 +143,8 @@ data class RendererTelemetry(
         .put("framesNotPresented", framesNotPresented)
         .put("framesWithoutValidContent", framesWithoutValidContent)
         .put("stallEvents", stallEvents)
+        .put("framesCutOffByShutdown", framesCutOffByShutdown)
+        .put("shutdownEglError", "0x" + shutdownEglError.toString(16))
         .put("frameSamples", frameSamples)
         .put("fps", finite(fps))
         .put("frameIntervalP50Ms", finite(frameIntervalP50Ms))
@@ -193,7 +202,8 @@ data class RendererTelemetry(
             "Render call: p50 ${fmt(renderCallP50Ms, 1)} / p95 ${fmt(renderCallP95Ms, 1)} / max ${fmt(renderCallMaxMs, 1)} ms · " +
                 "last frame CPU ${fmt(lastCpuMs, 1)} ms + swap ${fmt(lastSwapMs, 1)} ms",
             "Frames: $framesPresented presented · $framesNotPresented not presented · " +
-                "$framesWithoutValidContent without valid content · $stallEvents stall(s)",
+                "$framesWithoutValidContent without valid content · $stallEvents stall(s)" +
+                (if (framesCutOffByShutdown > 0) " · $framesCutOffByShutdown cut off by surface shutdown" else ""),
             "Scene: $drawCalls draw calls · $trianglesDrawn triangles drawn · model $modelTriangles triangles / " +
                 "$modelVertices vertices · $submeshes submeshes · $joints joints",
             "Load: GLB import ${duration(glbImportMs)} · renderer init ${duration(rendererInitMs)} · " +

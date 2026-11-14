@@ -516,6 +516,18 @@ class AvatarForgeRendererSmokeTest {
             "Native AvatarForge render sessions were not released after the Activity finished: $counters",
             counters.live == 0L && counters.created > 0L
         )
+
+        /* The worker publishes its last measured snapshot just after the native session is gone.
+           A frame Android cut off while closing is reported separately; anything else that failed
+           during the whole session is a renderer error and fails the test. */
+        SystemClock.sleep(500L)
+        val finalTelemetry = AvatarForgeSurfaceView.latestTelemetry
+        android.util.Log.i("AvatarForge", "FINAL_TELEMETRY ${finalTelemetry?.toJson()}")
+        assertTrue(
+            "The finished ${glb.name} session reported renderer errors or a stall: ${finalTelemetry?.toJson()}",
+            finalTelemetry != null && finalTelemetry.assetName == glb.name &&
+                finalTelemetry.errorCount == 0 && finalTelemetry.stallEvents == 0
+        )
     }
 
     private fun waitForTelemetry(

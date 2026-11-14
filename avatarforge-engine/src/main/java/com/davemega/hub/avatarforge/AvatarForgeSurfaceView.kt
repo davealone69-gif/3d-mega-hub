@@ -16,6 +16,8 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -46,6 +48,9 @@ class AvatarForgeSurfaceView(
     @Volatile private var surfaceWidth = 0
     @Volatile private var surfaceHeight = 0
     @Volatile private var renderThread: Thread? = null
+    /* Counted down by the render worker once its native session (and with it the EGL surface)
+       has been destroyed. */
+    @Volatile private var surfaceRelease: CountDownLatch? = null
 
     private val cameraLock = Any()
     private var pendingYawDeg = 0f
@@ -172,6 +177,29 @@ class AvatarForgeSurfaceView(
         pixelCopyPending.set(false)
         pixelCopyComplete.set(true)
         stopRenderer()
+        awaitSurfaceRelease()
+    }
+
+    /**
+     * Android releases the Surface as soon as surfaceDestroyed() returns. Give the render worker a
+     * short, bounded chance to finish the frame it is drawing and destroy its EGL surface first, so
+     * that an ordinary shutdown ends without a failed swap.
+     *
+     * This is deliberately not a join. A renderer that is slow, or blocked inside the driver, must
+     * never hold the UI thread: when the wait expires the worker simply finishes later. That is
+     * safe because the native session holds its own ANativeWindow reference, and the frame Android
+     * cut off is reported as such instead of being counted as a renderer error.
+     */
+    private fun awaitSurfaceRelease() {
+        val latch = surfaceRelease ?: return
+        val waitStarted = System.nanoTime()
+        val released = try {
+            latch.await(SURFACE_RELEASE_WAIT_MS, TimeUnit.MILLISECONDS)
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+        Log.i(TAG, "surfaceDestroyed rendererReleasedSurface=$released waitedMs=${(System.nanoTime() - waitStarted) / 1_000_000L}")
     }
 
     private fun stopRenderer() {
@@ -213,6 +241,8 @@ class AvatarForgeSurfaceView(
         }
         if (renderThread === previous) renderThread = null
         if (!running.compareAndSet(false, true)) return
+        val released = CountDownLatch(1)
+        surfaceRelease = released
         val worker = Thread({
             var nativeHandle = 0L
             var terminalFailure: String? = null
@@ -289,6 +319,15 @@ class AvatarForgeSurfaceView(
                     val outsideCorners = stats[6]
                     val glError = stats[7]
                     val eglError = stats[8]
+                    /* Android can take the Surface away while a frame is in flight. A swap that
+                       fails after the stop signal is the end of the session, not a renderer error:
+                       count it as a cut-off frame and leave the loop. Any swap failure while the
+                       session is still supposed to be rendering stays an error. */
+                    if (!(presentedThisFrame && framePresented) && eglError != 0 && (!running.get() || !surfaceReady)) {
+                        telemetry.recordShutdownCutOff(eglError)
+                        Log.i(TAG, "SHUTDOWN_CUTOFF frames=$frames presented=$presentedFrames eglError=0x${eglError.toString(16)} renderCallMs=${(renderReturned - now) / 1_000_000L}")
+                        break
+                    }
                     /* A valid frame is one that was presented AND drew in-frustum model geometry. */
                     val validFrame = presentedThisFrame && framePresented && drawCalls > 0 && triangles > 0 && boundsInFrustum
                     telemetry.recordFrame(now, renderReturned, presentedThisFrame && framePresented, validFrame)
@@ -348,7 +387,11 @@ class AvatarForgeSurfaceView(
                     if (remaining > 0L) Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
                 }
             } catch (failure: Throwable) {
-                val message = failure.message ?: failure.javaClass.simpleName
+                /* Say so when the Surface had already been taken away: an exception that arrives
+                   after the stop signal is a start or a frame that Android interrupted. */
+                val interrupted = !running.get() || !surfaceReady
+                val message = (if (interrupted) "Surface was released while the renderer was starting or drawing: " else "") +
+                    (failure.message ?: failure.javaClass.simpleName)
                 recordSmokeResult("FAILED", error = message)
                 Log.e(TAG, "Renderer failed: $message", failure)
                 terminalFailure = "AvatarForge renderer failed: $message"
@@ -363,6 +406,8 @@ class AvatarForgeSurfaceView(
                 var cleanupFailure: String? = null
                 if (nativeHandle != 0L) runCatching { nativeDestroy(nativeHandle) }
                     .onFailure { cleanupFailure = "AvatarForge cleanup failed: ${it.message}" }
+                /* The EGL surface and the ANativeWindow reference are gone from here on. */
+                released.countDown()
                 if (finalSnapshot != null) {
                     latestTelemetry = finalSnapshot
                     runCatching { onTelemetry?.invoke(finalSnapshot) }
@@ -401,9 +446,18 @@ class AvatarForgeSurfaceView(
         private var framesPresented = 0L
         private var framesNotPresented = 0L
         private var framesWithoutValidContent = 0L
+        private var framesCutOffByShutdown = 0
+        private var shutdownEglError = 0
         var validFrames = 0L
             private set
         var stallEvents = 0
+
+        /** The frame whose swap failed because Android released the Surface during shutdown. */
+        fun recordShutdownCutOff(eglError: Int) {
+            framesRequested++
+            framesCutOffByShutdown++
+            shutdownEglError = eglError
+        }
 
         fun recordFrame(callStartNs: Long, callEndNs: Long, presented: Boolean, valid: Boolean) {
             framesRequested++
@@ -452,6 +506,8 @@ class AvatarForgeSurfaceView(
                 framesNotPresented = framesNotPresented,
                 framesWithoutValidContent = framesWithoutValidContent,
                 stallEvents = stallEvents,
+                framesCutOffByShutdown = framesCutOffByShutdown,
+                shutdownEglError = shutdownEglError,
                 frameSamples = presentIntervals.count(),
                 fps = presentIntervals.ratePerSecond(),
                 frameIntervalP50Ms = presentIntervals.percentileMs(50.0),
@@ -484,7 +540,9 @@ class AvatarForgeSurfaceView(
                 qualityLevel = metrics[18].toInt(),
                 glErrorFrames = metrics[19].toInt(),
                 lastGlError = metrics[20].toInt(),
-                eglErrorFrames = metrics[21].toInt(),
+                /* The native counter includes the swap that failed on the cut-off frame. That frame
+                   is reported in framesCutOffByShutdown, so it is not counted twice as an error. */
+                eglErrorFrames = (metrics[21].toInt() - framesCutOffByShutdown).coerceAtLeast(0),
                 failedDrawCalls = metrics[22].toInt(),
                 cameraYawDeg = metrics[23] / 1000.0,
                 cameraPitchDeg = metrics[24] / 1000.0,
@@ -805,6 +863,8 @@ class AvatarForgeSurfaceView(
         private const val NO_VALID_FRAME_TIMEOUT_NS = 15_000_000_000L
         /** After a session has rendered, report (not kill) a gap this long with no valid frame. */
         private const val STALL_TIMEOUT_NS = 15_000_000_000L
+        /* Upper bound for the UI thread in surfaceDestroyed(); far below any ANR threshold. */
+        private const val SURFACE_RELEASE_WAIT_MS = 250L
         private const val TELEMETRY_PERIOD_NS = 1_000_000_000L
         private const val FRAME_WINDOW = 240
         /** Must match nativeGetMetrics in avatarforge_renderer_jni.cpp. */

@@ -51,8 +51,8 @@ class RendererTelemetryTest {
         val telemetry = RendererTelemetry(
             backend = "OpenGL ES", apiVersion = "OpenGL ES 3.2", deviceName = "test", assetName = "a.glb",
             assetBytes = 2048L, surfaceWidth = 1080, surfaceHeight = 1102, uptimeMs = 1500L,
-            framesRequested = 3L, framesPresented = 2L, framesNotPresented = 1L, framesWithoutValidContent = 1L,
-            stallEvents = 0, frameSamples = 1, fps = Double.NaN,
+            framesRequested = 4L, framesPresented = 2L, framesNotPresented = 1L, framesWithoutValidContent = 1L,
+            stallEvents = 0, framesCutOffByShutdown = 1, shutdownEglError = 0x300d, frameSamples = 1, fps = Double.NaN,
             frameIntervalP50Ms = 16.7, frameIntervalP95Ms = 16.7, frameIntervalP99Ms = 16.7,
             frameIntervalMaxMs = Double.POSITIVE_INFINITY,
             renderCallP50Ms = 4.0, renderCallP95Ms = 5.0, renderCallMaxMs = 6.0, lastCpuMs = 3.0, lastSwapMs = 1.0,
@@ -73,8 +73,17 @@ class RendererTelemetryTest {
         assertEquals("0x502", json.getString("lastGlError"))
         assertEquals(6, json.getInt("errorCount"))
         assertEquals(6, telemetry.errorCount)
+        // A frame Android cut off during shutdown is reported on its own and is not an error.
+        assertEquals(1, json.getInt("framesCutOffByShutdown"))
+        assertEquals("0x300d", json.getString("shutdownEglError"))
+        assertEquals(
+            telemetry.framesRequested,
+            telemetry.framesPresented + telemetry.framesNotPresented + telemetry.framesCutOffByShutdown
+        )
         val lines = telemetry.summaryLines()
         assertTrue(lines.any { it.contains("first frame not measured") })
         assertTrue(lines.any { it.contains("1 GL-error frame(s) (last 0x502)") })
+        assertTrue(lines.any { it.contains("1 cut off by surface shutdown") })
+        assertTrue(telemetry.copy(framesCutOffByShutdown = 0).summaryLines().none { it.contains("cut off") })
     }
 }

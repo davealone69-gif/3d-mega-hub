@@ -262,6 +262,8 @@ class GeneratedAvatarRuntimeTest {
             Thread.sleep(250)
             counters = AvatarForgeRendererRuntime.sessionCounters()
         }
+        /* The worker publishes its last measured snapshot just after the native session is gone. */
+        Thread.sleep(500)
         val finalTelemetry = AvatarForgeSurfaceView.latestTelemetry?.takeIf { it.assetName == result.file.name }
         evidence.put("nativeSessionsCreated", counters.created)
             .put("nativeSessionsDestroyed", counters.destroyed)
@@ -272,6 +274,12 @@ class GeneratedAvatarRuntimeTest {
         assertTrue(
             "Native AvatarForge render sessions were not released after the production surface closed: $counters",
             counters.live == 0L && counters.created > 0L
+        )
+        /* A frame Android cut off while closing is reported separately; anything else that failed
+           during the whole session is a renderer error. */
+        assertTrue(
+            "The finished production session reported renderer errors or a stall: ${finalTelemetry?.toJson()}",
+            finalTelemetry != null && finalTelemetry.errorCount == 0 && finalTelemetry.stallEvents == 0
         )
     }
 
