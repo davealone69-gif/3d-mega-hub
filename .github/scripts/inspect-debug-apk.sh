@@ -125,8 +125,12 @@ else
 fi
 cat "$OUT/apk-signature.txt"
 echo "::endgroup::"
-CERT_SHA256="$(sed -nE 's/^Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+).*/\1/p' "$OUT/apk-signature.txt" | head -n 1)"
-CERT_DN="$(sed -nE 's/^Signer #1 certificate DN: (.*)$/\1/p' "$OUT/apk-signature.txt" | head -n 1)"
+# apksigner labels the signer "Signer #1" in older build-tools and "V2 Signer:" in newer ones, so
+# the label is not matched. The first certificate line belongs to the scheme Android verifies.
+CERT_SHA256="$(sed -nE 's/^.*certificate SHA-256 digest: ([0-9a-fA-F]{64}).*$/\1/p' "$OUT/apk-signature.txt" | head -n 1)"
+CERT_DN="$(sed -nE 's/^.*certificate DN: (.*)$/\1/p' "$OUT/apk-signature.txt" | head -n 1)"
+SIGNER_COUNT="$(sed -nE 's/^Number of signers: ([0-9]+).*$/\1/p' "$OUT/apk-signature.txt" | head -n 1)"
+[[ "${SIGNER_COUNT:-1}" == "1" ]] || fail "the APK has ${SIGNER_COUNT} signers; exactly one is expected"
 SCHEMES="$({ grep -E '^Verified using v[0-9.]+ scheme .*: true' "$OUT/apk-signature.txt" || true; } | sed -E 's/^Verified using (v[0-9.]+) scheme.*/\1/' | tr '\n' ' ' | sed -E 's/ +$//')"
 [[ -n "$CERT_SHA256" ]] || fail "the signing certificate SHA-256 could not be read"
 
