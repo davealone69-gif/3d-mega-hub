@@ -62,8 +62,9 @@ namespace {
 #define AF_GL_LOGE(...) do { std::fprintf(stderr, "[AvatarForge ERROR] " __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
 #endif
 
-/* GLES 3.x removed the legacy space-separated GL_EXTENSIONS string. Enumerate extensions
-   with glGetStringi so ES 3.1 devices correctly expose optional framebuffer/texture features. */
+/* Extension lookup by exact name. OpenGL ES 3.x keeps glGetString(GL_EXTENSIONS) and adds the
+   indexed glGetStringi form; the indexed form is used because it compares whole names instead of
+   searching one long string for a substring. */
 bool hasGlExtension(const char* requested) {
     if (!requested || !*requested) return false;
     GLint count = 0;
