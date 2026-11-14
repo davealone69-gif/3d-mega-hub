@@ -1,0 +1,91 @@
+name: AvatarForge generated-avatar runtime verification
+
+on:
+  pull_request:
+    branches:
+      - main
+      - fix/mega-hub-candidate-hardening
+      - integration/avatarforge-renderer-port
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: avatarforge-generated-runtime-pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  generated-avatar-runtime:
+    name: Generate, render and inspect real avatar pixels
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "emulator platform-tools platforms;android-30 platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
+          accept-android-sdk-licenses: true
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Enable KVM hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run generated-avatar instrumentation test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -memory 4096 -cores 2 -no-window -no-audio -no-boot-anim -gpu swangle -camera-back none -no-snapshot -wipe-data
+          emulator-boot-timeout: 900
+          disable-animations: true
+          script: |
+            set +e
+            ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace
+            test_status=$?
+            mkdir -p artifacts/avatarforge/runtime-captures
+            # Capture the emulator display independently of app storage as a fallback.
+            # The instrumentation test's actual avatar PNGs/JSON live in internal app files;
+            # retrieve them through run-as, which works with the debuggable test APK and
+            # avoids Android 11+ scoped-storage restrictions on /Android/data.
+            adb exec-out screencap -p > artifacts/avatarforge/runtime-captures/emulator-screen.png || true
+            adb shell pm list packages | grep -F com.davemega.hub > artifacts/avatarforge/runtime-captures/installed-packages.txt || true
+            adb exec-out sh -c 'run-as com.davemega.hub sh -c "cd files/avatarforge-diagnostics && tar -cf - ."' > artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar 2> artifacts/avatarforge/runtime-captures/run-as-error.txt || true
+            test ! -s artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar || tar -xf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar -C artifacts/avatarforge/runtime-captures/
+            find artifacts/avatarforge/runtime-captures -type f -printf '%p %s bytes\\n'
+            echo "build_commit=${GITHUB_SHA}" > artifacts/avatarforge/runtime-captures/evidence-manifest.txt
+            echo "capture_time_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
+            find artifacts/avatarforge/runtime-captures -type f ! -name evidence-manifest.txt -print0 | sort -z | xargs -0 -r sha256sum >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
+            cat artifacts/avatarforge/runtime-captures/evidence-manifest.txt
+            exit $test_status
+
+      - name: Upload instrumentation reports and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: avatarforge-generated-runtime-evidence
+          if-no-files-found: warn
+          path: |
+            app/build/reports/androidTests/connected/
+            app/build/outputs/androidTest-results/connected/
+            artifacts/avatarforge/
+

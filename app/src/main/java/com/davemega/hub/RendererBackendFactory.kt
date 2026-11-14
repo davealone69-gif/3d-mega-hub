@@ -8,15 +8,14 @@ internal data class RendererBackendSelection<T : Any>(
 )
 
 /**
- * Initializes backends in preference order and returns the first successful result.
- * The callback should create the complete backend-dependent renderer session so
- * GLES is tried when Vulkan setup fails after engine creation as well.
+ * Prefer the known GLES path on the target Samsung device. Vulkan is an optional
+ * fallback and is not treated as available until the complete session initializes.
  */
 internal fun <T : Any> createWithRendererBackendFallback(
     initialize: (Engine.Backend) -> T?
 ): RendererBackendSelection<T> {
     val failures = mutableListOf<Throwable>()
-    val backends = listOf(Engine.Backend.VULKAN, Engine.Backend.OPENGL)
+    val backends = listOf(Engine.Backend.OPENGL, Engine.Backend.VULKAN)
 
     for (backend in backends) {
         try {
@@ -30,13 +29,13 @@ internal fun <T : Any> createWithRendererBackendFallback(
         }
     }
 
-    val failure = IllegalStateException("Filament could not initialize Vulkan or its OpenGL ES fallback")
+    val failure = IllegalStateException("Filament could not initialize OpenGL ES or its optional Vulkan fallback")
     failures.forEach(failure::addSuppressed)
     throw failure
 }
 
 internal fun Engine.Backend.displayName(): String = when (this) {
-    Engine.Backend.VULKAN -> "Vulkan"
     Engine.Backend.OPENGL -> "OpenGL ES"
+    Engine.Backend.VULKAN -> "Vulkan"
     else -> name
 }

@@ -1,6 +1,7 @@
 package com.davemega.hub
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,10 +22,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.davemega.hub.avatarforge.GlbValidator
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.net.URL
 import java.util.Locale
+import java.util.UUID
 import kotlin.concurrent.thread
 
 private enum class HubPage(val label: String) {
@@ -36,28 +42,82 @@ private data class ChatLine(val fromUser: Boolean, val text: String)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val initialImportUrl = extractIncomingGlbUrl(intent)
+        val initialImportUri = if (initialImportUrl == null) extractIncomingGlbUri(intent) else null
+        val startPage = resolveHubStartPage(
+            openAvatarStudio = intent.getBooleanExtra(EXTRA_OPEN_AVATAR_STUDIO, false) ||
+                initialImportUrl != null || initialImportUri != null
+        )
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                Surface(Modifier.fillMaxSize()) { MegaHubApp() }
+                Surface(Modifier.fillMaxSize()) {
+                    MegaHubApp(
+                        startPage = startPage,
+                        initialImportUrl = if (savedInstanceState == null) initialImportUrl else null,
+                        initialImportUri = if (savedInstanceState == null) initialImportUri else null
+                    )
+                }
             }
         }
     }
 }
 
+private fun extractIncomingGlbUrl(intent: Intent?): String? {
+    if (intent == null) return null
+    intent.getStringExtra(EXTRA_IMPORT_GLB_URL)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+    if (intent.action == Intent.ACTION_SEND) {
+        val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
+        if (sharedText.contains("http://", ignoreCase = true) || sharedText.contains("https://", ignoreCase = true)) {
+            return sharedText
+        }
+    }
+    if (intent.action == Intent.ACTION_VIEW) {
+        val data = intent.data
+        val scheme = data?.scheme?.lowercase(Locale.ROOT)
+        if (scheme == "https" || scheme == "http") {
+            return data.toString()
+        }
+    }
+    return null
+}
+
+private fun extractIncomingGlbUri(intent: Intent?): Uri? {
+    if (intent == null) return null
+    if (intent.action == Intent.ACTION_VIEW) {
+        val data = intent.data
+        val scheme = data?.scheme?.lowercase(Locale.ROOT)
+        if (scheme == "content" || scheme == "file") return data
+    }
+    if (intent.action == Intent.ACTION_SEND) {
+        @Suppress("DEPRECATION")
+        val stream = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+        if (stream != null) return stream
+    }
+    return null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MegaHubApp() {
+private fun MegaHubApp(
+    startPage: HubStartPage,
+    initialImportUrl: String? = null,
+    initialImportUri: Uri? = null
+) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("mega_hub", Context.MODE_PRIVATE) }
-    var page by remember { mutableStateOf(HubPage.HOME) }
-    var endpoint by remember { mutableStateOf(prefs.getString("ollama_url", "http://127.0.0.1:11434") ?: "http://127.0.0.1:11434") }
+    var page by remember {
+        mutableStateOf(if (startPage == HubStartPage.AVATAR) HubPage.AVATAR else HubPage.HOME)
+    }
+    var endpoint by remember { mutableStateOf(prefs.getString("ollama_url", "http://localhost:11434") ?: "http://localhost:11434") }
     var model by remember { mutableStateOf(prefs.getString("ollama_model", "llama3.2:1b") ?: "llama3.2:1b") }
     var connection by remember { mutableStateOf("Not checked") }
     var busy by remember { mutableStateOf(false) }
     var prompt by remember { mutableStateOf("") }
     var chat by remember { mutableStateOf(listOf<ChatLine>()) }
     var avatarUri by remember { mutableStateOf(prefs.getString("avatar_uri", null)?.let(Uri::parse)) }
-    var avatarName by remember { mutableStateOf(prefs.getString("avatar_name", "No avatar imported") ?: "No avatar imported") }
+    var avatarName by remember { mutableStateOf(prefs.getString("avatar_name", "Built-in sample model") ?: "Built-in sample model") }
+    var avatarImporting by remember { mutableStateOf(false) }
+    var avatarImportStatus by remember { mutableStateOf("Imported GLB files are copied into app-private storage and validated before use.") }
     var voiceText by remember { mutableStateOf("Hello. Your 3D Mega Hub voice output is ready.") }
     var voiceStatus by remember { mutableStateOf("Android text-to-speech is available on this device.") }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
@@ -72,63 +132,235 @@ private fun MegaHubApp() {
         onDispose { engine.stop(); engine.shutdown(); tts = null }
     }
 
-    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
+    fun importAvatar(uri: Uri) {
+        if (avatarImporting) return
+        val activity = context as? ComponentActivity ?: return
+        avatarImporting = true
+        avatarImportStatus = "Copying and validating selected GLB…"
+        thread(name = "MegaHubAvatarImport") {
+            var temporaryFile: File? = null
             try {
-                context.contentResolver.takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (_: Exception) { }
-            avatarUri = uri
-            avatarName = uri.lastPathSegment?.substringAfterLast('/') ?: "Imported avatar file"
-            prefs.edit().putString("avatar_uri", uri.toString()).putString("avatar_name", avatarName).apply()
+                val directory = File(context.filesDir, "avatars")
+                check(directory.isDirectory || directory.mkdirs()) { "Could not create the private avatar library directory." }
+                val outputFile = File.createTempFile("imported-avatar-", ".glb.part", directory)
+                temporaryFile = outputFile
+                val input = context.contentResolver.openInputStream(uri)
+                    ?: error("Android could not open the selected document.")
+                input.use { source ->
+                    outputFile.outputStream().use { target ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val count = source.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            require(total <= GlbValidator.MAX_GLB_BYTES) {
+                                "GLB exceeds the ${GlbValidator.MAX_GLB_BYTES / (1024L * 1024L)} MiB import limit."
+                            }
+                            target.write(buffer, 0, count)
+                        }
+                    }
+                }
+                GlbValidator.validate(outputFile)
+                val fileName = "imported-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}.glb"
+                val destination = File(directory, fileName)
+                Files.move(outputFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                temporaryFile = null
+                val importedUri = Uri.fromFile(destination)
+                prefs.edit().putString("avatar_uri", importedUri.toString())
+                    .putString("avatar_name", fileName).apply()
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread {
+                        avatarUri = importedUri
+                        avatarName = fileName
+                        avatarImporting = false
+                        avatarImportStatus = "Imported and structurally validated · ${destination.length() / 1024L} KiB"
+                    }
+                }
+            } catch (failure: Exception) {
+                temporaryFile?.delete()
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread {
+                        avatarImporting = false
+                        avatarImportStatus = "Import failed: ${failure.message ?: failure.javaClass.simpleName}"
+                        Toast.makeText(context, avatarImportStatus, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
         }
     }
 
+    fun importAvatarUrl(rawUrl: String) {
+        if (avatarImporting) return
+        val activity = context as? ComponentActivity ?: return
+        avatarImporting = true
+        avatarImportStatus = "Connecting to remote URL and downloading GLB…"
+        thread(name = "MegaHubRemoteGlbImport") {
+            var temporaryFile: File? = null
+            try {
+                val directory = File(context.filesDir, "avatars")
+                check(directory.isDirectory || directory.mkdirs()) { "Could not create the private avatar library directory." }
+                val outputFile = File.createTempFile("remote-avatar-", ".glb.part", directory)
+                temporaryFile = outputFile
+                var lastProgressStep = -1L
+                val displayName = RemoteGlbUrl.downloadToFile(
+                    rawUrl = rawUrl,
+                    destinationTempFile = outputFile,
+                    maxBytes = GlbValidator.MAX_GLB_BYTES
+                ) { downloadedBytes, totalBytes ->
+                    val step = downloadedBytes / (512L * 1024L)
+                    if (step != lastProgressStep && !activity.isFinishing && !activity.isDestroyed) {
+                        lastProgressStep = step
+                        val mb = String.format(Locale.US, "%.1f", downloadedBytes / (1024.0 * 1024.0))
+                        val progressLabel = if (totalBytes > 0L) {
+                            val totalMb = String.format(Locale.US, "%.1f", totalBytes / (1024.0 * 1024.0))
+                            "Downloading GLB… $mb / $totalMb MiB"
+                        } else {
+                            "Downloading GLB… $mb MiB"
+                        }
+                        activity.runOnUiThread { avatarImportStatus = progressLabel }
+                    }
+                }
+                // Remote sources receive the same bounded structural validation as document-picker imports.
+                GlbValidator.validate(outputFile)
+                val safeStem = displayName.removeSuffix(".glb").replace(Regex("[^A-Za-z0-9._-]"), "_").take(48).ifEmpty { "remote" }
+                val fileName = "$safeStem-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}.glb"
+                val destination = File(directory, fileName)
+                Files.move(outputFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                temporaryFile = null
+                val importedUri = Uri.fromFile(destination)
+                prefs.edit().putString("avatar_uri", importedUri.toString())
+                    .putString("avatar_name", displayName).apply()
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread {
+                        avatarUri = importedUri
+                        avatarName = displayName
+                        avatarImporting = false
+                        avatarImportStatus = "Downloaded & validated $displayName · ${destination.length() / 1024L} KiB"
+                    }
+                }
+            } catch (failure: Exception) {
+                temporaryFile?.delete()
+                if (!activity.isFinishing && !activity.isDestroyed) {
+                    activity.runOnUiThread {
+                        avatarImporting = false
+                        avatarImportStatus = "URL import failed: ${failure.message ?: failure.javaClass.simpleName}"
+                        Toast.makeText(context, avatarImportStatus, Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(initialImportUrl, initialImportUri) {
+        when {
+            !initialImportUrl.isNullOrBlank() -> importAvatarUrl(initialImportUrl)
+            initialImportUri != null -> importAvatar(initialImportUri)
+        }
+    }
+
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) importAvatar(uri)
+    }
+
     fun checkOllama() {
+        val baseUrl = try {
+            OllamaEndpoint.normalize(endpoint)
+        } catch (error: IllegalArgumentException) {
+            connection = error.message ?: "Invalid Ollama endpoint."
+            return
+        }
+        endpoint = baseUrl
+        prefs.edit().putString("ollama_url", baseUrl).apply()
         busy = true
-        connection = "Checking $endpoint ..."
-        thread {
+        connection = "Checking $baseUrl ..."
+        thread(name = "MegaHubOllamaCheck") {
             val result = try {
-                val url = URL(endpoint.trimEnd('/') + "/api/tags")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 3500; readTimeout = 3500; requestMethod = "GET"
+                val conn = (URL("$baseUrl/api/tags").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4_000
+                    readTimeout = 5_000
+                    requestMethod = "GET"
+                    instanceFollowRedirects = false
+                    useCaches = false
+                    setRequestProperty("Accept", "application/json")
                 }
                 try {
-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
+                    val code = conn.responseCode
+                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                    val body = stream?.use { readLimitedResponse(it, 1_048_576) }.orEmpty()
+                    if (code !in 200..299) error("Ollama returned HTTP $code: ${body.take(1_024)}")
                     val names = JSONObject(body).optJSONArray("models")
-                    val count = names?.length() ?: 0
-                    "Connected. Ollama returned $count model(s)."
-                } finally { conn.disconnect() }
-            } catch (e: Exception) { "Connection failed: ${e.message ?: e.javaClass.simpleName}" }
-            (context as? ComponentActivity)?.runOnUiThread { connection = result; busy = false }
+                    "Connected. Ollama returned ${names?.length() ?: 0} model(s)."
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (error: Exception) {
+                "Connection failed: ${error.message ?: error.javaClass.simpleName}"
+            }
+            (context as? ComponentActivity)?.runOnUiThread {
+                connection = result
+                busy = false
+            }
         }
     }
 
     fun sendPrompt() {
+        if (busy) return
         val question = prompt.trim()
-        if (question.isEmpty() || busy) return
+        if (question.isEmpty()) return
+        if (question.length > 32_768) {
+            connection = "Message is too long. Keep it under 32,768 characters."
+            return
+        }
+        val baseUrl = try {
+            OllamaEndpoint.normalize(endpoint)
+        } catch (error: IllegalArgumentException) {
+            connection = error.message ?: "Invalid Ollama endpoint."
+            return
+        }
+        val modelName = try {
+            OllamaEndpoint.validateModel(model)
+        } catch (error: IllegalArgumentException) {
+            connection = error.message ?: "Invalid model name."
+            return
+        }
+        endpoint = baseUrl
+        model = modelName
+        prefs.edit().putString("ollama_url", baseUrl).putString("ollama_model", modelName).apply()
         chat = chat + ChatLine(true, question)
         prompt = ""
         busy = true
         chat = chat + ChatLine(false, "Thinking…")
-        thread {
+        thread(name = "MegaHubOllamaChat") {
             val result = try {
                 val payload = JSONObject()
-                    .put("model", model.trim())
+                    .put("model", modelName)
                     .put("stream", false)
                     .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", question)))
-                val conn = (URL(endpoint.trimEnd('/') + "/api/chat").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8000; readTimeout = 120000; requestMethod = "POST"
+                val conn = (URL("$baseUrl/api/chat").openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8_000
+                    readTimeout = 120_000
+                    requestMethod = "POST"
+                    instanceFollowRedirects = false
+                    useCaches = false
                     doOutput = true
-                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    setRequestProperty("Accept", "application/json")
                 }
                 try {
                     conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
-                    val stream = if (conn.responseCode in 200..299) conn.inputStream else conn.errorStream
-                    val body = stream.bufferedReader().use { it.readText() }
-                    if (conn.responseCode !in 200..299) error("HTTP ${conn.responseCode}: $body")
-                    JSONObject(body).optJSONObject("message")?.optString("content").orEmpty().ifBlank { "Ollama returned an empty response." }
-                } finally { conn.disconnect() }
-            } catch (e: Exception) { "Request failed: ${e.message ?: e.javaClass.simpleName}" }
+                    val code = conn.responseCode
+                    val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                    val body = stream?.use { readLimitedResponse(it, 4_194_304) }.orEmpty()
+                    if (code !in 200..299) error("Ollama returned HTTP $code: ${body.take(2_048)}")
+                    JSONObject(body).optJSONObject("message")?.optString("content").orEmpty()
+                        .ifBlank { "Ollama returned an empty response." }
+                } finally {
+                    conn.disconnect()
+                }
+            } catch (error: Exception) {
+                "Request failed: ${error.message ?: error.javaClass.simpleName}"
+            }
             (context as? ComponentActivity)?.runOnUiThread {
                 chat = chat.dropLast(1) + ChatLine(false, result)
                 busy = false
@@ -161,33 +393,42 @@ private fun MegaHubApp() {
                 HubPage.HOME -> {
                     Text("Your creative workspace", style = MaterialTheme.typography.headlineSmall)
                     Text("A single hub for 3D assets, local AI and voice. Each integration reports its real connection state.")
-                    HubCard("3D / Avatar", avatarName, "Import a GLB or glTF asset to your library.") { page = HubPage.AVATAR }
+                    HubCard("3D / Avatar", avatarName, "Import a GLB or generate an avatar on-device.") { page = HubPage.AVATAR }
                     HubCard("Local AI", connection, "Endpoint: $endpoint · Model: $model") { page = HubPage.AI }
                     HubCard("Voice", voiceStatus, "Android speech output") { page = HubPage.VOICE }
                     HubCard("Device", "${Build.MANUFACTURER} ${Build.MODEL}", "Android ${Build.VERSION.RELEASE} · API ${Build.VERSION.SDK_INT}") { page = HubPage.SETTINGS }
                 }
                 HubPage.AVATAR -> {
-                    Text("Avatar library", style = MaterialTheme.typography.headlineSmall)
-                    Text("Import a .glb or .gltf file from device storage. Import stores access to the original file; rendering and editing are not yet connected.")
-                    Button(onClick = { avatarPicker.launch(arrayOf("model/gltf-binary", "model/gltf+json", "application/octet-stream", "*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Import 3D model") }
-                    HubCard("Selected asset", avatarName, avatarUri?.toString() ?: "No file selected")
-                    if (avatarUri != null) {
-                        OutlinedButton(onClick = {
-                            avatarUri = null; avatarName = "No avatar imported"
+                    AvatarStudioScreen(
+                        avatarUri = avatarUri,
+                        avatarName = avatarName,
+                        onImport = {
+                            // Use */* so Android DocumentProviders (Downloads, Dropbox, Drive) do not grey out .glb files;
+                            // GlbValidator strictly verifies binary glTF 2.0 headers and chunks on import.
+                            avatarPicker.launch(arrayOf("*/*"))
+                        },
+                        onImportUrl = { url -> importAvatarUrl(url) },
+                        onRemove = {
+                            avatarUri = null
+                            avatarName = "Built-in sample model"
                             prefs.edit().remove("avatar_uri").remove("avatar_name").apply()
-                        }) { Text("Remove from library") }
-                    }
-                    HubCard("Rendering status", "NOT CONNECTED", "The current Filament preview is a renderer diagnostic, not a GLB avatar viewer.")
+                        },
+                        onGenerated = { uri, name ->
+                            avatarUri = uri
+                            avatarName = name
+                            prefs.edit().putString("avatar_uri", uri.toString())
+                                .putString("avatar_name", name).apply()
+                        },
+                        isImporting = avatarImporting,
+                        importStatus = avatarImportStatus
+                    )
                 }
                 HubPage.AI -> {
                     Text("Local AI assistant", style = MaterialTheme.typography.headlineSmall)
                     OutlinedTextField(endpoint, { endpoint = it }, label = { Text("Ollama URL") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     OutlinedTextField(model, { model = it }, label = { Text("Model name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = {
-                            prefs.edit().putString("ollama_url", endpoint.trim()).putString("ollama_model", model.trim()).apply()
-                            checkOllama()
-                        }, enabled = !busy) { Text("Test connection") }
+                        Button(onClick = { checkOllama() }, enabled = !busy) { Text("Test connection") }
                         Text(connection, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     }
                     Text("Chat", style = MaterialTheme.typography.titleLarge)
@@ -200,10 +441,7 @@ private fun MegaHubApp() {
                         }
                     }
                     OutlinedTextField(prompt, { prompt = it }, label = { Text("Message your local model") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-                    Button(onClick = {
-                        prefs.edit().putString("ollama_url", endpoint.trim()).putString("ollama_model", model.trim()).apply()
-                        sendPrompt()
-                    }, enabled = !busy && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Working…" else "Send to Ollama") }
+                    Button(onClick = { sendPrompt() }, enabled = !busy && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Working…" else "Send to Ollama") }
                     Text("This sends requests directly to the configured Ollama /api/chat endpoint. It does not use a cloud AI service.", style = MaterialTheme.typography.bodySmall)
                 }
                 HubPage.VOICE -> {
@@ -220,16 +458,39 @@ private fun MegaHubApp() {
                 HubPage.SETTINGS -> {
                     Text("System & settings", style = MaterialTheme.typography.headlineSmall)
                     HubCard("Runtime", "Android ${Build.VERSION.RELEASE}", "API ${Build.VERSION.SDK_INT} · ${Build.SUPPORTED_ABIS.joinToString()}")
-                    HubCard("Graphics", "Filament Vulkan (OpenGL ES fallback)", "Vulkan is preferred when available; visible avatar rendering still needs device verification.")
+                    HubCard("Graphics", "Filament OpenGL ES (Vulkan fallback)", "OpenGL ES is the primary path. Vulkan is attempted only if GLES initialization fails; device rendering remains unverified.")
                     HubCard("AI endpoint", endpoint, "Saved locally on this device.")
                     Button(onClick = {
-                        prefs.edit().putString("ollama_url", endpoint.trim()).putString("ollama_model", model.trim()).apply()
-                        Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
+                        try {
+                            val normalized = OllamaEndpoint.normalize(endpoint)
+                            val validModel = OllamaEndpoint.validateModel(model)
+                            endpoint = normalized
+                            model = validModel
+                            prefs.edit().putString("ollama_url", normalized).putString("ollama_model", validModel).apply()
+                            Toast.makeText(context, "Settings saved", Toast.LENGTH_SHORT).show()
+                        } catch (error: IllegalArgumentException) {
+                            Toast.makeText(context, error.message ?: "Invalid settings", Toast.LENGTH_LONG).show()
+                        }
                     }, modifier = Modifier.fillMaxWidth()) { Text("Save settings") }
                 }
             }
         }
     }
+}
+
+
+private fun readLimitedResponse(input: java.io.InputStream, maxBytes: Int): String {
+    val output = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(8_192)
+    var total = 0
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        require(total <= maxBytes) { "Ollama response exceeded the $maxBytes-byte safety limit." }
+        output.write(buffer, 0, count)
+    }
+    return output.toString(Charsets.UTF_8.name())
 }
 
 @Composable
@@ -243,3 +504,4 @@ private fun HubCard(title: String, status: String, detail: String, onClick: (() 
         }
     }
 }
+

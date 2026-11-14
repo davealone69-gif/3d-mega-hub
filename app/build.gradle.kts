@@ -96,7 +96,14 @@ dependencies {
 
     implementation(libs.filament.android)
     implementation(libs.filament.utils.android)
+    implementation(libs.filament.gltfio.android)
+    implementation(project(":avatarforge-engine"))
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:core:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
 }
