@@ -1313,12 +1313,36 @@ void GlRenderer::drawShadowPass() {
     glUseProgram(shadowProgram_);
     glBindVertexArray(avatarVao_);
     glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexIbo_);
-    /* Shadow depth uses the light's own camera, not the viewer frustum. Keep the complete
-       model here; viewer-camera culling is applied only to the forward colour pass. */
-    glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
+
+    /* The shadow map is a low-resolution depth target, so submitting every source triangle
+       needlessly doubles the cost of very dense generated avatars. Use the coarsest validated
+       index-only LOD for shadows. It addresses the original vertex stream, preserving the exact
+       live/skinned vertex attributes and leaving the forward colour pass free to choose its own
+       camera-distance LOD. Fall back to the full source IBO when LOD data is unavailable. */
+    if (lodReady_ && lodIndexIbo_ != 0 && avatarLods_.levelCount() > 2) {
+        const auto& shadowRanges = avatarLods_.level(2).submeshes;
+        const af_submesh* submeshes = af_engine_submeshes(engine_);
+        const int submeshCount = af_engine_submesh_count(engine_);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lodIndexIbo_);
+        for (int i = 0; i < submeshCount && static_cast<size_t>(i) < shadowRanges.size(); ++i) {
+            const AvatarLodRange& range = shadowRanges[static_cast<size_t>(i)];
+            if (range.indexCount == 0 || range.indexCount % 3 != 0) continue;
+            if (range.firstIndex > avatarLods_.indices().size() ||
+                range.indexCount > avatarLods_.indices().size() - range.firstIndex) {
+                AF_GL_LOGE("Shadow LOD range rejected: submesh=%d first=%u count=%u total=%zu",
+                           i, range.firstIndex, range.indexCount, avatarLods_.indices().size());
+                continue;
+            }
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(range.indexCount), GL_UNSIGNED_INT,
+                           reinterpret_cast<const void*>(static_cast<uintptr_t>(range.firstIndex) * sizeof(uint32_t)));
+            ++drawCalls_;
+        }
+    } else {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexIbo_);
+        glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
+        ++drawCalls_;
+    }
     glDisable(GL_POLYGON_OFFSET_FILL);
-    ++drawCalls_;
 }
 
 void GlRenderer::drawForwardPass() {
