@@ -16,6 +16,9 @@
  *
  * Build:  cmake -S avatarforge-engine/src/main/cpp -B build/host -DBUILD_TESTING=ON && cmake --build build/host
  * Run:    build/host/af_host_probe --sex female --out /tmp/avatar.glb --extended
+ *         build/host/af_host_probe --sex female --build 2 --hair 3 --outfit 4 --height 1.75 \
+ *             --prompt "Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans" \
+ *             --out /tmp/app_diagnostic.glb      (the spec the app's debug diagnostic generates)
  *         build/host/af_host_probe --analyze /path/to/any.glb --extended
  */
 #include "afcore.h"
@@ -339,6 +342,9 @@ static void measure(const char* label, const af_engine* engine, bool rest) {
 int main(int argc, char** argv) {
     std::string out = "af_host_probe_out.glb", prompt, sex = "female", analyzeOnly;
     int seed = -1; long budgetMb = 0;
+    // Optional overrides so that any spec the app sends through JNI can be reproduced on a host.
+    // Values are the af_build / af_hair_style / af_outfit / af_footwear enum numbers; -1 keeps the default.
+    int build = -1, hair = -1, outfit = -1, footwear = -1; double heightM = 0.0;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -346,6 +352,9 @@ int main(int argc, char** argv) {
         else if (a == "--seed") seed = std::atoi(next().c_str()); else if (a == "--budget-mb") budgetMb = std::atol(next().c_str());
         else if (a == "--verbose") gVerbose = true; else if (a == "--extended") gExtended = true;
         else if (a == "--analyze") analyzeOnly = next();
+        else if (a == "--build") build = std::atoi(next().c_str()); else if (a == "--hair") hair = std::atoi(next().c_str());
+        else if (a == "--outfit") outfit = std::atoi(next().c_str()); else if (a == "--footwear") footwear = std::atoi(next().c_str());
+        else if (a == "--height") heightM = std::atof(next().c_str());
     }
     if (!analyzeOnly.empty()) {
         af_spec blank0; af_spec_init(&blank0);
@@ -361,6 +370,11 @@ int main(int argc, char** argv) {
     af_spec spec; af_spec_init(&spec);
     if (sex == "female") spec.sex = AF_SEX_FEMALE; else if (sex == "male") spec.sex = AF_SEX_MALE;
     if (seed >= 0) spec.seed = seed;
+    if (build >= 0) spec.build = build;
+    if (hair >= 0) spec.hair_style = hair;
+    if (outfit >= 0) spec.outfit = outfit;
+    if (footwear >= 0) spec.footwear = footwear;
+    if (heightM > 0.0) spec.height_m = static_cast<float>(heightM);
     if (!prompt.empty()) std::snprintf(spec.prompt, sizeof(spec.prompt), "%s", prompt.c_str());
     std::printf("engine %s abi %d | spec: sex=%d build=%d hair=%d outfit=%d footwear=%d seed=%d height=%.3f | budget=%ld MB (0=default) | prompt='%s'\n",
                 af_engine_version(), af_engine_abi_version(), spec.sex, spec.build, spec.hair_style, spec.outfit, spec.footwear, spec.seed, spec.height_m, budgetMb, prompt.c_str());
