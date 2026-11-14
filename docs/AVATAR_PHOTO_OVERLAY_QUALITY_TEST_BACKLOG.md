@@ -74,3 +74,27 @@ Use only photos with documented permission and provenance. Keep reference photos
 - AVQ-00: BLOCKED at the recorded Hub base commit because the file-picker URI is not consumed by the preview and the preview is not mounted in the app screen.
 - AVQ-01 through AVQ-08: NOT RUN. They require a real avatar render path and a rights-cleared reference set.
 - No renderer, model, shader, build configuration, photo asset, or production code change is authorized by this backlog. The first implementation handoff must be a separate scoped request; the existing renderer work remains untouched.
+
+
+## Ground-truth geometry notes supplied by the user (2026-11-14)
+
+The user supplied the following whole-mesh X-width / Z-depth envelope measurements for `mylove.glb`, divided into ten equal-height Y bands, bottom-to-top. Overall Y is approximately -0.499926 to +0.499917 model units (total height 0.999843); each band is approximately 0.099984 units tall.
+
+| Band | Y minimum | Y maximum | X width | Z depth |
+|---:|---:|---:|---:|---:|
+| 1 | -0.499926 | -0.399941 | 0.606548 | 0.342837 |
+| 2 | -0.399941 | -0.299957 | 0.432327 | 0.229914 |
+| 3 | -0.299957 | -0.199973 | 0.492954 | 0.205983 |
+| 4 | -0.199973 | -0.099989 | 0.530137 | 0.178481 |
+| 5 | -0.099989 | -0.000004 | 0.544348 | 0.155567 |
+| 6 | -0.000004 | 0.099980 | 0.587684 | 0.148691 |
+| 7 | 0.099980 | 0.199964 | 0.624390 | 0.187147 |
+| 8 | 0.199964 | 0.299948 | 0.799449 | 0.218482 |
+| 9 | 0.299948 | 0.399932 | 0.652151 | 0.188113 |
+| 10 | 0.399932 | 0.499917 | 0.181655 | 0.156217 |
+
+**Interpretation constraint:** these are per-band bounds across all vertices, not isolated anatomical measurements. Hair, hands, arms, feet, clothing or other geometry can influence a band's extrema. Do not label a band as a specific body part or directly copy these widths into body parameters without inspecting the reference mesh and isolating the relevant geometry.
+
+**Symmetry gate:** inspect LOD0 vertex positions for exact mirrored pairs across X before changing anatomy. Preserve the previously agreed maximum mirror-pair tolerance of 0.004 model units. Report unmatched vertices and maximum residual with their coordinates; do not average away or silently repair failures. Apply one geometry fix at a time, then run the relevant native regression and generated-avatar diagnostic before the next fix.
+
+**Reference provenance:** Dropbox contains two user-owned copies of `mylove.glb`, each 9,287,272 bytes; the diagnostics-folder copy was last modified 2026-11-10. The raw GLB binary still must be inspected in the implementation workspace before freezing a reference manifest or changing geometry. The ten-band envelope alone is not a substitute for that inspection.
