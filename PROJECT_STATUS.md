@@ -4,12 +4,16 @@ Last updated: 2026-11-13.
 
 ## Latest engineering update — 2026-11-15
 
-- Active implementation: `integration/avatarforge-renderer-port`, PR #9. Stable `main` remains at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
+- Active implementation: `integration/avatarforge-renderer-port`, PR #9. Stable `main` remains unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
 - PR #8 is closed and unmerged; its head is `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. Do not use it as the work branch.
-- Inspected PR #9 head `a42411302b7f9e9eabe171f844d8b4d646f1c23b`: Android CI and native host regression passed, but both generated-avatar GLES instrumentation workflows failed the visible-pixel gate. Their terminal message was overwritten to the generic `AvatarForge renderer stopped.`, concealing the first renderer exception.
-- **Implemented:** `78cb75d81557623622f6989a285ebf958dea2844` keeps the renderer failure and any teardown failure in the final status. This improves diagnosis only; it does not claim a renderer fix.
-- **Next:** run the consolidated exact-head validation on the new commit, inspect the now-preserved first renderer error and fix that root cause. Do not weaken the visible-pixel threshold or convert frame submission into a pixel pass.
-- **UNVERIFIED:** actual GLES visible-pixel rendering on the new commit; physical Samsung SM-S921B runtime. **BLOCKED:** production signing until the owner's keystore is configured in protected CI.
+- **Implemented:** `78cb75d81557623622f6989a285ebf958dea2844` preserves the first renderer failure and any teardown failure in the worker's final status. This is an observability fix, not a renderer fix.
+- **Exact-head evidence at `2a5485c17ec656659c4841826a1048d1577b7301`:**
+  - **PASS:** signed preview APK and AAB built, signatures verified, provenance emitted; run `43626247432`, job `132542586035`. One-run ephemeral key only, not production signing.
+  - **PASS:** Android emulator install/launch smoke; run `43626247432`, job `132542586459`.
+  - **PASS:** native host regression; run `43626247376`, job `132542664347`.
+  - **IN PROGRESS at last inspection:** debug APK assembly, R8/minification, unit tests, lint, imported-GLB GLES/PixelCopy diagnostic and generated-avatar GLES pixel test; runs `43626247376`, `43626247379`, `43626247386`.
+- **UNVERIFIED:** visible model pixels on the exact PR head until the instrumentation runs finish and captured screenshots/reports are inspected. Samsung SM-S921B runtime remains **UNVERIFIED**.
+- **BLOCKED:** production signing pending the owner's keystore in protected CI secrets. No merge to `main`.
 
 ## Repository and active branch
 
