@@ -2,8 +2,10 @@
 set -euo pipefail
 
 mkdir -p emulator-diagnostics
-APK="app/build/outputs/apk/debug/app-debug.apk"
+# SMOKE_APK selects the artifact under test; the default is the debug APK built by this job.
+APK="${SMOKE_APK:-app/build/outputs/apk/debug/app-debug.apk}"
 test -s "$APK"
+echo "Emulator smoke APK: $APK ($(stat -c%s "$APK") bytes, sha256 $(sha256sum "$APK" | cut -d' ' -f1))"
 
 adb wait-for-device
 BOOTED=""
@@ -20,6 +22,8 @@ if [[ "$BOOTED" != "1" ]]; then
   exit 1
 fi
 
+# A differently signed build of the same package may already be installed on a reused emulator.
+adb uninstall com.davemega.hub >/dev/null 2>&1 || true
 adb install -r "$APK"
 adb shell am force-stop com.davemega.hub
 adb shell am start -W -n com.davemega.hub/.MainActivity --ez com.davemega.hub.extra.OPEN_AVATAR_STUDIO true
@@ -109,9 +113,11 @@ fi
 adb exec-out screencap -p > emulator-diagnostics/avatar-studio-screen.png
 test -s emulator-diagnostics/avatar-studio-screen.png
 {
+  printf 'APK=%s\nAPK_SHA256=%s\n' "$APK" "$(sha256sum "$APK" | cut -d' ' -f1)"
   printf 'INSTALL=PASS\nLAUNCH=PASS\nAVATAR_STUDIO=OPENED\nGLB_LOAD=PASS\nRENDER_FRAME=SUBMITTED\nPROCESS_ID=%s\n' "$PID"
   printf 'SDK=%s\nABI=%s\nOPENGL_ES=%s\n' \
     "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" \
     "$(adb shell getprop ro.product.cpu.abi | tr -d '\r')" \
     "$(adb shell getprop ro.opengles.version | tr -d '\r')"
 } > emulator-diagnostics/result.txt
+cat emulator-diagnostics/result.txt

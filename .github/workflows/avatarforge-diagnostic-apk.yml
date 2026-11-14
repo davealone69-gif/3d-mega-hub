@@ -82,7 +82,7 @@ jobs:
           disable-animations: true
           emulator-options: -memory 4096 -cores 2 -no-window -no-audio -no-boot-anim -gpu swangle -no-snapshot -wipe-data
           emulator-boot-timeout: 900
-          script: ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest#generatedAvatarMustProduceVisiblePixels
+          script: bash .github/scripts/generated-runtime.sh com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest#generatedAvatarMustProduceVisiblePixels
       - name: Run generated GLB through production GLES SurfaceView
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -93,7 +93,7 @@ jobs:
           disable-animations: true
           emulator-options: -memory 4096 -cores 2 -no-window -no-audio -no-boot-anim -gpu swangle -no-snapshot -wipe-data
           emulator-boot-timeout: 900
-          script: ./gradlew --no-daemon --stacktrace :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView
+          script: bash .github/scripts/generated-runtime.sh com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView
       - name: Collect diagnostic APK and test evidence
         if: always()
         run: |
@@ -107,6 +107,9 @@ jobs:
           fi
           if [ -d app/build/reports/androidTests ]; then
             cp -R app/build/reports/androidTests avatarforge-diagnostic-output/
+          fi
+          if [ -d artifacts/avatarforge ]; then
+            cp -R artifacts/avatarforge avatarforge-diagnostic-output/
           fi
       - uses: actions/upload-artifact@v7
         if: always()
