@@ -25,8 +25,9 @@ if [[ "$MODE" == "compare" ]]; then
   REFERENCE_AAB="$OUT/3D-Mega-Hub-preview-release.aab"
   test -s "$REFERENCE_APK"
   test -s "$REFERENCE_AAB"
+  NOT_REPRODUCIBLE=0
   {
-    echo "REPRODUCIBILITY CHECK (two clean builds, same commit, same runner, same one-run key)"
+    echo "REPRODUCIBILITY CHECK (two clean builds, same commit, same runner, same one-run key; second build without the Gradle build cache)"
     for kind in apk aab; do
       if [[ "$kind" == "apk" ]]; then first="$REFERENCE_APK"; second="$APK"; else first="$REFERENCE_AAB"; second="$AAB"; fi
       first_sha="$(sha256sum "$first" | cut -d' ' -f1)"
@@ -36,13 +37,59 @@ if [[ "$MODE" == "compare" ]]; then
       if [[ "$first_sha" == "$second_sha" ]]; then
         echo "$kind REPRODUCIBLE=yes (byte-identical)"
       else
-        echo "$kind REPRODUCIBLE=no (bytes differ). Entries whose CRC or size differ:"
-        diff <(unzip -v "$first" | awk 'NR>3 {print $NF, $(NF-1), $1}' | sort) \
-             <(unzip -v "$second" | awk 'NR>3 {print $NF, $(NF-1), $1}' | sort) | head -n 40 || true
+        NOT_REPRODUCIBLE=$((NOT_REPRODUCIBLE + 1))
+        echo "$kind REPRODUCIBLE=no (bytes differ)"
+        echo "Zip entries whose name, CRC, size, compressed size or timestamp differ:"
+        diff <(unzip -v "$first" | awk 'NR>3 {print $NF, $(NF-1), $1, $3, $5, $6}' | sort) \
+             <(unzip -v "$second" | awk 'NR>3 {print $NF, $(NF-1), $1, $3, $5, $6}' | sort) | head -n 40 || true
+        # Say which part of the file differs: the zip entries, the APK Signing Block (and which
+        # block inside it), or the central directory.
+        python3 - "$first" "$second" <<'PY' || true
+import hashlib, struct, sys
+
+def sections(path):
+    data = open(path, 'rb').read()
+    eocd = data.rfind(b'PK\x05\x06')
+    cd_offset = struct.unpack_from('<I', data, eocd + 16)[0]
+    out = {}
+    block_start = cd_offset
+    if data[cd_offset - 16:cd_offset] == b'APK Sig Block 42':
+        size = struct.unpack_from('<Q', data, cd_offset - 24)[0]
+        block_start = cd_offset - (size + 8)
+        pos = block_start + 8
+        while pos < cd_offset - 24:
+            length = struct.unpack_from('<Q', data, pos)[0]
+            block_id = struct.unpack_from('<I', data, pos + 8)[0]
+            out['signing block 0x%08x' % block_id] = hashlib.sha256(data[pos + 12:pos + 8 + length]).hexdigest()
+            pos += 8 + length
+    out['zip entries (bytes before the signing block)'] = hashlib.sha256(data[:block_start]).hexdigest()
+    out['central directory and end record'] = hashlib.sha256(data[cd_offset:]).hexdigest()
+    return out
+
+NAMES = {
+    'signing block 0x7109871a': 'APK Signature Scheme v2',
+    'signing block 0xf05368c0': 'APK Signature Scheme v3',
+    'signing block 0x1b93ad61': 'APK Signature Scheme v3.1',
+    'signing block 0x504b4453': 'AGP dependency metadata (encrypted for Google Play)',
+    'signing block 0x42726577': 'verity padding',
+    'signing block 0x6dff800d': 'SourceStamp',
+}
+a, b = sections(sys.argv[1]), sections(sys.argv[2])
+for key in sorted(set(a) | set(b)):
+    same = a.get(key) == b.get(key)
+    label = NAMES.get(key, '')
+    print('  %-48s %s%s' % (key, 'identical' if same else 'DIFFERS', (' - ' + label) if label else ''))
+PY
       fi
     done
+    echo "not_reproducible_artifacts=$NOT_REPRODUCIBLE"
   } | tee "$OUT/REPRODUCIBILITY.txt"
-  exit 0
+  if grep -q '^not_reproducible_artifacts=0$' "$OUT/REPRODUCIBILITY.txt"; then
+    echo "Reproducibility check passed: both artifacts are byte-identical across two clean builds."
+    exit 0
+  fi
+  echo "Reproducibility check FAILED: at least one artifact differs between two clean builds of the same commit."
+  exit 1
 fi
 
 [[ "$MODE" == "verify" ]] || { echo "unknown mode: $MODE"; exit 2; }

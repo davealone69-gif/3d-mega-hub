@@ -90,11 +90,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./gradlew --no-daemon --stacktrace clean assembleRelease bundleRelease
+          # A second build that reuses cached task outputs would compare the cache with itself.
+          ./gradlew --no-daemon --stacktrace --no-build-cache clean assembleRelease bundleRelease
           APK="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
           AAB="$(find app/build/outputs/bundle/release -maxdepth 1 -name '*.aab' -print -quit)"
-          bash .github/scripts/verify-release.sh compare "$APK" "$AAB" release-preview
+          status=0
+          bash .github/scripts/verify-release.sh compare "$APK" "$AAB" release-preview || status=$?
           { echo '```'; cat release-preview/REPRODUCIBILITY.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -151,6 +154,9 @@ jobs:
     name: Signed release APK install and launch on emulator
     runs-on: ubuntu-latest
     needs: signed-preview
+    # Run whenever the signed APK was uploaded, including when only the reproducibility comparison
+    # failed. With no artifact the download step fails and so does this job.
+    if: ${{ !cancelled() }}
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
