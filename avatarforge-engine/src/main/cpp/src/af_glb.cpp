@@ -354,6 +354,7 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
                 empty.componentType = 5126;
                 empty.type = "VEC3";
                 empty.view = -1;
+                empty.hasBounds = true;      /* all-zero deltas: min = max = (0,0,0) */
                 morphAcc.push_back(b.addAccessor(empty));
                 morphNames.push_back(kBlendshapeNames[c]);
                 ++res.emptyMorphs;
@@ -363,6 +364,22 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             a.count = vcount;
             a.componentType = 5126;
             a.type = "VEC3";
+            /* glTF 2.0 requires min/max on every POSITION accessor, and a morph target's POSITION
+               is one. The bounds describe the accessor AFTER sparse substitution, so the implicit
+               zero of every vertex the channel does not move takes part whenever at least one
+               vertex is untouched. */
+            a.hasBounds = true;
+            const bool hasImplicitZeros = idx.size() < vcount;
+            for (int axis = 0; axis < 3; ++axis) {
+                float lo = hasImplicitZeros ? 0.0f : vals[static_cast<size_t>(axis)];
+                float hi = lo;
+                for (size_t k = static_cast<size_t>(axis); k < vals.size(); k += 3) {
+                    lo = std::min(lo, vals[k]);
+                    hi = std::max(hi, vals[k]);
+                }
+                a.mn[axis] = lo;
+                a.mx[axis] = hi;
+            }
             a.sparse = true;
             a.sparseCount = idx.size();
             a.sparseIndexView = b.addView(idx.data(), idx.size() * sizeof(uint32_t), 0);
@@ -888,14 +905,22 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             tail += std::to_string(a.view);
         }
         if (a.hasBounds) {
+            /* min/max must have exactly as many elements as the accessor type has components.
+               Writing three numbers for a SCALAR (the animation time inputs) is rejected by the
+               Khronos validator (ARRAY_LENGTH_NOT_IN_LIST) and leaves the sampler input without
+               usable bounds. Only SCALAR, VEC2 and VEC3 accessors carry bounds in this writer. */
+            const int components = std::strcmp(a.type, "SCALAR") == 0 ? 1
+                                 : std::strcmp(a.type, "VEC2") == 0 ? 2 : 3;
             tail += ",\"min\":[";
-            jsonNum(tail, a.mn[0]); tail += ',';
-            jsonNum(tail, a.mn[1]); tail += ',';
-            jsonNum(tail, a.mn[2]);
+            for (int c = 0; c < components; ++c) {
+                if (c) tail += ',';
+                jsonNum(tail, a.mn[c]);
+            }
             tail += "],\"max\":[";
-            jsonNum(tail, a.mx[0]); tail += ',';
-            jsonNum(tail, a.mx[1]); tail += ',';
-            jsonNum(tail, a.mx[2]);
+            for (int c = 0; c < components; ++c) {
+                if (c) tail += ',';
+                jsonNum(tail, a.mx[c]);
+            }
             tail += ']';
         }
         if (a.sparse) {
