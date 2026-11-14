@@ -42,6 +42,9 @@ jobs:
           set -euo pipefail
           STORE="$RUNNER_TEMP/3d-mega-hub-preview.jks"
           STORE_PASS="$(openssl rand -hex 24)"
+          # Values written to GITHUB_ENV are printed with every later step unless they are masked.
+          # The key is discarded with the runner, but a signing password must never appear in a log.
+          echo "::add-mask::$STORE_PASS"
           echo "ANDROID_RELEASE_STORE_FILE=$STORE" >> "$GITHUB_ENV"
           echo "ANDROID_RELEASE_STORE_PASSWORD=$STORE_PASS" >> "$GITHUB_ENV"
           echo "ANDROID_RELEASE_KEY_ALIAS=preview" >> "$GITHUB_ENV"

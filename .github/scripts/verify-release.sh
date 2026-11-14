@@ -70,15 +70,30 @@ test -x "$APKSIGNER"
 
 echo "::group::APK manifest (aapt2 dump badging)"
 "$AAPT2" dump badging "$APK" > "$OUT/apk-badging-full.txt"
-grep -E "^(package:|sdkVersion:|targetSdkVersion:|native-code:|application-label:|uses-permission:|uses-feature)" \
+grep -E "^(package:|sdkVersion:|minSdkVersion:|targetSdkVersion:|native-code:|application-label:|uses-permission:|uses-feature)" \
   "$OUT/apk-badging-full.txt" | tee "$OUT/apk-badging.txt"
 echo "::endgroup::"
-PACKAGE_LINE="$(grep -E '^package:' "$OUT/apk-badging-full.txt")"
-[[ "$PACKAGE_LINE" == *"name='$EXPECTED_ID'"* ]] || fail "APK applicationId is not $EXPECTED_ID: $PACKAGE_LINE"
-[[ "$PACKAGE_LINE" == *"versionCode='$EXPECTED_CODE'"* ]] || fail "APK versionCode is not $EXPECTED_CODE: $PACKAGE_LINE"
-[[ "$PACKAGE_LINE" == *"versionName='$EXPECTED_NAME'"* ]] || fail "APK versionName is not $EXPECTED_NAME: $PACKAGE_LINE"
-grep -qx "sdkVersion:'$EXPECTED_MIN'" "$OUT/apk-badging-full.txt" || fail "APK minSdk is not $EXPECTED_MIN"
-grep -qx "targetSdkVersion:'$EXPECTED_TARGET'" "$OUT/apk-badging-full.txt" || fail "APK targetSdk is not $EXPECTED_TARGET"
+# Read every value back from the APK's own manifest, then compare with the Gradle configuration.
+PACKAGE_LINE="$(grep -E '^package:' "$OUT/apk-badging-full.txt" || true)"
+badging_attr() { sed -nE "s/.* $1='([^']*)'.*/\\1/p" <<<"$PACKAGE_LINE" | head -n 1; }
+APK_ID="$(badging_attr name)"
+APK_CODE="$(badging_attr versionCode)"
+APK_NAME="$(badging_attr versionName)"
+# aapt2 prints the minimum SDK as "sdkVersion:" in older build-tools and "minSdkVersion:" in newer
+# ones. If neither line is present, read the attribute from the binary manifest directly.
+APK_MIN="$(sed -nE "s/^(sdkVersion|minSdkVersion):'([^']*)'.*/\\2/p" "$OUT/apk-badging-full.txt" | head -n 1)"
+if [[ -z "$APK_MIN" ]]; then
+  APK_MIN="$({ "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml || true; } \
+    | sed -nE 's/.*minSdkVersion\(0x0101020c\)=([0-9]+).*/\1/p' | head -n 1)"
+fi
+APK_TARGET="$(sed -nE "s/^targetSdkVersion:'([^']*)'.*/\\1/p" "$OUT/apk-badging-full.txt" | head -n 1)"
+echo "APK manifest read back: applicationId=${APK_ID:-?} versionCode=${APK_CODE:-?} versionName=${APK_NAME:-?} minSdk=${APK_MIN:-?} targetSdk=${APK_TARGET:-?}" \
+  | tee "$OUT/apk-manifest.txt"
+[[ "$APK_ID" == "$EXPECTED_ID" ]] || fail "APK applicationId is '${APK_ID:-not found}', expected $EXPECTED_ID"
+[[ "$APK_CODE" == "$EXPECTED_CODE" ]] || fail "APK versionCode is '${APK_CODE:-not found}', expected $EXPECTED_CODE"
+[[ "$APK_NAME" == "$EXPECTED_NAME" ]] || fail "APK versionName is '${APK_NAME:-not found}', expected $EXPECTED_NAME"
+[[ "$APK_MIN" == "$EXPECTED_MIN" ]] || fail "APK minSdk is '${APK_MIN:-not found}', expected $EXPECTED_MIN"
+[[ "$APK_TARGET" == "$EXPECTED_TARGET" ]] || fail "APK targetSdk is '${APK_TARGET:-not found}', expected $EXPECTED_TARGET"
 if grep -q "application-debuggable" "$OUT/apk-badging-full.txt"; then fail "release APK is debuggable"; fi
 
 echo "::group::APK native libraries per ABI"
@@ -148,7 +163,9 @@ CERT_SHA256="$(grep -m1 'certificate SHA-256 digest' "$OUT/apk-signature.txt" | 
   echo "commit=${GITHUB_SHA:-unknown}"
   echo "apk_bytes=$(stat -c%s "$APK") apk_sha256=$(sha256sum "$APK" | cut -d' ' -f1)"
   echo "aab_bytes=$(stat -c%s "$AAB") aab_sha256=$(sha256sum "$AAB" | cut -d' ' -f1)"
-  echo "applicationId=$EXPECTED_ID versionCode=$EXPECTED_CODE versionName=$EXPECTED_NAME minSdk=$EXPECTED_MIN targetSdk=$EXPECTED_TARGET"
+  echo "expected_from_gradle: applicationId=$EXPECTED_ID versionCode=$EXPECTED_CODE versionName=$EXPECTED_NAME minSdk=$EXPECTED_MIN targetSdk=$EXPECTED_TARGET"
+  echo "apk_read_back: applicationId=${APK_ID:-?} versionCode=${APK_CODE:-?} versionName=${APK_NAME:-?} minSdk=${APK_MIN:-?} targetSdk=${APK_TARGET:-?}"
+  echo "aab_read_back: applicationId=${AAB_ID:-?} versionCode=${AAB_CODE:-?} versionName=${AAB_NAME:-?} minSdk=${AAB_MIN:-?} targetSdk=${AAB_TARGET:-?}"
   echo "apk_abis=$(sed -E 's#^lib/([^/]+)/.*#\1#' "$OUT/apk-native-libs.txt" | sort -u | tr '\n' ' ')"
   echo "aab_abis=$(sed -E 's#^base/lib/([^/]+)/.*#\1#' "$OUT/aab-native-libs.txt" | sort -u | tr '\n' ' ')"
   echo "signer_certificate_sha256=$CERT_SHA256"
