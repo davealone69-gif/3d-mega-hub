@@ -159,6 +159,41 @@ for required in libmega_hub_avatarforge.so libafcore.so libafrender.so libfilame
   grep -q "^lib/arm64-v8a/$required$" "$OUT/apk-native-libs.txt" || fail "arm64-v8a is missing $required"
 done
 
+# BEGIN native-dependency read-back
+# The app renders with OpenGL ES only. The dynamic section of every packaged library is read back
+# from the APK and printed; the project's own libraries must not link the Vulkan loader, and the
+# renderer library must link OpenGL ES.
+echo "::group::APK native library dependencies (NEEDED entries read back with readelf)"
+READELF="$(command -v readelf || true)"
+if [[ -z "$READELF" ]]; then
+  READELF="$(ls "${ANDROID_HOME:-/nonexistent}"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf 2>/dev/null | sort | tail -n 1 || true)"
+fi
+if [[ -z "$READELF" ]]; then
+  fail "no readelf is available, so the native library dependencies could not be read back"
+else
+  LIBS_DIR="$OUT/apk-libs"
+  rm -rf "$LIBS_DIR"
+  mkdir -p "$LIBS_DIR"
+  unzip -q -o "$APK" 'lib/*' -d "$LIBS_DIR" || fail "could not extract the native libraries from the APK"
+  : > "$OUT/apk-native-deps.txt"
+  while IFS= read -r library; do
+    NEEDED="$( { "$READELF" -d "$LIBS_DIR/$library" 2>/dev/null || true; } | { grep 'NEEDED' || true; } | sed -E 's/.*\[(.*)\].*/\1/' | sort | tr '\n' ' ')"
+    echo "$library: $NEEDED" | tee -a "$OUT/apk-native-deps.txt"
+  done < "$OUT/apk-native-libs.txt"
+  rm -rf "$LIBS_DIR"
+  for own in libafrender.so libafcore.so libmega_hub_avatarforge.so; do
+    if grep -E "^lib/[^/]+/$own: " "$OUT/apk-native-deps.txt" | grep -q 'libvulkan'; then
+      fail "$own links libvulkan.so; the app must render with OpenGL ES only"
+    fi
+  done
+  for abi in $(sed -E 's#^lib/([^/]+)/.*#\1#' "$OUT/apk-native-libs.txt" | sort -u); do
+    grep -E "^lib/$abi/libafrender.so: " "$OUT/apk-native-deps.txt" | grep -q 'libGLESv3.so' \
+      || fail "$abi libafrender.so does not link libGLESv3.so"
+  done
+fi
+echo "::endgroup::"
+# END native-dependency read-back
+
 echo "::group::APK signature (apksigner verify --verbose --print-certs)"
 "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$OUT/apk-signature.txt"
 echo "::endgroup::"
@@ -215,6 +250,7 @@ CERT_SHA256="$(grep -m1 'certificate SHA-256 digest' "$OUT/apk-signature.txt" | 
   echo "aab_read_back: applicationId=${AAB_ID:-?} versionCode=${AAB_CODE:-?} versionName=${AAB_NAME:-?} minSdk=${AAB_MIN:-?} targetSdk=${AAB_TARGET:-?}"
   echo "apk_abis=$(sed -E 's#^lib/([^/]+)/.*#\1#' "$OUT/apk-native-libs.txt" | sort -u | tr '\n' ' ')"
   echo "aab_abis=$(sed -E 's#^base/lib/([^/]+)/.*#\1#' "$OUT/aab-native-libs.txt" | sort -u | tr '\n' ' ')"
+  echo "libafrender_needed_arm64=$(grep -E '^lib/arm64-v8a/libafrender.so: ' "$OUT/apk-native-deps.txt" 2>/dev/null | sed -E 's/^[^:]*: //' || true)"
   echo "signer_certificate_sha256=$CERT_SHA256"
   echo "signing_identity=${SIGNING_IDENTITY_LABEL:-unspecified}"
   echo "verification_failures=$FAILURES"

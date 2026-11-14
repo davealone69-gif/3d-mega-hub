@@ -41,20 +41,31 @@ if(ANDROID)
 endif()
 
 # AvatarForge custom renderer, copied from the canonical engine source.
-# GLES is forced by the Hub runtime on the target Samsung profile; Vulkan remains
-# compiled as an optional backend but is not selected by default.
+# The Hub renders with OpenGL ES only: both JNI entry points set preferVulkan = false and no
+# code path falls back to Vulkan. The Vulkan backend source (af_vk.cpp) stays in the tree, but it
+# is not compiled into libafrender.so and the library does not link libvulkan.so unless
+# -DAF_ENABLE_VULKAN=ON is passed. The release gate reads the library's NEEDED entries back.
+option(AF_ENABLE_VULKAN "Build the Vulkan backend into libafrender (the Hub never selects it)" OFF)
 if(ANDROID)
-    add_library(afrender SHARED
+    set(AF_RENDER_SOURCES
         src/render/af_render.cpp
         src/render/af_render_capi.cpp
         src/render/af_gl.cpp
-        src/render/af_vk.cpp
         src/render/af_shaders.cpp)
+    set(AF_RENDER_SYSTEM_LIBS EGL GLESv3 android log)
+    if(AF_ENABLE_VULKAN)
+        list(APPEND AF_RENDER_SOURCES src/render/af_vk.cpp)
+        list(APPEND AF_RENDER_SYSTEM_LIBS vulkan)
+    endif()
+    add_library(afrender SHARED ${AF_RENDER_SOURCES})
     target_include_directories(afrender
         PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
         PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/render)
     target_compile_options(afrender PRIVATE ${AF_OPT_FLAGS} -Wall -Wextra)
-    target_link_libraries(afrender PUBLIC afcore PRIVATE vulkan EGL GLESv3 android log)
+    if(AF_ENABLE_VULKAN)
+        target_compile_definitions(afrender PRIVATE AF_ENABLE_VULKAN=1)
+    endif()
+    target_link_libraries(afrender PUBLIC afcore PRIVATE ${AF_RENDER_SYSTEM_LIBS})
 endif()
 set_target_properties(afcore PROPERTIES VERSION "" SOVERSION "" PREFIX "lib")
 

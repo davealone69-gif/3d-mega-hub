@@ -164,6 +164,14 @@ Renderer* createVulkanRenderer(ANativeWindow*, const RendererOptions&, std::stri
     if (error) *error = "Vulkan backend disabled in non-Android headless build";
     return nullptr;
 }
+#elif !defined(AF_ENABLE_VULKAN)
+/* af_vk.cpp is not part of this library (CMake option AF_ENABLE_VULKAN is off), so the library
+   has no Vulkan code and no libvulkan.so dependency. A caller that asks for Vulkan is told so and
+   Renderer::create() continues with OpenGL ES. */
+Renderer* createVulkanRenderer(ANativeWindow*, const RendererOptions&, std::string* error) {
+    if (error) *error = "the Vulkan backend is not built into this library";
+    return nullptr;
+}
 #endif
 
 Renderer* Renderer::create(ANativeWindow* window, const RendererOptions& options, std::string* error) {
