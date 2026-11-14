@@ -39,6 +39,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -255,6 +256,13 @@ private:
     bool drawDumpLogged_ = false;
     float cameraLogAccumulatorSeconds_ = 0.0f;
     GLenum lastDrawError_ = GL_NO_ERROR;
+
+    /* ---- measured diagnostics (see RendererStats) ---- */
+    void noteFrameGlError(GLenum error) { if (error != GL_NO_ERROR && frameGlError_ == GL_NO_ERROR) frameGlError_ = error; }
+    GLenum frameGlError_ = GL_NO_ERROR;      /* first GL error seen during the current frame   */
+    uint64_t lodIndexBytes_ = 0;             /* bytes requested for the LOD index buffer       */
+    std::chrono::steady_clock::time_point lastPresentTime_{};
+    bool havePresentTime_ = false;
 };
 
 /* ============================================================================================
@@ -640,6 +648,20 @@ bool GlRenderer::createTargets(std::string* error) {
     stats_.bloomLevels = bloomLevels_;
     stats_.msaaSamples = options_.msaaSamples;
     stats_.shadowMapSize = options_.enableShadows ? options_.shadowMapSize : 0;
+
+    /* Requested byte sizes of everything allocated above (see RendererStats::renderTargetBytes).
+       options_.msaaSamples is the sample count that actually produced a complete framebuffer. */
+    const uint64_t colourBpp = hdrInternalFormat_ == GL_RGBA16F ? 8u : 4u;
+    const uint64_t pixels = static_cast<uint64_t>(w) * static_cast<uint64_t>(h);
+    const uint64_t effectiveSamples = static_cast<uint64_t>(std::max(1, options_.msaaSamples));
+    uint64_t targetBytes = pixels * colourBpp;                          /* resolved HDR texture   */
+    targetBytes += pixels * colourBpp * effectiveSamples;               /* MSAA colour            */
+    targetBytes += pixels * 4u * effectiveSamples;                      /* MSAA depth (D24 in 32) */
+    targetBytes += static_cast<uint64_t>(shadowSize) * static_cast<uint64_t>(shadowSize) * 4u;
+    for (int i = 0; i < bloomLevels_; ++i) {
+        targetBytes += static_cast<uint64_t>(bloomWidth_[i]) * static_cast<uint64_t>(bloomHeight_[i]) * colourBpp;
+    }
+    stats_.renderTargetBytes = targetBytes;
     return true;
 }
 
@@ -948,6 +970,7 @@ void GlRenderer::ensureGeometryBuffers() {
         lodReady_ = false;
         avatarLods_.clear();
         if (lodIndexIbo_) { glDeleteBuffers(1, &lodIndexIbo_); lodIndexIbo_ = 0; }
+        lodIndexBytes_ = 0;
         lodEngine_ = engine_; lodVertices_ = verts; lodSourceIndices_ = indices;
         lodSubmeshes_ = submeshes; lodVertexCount_ = vcount;
         lodIndexCount_ = icount; lodSubmeshCount_ = submeshCount;
@@ -966,6 +989,7 @@ void GlRenderer::ensureGeometryBuffers() {
                     glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(lodBytes), lodIndices.data(), GL_STATIC_DRAW);
                     if (glGetError() == GL_NO_ERROR) {
                         lodReady_ = true;
+                        lodIndexBytes_ = static_cast<uint64_t>(lodBytes);
                         AF_GL_LOGI("Avatar LOD ready: levels=%d sourceTriangles=%d lod1Triangles=%d lod2Triangles=%d",
                                    avatarLods_.levelCount(), icount / 3, avatarLods_.triangleCount(1),
                                    avatarLods_.levelCount() > 2 ? avatarLods_.triangleCount(2) : 0);
@@ -977,15 +1001,18 @@ void GlRenderer::ensureGeometryBuffers() {
     }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     meshDirty_ = false;
+    stats_.geometryBytes = static_cast<uint64_t>(vertexCapacity_) + static_cast<uint64_t>(indexCapacity_) + lodIndexBytes_;
 }
 
 void GlRenderer::uploadAtlas(std::string* error) {
     if (!engine_) return;
     const GLubyte white[4] = {255, 255, 255, 255};
+    uint64_t atlasBytes = 0;   /* requested texel bytes including the generated mip chain */
     for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
         af_texture tex{};
         if (af_engine_texture(engine_, slot, &tex) != AF_OK ||
             !tex.data || tex.width <= 0 || tex.height <= 0) {
+            atlasBytes += 4u;  /* 1x1 RGBA8 placeholder */
             glBindTexture(GL_TEXTURE_2D, atlasTexture_[slot]);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1009,6 +1036,16 @@ void GlRenderer::uploadAtlas(std::string* error) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         /* The generated chain must not collapse to magenta when a driver limits mip depth. */
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 12);
+        {
+            const uint64_t texelBytes = (tex.channels == 1) ? 1u : 4u;
+            int mipW = tex.width, mipH = tex.height;
+            for (int level = 0; level <= 12; ++level) {
+                atlasBytes += static_cast<uint64_t>(mipW) * static_cast<uint64_t>(mipH) * texelBytes;
+                if (mipW == 1 && mipH == 1) break;
+                mipW = std::max(1, mipW / 2);
+                mipH = std::max(1, mipH / 2);
+            }
+        }
 
         const char* ext = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
         if (ext && std::strstr(ext, "GL_EXT_texture_filter_anisotropic")) {
@@ -1019,6 +1056,7 @@ void GlRenderer::uploadAtlas(std::string* error) {
         }
     }
     atlasUploaded_ = true;
+    stats_.textureBytes = atlasBytes;
     (void)error;
 }
 
@@ -1476,6 +1514,8 @@ void GlRenderer::drawForwardPass() {
                                static_cast<unsigned long long>(stats_.frames));
                 }
                 lastDrawError_ = preDrawError;
+                noteFrameGlError(preDrawError);
+                ++stats_.failedDrawCalls;
                 continue;
             }
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndexCount), GL_UNSIGNED_INT,
@@ -1488,6 +1528,8 @@ void GlRenderer::drawForwardPass() {
                                static_cast<int>(avatarVao_));
                 }
                 lastDrawError_ = drawError;
+                noteFrameGlError(drawError);
+                ++stats_.failedDrawCalls;
                 continue;
             }
             lastDrawError_ = GL_NO_ERROR;
@@ -1576,6 +1618,8 @@ void GlRenderer::drawComposite() {
 }
 
 void GlRenderer::renderFrame(float deltaSeconds) {
+    const std::chrono::steady_clock::time_point frameStart = std::chrono::steady_clock::now();
+    frameGlError_ = GL_NO_ERROR;
     stats_.framePresented = false;
     stats_.readbackValid = false;
     stats_.readbackNonBlackPixels = 0;
@@ -1608,11 +1652,9 @@ void GlRenderer::renderFrame(float deltaSeconds) {
     }
 
     stats_.frames++;
-    if (deltaSeconds > 0.0f && deltaSeconds < 1.0f) {
-        const float alpha = 0.06f;
-        stats_.frameMs = stats_.frameMs * (1.0f - alpha) + deltaSeconds * 1000.0f * alpha;
-        stats_.fps = stats_.frameMs > 0.01f ? 1000.0f / stats_.frameMs : 0.0f;
-    }
+    /* frameMs/fps are measured from successful presents at the end of this function. They used to
+       be an exponential average of the caller's deltaSeconds seeded from zero, which reported
+       thousands of FPS on the first frames and could never exceed the caller's clamp. */
     drawCalls_ = 0;
     triangles_ = 0;
 
@@ -1700,6 +1742,7 @@ void GlRenderer::renderFrame(float deltaSeconds) {
             if (drawError == GL_NO_ERROR) drawError = err;
         }
         stats_.glError = static_cast<int>(drawError);
+        noteFrameGlError(drawError);
         if (drawError == GL_NO_ERROR && surfaceWidth_ > 0 && surfaceHeight_ > 0) {
             const size_t pixelCount = static_cast<size_t>(surfaceWidth_) * static_cast<size_t>(surfaceHeight_);
             verificationPixels_.resize(pixelCount * 4u);
@@ -1744,18 +1787,54 @@ void GlRenderer::renderFrame(float deltaSeconds) {
                 stats_.readbackHeight = surfaceHeight_;
             } else {
                 stats_.glError = static_cast<int>(readError);
+                noteFrameGlError(readError);
                 verificationPixels_.clear();
             }
         }
+    } else {
+        /* Production path: one drain per frame so errors raised by the shadow, bloom and composite
+           passes are counted too. The per-draw checks above only cover the avatar submeshes. The
+           presentation contract is unchanged: this records errors, it does not veto the swap. */
+        for (int drain = 0; drain < 16; ++drain) {
+            const GLenum pending = glGetError();
+            if (pending == GL_NO_ERROR) break;
+            noteFrameGlError(pending);
+        }
+    }
+    if (frameGlError_ != GL_NO_ERROR) {
+        ++stats_.glErrorFrames;
+        stats_.lastGlError = static_cast<int>(frameGlError_);
     }
 
+    const std::chrono::steady_clock::time_point swapStart = std::chrono::steady_clock::now();
     const EGLBoolean swapped = eglSwapBuffers(display_, surface_);
+    const std::chrono::steady_clock::time_point swapEnd = std::chrono::steady_clock::now();
     if (swapped != EGL_TRUE) {
         stats_.eglError = static_cast<int>(eglGetError());
+        ++stats_.eglErrorFrames;
         if (stats_.eglError == EGL_CONTEXT_LOST || stats_.eglError == EGL_BAD_SURFACE) contextLost_ = true;
     } else {
         stats_.framePresented = stats_.glError == 0;
         if (stats_.framePresented) ++stats_.presentedFrames;
+    }
+
+    /* Measured timings. steady_clock only; see RendererStats. */
+    const auto toMs = [](std::chrono::steady_clock::duration d) {
+        return std::chrono::duration<float, std::milli>(d).count();
+    };
+    stats_.lastCpuMs = toMs(swapStart - frameStart);
+    stats_.lastSwapMs = toMs(swapEnd - swapStart);
+    stats_.lastFrameMs = stats_.lastCpuMs + stats_.lastSwapMs;
+    stats_.cpuMs = stats_.cpuMs <= 0.0f ? stats_.lastCpuMs : stats_.cpuMs * 0.9f + stats_.lastCpuMs * 0.1f;
+    if (stats_.framePresented) {
+        if (havePresentTime_) {
+            stats_.presentIntervalMs = toMs(swapEnd - lastPresentTime_);
+            stats_.frameMs = stats_.frameMs <= 0.0f ? stats_.presentIntervalMs
+                                                    : stats_.frameMs * 0.9f + stats_.presentIntervalMs * 0.1f;
+            stats_.fps = stats_.frameMs > 0.001f ? 1000.0f / stats_.frameMs : 0.0f;
+        }
+        lastPresentTime_ = swapEnd;
+        havePresentTime_ = true;
     }
 
     stats_.drawCalls = drawCalls_;
@@ -1838,6 +1917,7 @@ void GlRenderer::destroyTargets() {
     if (msaaFbo_) { glDeleteFramebuffers(1, &msaaFbo_); msaaFbo_ = 0; }
     if (msaaColorRb_) { glDeleteRenderbuffers(1, &msaaColorRb_); msaaColorRb_ = 0; }
     if (msaaDepthRb_) { glDeleteRenderbuffers(1, &msaaDepthRb_); msaaDepthRb_ = 0; }
+    stats_.renderTargetBytes = 0;
 }
 
 void GlRenderer::destroyAll() {

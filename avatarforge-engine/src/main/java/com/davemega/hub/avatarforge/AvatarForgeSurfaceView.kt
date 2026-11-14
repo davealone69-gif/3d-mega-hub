@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.os.Debug
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -20,11 +21,18 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.max
 
-/** One render worker owns the AvatarForge engine, renderer and ANativeWindow lifetime. */
+/**
+ * One render worker owns the AvatarForge engine, renderer and ANativeWindow lifetime.
+ *
+ * [onTelemetry] receives a measured [RendererTelemetry] snapshot about once per second, on the
+ * render thread. [onStatus] receives human-readable state changes; a failure message is the final
+ * status of a failed session and is never replaced by a generic "stopped" line.
+ */
 class AvatarForgeSurfaceView(
     context: Context,
     private val glbFile: File,
     private val verifyVisiblePixels: Boolean = false,
+    private val onTelemetry: ((RendererTelemetry) -> Unit)? = null,
     private val onStatus: (String) -> Unit
 ) : SurfaceView(context), SurfaceHolder.Callback {
     private val running = AtomicBoolean(false)
@@ -207,6 +215,8 @@ class AvatarForgeSurfaceView(
         if (!running.compareAndSet(false, true)) return
         val worker = Thread({
             var nativeHandle = 0L
+            var terminalFailure: String? = null
+            var session: TelemetrySession? = null
             try {
                 recordSmokeResult("STARTING")
                 onStatus("Starting AvatarForge GLES renderer and importing ${glbFile.name}…")
@@ -221,12 +231,20 @@ class AvatarForgeSurfaceView(
                     "Unexpected AvatarForge backend information: $rendererInfo"
                 }
                 val apiVersion = rendererInfo.substringAfter('|').substringBefore('|')
+                val telemetry = TelemetrySession(
+                    backend = "OpenGL ES",
+                    apiVersion = apiVersion,
+                    deviceName = rendererInfo.substringAfter('|').substringAfter('|', "")
+                )
+                session = telemetry
                 recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion)
                 onStatus("AvatarForge GLES renderer active · $apiVersion · ${glbFile.name}")
                 var lastFrame = System.nanoTime()
                 var lastWidth = surfaceWidth
                 var lastHeight = surfaceHeight
                 var reportedFrame = false
+                var slowStartReported = false
+                var stallReported = false
                 val frameWaitStarted = System.nanoTime()
                 while (running.get() && surfaceReady) {
                     val width = surfaceWidth
@@ -259,6 +277,7 @@ class AvatarForgeSurfaceView(
                     val delta = ((now - lastFrame).toDouble() / 1_000_000_000.0).coerceIn(0.001, 0.1).toFloat()
                     lastFrame = now
                     val presentedThisFrame = nativeRender(nativeHandle, delta)
+                    val renderReturned = System.nanoTime()
                     val stats = nativeGetStats(nativeHandle)
                     check(stats.size == 9) { "AvatarForge returned ${stats.size} renderer statistics; expected 9." }
                     val frames = stats[0]
@@ -270,19 +289,55 @@ class AvatarForgeSurfaceView(
                     val outsideCorners = stats[6]
                     val glError = stats[7]
                     val eglError = stats[8]
+                    /* A valid frame is one that was presented AND drew in-frustum model geometry. */
+                    val validFrame = presentedThisFrame && framePresented && drawCalls > 0 && triangles > 0 && boundsInFrustum
+                    telemetry.recordFrame(now, renderReturned, presentedThisFrame && framePresented, validFrame)
+                    val sinceStartNs = renderReturned - frameWaitStarted
                     if (!reportedFrame) {
-                        if (presentedThisFrame && framePresented && presentedFrames >= 3 && drawCalls > 0 && triangles > 0 && boundsInFrustum) {
+                        if (validFrame && presentedFrames >= 3) {
                             reportedFrame = true
                             recordSmokeResult("FRAME_PRESENTED", apiVersion, frames, drawCalls, triangles,
                                 presentedFrames, boundsInFrustum, outsideCorners, glError, eglError)
                             Log.i(TAG, "FRAME_PRESENTED api=$apiVersion frames=$frames presented=$presentedFrames draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum")
                             onStatus("EGL frame presented · $presentedFrames successful swaps · $drawCalls draw calls · $triangles triangles")
-                        } else if (System.nanoTime() - frameWaitStarted > 15_000_000_000L) {
-                            error("No drawable EGL-presented model frame within 15 seconds " +
+                        } else if (telemetry.validFrames == 0L && sinceStartNs > NO_VALID_FRAME_TIMEOUT_NS) {
+                            /* Frames are coming back from the renderer but none of them is a valid,
+                               presented model frame. That is a broken renderer, not a slow one. */
+                            error("No drawable EGL-presented model frame within ${NO_VALID_FRAME_TIMEOUT_NS / 1_000_000_000L} seconds " +
                                 "(frames=$frames presented=$presentedFrames framePresented=$framePresented " +
                                 "draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
                                 "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)})")
+                        } else if (!slowStartReported && sinceStartNs > NO_VALID_FRAME_TIMEOUT_NS) {
+                            /* Valid frames exist but fewer than three arrived in the first window.
+                               The renderer works and is slow; say so with the measured numbers and
+                               keep rendering instead of tearing a working session down. */
+                            slowStartReported = true
+                            val lastMs = (renderReturned - now) / 1_000_000L
+                            Log.w(TAG, "SLOW_START validFrames=${telemetry.validFrames} elapsedMs=${sinceStartNs / 1_000_000L} lastRenderCallMs=$lastMs")
+                            onStatus("Renderer is presenting slowly: ${telemetry.validFrames} valid frame(s) in " +
+                                "${sinceStartNs / 1_000_000_000L} s, last render call $lastMs ms · $drawCalls draw calls · $triangles triangles. Still rendering.")
                         }
+                    } else if (telemetry.nanosSinceLastValidFrame(renderReturned) > STALL_TIMEOUT_NS) {
+                        if (!stallReported) {
+                            stallReported = true
+                            telemetry.stallEvents++
+                            val stalledSeconds = telemetry.nanosSinceLastValidFrame(renderReturned) / 1_000_000_000L
+                            Log.e(TAG, "STALL no valid frame for ${stalledSeconds}s frames=$frames presented=$presentedFrames draws=$drawCalls glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)}")
+                            onStatus("FAILED: no valid frame presented for $stalledSeconds s " +
+                                "(framePresented=$framePresented draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
+                                "glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)}). Renderer is still retrying.")
+                        }
+                    } else if (stallReported && validFrame) {
+                        stallReported = false
+                        onStatus("Renderer recovered: valid frames are being presented again · $drawCalls draw calls · $triangles triangles")
+                    }
+                    if (telemetry.shouldPublish(renderReturned)) {
+                        val metrics = nativeGetMetrics(nativeHandle)
+                        val snapshot = telemetry.snapshot(renderReturned, metrics)
+                        latestTelemetry = snapshot
+                        /* A diagnostics listener must never be able to stop the renderer. */
+                        runCatching { onTelemetry?.invoke(snapshot) }
+                            .onFailure { Log.e(TAG, "Telemetry listener failed", it) }
                     }
                     if (verifyVisiblePixels && presentedThisFrame && presentedFrames >= 3 &&
                         drawCalls > 0 && triangles > 0 && boundsInFrustum && !pixelCopyComplete.get()) {
@@ -296,18 +351,177 @@ class AvatarForgeSurfaceView(
                 val message = failure.message ?: failure.javaClass.simpleName
                 recordSmokeResult("FAILED", error = message)
                 Log.e(TAG, "Renderer failed: $message", failure)
+                terminalFailure = "AvatarForge renderer failed: $message"
                 onStatus("AvatarForge renderer failed: $message")
             } finally {
+                /* Take the final measured snapshot while the native session still exists. */
+                val finalSnapshot = if (nativeHandle != 0L) {
+                    runCatching {
+                        session?.snapshot(System.nanoTime(), nativeGetMetrics(nativeHandle))
+                    }.getOrNull()
+                } else null
+                var cleanupFailure: String? = null
                 if (nativeHandle != 0L) runCatching { nativeDestroy(nativeHandle) }
-                    .onFailure { onStatus("AvatarForge cleanup failed: ${it.message}") }
+                    .onFailure { cleanupFailure = "AvatarForge cleanup failed: ${it.message}" }
+                if (finalSnapshot != null) {
+                    latestTelemetry = finalSnapshot
+                    runCatching { onTelemetry?.invoke(finalSnapshot) }
+                    persistTelemetry(finalSnapshot, terminalFailure ?: cleanupFailure)
+                }
                 running.set(false)
                 if (renderThread === Thread.currentThread()) renderThread = null
-                onStatus(if (surfaceReady) "AvatarForge renderer stopped." else "AvatarForge surface released.")
+                /* The reason a session ended must remain the last status. Reporting a generic
+                   "stopped" line here used to overwrite the failure message, which is how the
+                   production-surface CI test came to fail with no visible cause. */
+                onStatus(
+                    terminalFailure
+                        ?: cleanupFailure
+                        ?: if (surfaceReady) "AvatarForge renderer stopped." else "AvatarForge surface released."
+                )
             }
         }, "AvatarForge-GLES-Render")
         worker.priority = Thread.NORM_PRIORITY
         renderThread = worker
         worker.start()
+    }
+
+    /** Render-thread-only accumulator behind [RendererTelemetry]. */
+    private inner class TelemetrySession(
+        private val backend: String,
+        private val apiVersion: String,
+        private val deviceName: String
+    ) {
+        private val startedNs = System.nanoTime()
+        private val presentIntervals = FrameSampleWindow(FRAME_WINDOW)
+        private val renderCalls = FrameSampleWindow(FRAME_WINDOW)
+        private var lastPresentNs = 0L
+        private var lastValidNs = 0L
+        private var lastPublishNs = 0L
+        private var framesRequested = 0L
+        private var framesPresented = 0L
+        private var framesNotPresented = 0L
+        private var framesWithoutValidContent = 0L
+        var validFrames = 0L
+            private set
+        var stallEvents = 0
+
+        fun recordFrame(callStartNs: Long, callEndNs: Long, presented: Boolean, valid: Boolean) {
+            framesRequested++
+            renderCalls.add(callEndNs - callStartNs)
+            if (presented) {
+                framesPresented++
+                if (lastPresentNs != 0L) presentIntervals.add(callEndNs - lastPresentNs)
+                lastPresentNs = callEndNs
+            } else {
+                framesNotPresented++
+            }
+            if (valid) {
+                validFrames++
+                lastValidNs = callEndNs
+            } else {
+                framesWithoutValidContent++
+            }
+        }
+
+        fun nanosSinceLastValidFrame(nowNs: Long): Long =
+            if (lastValidNs == 0L) nowNs - startedNs else nowNs - lastValidNs
+
+        fun shouldPublish(nowNs: Long): Boolean {
+            if (lastPublishNs != 0L && nowNs - lastPublishNs < TELEMETRY_PERIOD_NS) return false
+            lastPublishNs = nowNs
+            return true
+        }
+
+        fun snapshot(nowNs: Long, metrics: LongArray?): RendererTelemetry {
+            check(metrics != null && metrics.size == METRIC_COUNT && metrics[0] == METRIC_LAYOUT_VERSION) {
+                "AvatarForge returned an unexpected renderer metric layout (size=${metrics?.size}, version=${metrics?.getOrNull(0)})."
+            }
+            fun millis(index: Int): Double = if (metrics[index] < 0L) -1.0 else metrics[index] / 1000.0
+            val runtime = Runtime.getRuntime()
+            return RendererTelemetry(
+                backend = backend,
+                apiVersion = apiVersion,
+                deviceName = deviceName,
+                assetName = glbFile.name,
+                assetBytes = glbFile.length(),
+                surfaceWidth = surfaceWidth,
+                surfaceHeight = surfaceHeight,
+                uptimeMs = (nowNs - startedNs) / 1_000_000L,
+                framesRequested = framesRequested,
+                framesPresented = framesPresented,
+                framesNotPresented = framesNotPresented,
+                framesWithoutValidContent = framesWithoutValidContent,
+                stallEvents = stallEvents,
+                frameSamples = presentIntervals.count(),
+                fps = presentIntervals.ratePerSecond(),
+                frameIntervalP50Ms = presentIntervals.percentileMs(50.0),
+                frameIntervalP95Ms = presentIntervals.percentileMs(95.0),
+                frameIntervalP99Ms = presentIntervals.percentileMs(99.0),
+                frameIntervalMaxMs = presentIntervals.maxMs(),
+                renderCallP50Ms = renderCalls.percentileMs(50.0),
+                renderCallP95Ms = renderCalls.percentileMs(95.0),
+                renderCallMaxMs = renderCalls.maxMs(),
+                lastCpuMs = millis(6),
+                lastSwapMs = millis(7),
+                drawCalls = metrics[11].toInt(),
+                trianglesDrawn = metrics[10].toInt(),
+                verticesUploaded = metrics[9].toInt(),
+                modelVertices = metrics[26].toInt(),
+                modelTriangles = metrics[27].toInt(),
+                submeshes = metrics[28].toInt(),
+                joints = metrics[29].toInt(),
+                glbImportMs = millis(1),
+                initialPoseMs = millis(2),
+                rendererInitMs = millis(3),
+                nativeCreateMs = millis(4),
+                firstFrameMs = millis(5),
+                textureBytes = metrics[12],
+                geometryBytes = metrics[13],
+                renderTargetBytes = metrics[14],
+                msaaSamples = metrics[15].toInt(),
+                shadowMapSize = metrics[16].toInt(),
+                bloomLevels = metrics[17].toInt(),
+                qualityLevel = metrics[18].toInt(),
+                glErrorFrames = metrics[19].toInt(),
+                lastGlError = metrics[20].toInt(),
+                eglErrorFrames = metrics[21].toInt(),
+                failedDrawCalls = metrics[22].toInt(),
+                cameraYawDeg = metrics[23] / 1000.0,
+                cameraPitchDeg = metrics[24] / 1000.0,
+                cameraDistanceM = metrics[25] / 1_000_000.0,
+                nativeHeapBytes = Debug.getNativeHeapAllocatedSize(),
+                javaHeapBytes = runtime.totalMemory() - runtime.freeMemory(),
+                nativeSessionsCreated = metrics[30],
+                nativeSessionsDestroyed = metrics[31]
+            )
+        }
+    }
+
+    /**
+     * Writes the final measured snapshot of a render session next to the renderer report:
+     * app-private external files (readable with adb / run-as) and the public Downloads
+     * diagnostics folder. A write failure is logged and never hides the session result.
+     */
+    private fun persistTelemetry(snapshot: RendererTelemetry, failure: String?) {
+        val report = snapshot.toJson()
+            .put("updatedAtEpochMs", System.currentTimeMillis())
+            .put("sessionResult", if (failure == null) "ENDED" else "FAILED")
+            .put("failure", failure ?: "")
+        val text = runCatching { report.toString(2) }.getOrElse { failure2 ->
+            Log.e(TAG, "Could not serialise renderer telemetry", failure2)
+            return
+        }
+        runCatching {
+            context.getExternalFilesDir(null)?.let { directory ->
+                File(directory, TELEMETRY_FILE).writeText(text, Charsets.UTF_8)
+            }
+        }.onFailure { Log.e(TAG, "Could not save renderer telemetry to app files", it) }
+        runCatching {
+            DiagnosticDownloads.save(context, TELEMETRY_FILE, "application/json") { output ->
+                output.write(text.toByteArray(Charsets.UTF_8))
+            }
+        }.onFailure { Log.e(TAG, "Could not save renderer telemetry to Downloads", it) }
+        Log.i(TAG, "TELEMETRY " + report.toString())
     }
 
     private fun recordSmokeResult(
@@ -368,6 +582,8 @@ class AvatarForgeSurfaceView(
             .put("screenshotDownloadsUri", preferences.getString("downloads_screenshot_uri", null))
             .put("error", error)
             .put("downloadsDirectory", DiagnosticDownloads.locationLabel())
+            /* Latest measured snapshot (at most about one second old); null before the first frame. */
+            .put("telemetry", latestTelemetry?.toJson() ?: org.json.JSONObject.NULL)
         runCatching {
             val uri = DiagnosticDownloads.save(
                 context,
@@ -576,6 +792,7 @@ class AvatarForgeSurfaceView(
     private external fun nativeRender(handle: Long, deltaSeconds: Float): Boolean
     private external fun nativeGetInfo(handle: Long): String
     private external fun nativeGetStats(handle: Long): IntArray
+    private external fun nativeGetMetrics(handle: Long): LongArray?
     private external fun nativeDestroy(handle: Long)
 
     companion object {
@@ -584,6 +801,26 @@ class AvatarForgeSurfaceView(
         private const val MIN_VISIBLE_PIXELS = 5_000
         private const val MAX_PIXEL_COPY_ATTEMPTS = 3
         private const val PIXEL_COPY_TIMEOUT_MS = 15_000L
+        /** Fail only when frames return for this long without a single valid presented frame. */
+        private const val NO_VALID_FRAME_TIMEOUT_NS = 15_000_000_000L
+        /** After a session has rendered, report (not kill) a gap this long with no valid frame. */
+        private const val STALL_TIMEOUT_NS = 15_000_000_000L
+        private const val TELEMETRY_PERIOD_NS = 1_000_000_000L
+        private const val FRAME_WINDOW = 240
+        /** Must match nativeGetMetrics in avatarforge_renderer_jni.cpp. */
+        private const val METRIC_COUNT = 32
+        private const val METRIC_LAYOUT_VERSION = 1L
+        const val TELEMETRY_FILE = "renderer_telemetry.json"
+
+        /**
+         * Most recent measured snapshot from any AvatarForge render session in this process,
+         * including the final snapshot of a session that has ended. Null until a renderer has
+         * produced one. Diagnostics screens and instrumentation read this instead of guessing.
+         */
+        @Volatile
+        var latestTelemetry: RendererTelemetry? = null
+            private set
+
         init { System.loadLibrary("mega_hub_avatarforge") }
     }
 }

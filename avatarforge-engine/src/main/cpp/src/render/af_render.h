@@ -97,18 +97,41 @@ struct CameraState {
     float rollDeg   = 0.0f;
 };
 
-/* Per-frame timing the UI shows in the stats drawer, and the budget controller reads. */
+/* Per-frame statistics the UI shows and the diagnostics report persists.
+ *
+ * Every timing below is MEASURED with std::chrono::steady_clock inside renderFrame(). None of
+ * them is derived from the caller-supplied deltaSeconds (which the app clamps for animation and
+ * therefore cannot describe a slow frame). A value of 0 means "not measured yet", never "fast".
+ * The GLES backend fills all of them; the Vulkan backend (not selected by the app) only fills the
+ * legacy frameMs/fps pair from deltaSeconds and leaves the measured fields at 0. */
 struct RendererStats {
-    float frameMs        = 0.0f;   /* GPU-side frame time, 16-frame rolling mean              */
-    float cpuMs          = 0.0f;   /* CPU submit cost for the same window                     */
-    float fps            = 0.0f;
+    float frameMs        = 0.0f;   /* GLES: smoothed wall time between successful presents (EMA,
+                                      seeded with the first measured interval; 0 until two frames
+                                      have been presented)                                     */
+    float cpuMs          = 0.0f;   /* GLES: smoothed lastCpuMs (EMA seeded with the first sample) */
+    float fps            = 0.0f;   /* 1000 / frameMs, 0 while frameMs is unmeasured            */
+    float lastCpuMs      = 0.0f;   /* this frame: renderFrame() entry -> just before the swap   */
+    float lastSwapMs     = 0.0f;   /* this frame: time spent inside eglSwapBuffers()            */
+    float lastFrameMs    = 0.0f;   /* this frame: lastCpuMs + lastSwapMs                        */
+    float presentIntervalMs = 0.0f;/* wall time between the two most recent successful presents */
     int   drawCalls      = 0;
     int   triangles      = 0;
     int   vertices       = 0;
     int   shadowMapSize  = 0;
     int   msaaSamples    = 1;
     int   bloomLevels    = 0;
-    uint64_t textureBytes = 0;
+    /* GPU memory figures are the byte sizes this renderer REQUESTED from the driver (format x
+       dimensions x samples, including mip chains). A driver may pad, compress or defer them, so
+       they are an accounting of requests, not a measurement of physical GPU memory. */
+    uint64_t textureBytes = 0;       /* avatar material atlas textures, full mip chains          */
+    uint64_t geometryBytes = 0;      /* vertex + index + LOD index buffer capacities             */
+    uint64_t renderTargetBytes = 0;  /* HDR, MSAA colour/depth, shadow map and bloom chain        */
+    /* Error accounting for the production path. glError below is only populated by the
+       verifyFramePixels readback path; these counters are maintained on every frame. */
+    int   glErrorFrames  = 0;      /* frames in which glGetError() returned at least one error  */
+    int   lastGlError    = 0;      /* most recent non-zero GL error code, 0 if none ever        */
+    int   eglErrorFrames = 0;      /* frames whose eglSwapBuffers() failed                      */
+    int   failedDrawCalls = 0;     /* avatar draws skipped or failed because of a GL error      */
     int   qualityLevel   = 2;      /* effective QualityPreset after automatic stepping        */
     int   frames         = 0;
     bool  framePresented = false; /* true only after a successful EGL swap / backend present */

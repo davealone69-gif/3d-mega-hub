@@ -6,6 +6,8 @@
 #include "render/af_render.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -16,6 +18,18 @@
 #include <vector>
 
 namespace {
+/* Process-wide lifetime accounting. A session is counted once it has been handed to Java and
+   again when its destructor has released the renderer, engine and ANativeWindow. created minus
+   destroyed is therefore the number of native sessions Java still owns; a value that does not
+   return to zero after every surface has gone is a native resource leak. */
+std::atomic<int64_t> gSessionsCreated{0};
+std::atomic<int64_t> gSessionsDestroyed{0};
+
+using SteadyClock = std::chrono::steady_clock;
+int64_t microsBetween(SteadyClock::time_point from, SteadyClock::time_point to) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(to - from).count();
+}
+
 struct NativeAvatarSession {
     ANativeWindow* window = nullptr;
     af_engine* engine = nullptr;
@@ -27,6 +41,14 @@ struct NativeAvatarSession {
     float minDistance = 0.05f;
     float maxDistance = 100.0f;
     std::string verificationReport;
+    /* Measured with steady_clock in nativeCreate/nativeRender; -1 means "not measured". */
+    int64_t importMicros = -1;        /* af_engine_import_glb()                              */
+    int64_t poseMicros = -1;          /* initial AF_CLIP_REST for skinned imports            */
+    int64_t rendererInitMicros = -1;  /* Renderer::create + resize + attach                   */
+    int64_t createMicros = -1;        /* the whole nativeCreate call                          */
+    int64_t firstFrameMicros = -1;    /* the first renderFrame(): shader/geometry/LOD upload  */
+    int64_t framesRequested = 0;
+    bool countedAsCreated = false;
     ~NativeAvatarSession() {
         // Renderer may still reference both the engine buffers and the native window.
         if (renderer) {
@@ -43,8 +65,16 @@ struct NativeAvatarSession {
             ANativeWindow_release(window);
             window = nullptr;
         }
+        if (countedAsCreated) gSessionsDestroyed.fetch_add(1, std::memory_order_relaxed);
     }
 };
+
+/* Hands a fully constructed session to Java and records it in the lifetime counters. */
+jlong publishSession(std::unique_ptr<NativeAvatarSession>& session) {
+    session->countedAsCreated = true;
+    gSessionsCreated.fetch_add(1, std::memory_order_relaxed);
+    return reinterpret_cast<jlong>(session.release());
+}
 
 void throwState(JNIEnv* env, const std::string& message) {
     jclass type = env->FindClass("java/lang/IllegalStateException");
@@ -64,6 +94,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     }
     const char* path = env->GetStringUTFChars(glbPath, nullptr);
     if (!path) return 0;
+    const SteadyClock::time_point createStart = SteadyClock::now();
 
     std::unique_ptr<NativeAvatarSession> session(new (std::nothrow) NativeAvatarSession());
     if (!session) {
@@ -90,7 +121,9 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
         return 0;
     }
 
+    const SteadyClock::time_point importStart = SteadyClock::now();
     const int32_t importResult = af_engine_import_glb(session->engine, path);
+    session->importMicros = microsBetween(importStart, SteadyClock::now());
     const std::string importError = af_engine_last_error(session->engine)
         ? af_engine_last_error(session->engine) : "";
     env->ReleaseStringUTFChars(glbPath, path);
@@ -103,7 +136,9 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     /* Apply the initial skin pose before reading submesh bounds for camera framing.
        Static GLBs have no joints and keep their original import path. */
     if (af_engine_joint_count(session->engine) > 0) {
+        const SteadyClock::time_point poseStart = SteadyClock::now();
         const int32_t poseResult = af_engine_apply_clip(session->engine, AF_CLIP_REST, 0.0f);
+        session->poseMicros = microsBetween(poseStart, SteadyClock::now());
         if (poseResult != AF_OK) {
             const char* poseError = af_engine_last_error(session->engine);
             throwState(env, "Applying initial AF_CLIP_REST before GLES camera framing failed (" +
@@ -150,6 +185,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
         options.exposure = 0.82f;
     }
     std::string rendererError;
+    const SteadyClock::time_point rendererStart = SteadyClock::now();
     session->renderer = af::Renderer::create(session->window, options, &rendererError);
     if (!session->renderer) {
         throwState(env, "AvatarForge GLES renderer creation failed: " + rendererError);
@@ -161,6 +197,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     }
     session->renderer->attachEngine(session->engine);
     session->renderer->invalidateMesh();
+    session->rendererInitMicros = microsBetween(rendererStart, SteadyClock::now());
 
     // Fit the imported asset, not a hard-coded 1.75 m avatar. This handles tiny props,
     // large scenes and GLBs whose origin is far from their actual geometry.
@@ -201,7 +238,8 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     // buildCameraUbo derives near/far from the imported model bounds each frame.
     // Keep clipping-plane policy in one place instead of maintaining a second camera contract.
     session->renderer->setCamera(camera);
-    return reinterpret_cast<jlong>(session.release());
+    session->createMicros = microsBetween(createStart, SteadyClock::now());
+    return publishSession(session);
 }
 
 namespace {
@@ -379,7 +417,7 @@ jlong createGeneratedSession(JNIEnv* env, jobject surface, jint width, jint heig
         " height_m=" + std::to_string(generatedHeight) +
         " blendshapes=" + std::to_string(engineStats.blendshape_count) +
         " " + meshReport;
-    return reinterpret_cast<jlong>(session.release());
+    return publishSession(session);
 }
 } // namespace
 
@@ -480,8 +518,79 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeRender(
     JNIEnv*, jobject, jlong handle, jfloat deltaSeconds) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return JNI_FALSE;
-    session->renderer->renderFrame(deltaSeconds);
+    if (session->framesRequested++ == 0) {
+        const SteadyClock::time_point firstStart = SteadyClock::now();
+        session->renderer->renderFrame(deltaSeconds);
+        session->firstFrameMicros = microsBetween(firstStart, SteadyClock::now());
+    } else {
+        session->renderer->renderFrame(deltaSeconds);
+    }
     return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
+}
+
+/*
+ * Measured renderer metrics for the diagnostics panel and the persisted report. The element order
+ * is a contract with AvatarForgeSurfaceView.Metrics; element 0 is the layout version and the
+ * Kotlin side refuses any other version or length instead of guessing. Durations are microseconds
+ * (-1 = not measured), byte counts are the sizes requested from the driver, and nothing here is
+ * derived from the caller's frame delta.
+ */
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetMetrics(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer || !session->engine) return nullptr;
+    const af::RendererStats stats = session->renderer->stats();
+    const auto micros = [](float milliseconds) { return static_cast<jlong>(std::llround(static_cast<double>(milliseconds) * 1000.0)); };
+    const jlong values[32] = {
+        1,                                                        /*  0 layout version            */
+        static_cast<jlong>(session->importMicros),                /*  1                           */
+        static_cast<jlong>(session->poseMicros),                  /*  2                           */
+        static_cast<jlong>(session->rendererInitMicros),          /*  3                           */
+        static_cast<jlong>(session->createMicros),                /*  4                           */
+        static_cast<jlong>(session->firstFrameMicros),            /*  5                           */
+        micros(stats.lastCpuMs),                                  /*  6                           */
+        micros(stats.lastSwapMs),                                 /*  7                           */
+        micros(stats.presentIntervalMs),                          /*  8                           */
+        static_cast<jlong>(stats.vertices),                       /*  9 uploaded vertices         */
+        static_cast<jlong>(stats.triangles),                      /* 10 triangles drawn this frame */
+        static_cast<jlong>(stats.drawCalls),                      /* 11                           */
+        static_cast<jlong>(stats.textureBytes),                   /* 12                           */
+        static_cast<jlong>(stats.geometryBytes),                  /* 13                           */
+        static_cast<jlong>(stats.renderTargetBytes),              /* 14                           */
+        static_cast<jlong>(stats.msaaSamples),                    /* 15                           */
+        static_cast<jlong>(stats.shadowMapSize),                  /* 16                           */
+        static_cast<jlong>(stats.bloomLevels),                    /* 17                           */
+        static_cast<jlong>(stats.qualityLevel),                   /* 18                           */
+        static_cast<jlong>(stats.glErrorFrames),                  /* 19                           */
+        static_cast<jlong>(stats.lastGlError),                    /* 20                           */
+        static_cast<jlong>(stats.eglErrorFrames),                 /* 21                           */
+        static_cast<jlong>(stats.failedDrawCalls),                /* 22                           */
+        static_cast<jlong>(std::llround(static_cast<double>(session->camera.yawDeg) * 1000.0)),    /* 23 */
+        static_cast<jlong>(std::llround(static_cast<double>(session->camera.pitchDeg) * 1000.0)),  /* 24 */
+        static_cast<jlong>(std::llround(static_cast<double>(session->camera.distance) * 1.0e6)),   /* 25 */
+        static_cast<jlong>(af_engine_vertex_count(session->engine)),                               /* 26 */
+        static_cast<jlong>(af_engine_index_count(session->engine) / 3),                            /* 27 */
+        static_cast<jlong>(af_engine_submesh_count(session->engine)),                              /* 28 */
+        static_cast<jlong>(af_engine_joint_count(session->engine)),                                /* 29 */
+        static_cast<jlong>(gSessionsCreated.load(std::memory_order_relaxed)),                      /* 30 */
+        static_cast<jlong>(gSessionsDestroyed.load(std::memory_order_relaxed))                     /* 31 */
+    };
+    jlongArray result = env->NewLongArray(32);
+    if (result) env->SetLongArrayRegion(result, 0, 32, values);
+    return result;
+}
+
+/* Process-wide {created, destroyed} native session counters; valid with no live session. */
+extern "C" JNIEXPORT jlongArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeRendererRuntime_nativeSessionCounters(JNIEnv* env, jobject) {
+    const jlong values[2] = {
+        static_cast<jlong>(gSessionsCreated.load(std::memory_order_relaxed)),
+        static_cast<jlong>(gSessionsDestroyed.load(std::memory_order_relaxed))
+    };
+    jlongArray result = env->NewLongArray(2);
+    if (result) env->SetLongArrayRegion(result, 0, 2, values);
+    return result;
 }
 
 extern "C" JNIEXPORT jstring JNICALL

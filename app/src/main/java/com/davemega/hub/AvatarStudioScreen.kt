@@ -19,6 +19,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +67,8 @@ fun AvatarStudioScreen(
     }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
     var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
+    // Measured values published by the native GLES render thread; empty until a frame was measured.
+    var telemetryLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var generationJob by remember { mutableStateOf<Job?>(null) }
     val generating = generationJob?.isActive == true
 
@@ -129,9 +132,29 @@ fun AvatarStudioScreen(
                 key(avatarUri) {
                     val importedGlb = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)
                     if (importedGlb != null && importedGlb.isFile) {
+                        // A render session publishes one last snapshot while it shuts down. Once this
+                        // viewport has left the screen those numbers describe a renderer that is no
+                        // longer shown, so they must not be displayed under a different model.
+                        val viewportActive = remember { java.util.concurrent.atomic.AtomicBoolean(true) }
+                        DisposableEffect(Unit) {
+                            onDispose {
+                                viewportActive.set(false)
+                                telemetryLines = emptyList()
+                            }
+                        }
                         AndroidView(
                             factory = { viewContext ->
-                                AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = isDebuggable) { status ->
+                                AvatarForgeSurfaceView(
+                                    viewContext,
+                                    importedGlb,
+                                    verifyVisiblePixels = isDebuggable,
+                                    onTelemetry = { snapshot ->
+                                        val lines = snapshot.summaryLines()
+                                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                            if (viewportActive.get()) telemetryLines = lines
+                                        }
+                                    }
+                                ) { status ->
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                                         rendererStatus = status
                                         val savedPath = context.getSharedPreferences("avatarforge_renderer_smoke", Context.MODE_PRIVATE)
@@ -161,8 +184,21 @@ fun AvatarStudioScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
+                if (telemetryLines.isNotEmpty()) {
+                    Text("Measured renderer diagnostics", style = MaterialTheme.typography.titleSmall)
+                    telemetryLines.forEach { line ->
+                        Text(line, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text(
+                        "Measured on this device by the render thread and updated about once per second. " +
+                            "GPU byte figures are the sizes requested from the driver.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Text(
-                    "Renderer diagnostics are saved automatically to Downloads/3D Mega Hub Diagnostics when a renderer check runs.",
+                    "Renderer reports are saved to Downloads/3D Mega Hub Diagnostics: renderer_diagnostics.json when a " +
+                        "renderer check runs, and renderer_telemetry.json with the final measured numbers when this viewport closes.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

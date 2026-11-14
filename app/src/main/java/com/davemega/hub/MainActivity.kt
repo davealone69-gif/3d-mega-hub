@@ -458,7 +458,15 @@ private fun MegaHubApp(
                 HubPage.SETTINGS -> {
                     Text("System & settings", style = MaterialTheme.typography.headlineSmall)
                     HubCard("Runtime", "Android ${Build.VERSION.RELEASE}", "API ${Build.VERSION.SDK_INT} · ${Build.SUPPORTED_ABIS.joinToString()}")
-                    HubCard("Graphics", "Filament OpenGL ES (Vulkan fallback)", "OpenGL ES is the primary path. Vulkan is attempted only if GLES initialization fails; device rendering remains unverified.")
+                    HubCard(
+                        "Graphics",
+                        "AvatarForge native OpenGL ES · Filament OpenGL ES",
+                        "Imported and generated GLBs render through the AvatarForge native OpenGL ES renderer. " +
+                            "The bundled sample uses Filament on OpenGL ES, with Vulkan tried only if Filament's " +
+                            "OpenGL ES start-up fails. Measured frame, memory and error numbers appear under the Avatar viewport."
+                    )
+                    val exitHistory = remember { readProcessExitHistory(context) }
+                    HubCard("Previous app exits", exitHistory.headline, exitHistory.detail)
                     HubCard("AI endpoint", endpoint, "Saved locally on this device.")
                     Button(onClick = {
                         try {
