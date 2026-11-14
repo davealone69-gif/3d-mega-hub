@@ -91,6 +91,35 @@ class GeneratedAvatarRuntimeTest {
     private external fun nativeGetVerificationReport(handle: Long): String
     private external fun nativeGetReadbackPixels(handle: Long): ByteArray?
     private external fun nativeDestroyGenerated(handle: Long)
+    private external fun nativeBarrierSelfTest(kind: Int): Int
+
+    /**
+     * A C++ exception that reaches the JNI boundary must arrive as a Java exception and must
+     * leave the process alive. The native side throws real C++ exceptions inside the same
+     * barrier that the renderer entry points use.
+     */
+    @Test(timeout = 60000)
+    fun nativeExceptionBarrierTurnsCppExceptionsIntoJavaExceptions() {
+        assertEquals("the barrier must not change a normal result", 7, nativeBarrierSelfTest(0))
+        val injected = listOf(
+            1 to "injected std::runtime_error",
+            2 to "std::bad_alloc",
+            3 to "unknown C++ exception"
+        )
+        for ((kind, expectedText) in injected) {
+            val failure = runCatching { nativeBarrierSelfTest(kind) }.exceptionOrNull()
+            assertTrue(
+                "kind $kind must arrive as IllegalStateException but gave $failure",
+                failure is IllegalStateException
+            )
+            assertTrue(
+                "kind $kind carried the wrong message: ${failure?.message}",
+                failure?.message?.contains(expectedText) == true
+            )
+        }
+        assertEquals("native code must still run after the exceptions", 7, nativeBarrierSelfTest(0))
+        Log.i("AvatarForge", "BARRIER_EVIDENCE cppExceptionsConverted=${injected.size} processAlive=true")
+    }
 
 
     @Test(timeout = 900000)

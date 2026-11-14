@@ -11,9 +11,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <memory>
 #include <limits>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -83,29 +85,83 @@ void throwState(JNIEnv* env, const std::string& message) {
         env->DeleteLocalRef(type);
     }
 }
+
+/* Reports a C++ exception to Java without allocating native memory: the exception may well be
+   std::bad_alloc. A Java exception that is already pending is the first cause and is kept. */
+void throwNativeFailure(JNIEnv* env, const char* where, const char* detail) noexcept {
+    if (env->ExceptionCheck()) return;
+    char message[512];
+    std::snprintf(message, sizeof(message), "%s failed with a native exception: %s",
+                  where, (detail && *detail) ? detail : "no description");
+    jclass type = env->FindClass("java/lang/IllegalStateException");
+    if (type) {
+        env->ThrowNew(type, message);
+        env->DeleteLocalRef(type);
+    }
+}
+
+/*
+ * A C++ exception must never unwind into the JVM: that aborts the whole app. The engine's C API
+ * already catches its own exceptions, but the renderer does not, and it allocates hundreds of
+ * megabytes of geometry and level-of-detail buffers for a large avatar. Every entry point that
+ * runs renderer code goes through this barrier. The exception becomes an IllegalStateException;
+ * the Kotlin render thread reports it as the renderer failure and tears the session down.
+ */
+template <typename Result, typename Body>
+Result jniBarrier(JNIEnv* env, const char* where, Result fallback, Body&& body) noexcept {
+    try {
+        return body();
+    } catch (const std::bad_alloc&) {
+        throwNativeFailure(env, where, "out of native memory (std::bad_alloc)");
+    } catch (const std::exception& failure) {
+        throwNativeFailure(env, where, failure.what());
+    } catch (...) {
+        throwNativeFailure(env, where, "unknown C++ exception");
+    }
+    return fallback;
+}
+
+jlong createImportedSession(JNIEnv* env, jobject surface, jstring glbPath, jint width, jint height);
+jlong createGeneratedSession(JNIEnv* env, jobject surface, jint width, jint height, bool debugMagenta);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height) {
+    return jniBarrier<jlong>(env, "AvatarForge renderer start", 0, [&]() -> jlong {
+        return createImportedSession(env, surface, glbPath, width, height);
+    });
+}
+
+namespace {
+jlong createImportedSession(JNIEnv* env, jobject surface, jstring glbPath, jint width, jint height) {
     if (!surface || !glbPath || width <= 0 || height <= 0) {
         throwState(env, "AvatarForge renderer requires a Surface, GLB path and non-zero size");
         return 0;
     }
-    const char* path = env->GetStringUTFChars(glbPath, nullptr);
-    if (!path) return 0;
+    /* Copy the path and give the JNI characters back at once, so that no later failure, a C++
+       exception included, can leave them pinned. */
+    const char* pathChars = env->GetStringUTFChars(glbPath, nullptr);
+    if (!pathChars) return 0;
+    std::string pathCopy;
+    try {
+        pathCopy = pathChars;
+    } catch (...) {
+        env->ReleaseStringUTFChars(glbPath, pathChars);
+        throw;
+    }
+    env->ReleaseStringUTFChars(glbPath, pathChars);
+    const char* path = pathCopy.c_str();
     const SteadyClock::time_point createStart = SteadyClock::now();
 
     std::unique_ptr<NativeAvatarSession> session(new (std::nothrow) NativeAvatarSession());
     if (!session) {
-        env->ReleaseStringUTFChars(glbPath, path);
         throwState(env, "Unable to allocate AvatarForge render session");
         return 0;
     }
 
     session->window = ANativeWindow_fromSurface(env, surface);
     if (!session->window) {
-        env->ReleaseStringUTFChars(glbPath, path);
         throwState(env, "Android could not provide a native window for the AvatarForge surface");
         return 0;
     }
@@ -116,7 +172,6 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     af_spec_init(&spec);
     const int32_t createResult = af_engine_create(&spec, nullptr, &session->engine);
     if (createResult != AF_OK || !session->engine) {
-        env->ReleaseStringUTFChars(glbPath, path);
         throwState(env, "af_engine_create failed: " + std::to_string(createResult));
         return 0;
     }
@@ -126,7 +181,6 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     session->importMicros = microsBetween(importStart, SteadyClock::now());
     const std::string importError = af_engine_last_error(session->engine)
         ? af_engine_last_error(session->engine) : "";
-    env->ReleaseStringUTFChars(glbPath, path);
     if (importResult != AF_OK) {
         throwState(env, "AvatarForge GLB import failed (" + std::to_string(importResult) +
                         "): " + importError);
@@ -242,7 +296,6 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     return publishSession(session);
 }
 
-namespace {
 jlong createGeneratedSession(JNIEnv* env, jobject surface, jint width, jint height, bool debugMagenta) {
     if (!surface || width <= 0 || height <= 0) {
         throwState(env, "Generated-avatar verification requires a valid Surface and non-zero size");
@@ -424,22 +477,28 @@ jlong createGeneratedSession(JNIEnv* env, jobject surface, jint width, jint heig
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGenerated(
     JNIEnv* env, jobject, jobject surface, jint width, jint height) {
-    return createGeneratedSession(env, surface, width, height, false);
+    return jniBarrier<jlong>(env, "Generated-avatar renderer start", 0, [&]() -> jlong {
+        return createGeneratedSession(env, surface, width, height, false);
+    });
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeCreateGeneratedDebug(
     JNIEnv* env, jobject, jobject surface, jint width, jint height, jboolean debugMagenta) {
-    return createGeneratedSession(env, surface, width, height, debugMagenta == JNI_TRUE);
+    return jniBarrier<jlong>(env, "Generated-avatar renderer start", 0, [&]() -> jlong {
+        return createGeneratedSession(env, surface, width, height, debugMagenta == JNI_TRUE);
+    });
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeRenderGenerated(
-    JNIEnv*, jobject, jlong handle, jfloat deltaSeconds) {
+    JNIEnv* env, jobject, jlong handle, jfloat deltaSeconds) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return JNI_FALSE;
-    session->renderer->renderFrame(deltaSeconds);
-    return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
+    return jniBarrier<jboolean>(env, "Generated-avatar frame", JNI_FALSE, [&]() -> jboolean {
+        session->renderer->renderFrame(deltaSeconds);
+        return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
+    });
 }
 
 extern "C" JNIEXPORT jintArray JNICALL
@@ -502,30 +561,48 @@ Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeDestroyGenera
     JNIEnv*, jobject, jlong handle) {
     delete reinterpret_cast<NativeAvatarSession*>(handle);
 }
+/* Fault injection for the instrumented test of the exception barrier. Real C++ exceptions are
+   thrown inside the same jniBarrier that the renderer entry points use: kind 1 is a
+   std::runtime_error, 2 a std::bad_alloc, 3 a non-standard exception, anything else returns 7. */
+extern "C" JNIEXPORT jint JNICALL
+Java_com_davemega_hub_avatarforge_GeneratedAvatarRuntimeTest_nativeBarrierSelfTest(
+    JNIEnv* env, jobject, jint kind) {
+    return jniBarrier<jint>(env, "Barrier self-test", -1, [&]() -> jint {
+        if (kind == 1) throw std::runtime_error("injected std::runtime_error");
+        if (kind == 2) throw std::bad_alloc();
+        if (kind == 3) throw 42;
+        return 7;
+    });
+}
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResize(
-    JNIEnv*, jobject, jlong handle, jint width, jint height) {
+    JNIEnv* env, jobject, jlong handle, jint width, jint height) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer || width <= 0 || height <= 0) return;
-    session->width = width;
-    session->height = height;
-    session->renderer->resize(width, height);
+    jniBarrier<int>(env, "AvatarForge renderer resize", 0, [&]() -> int {
+        session->width = width;
+        session->height = height;
+        session->renderer->resize(width, height);
+        return 0;
+    });
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeRender(
-    JNIEnv*, jobject, jlong handle, jfloat deltaSeconds) {
+    JNIEnv* env, jobject, jlong handle, jfloat deltaSeconds) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return JNI_FALSE;
-    if (session->framesRequested++ == 0) {
-        const SteadyClock::time_point firstStart = SteadyClock::now();
-        session->renderer->renderFrame(deltaSeconds);
-        session->firstFrameMicros = microsBetween(firstStart, SteadyClock::now());
-    } else {
-        session->renderer->renderFrame(deltaSeconds);
-    }
-    return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
+    return jniBarrier<jboolean>(env, "AvatarForge frame", JNI_FALSE, [&]() -> jboolean {
+        if (session->framesRequested++ == 0) {
+            const SteadyClock::time_point firstStart = SteadyClock::now();
+            session->renderer->renderFrame(deltaSeconds);
+            session->firstFrameMicros = microsBetween(firstStart, SteadyClock::now());
+        } else {
+            session->renderer->renderFrame(deltaSeconds);
+        }
+        return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
+    });
 }
 
 /*
