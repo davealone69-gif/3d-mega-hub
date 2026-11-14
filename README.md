@@ -169,15 +169,15 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 
 - **Working branch:** `integration/avatarforge-renderer-port` · **PR:** [#9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) · **stable `main`:** unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
 - PR #8 is **CLOSED / UNMERGED**, head `fix/mega-hub-candidate-hardening` at `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. It is not the active implementation path.
-- PR #9 exact source before this diagnostic patch: `a42411302b7f9e9eabe171f844d8b4d646f1c23b`; the observability patch is `78cb75d81557623622f6989a285ebf958dea2844`.
-- **Code change:** the worker now preserves the first renderer exception and any teardown exception instead of replacing the real cause with the generic stopped message.
-- **Latest exact head:** `2a5485c17ec656659c4841826a1048d1577b7301`. Fresh CI evidence for this exact head:
-  - **PASS:** signed release-preview APK and AAB build, signature verification and provenance (run `43626247432`, job `132542586035`). The signing identity is ephemeral and valid for this CI run only, not production.
+- **Failure-observability fix:** `78cb75d81557623622f6989a285ebf958dea2844` preserves the first renderer exception and any teardown exception instead of overwriting them with a generic stopped status.
+- **GLES capability fix:** `ae43e0e271684d56336005450765a4577aafc591` replaces invalid legacy `glGetString(GL_EXTENSIONS)` calls with GLES 3.x `glGetStringi` enumeration. Float-colour-buffer and anisotropy capability flags now reflect actual extension support; anisotropy limit is queried once rather than once per texture.
+- **Last completed exact-head CI evidence (`2a5485c17ec656659c4841826a1048d1577b7301)):**
+  - **PASS:** signed preview APK and AAB build, signature verification and provenance (run `43626247432`, job `132542586035`). Ephemeral CI key only, not production signing.
   - **PASS:** Android emulator install/launch smoke (run `43626247432`, job `132542586459`).
-  - **PASS:** native host regression tests (run `43626247376`, job `132542664347`).
-  - **IN PROGRESS at last inspection:** debug APK, R8/minification, unit tests, lint, imported-GLB GLES smoke, PixelCopy diagnostic and generated-avatar runtime/pixel verification (runs `43626247376`, `43626247379`, `43626247386`). No pass is claimed for these unfinished jobs.
-- **UNVERIFIED:** actual GLES visible-pixel rendering on exact head `2a5485c` until the instrumentation workflows complete and their screenshots/reports are inspected. Samsung SM-S921B physical-device runtime also remains **UNVERIFIED**.
-- **BLOCKED:** production APK/AAB signing until the owner's keystore is configured in protected CI secrets. The successful ephemeral preview signing is not a substitute.
+  - **PASS:** native host regression (run `43626247376`, job `132542664347`).
+  - Renderer pixel tests and Android CI had not completed when this evidence was recorded.
+- **Latest source head:** `ae43e0e271684d56336005450765a4577aafc591`. Fresh exact-head CI is required after the GLES capability change. **UNVERIFIED:** visible model pixels and Samsung SM-S921B runtime. **BLOCKED:** production signing until the owner's keystore is configured in protected CI secrets.
+- Do not merge to `main` or weaken the real visible-pixel gate.
 
 ## Execution plan
 

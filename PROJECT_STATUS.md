@@ -6,14 +6,11 @@ Last updated: 2026-11-13.
 
 - Active implementation: `integration/avatarforge-renderer-port`, PR #9. Stable `main` remains unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
 - PR #8 is closed and unmerged; its head is `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. Do not use it as the work branch.
-- **Implemented:** `78cb75d81557623622f6989a285ebf958dea2844` preserves the first renderer failure and any teardown failure in the worker's final status. This is an observability fix, not a renderer fix.
-- **Exact-head evidence at `2a5485c17ec656659c4841826a1048d1577b7301`:**
-  - **PASS:** signed preview APK and AAB built, signatures verified, provenance emitted; run `43626247432`, job `132542586035`. One-run ephemeral key only, not production signing.
-  - **PASS:** Android emulator install/launch smoke; run `43626247432`, job `132542586459`.
-  - **PASS:** native host regression; run `43626247376`, job `132542664347`.
-  - **IN PROGRESS at last inspection:** debug APK assembly, R8/minification, unit tests, lint, imported-GLB GLES/PixelCopy diagnostic and generated-avatar GLES pixel test; runs `43626247376`, `43626247379`, `43626247386`.
-- **UNVERIFIED:** visible model pixels on the exact PR head until the instrumentation runs finish and captured screenshots/reports are inspected. Samsung SM-S921B runtime remains **UNVERIFIED**.
-- **BLOCKED:** production signing pending the owner's keystore in protected CI secrets. No merge to `main`.
+- **Implemented:** `78cb75d81557623622f6989a285ebf958dea2844` preserves the original renderer and teardown failures in the final worker status. Diagnostic observability only, not a renderer fix.
+- **Implemented:** `ae43e0e271684d56336005450765a4577aafc591` fixes GLES 3.x extension enumeration. GLES 3.0+ requires `glGetStringi(GL_EXTENSIONS, index)`; the removed legacy extension-string query could return `GL_INVALID_ENUM` and incorrectly disable ES 3.1 extension detection. Float colour-buffer and anisotropy support are now reported from actual capabilities.
+- **Verified on prior exact head `2a5485c17ec656659c4841826a1048d1577b7301`:** signed ephemeral preview APK/AAB build and signature verification (run `43626247432`, job `132542586035`); Android emulator install/launch smoke (job `132542586459`); native host regression (run `43626247376`, job `132542664347`). These results do not validate the later GLES source change.
+- **Latest source head:** `ae43e0e271684d56336005450765a4577aafc591`. Fresh exact-head CI must validate the GLES capability change. **UNVERIFIED:** real imported/generated avatar visible pixels and Samsung SM-S921B runtime. **BLOCKED:** production signing pending owner keystore in protected CI secrets.
+- Keep `main` unchanged; no merge until exact-head renderer evidence passes.
 
 ## Repository and active branch
 
