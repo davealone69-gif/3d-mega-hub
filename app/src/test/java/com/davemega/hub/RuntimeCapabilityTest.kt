@@ -18,6 +18,14 @@ class RuntimeCapabilityTest {
     }
 
     @Test
+    fun backendWithNativeLoadFailureIsUnavailable() {
+        assertEquals(
+            "UNAVAILABLE",
+            RuntimeCapability("Avatar engine", backend = "AvatarForge", problem = "ABI mismatch").status
+        )
+    }
+
+    @Test
     fun initializedBackendIsNotMislabelledDeviceVerified() {
         assertEquals(
             "INITIALIZED, NOT DEVICE-VERIFIED",
