@@ -17,6 +17,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
@@ -66,6 +67,16 @@ fun AvatarStudioScreen(
     }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
     var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
+    var useFilamentAnimationPreview by remember { mutableStateOf(false) }
+    var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
+    var animationCount by remember { mutableStateOf(0) }
+    var selectedAnimation by remember { mutableStateOf(0) }
+    var animationPlaying by remember { mutableStateOf(false) }
+    var animationLoop by remember { mutableStateOf(true) }
+    var animationSpeed by remember { mutableStateOf(1.0f) }
+    var animationDuration by remember { mutableStateOf(0.0f) }
+    var animationPosition by remember { mutableStateOf(0.0f) }
+    val hasImportedFile = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.isFile == true
     var generationJob by remember { mutableStateOf<Job?>(null) }
     val generating = generationJob?.isActive == true
 
@@ -126,9 +137,9 @@ fun AvatarStudioScreen(
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("3D viewport", style = MaterialTheme.typography.titleMedium)
-                key(avatarUri) {
+                key(avatarUri, useFilamentAnimationPreview) {
                     val importedGlb = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)
-                    if (importedGlb != null && importedGlb.isFile) {
+                    if (importedGlb != null && importedGlb.isFile && !useFilamentAnimationPreview) {
                         AndroidView(
                             factory = { viewContext ->
                                 AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = isDebuggable) { status ->
@@ -147,10 +158,23 @@ fun AvatarStudioScreen(
                             factory = { viewContext ->
                                 FilamentPreviewView(viewContext).apply {
                                     setStatusListener { rendererStatus = it }
+                                    setAnimationInfoListener { count, index, playing, loop, speed, duration, position ->
+                                        animationCount = count
+                                        selectedAnimation = index
+                                        animationPlaying = playing
+                                        animationLoop = loop
+                                        animationSpeed = speed
+                                        animationDuration = duration
+                                        animationPosition = position
+                                    }
                                     setModel(avatarUri)
+                                    filamentPreviewView = this
                                 }
                             },
-                            update = { view -> view.setModel(avatarUri) },
+                            update = { view ->
+                                filamentPreviewView = view
+                                view.setModel(avatarUri)
+                            },
                             modifier = Modifier.fillMaxWidth().height(420.dp)
                         )
                     }
@@ -161,6 +185,64 @@ fun AvatarStudioScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
+                if (hasImportedFile) {
+                    OutlinedButton(
+                        onClick = {
+                            useFilamentAnimationPreview = !useFilamentAnimationPreview
+                            if (!useFilamentAnimationPreview) {
+                                filamentPreviewView = null
+                                animationCount = 0
+                                animationPosition = 0f
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (useFilamentAnimationPreview) "Return to AvatarForge GLES preview" else "Open animated GLB preview")
+                    }
+                }
+                if (useFilamentAnimationPreview) {
+                    if (animationCount > 0) {
+                        Text("GLB animations · ${selectedAnimation + 1} of $animationCount · ${"%.2f".format(animationDuration)} s")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { filamentPreviewView?.selectAnimation((selectedAnimation - 1).coerceAtLeast(0)) },
+                                enabled = selectedAnimation > 0
+                            ) { Text("Previous") }
+                            Button(onClick = { filamentPreviewView?.setAnimationPlaying(!animationPlaying) }) {
+                                Text(if (animationPlaying) "Pause" else "Play")
+                            }
+                            OutlinedButton(
+                                onClick = { filamentPreviewView?.selectAnimation((selectedAnimation + 1).coerceAtMost(animationCount - 1)) },
+                                enabled = selectedAnimation < animationCount - 1
+                            ) { Text("Next") }
+                        }
+                        if (animationDuration > 0f) {
+                            Slider(
+                                value = animationPosition.coerceIn(0f, animationDuration),
+                                onValueChange = { value ->
+                                    animationPosition = value
+                                    filamentPreviewView?.seekAnimation(value)
+                                },
+                                valueRange = 0f..animationDuration
+                            )
+                            Text("${"%.2f".format(animationPosition)} / ${"%.2f".format(animationDuration)} seconds")
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = {
+                                animationLoop = !animationLoop
+                                filamentPreviewView?.setAnimationLoop(animationLoop)
+                            }) { Text(if (animationLoop) "Loop: on" else "Loop: off") }
+                            listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { speed ->
+                                OutlinedButton(onClick = {
+                                    animationSpeed = speed
+                                    filamentPreviewView?.setAnimationSpeed(speed)
+                                }) { Text("${speed}x") }
+                            }
+                        }
+                    } else {
+                        Text("Waiting for GLB animation tracks. If this reports zero animations, the file has no playable clip for Filament.")
+                    }
+                }
                 Text(
                     "Renderer diagnostics are saved automatically to Downloads/3D Mega Hub Diagnostics when a renderer check runs.",
                     style = MaterialTheme.typography.bodySmall,
