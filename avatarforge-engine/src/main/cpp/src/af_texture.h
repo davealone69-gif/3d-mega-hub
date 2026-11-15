@@ -59,6 +59,9 @@ struct BakeOptions {
     bool  bakeMicroRelief = true;
     bool  bakeHairScroll = false;   /* reserved: hair shells bake their own maps */
     int   threads = 0;
+    /* The field the mesh was extracted from, with its apparel set. When given, texels on triangles
+       that straddle two materials are classified by the field instead of by vertex label. */
+    const BodyField* field = nullptr;
 };
 
 /**

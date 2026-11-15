@@ -15,7 +15,13 @@ const uint8_t kUnbakedRGBA[4] = {255, 0, 255, 255};
  * ============================================================================================== */
 const MaterialDef& materialForRegion(int region) {
     /* Values are physical: roughness is measured BRDF roughness, ior is the index of refraction,
-       metallic is 0 for every biological tissue (only metal armour goes above 0). */
+       metallic is 0 for every biological tissue (only metal armour goes above 0).
+
+       baseColor is the DEFAULT colour of the region and is applied exactly once, in the texture
+       bake. The material's base colour factor is white. The factor used to repeat this colour,
+       so every default was applied twice (a 0.30 grey-blue cloth rendered as its square, a dark
+       slate) and a colour from the prompt, which lived only in the engine's in-memory material,
+       never reached the exported file at all. */
     static const MaterialDef kMaterials[13] = {
         /* SKIN            */ {"skin",        {0.80f, 0.62f, 0.55f}, 0.00f, 0.52f, 1.40f, 0.10f, 0.50f, 1.00f, 0.00f, 0.020f},
         /* EYE_L           */ {"eye_left",    {0.94f, 0.94f, 0.93f}, 0.00f, 0.07f, 1.38f, 0.00f, 0.50f, 0.35f, 0.00f, 0.006f},
@@ -23,12 +29,12 @@ const MaterialDef& materialForRegion(int region) {
         /* TEETH           */ {"teeth",       {0.92f, 0.90f, 0.86f}, 0.00f, 0.25f, 1.55f, 0.00f, 0.50f, 0.60f, 0.00f, 0.010f},
         /* TONGUE          */ {"tongue",      {0.72f, 0.30f, 0.30f}, 0.00f, 0.45f, 1.36f, 0.05f, 0.50f, 1.00f, 0.00f, 0.012f},
         /* LIPS            */ {"lips",        {0.62f, 0.24f, 0.24f}, 0.00f, 0.36f, 1.38f, 0.15f, 0.50f, 1.00f, 0.00f, 0.010f},
-        /* HAIR            */ {"hair",        {0.09f, 0.06f, 0.05f}, 0.00f, 0.34f, 1.55f, 0.55f, 0.62f, 0.00f, 0.85f, 0.004f},
-        /* LASH            */ {"lash",        {0.04f, 0.03f, 0.03f}, 0.00f, 0.28f, 1.55f, 0.40f, 0.40f, 0.00f, 0.70f, 0.003f},
-        /* NAIL            */ {"nail",        {0.88f, 0.80f, 0.78f}, 0.00f, 0.22f, 1.50f, 0.25f, 0.60f, 0.70f, 0.10f, 0.008f},
-        /* CLOTH_UPPER     */ {"cloth_upper", {0.30f, 0.34f, 0.42f}, 0.00f, 0.78f, 1.45f, 0.45f, 0.55f, 0.00f, 0.30f, 0.010f},
-        /* CLOTH_LOWER     */ {"cloth_lower", {0.20f, 0.22f, 0.28f}, 0.00f, 0.82f, 1.45f, 0.40f, 0.50f, 0.00f, 0.25f, 0.012f},
-        /* SHOE            */ {"shoe",        {0.12f, 0.12f, 0.13f}, 0.00f, 0.55f, 1.50f, 0.20f, 0.50f, 0.00f, 0.20f, 0.008f},
+        /* HAIR            */ {"hair",        {0.050f, 0.034f, 0.024f}, 0.00f, 0.34f, 1.55f, 0.55f, 0.62f, 0.00f, 0.85f, 0.004f},
+        /* LASH            */ {"lash",        {0.022f, 0.016f, 0.013f}, 0.00f, 0.28f, 1.55f, 0.40f, 0.40f, 0.00f, 0.70f, 0.003f},
+        /* NAIL            */ {"nail",        {0.78f, 0.62f, 0.58f}, 0.00f, 0.22f, 1.50f, 0.25f, 0.60f, 0.70f, 0.10f, 0.008f},
+        /* CLOTH_UPPER     */ {"cloth_upper", {0.090f, 0.116f, 0.176f}, 0.00f, 0.78f, 1.45f, 0.45f, 0.55f, 0.00f, 0.30f, 0.010f},
+        /* CLOTH_LOWER     */ {"cloth_lower", {0.040f, 0.060f, 0.120f}, 0.00f, 0.82f, 1.45f, 0.40f, 0.50f, 0.00f, 0.25f, 0.012f},
+        /* SHOE            */ {"shoe",        {0.030f, 0.030f, 0.034f}, 0.00f, 0.55f, 1.50f, 0.20f, 0.50f, 0.00f, 0.20f, 0.008f},
         /* GEAR            */ {"gear",        {0.62f, 0.60f, 0.55f}, 0.85f, 0.35f, 2.20f, 0.05f, 0.50f, 0.00f, 0.15f, 0.014f},
     };
     if (region < 0 || region >= 13) return kMaterials[0];
@@ -163,6 +169,7 @@ struct MaterialContext {
     Vec3 eyeCentre[2];
     float eyeRadius = 0.008f;
     float ageFactor = 0.0f;
+    Vec3 tone[13];                /* colour baked for each region: the spec's, or the default */
 };
 
 void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out) {
@@ -288,8 +295,12 @@ void evaluateEye(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut*
     const float along = rel.dot(axis);
     const Vec3 radialVec = rel - axis * along;
     const float radial = radialVec.length();
-    const float rIris = r * 1.62f;
-    const float rPupil = rIris * 0.36f;
+    /* r is the EYEBALL radius. A human iris is about half of it across (11.8 mm on a 24 mm
+       globe) and the pupil about a third of the iris. The factor here was 1.62, which made the
+       iris wider than the eyeball and the pupil 7 mm in radius: the whole visible eye was painted
+       as pupil, which is the black bead in every capture. */
+    const float rIris = r * 0.50f;
+    const float rPupil = rIris * 0.34f;
 
     Vec3 albedo;
     float roughness;
@@ -323,7 +334,7 @@ void evaluateEye(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut*
         roughness = 0.18f;
     } else {
         /* Sclera: off-white with limbic and episcleral vessels that thicken towards rotation. */
-        const float t = saturate((radial - rIris) / (r * 1.6f));
+        const float t = saturate((radial - rIris) / (r * 0.9f));
         albedo = Vec3(0.90f, 0.88f, 0.86f) * (1.0f - 0.10f * t);
         const float veins = saturate((fbm(ctx.noise, rel * 260.0f, 3, 2.4f, 0.55f) - 0.52f) * 7.0f);
         const float veinDensity = saturate(t * 1.4f);
@@ -371,7 +382,9 @@ void evaluateLips(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
     const float t = s.position.y - m.mouthY;
     const float halfH = m.lipWidth * 0.42f;
     const float lipT = saturate(1.0f - std::fabs(t) / std::max(1e-5f, halfH));
-    Vec3 albedo = ctx.skinAlbedo.lerp(Vec3(0.66f, 0.24f, 0.24f), 0.65f + 0.3f * lipT);
+    Vec3 albedo = ctx.skinAlbedo.lerp(Vec3(0.46f, 0.15f, 0.15f), 0.58f + 0.26f * lipT);
+    /* The lip line: the mouth is closed, so the line between the lips is drawn, not cut. */
+    albedo = albedo * (1.0f - 0.55f * saturate(1.0f - std::fabs(t) / 0.0016f));
     /* Vermilion border and vertical lip lines */
     const float lines = saturate((fbm(ctx.noise, Vec3(s.position.x * 420.0f, s.position.y * 60.0f, s.position.z * 60.0f), 2) - 0.5f) * 5.0f);
     albedo = albedo * (1.0f - 0.12f * lines * lipT);
@@ -385,7 +398,7 @@ void evaluateLips(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
 }
 
 void evaluateNail(const MaterialContext&, const SurfaceSample& s, SurfaceOut* out) {
-    out->albedo = Vec3(0.86f, 0.78f, 0.76f) * (0.94f + 0.06f * saturate(s.curvature));
+    out->albedo = Vec3(0.78f, 0.62f, 0.58f) * (0.94f + 0.06f * saturate(s.curvature));
     out->roughness = 0.16f;
     out->thickness = 0.004f;
     out->scatterRadius = 0.006f;
@@ -405,7 +418,8 @@ void evaluateCloth(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOu
     const float weft = std::sin(q.z * 6.2831853f) * 0.5f + 0.5f;
     const float twill = (warp + weft) * 0.5f;
     const float fuzz = fbm(ctx.noise, s.position * 240.0f, 2, 2.1f, 0.5f);
-    Vec3 albedo = mat.baseColor * (0.94f + 0.08f * twill) * (0.98f + 0.04f * fuzz);
+    const Vec3& tone = ctx.tone[upper ? REGION_CLOTH_UPPER : REGION_CLOTH_LOWER];
+    Vec3 albedo = tone * (0.94f + 0.08f * twill) * (0.98f + 0.04f * fuzz);
     /* Restrained dye variation; keep the garment colour coherent at full-body viewing distance. */
     albedo *= 1.0f + 0.025f * fbm(ctx.noise, s.position * 8.0f, 3);
     out->albedo = albedo;
@@ -419,7 +433,6 @@ void evaluateCloth(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOu
     const float amp = 0.00010f;
     out->reliefGradient = Vec3(std::cos(q.x * 6.2831853f) * amp * 6.2831853f / yarn,
                                std::cos(q.z * 6.2831853f) * amp * 6.2831853f / yarn * 0.5f, 0.0f);
-    (void)upper;
 }
 
 void evaluateShoe(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out) {
@@ -433,7 +446,7 @@ void evaluateShoe(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
     } else {
         const float grain = 1.0f - saturate(poreNoise(ctx.noise, s.position, 0.0016f) * 3.0f);
         const float creases = saturate((fbm(ctx.noise, s.position * 45.0f, 3, 2.3f, 0.55f) - 0.5f) * 4.0f);
-        out->albedo = Vec3(0.11f, 0.10f, 0.10f) * (0.82f + 0.35f * grain) * (1.0f - 0.25f * creases);
+        out->albedo = ctx.tone[REGION_SHOE] * 3.4f * (0.82f + 0.35f * grain) * (1.0f - 0.25f * creases);
         out->roughness = saturate(0.42f + 0.22f * creases - 0.08f * grain);
         out->reliefGradient = Vec3(grain * 0.9f, creases * 1.2f, 0.0f);
     }
@@ -481,11 +494,15 @@ void evaluateSurface(const MaterialContext& ctx, const SurfaceSample& s, Surface
         case REGION_CLOTH_LOWER:              evaluateCloth(ctx, s, out, false, mat); break;
         case REGION_SHOE:                     evaluateShoe(ctx, s, out); break;
         case REGION_GEAR:                     evaluateGear(ctx, s, out); break;
-        case REGION_HAIR: case REGION_LASH:   /* shells bake their own maps; the body bake writes a neutral strand colour */
-            out->albedo = mat.baseColor;
+        case REGION_HAIR: case REGION_LASH: {
+            /* Strand colour with a slow variation along the fall of the hair, so a head of hair
+               is not one flat value. */
+            const float strand = fbm(ctx.noise, Vec3(s.position.x * 140.0f, s.position.y * 9.0f, s.position.z * 140.0f), 2);
+            out->albedo = ctx.tone[s.region] * (0.80f + 0.40f * strand);
             out->roughness = mat.roughness;
             out->anisotropyHint = 1.0f;
             break;
+        }
         default:                              evaluateSkin(ctx, s, out); break;
     }
 }
@@ -522,7 +539,37 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
     ctx.spec = &spec;
     ctx.noise = Noise(static_cast<uint32_t>(spec.seed) * 2654435761u + 101u);
     ctx.undertone = Vec3(1.0f, 0.72f - 0.25f * spec.skin_melanin, 0.60f - 0.30f * spec.skin_melanin);
-    ctx.skinAlbedo = skinAlbedoFromMelanin(spec.skin_melanin, ctx.undertone);
+    /* The skin's own pigment model, times the skin material's tint. The tint used to be applied
+       by the material's base colour factor; it is part of the baked colour now. */
+    ctx.skinAlbedo = skinAlbedoFromMelanin(spec.skin_melanin, ctx.undertone) * materialForRegion(REGION_SKIN).baseColor;
+    for (int r = 0; r < 13; ++r) ctx.tone[r] = materialForRegion(r).baseColor;
+    {
+        const auto given = [](const float* t) { return t[0] > 0.0f || t[1] > 0.0f || t[2] > 0.0f; };
+        if (given(spec.cloth_tone)) {
+            const Vec3 c(spec.cloth_tone[0], spec.cloth_tone[1], spec.cloth_tone[2]);
+            ctx.tone[REGION_CLOTH_UPPER] = c;
+            /* The spec carries one garment colour. It dresses the upper garment; the lower one
+               takes it only where the outfit is a single piece or a matching set. Jeans stay denim. */
+            const int o = spec.outfit;
+            if (o == AF_OUTFIT_DRESS || o == AF_OUTFIT_SUIT || o == AF_OUTFIT_SPACESUIT || o == AF_OUTFIT_ATHLETIC) {
+                ctx.tone[REGION_CLOTH_LOWER] = c;
+            }
+        }
+        if (given(spec.gear_tone)) {
+            const Vec3 g(spec.gear_tone[0], spec.gear_tone[1], spec.gear_tone[2]);
+            ctx.tone[REGION_GEAR] = g;
+            ctx.tone[REGION_SHOE] = g;
+        }
+        if (given(spec.hair_tone)) {
+            ctx.tone[REGION_HAIR] = Vec3(spec.hair_tone[0], spec.hair_tone[1], spec.hair_tone[2]);
+        } else {
+            /* "0 => derived from skin_melanin" (afcore.h): fair to dark brown to black. */
+            const float t = saturate(0.35f + spec.skin_melanin * 1.2f);
+            ctx.tone[REGION_HAIR] = Vec3(0.42f, 0.30f, 0.16f).lerp(Vec3(0.022f, 0.016f, 0.012f), t);
+        }
+        /* Brows and lashes follow the hair, a little darker. */
+        ctx.tone[REGION_LASH] = ctx.tone[REGION_HAIR] * 0.55f;
+    }
     ctx.ageFactor = saturate((spec.age_years - 18.0f) / 60.0f);
     ctx.eyeRadius = metrics.eyeRadius;
     ctx.eyeCentre[0] = Vec3(metrics.eyeSeparation * 0.5f, metrics.y.eyeY, metrics.eyeZ);
@@ -578,16 +625,39 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
                 if (std::fabs(d) < 1e-12f) continue;
                 const float invD = 1.0f / d;
 
+                /* A triangle smaller than a texel may cover no texel centre at all. It still has to
+                   own the texel its centroid falls in, or the renderer samples a neighbour's colour
+                   there. `centroidOnly` makes the loop below visit exactly that texel. */
+                bool anyCentre = false;
+                for (int py = y0; py <= y1 && !anyCentre; ++py) {
+                    for (int px = x0; px <= x1; ++px) {
+                        const float su = (static_cast<float>(px) + 0.5f) / static_cast<float>(w);
+                        const float sv = (static_cast<float>(py) + 0.5f) / static_cast<float>(h);
+                        const float a0 = ((uv[1].x - su) * (uv[2].y - sv) - (uv[2].x - su) * (uv[1].y - sv)) * invD;
+                        const float a1 = ((uv[2].x - su) * (uv[0].y - sv) - (uv[0].x - su) * (uv[2].y - sv)) * invD;
+                        if (a0 >= -0.0015f && a1 >= -0.0015f && (1.0f - a0 - a1) >= -0.0015f) { anyCentre = true; break; }
+                    }
+                }
+                const bool centroidOnly = !anyCentre;
+                if (centroidOnly) {
+                    const float cu = (uv[0].x + uv[1].x + uv[2].x) / 3.0f, cv = (uv[0].y + uv[1].y + uv[2].y) / 3.0f;
+                    x0 = x1 = mini(w - 1, maxi(0, static_cast<int>(cu * static_cast<float>(w))));
+                    y0 = y1 = mini(h - 1, maxi(0, static_cast<int>(cv * static_cast<float>(h))));
+                }
+
                 for (int py = y0; py <= y1; ++py) {
                     for (int px = x0; px <= x1; ++px) {
                         const float su = (static_cast<float>(px) + 0.5f) / static_cast<float>(w);
                         const float sv = (static_cast<float>(py) + 0.5f) / static_cast<float>(h);
-                        const float l0 = ((uv[1].x - su) * (uv[2].y - sv) - (uv[2].x - su) * (uv[1].y - sv)) * invD;
-                        const float l1 = ((uv[2].x - su) * (uv[0].y - sv) - (uv[0].x - su) * (uv[2].y - sv)) * invD;
-                        const float l2 = 1.0f - l0 - l1;
+                        float l0 = ((uv[1].x - su) * (uv[2].y - sv) - (uv[2].x - su) * (uv[1].y - sv)) * invD;
+                        float l1 = ((uv[2].x - su) * (uv[0].y - sv) - (uv[0].x - su) * (uv[2].y - sv)) * invD;
+                        float l2 = 1.0f - l0 - l1;
                         /* Half-texel tolerance keeps chart borders watertight. */
                         const float tol = -0.0015f;
-                        if (l0 < tol || l1 < tol || l2 < tol) continue;
+                        if (centroidOnly) {
+                            if (filled[static_cast<size_t>(py) * w + px]) continue;   /* a real sample is there already */
+                            l0 = l1 = l2 = 1.0f / 3.0f;
+                        } else if (l0 < tol || l1 < tol || l2 < tol) continue;
 
                         SurfaceSample s;
                         s.position = pos[0] * l0 + pos[1] * l1 + pos[2] * l2;
@@ -595,8 +665,15 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
                         s.tangent = (tan[0] * l0 + tan[1] * l1 + tan[2] * l2).normalizedOr({1, 0, 0});
                         s.bitangent = (bit[0] * l0 + bit[1] * l1 + bit[2] * l2).normalizedOr({0, 0, 1});
                         s.curvature = l0 * curv[0] + l1 * curv[1] + l2 * curv[2];
-                        /* Region: majority of the three vertices, so charts stay single-material. */
+                        /* Region: the nearest vertex's label - except on a triangle whose vertices
+                           disagree. There the boundary between two materials crosses the triangle,
+                           and following the vertex labels draws it as a saw-tooth one triangle
+                           wide. Asking the field which shape this texel lies on puts the hem, the
+                           hairline, the lip edge and the brow where they actually are. */
                         s.region = (l0 > l1) ? ((l0 > l2) ? region[0] : region[2]) : ((l1 > l2) ? region[1] : region[2]);
+                        if (options.field && (region[0] != region[1] || region[1] != region[2])) {
+                            s.region = options.field->classifyRegion(s.position);
+                        }
                         s.thickness = ctx.axis.distance(s.position);
 
                         SurfaceOut so;
@@ -693,8 +770,42 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
         (void)span;
     }
 
-    /* Any texel outside every chart stays at the neutral value so the atlas never shows the
-       magenta marker in a completed bake. */
+    /*
+     * Fill every remaining texel from the nearest baked one (breadth-first from all baked texels).
+     *
+     * Texels outside the charts used to be left at a neutral grey. A triangle too small to cover a
+     * texel centre bakes nothing of its own, and bilinear filtering and mip-mapping read beyond a
+     * chart's edge, so that grey was sampled: it is the light specks scattered over dark cloth.
+     * With the whole atlas flooded from its nearest content, a stray sample returns the colour next
+     * to it instead.
+     */
+    {
+        std::vector<uint32_t> queue;
+        queue.reserve(filled.size());
+        for (size_t i = 0; i < filled.size(); ++i) if (filled[i]) queue.push_back(static_cast<uint32_t>(i));
+        const int dx4[4] = {1, -1, 0, 0}, dy4[4] = {0, 0, 1, -1};
+        for (size_t head = 0; head < queue.size(); ++head) {
+            const uint32_t t = queue[head];
+            const int px = static_cast<int>(t % static_cast<uint32_t>(w)), py = static_cast<int>(t / static_cast<uint32_t>(w));
+            for (int k = 0; k < 4; ++k) {
+                const int nx = px + dx4[k], ny = py + dy4[k];
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                const size_t nt = static_cast<size_t>(ny) * w + nx;
+                if (filled[nt]) continue;
+                filled[nt] = 1;
+                for (int c = 0; c < 4; ++c) {
+                    out->baseColor[nt * 4 + c] = out->baseColor[static_cast<size_t>(t) * 4 + c];
+                    out->normal[nt * 4 + c] = out->normal[static_cast<size_t>(t) * 4 + c];
+                    out->metallicRoughness[nt * 4 + c] = out->metallicRoughness[static_cast<size_t>(t) * 4 + c];
+                    out->subsurface[nt * 4 + c] = out->subsurface[static_cast<size_t>(t) * 4 + c];
+                }
+                out->occlusion[nt] = out->occlusion[t];
+                queue.push_back(static_cast<uint32_t>(nt));
+            }
+        }
+    }
+
+    /* Only an atlas with no baked texel at all reaches this: keep it neutral rather than marked. */
     for (size_t i = 0; i < filled.size(); ++i) {
         if (filled[i]) continue;
         out->baseColor[i * 4 + 0] = 128; out->baseColor[i * 4 + 1] = 128;

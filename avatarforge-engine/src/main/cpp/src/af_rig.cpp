@@ -171,6 +171,40 @@ void Rig::buildSkeleton(const BodyField& field) {
     (void)spine2; (void)spine3; (void)spine4; (void)chest; (void)neck; (void)neck2; (void)head; (void)jaw;
 }
 
+bool Rig::restore(std::vector<Joint> joints, std::vector<Mat4> inverseBind, std::vector<SkinWeights> weights) {
+    if (joints.empty() || inverseBind.size() != joints.size()) return false;
+    for (size_t i = 0; i < joints.size(); ++i) {
+        /* Parents must precede children: computeWorld() walks the array once, in order. */
+        if (joints[i].parent >= static_cast<int>(i)) return false;
+    }
+    joints_ = std::move(joints);
+    inverseBind_ = std::move(inverseBind);
+    weights_ = std::move(weights);
+    shapeCache_.clear();
+    field_ = nullptr;
+    radiusScale_ = 1.0f;
+    /* Rest-pose world positions, for the skeleton overlay and for joint introspection. */
+    std::vector<Quat> rest(joints_.size());
+    for (size_t i = 0; i < joints_.size(); ++i) rest[i] = joints_[i].restRotation;
+    const std::vector<Mat4> world = computeWorld(rest);
+    for (size_t i = 0; i < joints_.size(); ++i) joints_[i].worldPosition = world[i].transformPoint(Vec3(0, 0, 0));
+    return true;
+}
+
+std::vector<Mat4> Rig::computeWorld(const std::vector<Quat>& localRotations,
+                                    const std::vector<Vec3>& localOffsets) const {
+    const int n = jointCount();
+    std::vector<Mat4> world(static_cast<size_t>(n), Mat4::identity());
+    for (int i = 0; i < n; ++i) {
+        const Joint& j = joints_[i];
+        const Quat rot = (i < static_cast<int>(localRotations.size())) ? localRotations[i] : j.restRotation;
+        const Vec3 off = (i < static_cast<int>(localOffsets.size())) ? localOffsets[i] : Vec3(0, 0, 0);
+        const Mat4 local = Mat4::trs(j.restTranslation + off, rot, j.restScale);
+        world[i] = (j.parent >= 0) ? (world[j.parent] * local) : local;
+    }
+    return world;
+}
+
 std::vector<Mat4> Rig::computeWorld(const std::vector<Quat>& localRotations) const {
     const int n = jointCount();
     std::vector<Mat4> world(static_cast<size_t>(n), Mat4::identity());

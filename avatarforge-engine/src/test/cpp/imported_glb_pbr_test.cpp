@@ -285,13 +285,15 @@ int main(int argc, char** argv) {
             check(hasAnimationChannels, "generated GLB animation clips contain playable transform channels");
         }
 
-        // Foreign GLB import is intentionally static today. Prove that a rigged export is not
-        // silently advertised as animated after crossing the import boundary.
+        // A GLB this engine exported keeps its skeleton and its clips when it comes back in: the
+        // importer recognises its own rig. (It used to discard both, which is why an avatar could
+        // not be animated once it had been saved - this check then asserted the loss.) The
+        // synthetic foreign file further down must still import as static geometry.
         const int32_t reimportRc = af_engine_import_glb_from_memory(engine, generatedGlbBytes, generatedGlbSize);
-        check(reimportRc == AF_OK, "generated rigged GLB can be re-imported as foreign geometry");
+        check(reimportRc == AF_OK, "generated rigged GLB can be re-imported");
         if (reimportRc == AF_OK) {
-            check(af_engine_joint_count(engine) == 0,
-                  "foreign GLB import does not falsely adopt the embedded skeleton");
+            check(af_engine_skin_joint_count(engine) > 0 && af_engine_animation_count(engine) > 0,
+                  "an AvatarForge GLB keeps its skeleton and clips across import");
         }
     }
     if (generatedGlbBytes != nullptr) af_arena_free(generatedGlbBytes);

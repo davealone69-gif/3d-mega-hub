@@ -671,10 +671,12 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             if (mi) j += ',';
             j += "{\"name\":\"";
             jsonEscape(j, names[mi]);
+            /* White: the colour is in the base colour texture, once. (When the file has no
+               texture the default colour is written instead, so the model is not blank.) */
             j += "\",\"doubleSided\":false,\"pbrMetallicRoughness\":{\"baseColorFactor\":[";
-            jsonNum(j, md.baseColor.x); j += ',';
-            jsonNum(j, md.baseColor.y); j += ',';
-            jsonNum(j, md.baseColor.z);
+            jsonNum(j, texBaseColor >= 0 ? 1.0f : md.baseColor.x); j += ',';
+            jsonNum(j, texBaseColor >= 0 ? 1.0f : md.baseColor.y); j += ',';
+            jsonNum(j, texBaseColor >= 0 ? 1.0f : md.baseColor.z);
             j += ",1],\"metallicFactor\":";
             jsonNum(j, md.metallic);
             j += ",\"roughnessFactor\":";

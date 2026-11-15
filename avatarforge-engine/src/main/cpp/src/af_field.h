@@ -62,6 +62,11 @@ struct ApparelOptions {
      * lattice cell: the caller states the lattice and gets clothing that can actually be meshed.
      */
     float latticeCell = 0.008f;
+    /*
+     * Build the mouth open, with an aperture, an oral cavity, teeth and a tongue. Off by default:
+     * see BodyField::applyOralShapes for why the rest pose is a closed mouth.
+     */
+    bool openMouth = false;
 };
 
 class BodyField {
@@ -80,6 +85,8 @@ public:
     float armChainPublic(const Vec3& p, int side) const { return armChain(p, chain(side)); }
     float legChainPublic(const Vec3& p, int side) const { return legChain(p, chain(side)); }
 
+    /** The unclothed body's field: trunk, limbs, hands, feet and head, without apparel. */
+    float skinUnion(const Vec3& p) const;
     /** Dominant primitive region at a point; REGION_SKIN when nothing more specific matches. */
     int classifyRegion(const Vec3& p) const;
 
@@ -107,12 +114,14 @@ public:
 
 private:
     float torso(const Vec3& p) const;
+    float trunkAndLegs(const Vec3& p) const;
     float torsoProfileRx(float y) const;
     float torsoProfileRz(float y) const;
     float torsoProfileCz(float y) const;
     float armChain(const Vec3& p, const Chain& c) const;
     float legChain(const Vec3& p, const Chain& c) const;
     float footShape(const Vec3& p, const Chain& c) const;
+    void  toeSegment(const Chain& c, int i, float ground, float ballZ, Vec3* from, Vec3* to) const;
     float handShape(const Vec3& p, const Chain& c) const;
     float skull(const Vec3& p) const;
     float faceFeatures(const Vec3& p) const;
@@ -132,7 +141,12 @@ private:
     float oralCavity(const Vec3& p) const;            /* carved void behind the lips          */
     float teethShape(const Vec3& p) const;            /* upper + lower dental arches, crowns  */
     float tongueShape(const Vec3& p) const;           /* tongue body + tip, on the floor      */
+    float lipsOutline(const Vec3& p) const;           /* the vermilion, as a front-view outline */
     float eyeballShape(const Vec3& p, int side) const;/* sclera sphere + corneal bulge        */
+    float eyeOpening(const Vec3& p, int side) const;  /* the almond between the lids          */
+    /** eyeOpening(), also telling whether p is above the line between the corners of the eye. */
+    float eyeOpening(const Vec3& p, int side, bool* upperLid) const;
+    float armFillet(const Vec3& p, const Chain& c) const;  /* arm-to-trunk blend radius      */
     float browShape(const Vec3& p) const;             /* eyebrow band (fibre material)        */
 
     /*
@@ -165,6 +179,8 @@ public:
     const ApparelOptions& apparel() const { return apparel_; }
     /** Union of all active apparel solids (a huge positive value when nothing is worn). */
     float apparelField(const Vec3& p) const;
+    /** As apparelField(), and also returns the hair's own distance (1e9 without hair). */
+    float apparelField(const Vec3& p, float* hairOut) const;
     /** Bounds of the apparel, for the extraction grid. Returns false when nothing is worn. */
     bool boundsApparel(Vec3* lo, Vec3* hi) const;
     /** True when the apparel changes the body's silhouette at all. */
@@ -187,6 +203,8 @@ public:
     /* Eye centres in world space. Public because the mesh builder needs to point its finest
        refinement at them; they are anatomical anchors, not internal state. */
     Vec3 eyeCentre(int side) const { return eyeCentre_[static_cast<size_t>((side > 0) ? 0 : 1)]; }
+    Vec3 noseTip() const { return noseTip_; }
+    Vec3 mouthCentre() const { return mouthCentre_; }
     /* Diagnostic access to the mouth shapes, so probes can verify that what was built is what the
        classifier claims. Not used by the engine path. */
     Vec3  archCentrePublic() const { return archCentre(); }

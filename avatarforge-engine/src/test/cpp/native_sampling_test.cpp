@@ -38,7 +38,17 @@ int main() {
     require(measured.sex == AF_SEX_FEMALE, "female prompt was not parsed");
     require(measured.build == AF_BUILD_ATHLETIC, "athletic build was not parsed");
     require(measured.hair_style == AF_HAIR_MEDIUM, "medium hair was not parsed");
-    require(measured.outfit == AF_OUTFIT_JEANS_JACKET, "jeans outfit was not parsed");
+    // "t-shirt and jeans" is the T-shirt outfit, which the engine builds with jeans as its lower
+    // garment. It used to parse as the jeans-and-JACKET outfit, so the avatar came out in a jacket
+    // nobody asked for.
+    require(measured.outfit == AF_OUTFIT_TSHIRT, "\"t-shirt and jeans\" must stay the T-shirt outfit");
+    {
+        af_spec jacket{};
+        af_spec_init(&jacket);
+        af::PromptParse jacketParse;
+        af::parsePrompt("Adult man in a denim jacket and jeans", &jacket, &jacketParse);
+        require(jacket.outfit == AF_OUTFIT_JEANS_JACKET, "a jeans jacket prompt was not parsed as the jacket outfit");
+    }
     require(std::fabs(measured.height_m - 1.75f) < 0.001f,
             "explicit 175 cm height was overwritten by the word tall");
 
@@ -101,10 +111,27 @@ int main() {
             std::fabs(leftEye.y - rightEye.y) < 1e-5f &&
             std::fabs(leftEye.z - rightEye.z) < 1e-5f,
             "eye anchors are not correctly mirrored across the facial midline");
-    require(qualityField.classifyRegion(leftEye) == af::REGION_EYE_L,
-            "left eyeball centre is missing or assigned to the wrong material region");
-    require(qualityField.classifyRegion(rightEye) == af::REGION_EYE_R,
-            "right eyeball centre is missing or assigned to the wrong material region");
+    // The material of an eye is asked where it can be seen: on the surface, straight in front of
+    // the eye's centre. (This used to ask at the centre of the globe, which is inside solid
+    // material; the classifier now answers "eye" only on the visible surface between the lids,
+    // because that is the only place the answer is used.)
+    const auto visibleEyePoint = [&](const af::Vec3& centre) {
+        af::Vec3 p(centre.x, centre.y, centre.z - 0.040f);
+        for (int i = 0; i < 4000; ++i) {
+            const float d = qualityField.skinUnion(p);
+            if (d < 0.00002f) break;
+            p.z += (d > 0.00002f ? d * 0.5f : 0.00001f);
+        }
+        return p;
+    };
+    const af::Vec3 leftEyeSurface = visibleEyePoint(leftEye);
+    const af::Vec3 rightEyeSurface = visibleEyePoint(rightEye);
+    require(leftEyeSurface.z < leftEye.z && leftEyeSurface.z > leftEye.z - 0.030f,
+            "no surface was found in front of the left eye");
+    require(qualityField.classifyRegion(leftEyeSurface) == af::REGION_EYE_L,
+            "the visible surface of the left eye is missing or assigned to the wrong material region");
+    require(qualityField.classifyRegion(rightEyeSurface) == af::REGION_EYE_R,
+            "the visible surface of the right eye is missing or assigned to the wrong material region");
 
     // Finger and toe centre-lines must remain inside their generated hand/foot SDFs.
     // This catches disconnected or collapsed extremity geometry before rendering.
@@ -254,13 +281,17 @@ int main() {
     longHair.latticeCell = 0.008f;
     hairField.setApparel(longHair);
     const float headHeight = qualityMetrics.y.crownY - qualityMetrics.y.chinY;
-    const float hairTop = qualityMetrics.y.crownY - headHeight * 0.05f;
-    const float hairBottom = qualityMetrics.y.crownY - headHeight * 2.6f;
-    const float hairMidY = (hairTop + hairBottom) * 0.5f;
-    const float hairBackZ = qualityMetrics.head.centreZ + qualityMetrics.head.rz * 0.625f;
-    const float hairDepth = std::max(qualityMetrics.head.rz * 0.34f, 0.022f);
-    const af::Vec3 hairCore(0.0f, hairMidY, hairBackZ + hairDepth);
-    require(hairField.hairPublic(hairCore) < -0.015f,
+    // Long hair hangs down the back. Somewhere behind the neck, between the nape and the shoulder
+    // blades, there must be hair with real thickness: at least 8 mm of it (4 mm deep at its
+    // middle). The probe searches for it rather than assuming where it is - this check used to
+    // sample one fixed point inside the 60 mm slab the hair was once made of, which was wider than
+    // the head and has been replaced by hair that follows the head and the back.
+    const float hairMidY = qualityMetrics.y.crownY - headHeight * 1.30f;
+    float deepestHair = 1.0f;
+    for (float z = qualityMetrics.head.centreZ; z < qualityMetrics.head.centreZ + 0.30f; z += 0.002f) {
+        deepestHair = std::min(deepestHair, hairField.hairPublic(af::Vec3(0.0f, hairMidY, z)));
+    }
+    require(deepestHair < -0.004f,
             "long hairstyle hanging section is not a solid 3D volume");
 
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");

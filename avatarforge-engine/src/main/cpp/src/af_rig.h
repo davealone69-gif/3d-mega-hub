@@ -62,8 +62,19 @@ public:
     const std::vector<Mat4>& inverseBind() const { return inverseBind_; }
     int jointCount() const { return static_cast<int>(joints_.size()); }
 
+    /**
+     * Rebuilds a rig from stored data instead of from a field: the joints with their rest
+     * transforms, the inverse bind matrices and the per-vertex weights, as a GLB skin carries
+     * them. This is what lets an exported avatar be posed again after it is imported. No field is
+     * attached, so the analytic blendshapes are not available on a restored rig.
+     */
+    bool restore(std::vector<Joint> joints, std::vector<Mat4> inverseBind, std::vector<SkinWeights> weights);
+
     /** Global matrix of a joint for the given local rotations (rest translation kept). */
     std::vector<Mat4> computeWorld(const std::vector<Quat>& localRotations) const;
+    /** As above, with a translation offset added to each joint's rest translation (root motion). */
+    std::vector<Mat4> computeWorld(const std::vector<Quat>& localRotations,
+                                   const std::vector<Vec3>& localOffsets) const;
 
     /** LBS: writes the deformed vertex positions into `outPositions`. */
     void skin(const Mesh& restMesh, const std::vector<Mat4>& jointWorld, std::vector<Vec3>* outPositions) const;

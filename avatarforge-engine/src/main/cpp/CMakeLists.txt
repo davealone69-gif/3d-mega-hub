@@ -148,6 +148,16 @@ if(BUILD_TESTING AND NOT ANDROID)
         COMMAND af_glb_import_robustness_test
             ${CMAKE_CURRENT_SOURCE_DIR}/../../../../app/src/main/assets/models/female.glb 8000 1337)
 
+    # Generates a draft avatar, exports it, imports the file into a second engine and checks that
+    # the imported avatar can be animated and moves exactly as the generating engine's own rig.
+    add_executable(af_animation_roundtrip_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/animation_roundtrip_test.cpp)
+    target_include_directories(af_animation_roundtrip_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_animation_roundtrip_test PRIVATE afcore)
+    add_test(NAME animation_roundtrip COMMAND af_animation_roundtrip_test)
+
     # Evidence probe: generates an avatar through the same sequence as the Android JNI layer and
     # measures orientation, mirror symmetry and the export/import round trip. It takes about a
     # minute, so it is built with the host tests but deliberately not registered with CTest.
@@ -156,5 +166,15 @@ if(BUILD_TESTING AND NOT ANDROID)
     target_include_directories(af_host_probe PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_host_probe PRIVATE afcore)
+
+    # Evidence tool: imports a GLB through the engine, reports what the engine kept of it (mesh,
+    # materials, joints, animations) and draws the engine's buffers with a software rasteriser.
+    # Not a test and not the app's renderer; see the header of the source file.
+    add_executable(af_host_render
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/host_avatar_render.cpp)
+    target_include_directories(af_host_render PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_host_render PRIVATE afcore)
 endif()
 

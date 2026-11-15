@@ -22,6 +22,30 @@
 
 namespace af {
 
+/* Thickness of an eyelid at its margin, as a fraction of the eyeball radius (about 1.6 mm). The
+   lids are a shell of this thickness round the globe; the opening is cut through it. It was 0.22
+   (2.7 mm), which left the eye at the bottom of a wall the mesh could not resolve. */
+static const float kLidThickness = 0.13f;
+
+/*
+ * How far a layer that lies on the body (cloth, hair on the scalp) stands off the skin, given the
+ * signed distance to the layer's edge (negative inside the layer).
+ *
+ * The layer reaches its full thickness `width` inside the edge and thins smoothly to nothing
+ * towards it; outside the edge it is below the skin, so it does not exist. A layer used to keep its
+ * full thickness up to the edge and end in a wall. A wall a few millimetres high is a step the
+ * mesher cannot follow with triangles of that same size - every collar, hem and hairline came out
+ * as a saw-tooth. With the layer feathered there is no step: the surface is smooth across the
+ * edge, and the edge itself is drawn by the texture bake, texel by texel, from this same function.
+ */
+static float layerOffset(float edge, float thickness, float width) {
+    const float s = -edge;
+    /* Outside the edge the layer goes under the skin along a parabola, not a straight line: a
+       change of slope at the edge shows in the body's surface as a ridge along every hem. */
+    const float out = minf(s, 0.0f);
+    return thickness * smoothstepf(0.0f, width, s) - 0.0010f - out * out * 250.0f;
+}
+
 /* =======================================================================================
  * Profile1D -- monotone cubic Hermite (Fritsch-Carlson tangents)
  * ======================================================================================= */
@@ -111,8 +135,13 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
     const float neckBaseY = m_.y.neckBaseY;
 
     /* rx (side-to-side half width) - note the pinch at the waist and the flare at the hips. */
-    rxProfile_.add(crotch - 0.10f * H, m_.hip.rx * 0.86f);
-    rxProfile_.add(crotch, m_.hip.rx * 0.94f);
+    /* Below the hip line the trunk narrows to the pelvic floor and stops: from there down the
+       width of the hips is carried by the two thighs. The profile used to stay almost as wide as
+       the hips for 13 cm below the crotch, which is the solid block that sat between and around
+       the upper thighs. */
+    rxProfile_.add(crotch - 0.020f * H, m_.hip.rx * 0.34f);
+    rxProfile_.add(crotch, m_.hip.rx * 0.58f);
+    rxProfile_.add(lerpf(crotch, hipY, 0.45f), m_.hip.rx * 0.90f);
     rxProfile_.add(hipY, m_.hip.rx * 1.02f);
     rxProfile_.add(lerpf(hipY, waistY, 0.5f), lerpf(m_.hip.rx, m_.waist.rx, 0.45f) * 1.01f);
     rxProfile_.add(waistY, m_.waist.rx);
@@ -126,10 +155,14 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
     rxProfile_.build();
 
     /* rz (front-to-back half depth) - the lumbar curve and thoracic mass live here. */
-    rzProfile_.add(crotch - 0.10f * H, m_.hip.rz * 0.90f);
-    rzProfile_.add(crotch, m_.hip.rz * 0.98f);
-    rzProfile_.add(hipY, m_.hip.rz * 1.04f);
-    rzProfile_.add(lerpf(hipY, waistY, 0.5f), m_.waist.rz * 1.06f);
+    /* The hip girth is measured round the buttocks, so the pelvis itself is shallower than an
+       ellipse of that girth: the rest of the depth is the gluteal mass added in torso(). Using the
+       full ellipse AND the glutes made the hips a barrel that stood out in front as well. */
+    rzProfile_.add(crotch - 0.020f * H, m_.hip.rz * 0.42f);
+    rzProfile_.add(crotch, m_.hip.rz * 0.62f);
+    rzProfile_.add(lerpf(crotch, hipY, 0.45f), m_.hip.rz * 0.80f);
+    rzProfile_.add(hipY, m_.hip.rz * 0.86f);
+    rzProfile_.add(lerpf(hipY, waistY, 0.5f), lerpf(m_.hip.rz * 0.86f, m_.waist.rz, 0.55f));
     rzProfile_.add(waistY, m_.waist.rz);
     rzProfile_.add(underbustY, m_.underbust.rz);
     rzProfile_.add(bustY, m_.bust > 0.05f && female ? m_.underbust.rz * 1.08f : m_.chest.rz * 0.99f);
@@ -141,8 +174,8 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
 
     /* cz (centre-line offset) - lumbar lordosis pulls the waist centre backwards, the bust
        pushes the chest centre forwards. Small numbers, big perceptual effect. */
-    czProfile_.add(crotch, m_.hip.centreZ + 0.004f);
-    czProfile_.add(hipY, m_.hip.centreZ);
+    czProfile_.add(crotch, m_.hip.centreZ + 0.012f);
+    czProfile_.add(hipY, m_.hip.centreZ + 0.010f);
     czProfile_.add(waistY, m_.waist.centreZ - 0.006f * H);
     czProfile_.add(bustY, m_.bustSeg.centreZ + (female ? 0.004f * H * m_.bust : 0.0f));
     czProfile_.add(shoulderY, m_.chest.centreZ + 0.002f * H);
@@ -156,47 +189,65 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
         c.side = side;
         const float sx = static_cast<float>(side);
 
-        /* Arm: A-pose with ~9 degrees of abduction, which is the standard rigging stance
-           (arms clear of the torso so skinning, cloth and IK all behave). */
-        const float abduct = radians(9.0f * (female ? 1.15f : 1.0f));
-        c.shoulder = {sx * m_.biacromialHalf, m_.y.shoulderY, -0.006f * H};
+        /* Arm: an A-pose, the standard rigging stance: arms clear of the torso so skinning, cloth
+           and IK all behave. 12 degrees at the shoulder (a little more on a female figure, whose
+           hips are wider), and the forearm nearly in line with the upper arm. It was 9 degrees
+           with the forearm turned back to half of that, which hung the wrist against the hip:
+           the hand and the trouser leg were one surface. */
+        const float abduct = radians(12.0f * (female ? 1.15f : 1.0f));
+        /* The biacromial breadth is measured between the outer edges of the acromia. The centre
+           of the shoulder joint, which is what the arm turns about, lies inside that edge. */
+        c.shoulder = {sx * m_.biacromialHalf * 0.87f, m_.y.shoulderY, -0.006f * H};
         const Vec3 upperDir(sx * std::sin(abduct), -std::cos(abduct), 0.02f);
         c.elbow = c.shoulder + upperDir * m_.upperArmLen;
-        const Vec3 foreDir(sx * std::sin(abduct * 0.55f), -std::cos(abduct * 0.55f), -0.015f);
+        const Vec3 foreDir(sx * std::sin(abduct * 0.80f), -std::cos(abduct * 0.80f), -0.015f);
         c.wrist = c.elbow + foreDir * m_.forearmLen;
 
         /* Hand frame: fingers hang down, palm faces the thigh, index finger toward the front. */
         const Vec3 dirDown = (c.wrist - c.elbow).normalizedOr({0, -1, 0});
         const Vec3 palmNormal(-sx, 0.0f, 0.0f);              /* points at the body    */
         c.palmCentre = c.wrist + dirDown * (m_.handLength * 0.26f);
-        const Vec3 across = palmNormal.cross(dirDown).normalizedOr({0, 0, 1});
+        /* `across` runs from the little finger towards the index finger and the thumb. A cross
+           product is an axial vector, so mirroring the hand flips it: without the side sign the
+           left hand was built with its thumb pointing backwards and the two hands were not mirror
+           images of each other. With it, both thumbs point forward (-Z). */
+        const Vec3 across = (palmNormal.cross(dirDown) * -sx).normalizedOr({0, 0, -1});
 
-        const float spacing = m_.palmWidth * 0.265f;
+        const float spacing = m_.palmWidth * 0.245f;
         const Vec3 knuckleLineCentre = c.palmCentre + dirDown * (m_.handLength * 0.20f);
         for (int i = 0; i < 5; ++i) {
             if (i == 0) {
-                /* Thumb: planted on the front-inner edge of the palm, opposed ~45 degrees. */
-                const Vec3 base = c.palmCentre + across * (spacing * 2.30f) +
-                                  palmNormal * (m_.palmThickness * 0.55f) -
-                                  dirDown * (m_.handLength * 0.10f);
-                const Vec3 thumbDir = rotateToward(dirDown, -palmNormal, radians(52.0f));
-                const Vec3 dir2 = rotateToward(thumbDir, across, radians(28.0f)).normalizedOr(thumbDir);
+                /* Thumb. Its base (the carpometacarpal joint) is at the thumb-side edge of the
+                   palm near the wrist. In the relaxed hand the thumb points down and forward,
+                   about 40 degrees off the fingers, and turns a little towards the palm. */
+                const Vec3 base = c.palmCentre + across * (m_.palmWidth * 0.40f) +
+                                  palmNormal * (m_.palmThickness * 0.20f) -
+                                  dirDown * (m_.handLength * 0.15f);
+                const Vec3 dirMeta = (dirDown * 0.74f + across * 0.64f + palmNormal * 0.20f).normalizedOr(dirDown);
+                const Vec3 dirTip = (dirDown * 0.86f + across * 0.46f + palmNormal * 0.22f).normalizedOr(dirDown);
                 const float L = m_.fingerLength[0];
                 c.fingerKnuckle[0] = base;
-                c.fingerJoints[0][0] = base + dir2 * (L * 0.50f);
-                c.fingerJoints[0][1] = c.fingerJoints[0][0] + dir2 * (L * 0.28f);
-                c.fingerJoints[0][2] = c.fingerJoints[0][1] + dir2 * (L * 0.22f);
+                c.fingerJoints[0][0] = base + dirMeta * (L * 0.46f);
+                c.fingerJoints[0][1] = c.fingerJoints[0][0] + dirTip * (L * 0.30f);
+                c.fingerJoints[0][2] = c.fingerJoints[0][1] + dirTip * (L * 0.24f);
                 c.fingerTip[0] = c.fingerJoints[0][2];
                 continue;
             }
-            const float acrossOffset = static_cast<float>(2 - i) * spacing;   /* index..little */
-            const Vec3 knuckle = knuckleLineCentre + across * acrossOffset +
-                                 palmNormal * (m_.palmThickness * 0.10f);
+            /* Index..little, centred on the palm: +1.5, +0.5, -0.5, -1.5 spacings. The row used
+               to be centred on the middle finger, which hung the little finger off the palm. */
+            const float acrossOffset = (2.5f - static_cast<float>(i)) * spacing;
+            /* The knuckles lie on an arc, not a line: the index and little finger start higher. */
+            const float arc = (i == 2 || i == 3) ? 0.0f : (i == 1 ? 0.035f : 0.075f);
+            const Vec3 knuckle = knuckleLineCentre + across * acrossOffset -
+                                 dirDown * (m_.handLength * arc) +
+                                 palmNormal * (m_.palmThickness * 0.05f);
             const float L = m_.fingerLength[i];
-            /* Progressive flexion: 8 / 18 / 26 degrees, the classic relaxed hand. */
-            const Vec3 d1 = rotateToward(dirDown, -palmNormal, radians(8.0f));
-            const Vec3 d2 = rotateToward(d1, -palmNormal, radians(10.0f));
-            const Vec3 d3 = rotateToward(d2, -palmNormal, radians(8.0f));
+            /* Relaxed hand: each joint a little more flexed than the last, curling towards the
+               palm, and the outer fingers fanning slightly away from the middle one. */
+            const Vec3 fan = across * ((2.5f - static_cast<float>(i)) * 0.045f);
+            const Vec3 d1 = (rotateToward(dirDown, palmNormal, radians(10.0f)) + fan).normalizedOr(dirDown);
+            const Vec3 d2 = rotateToward(d1, palmNormal, radians(14.0f));
+            const Vec3 d3 = rotateToward(d2, palmNormal, radians(12.0f));
             c.fingerKnuckle[i] = knuckle;
             c.fingerJoints[i][0] = knuckle + d1 * (L * 0.44f);
             c.fingerJoints[i][1] = c.fingerJoints[i][0] + d2 * (L * 0.32f);
@@ -221,20 +272,23 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
     const float headC = (m_.y.crownY + m_.y.chinY) * 0.5f;
     const float headH = m_.y.crownY - m_.y.chinY;
     const float zFront = -m_.head.rz * 0.98f;                      /* -Z is forward */
-    noseBridge_ = {0.0f, m_.y.eyeY - headH * 0.02f, zFront * 0.86f};
-    noseTip_ = {0.0f, m_.y.eyeY - headH * 0.075f, zFront * 1.28f};
-    chin_ = {0.0f, m_.y.chinY + headH * 0.055f, zFront * 0.90f};
-    browRidge_ = {0.0f, m_.y.eyeY + headH * 0.030f, zFront * 0.92f};
-    mouthCentre_ = {0.0f, m_.mouthY, zFront * 0.94f};
+    /* Anchors on the face. Depths are fractions of zFront, the front of the head, so the features
+       sit ON the facial surface that skull() builds: the nasion and the brow slightly behind it,
+       the nose tip in front of it, the mouth and the chin stepping back below the nose. */
+    noseBridge_ = {0.0f, m_.y.eyeY + headH * 0.012f, zFront * 0.945f};
+    noseTip_ = {0.0f, m_.y.eyeY - headH * 0.185f, zFront * 1.225f};
+    chin_ = {0.0f, m_.y.chinY + headH * 0.062f, zFront * 0.75f};
+    browRidge_ = {0.0f, m_.y.eyeY + headH * 0.062f, zFront * 0.95f};
+    mouthCentre_ = {0.0f, m_.mouthY, zFront * 0.925f};
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
-        jawCorner_[s] = {sx * m_.jaw.rx * 1.02f, m_.y.chinY + headH * 0.20f, zFront * 0.42f};
-        cheek_[s] = {sx * m_.head.rx * 0.90f, m_.y.chinY + headH * 0.30f, zFront * 0.70f};
-        /* Bring the globe slightly through the orbital plane. At 0.80 * skull depth,
-           the default eye radius was almost entirely buried by the cranium, leaving a blank
-           face in full-body captures. Keep the same spacing/height but expose a readable
-           corneal silhouette without enlarging the eyes into a caricature. */
-        eyeCentre_[s] = {sx * m_.eyeSeparation * 0.5f, m_.y.eyeY, -m_.head.rz * 0.91f};
+        /* Angle of the jaw: below the ear lobe, at the back of the face. */
+        jawCorner_[s] = {sx * m_.jaw.rx * (female ? 0.66f : 0.80f), m_.y.chinY + headH * 0.20f, -m_.head.rz * 0.04f};
+        cheek_[s] = {sx * m_.head.rx * 0.56f, m_.y.chinY + headH * 0.30f, zFront * 0.70f};
+        /* One eye centre for everything: the field, the rig and the texture bake all read
+           metrics.eyeZ. The field used its own depth, 11 mm in front of the one the iris was
+           painted around. */
+        eyeCentre_[s] = {sx * m_.eyeSeparation * 0.5f, m_.y.eyeY, m_.eyeZ};
         earCentre_[s] = {sx * m_.head.rx * 1.05f, m_.y.eyeY - headH * 0.055f, zFront * 0.10f};
     }
     (void)headC; (void)neckBase; (void)neckTop;
@@ -248,7 +302,7 @@ float BodyField::torsoProfileRz(float y) const { return maxf(rzProfile_.eval(y),
 float BodyField::torsoProfileCz(float y) const { return czProfile_.eval(y); }
 
 float BodyField::torso(const Vec3& p) const {
-    const float yMin = m_.y.crotchY - m_.thighLen * 0.30f;
+    const float yMin = m_.y.crotchY - 0.018f * m_.height;
     const float yMax = m_.y.neckBaseY + 0.010f;
     const float y = clampf(p.y, yMin, yMax);
     const float rx = torsoProfileRx(y);
@@ -275,7 +329,6 @@ float BodyField::torso(const Vec3& p) const {
     const float H = m_.height;
     const bool female = (m_.sex == AF_SEX_FEMALE);
     const float chestZ = -m_.chest.rz * 0.85f;
-    const float backZ = m_.chest.rz * 0.85f;
     const float mergeK = lerpf(0.030f, 0.014f, saturate(m_.muscle));
 
     /* --- chest: pectorals / bust ------------------------------------------------------- */
@@ -283,8 +336,13 @@ float BodyField::torso(const Vec3& p) const {
         const float r = m_.chest.rx * (0.40f + 0.10f * m_.bust);
         const Vec3 radii(r * 0.92f, r * lerpf(0.85f, 1.05f, m_.bust), r * lerpf(0.82f, 1.02f, m_.bust));
         const float cx = m_.chest.rx * 0.44f;
-        const float cz2 = m_.underbust.rz * 0.95f - m_.bustSeg.rz * (0.20f + 0.22f * m_.bust);
-        d = smin(d, blob2(p, cx, m_.y.bustY + 0.004f * H, cz2, radii), 0.022f);
+        /* Centre the breast so that it projects from the FRONT of the rib cage (forward is -Z).
+           The old expression evaluated to +62 mm, i.e. behind the spine: the breasts were two
+           mounds on the back and the chest was flat. The projection grows with the bust value. */
+        const float chestFrontZ = torsoProfileCz(m_.y.bustY) - torsoProfileRz(m_.y.bustY);
+        const float projection = lerpf(0.018f, 0.062f, saturate(m_.bust)) * (H / 1.70f);
+        const float cz2 = chestFrontZ + radii.z - projection;
+        d = smin(d, blob2(p, cx, m_.y.bustY + 0.004f * H, cz2, radii), 0.026f);
     } else {
         const float pecR = m_.chest.rx * (0.42f + 0.10f * m_.muscle);
         const Vec3 radii(pecR, pecR * 0.72f, pecR * 0.52f);
@@ -295,9 +353,12 @@ float BodyField::torso(const Vec3& p) const {
     /* --- abdomen: rectus columns + transverse crease ----------------------------------- */
     const float abW = m_.waist.rx * (0.60f + 0.16f * m_.muscle);
     const float abH = (m_.y.waistY - m_.y.hipY) * 0.34f;
-    const Vec3 abRadii(abW * 0.5f, abH, m_.waist.rz * (0.34f + 0.10f * m_.muscle + m_.abDepth * 2.0f));
+    /* The rectus columns stand proud of the abdomen only as far as the build's muscle says.
+       They used to protrude on every body, as two lumps above the waistband. */
+    const float abProud = saturate((m_.muscle - 0.45f) / 0.45f);
+    const Vec3 abRadii(abW * 0.5f, abH, m_.waist.rz * (0.26f + 0.16f * abProud + m_.abDepth * 2.0f));
     d = smin(d, blob2(p, m_.waist.rx * 0.34f, (m_.y.waistY + m_.y.underbustY) * 0.5f - abH * 0.30f,
-                      -m_.waist.rz * 0.72f, abRadii), 0.020f);
+                      -m_.waist.rz * 0.72f, abRadii), 0.028f);
 
     /* --- obliques / serratus ----------------------------------------------------------- */
     if (m_.obliqueBulge > 1e-4f) {
@@ -314,29 +375,52 @@ float BodyField::torso(const Vec3& p) const {
 
     /* --- glutes ------------------------------------------------------------------------ */
     {
-        const float gz = m_.hip.rz * (0.62f + 0.12f * saturate(m_.bodyFat));
-        const Vec3 radii(m_.hip.rx * 0.52f, m_.hip.rz * 0.62f, m_.hip.rz * 0.52f);
-        d = smin(d, blob2(p, m_.hip.rx * 0.46f, m_.y.hipY - m_.hip.rz * 0.34f, gz, radii), 0.030f);
+        const float gz = m_.hip.rz * (0.50f + 0.10f * saturate(m_.bodyFat));
+        const Vec3 radii(m_.hip.rx * 0.50f, m_.hip.rz * 0.60f, m_.hip.rz * 0.52f);
+        d = smin(d, blob2(p, m_.hip.rx * 0.45f, m_.y.hipY - m_.hip.rz * 0.36f, gz, radii), 0.034f);
     }
 
-    /* --- lumbar / spinal groove (subtractive: the back is not a barrel) -----------------
-       Carving rule used everywhere in this file: to remove the region {shape < 0} from a
-       field d, you need d = smax(d, -shape, k). Writing `smax(d, shape)` treats the *space
-       outside* the shape as solid and carves the entire body away - which is exactly the
-       class of sign error that turns an avatar into a shell. */
+    /* --- spinal furrow -------------------------------------------------------------------
+       A shallow channel down the middle of the back, 3 mm deep and about 2 cm wide, following the
+       back's own profile from above the hips to between the shoulder blades and fading out at
+       both ends.
+
+       It was a straight capsule of 10 mm radius between two fixed points near the back surface,
+       cut with a 30 mm blend. The back is not straight, so the capsule broke the surface only
+       along the middle third of its length - and there it cut a slot ten centimetres long with
+       sharp ends, which read as a wound.
+
+       Carving rule used everywhere in this file: to remove the region {shape < 0} from a field d,
+       you need d = smax(d, -shape, k). Writing `smax(d, shape)` treats the *space outside* the
+       shape as solid and carves the entire body away. */
     {
-        const float groove = sdCapsule(p, {0.0f, m_.y.hipY + 0.02f * H, m_.hip.rz * 0.93f},
-                                       {0.0f, m_.y.armpitY, m_.chest.rz * 0.90f}, 0.010f);
-        d = smax(d, -groove, 0.030f);
+        const float yLow = m_.y.hipY + 0.035f * H;
+        const float yHigh = m_.y.armpitY + 0.030f * H;
+        if (p.y > yLow - 0.05f && p.y < yHigh + 0.05f && p.z > 0.0f && std::fabs(p.x) < 0.05f) {
+            const float fade = smoothstepf(yLow, yLow + 0.07f, p.y) * (1.0f - smoothstepf(yHigh - 0.07f, yHigh, p.y));
+            const float backZ = cz + rz;                       /* the profile's back surface here */
+            /* A cylinder lying along the back, just touching it; the blend below is what cuts the
+               channel (about a quarter of its radius deep). Towards the ends the cylinder is moved
+               off the surface, further than the blend reaches, so the channel fades to nothing
+               instead of stopping at an edge. */
+            const float channelR = 0.0105f;
+            const float standOff = (1.0f - fade) * 0.024f;
+            const float dz = p.z - (backZ + channelR + standOff);
+            const float channel = std::sqrt(p.x * p.x + dz * dz) - channelR;
+            d = smax(d, -channel, 0.011f);
+        }
     }
 
     /* --- trapezius --------------------------------------------------------------------- */
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
-        const Vec3 from(sx * m_.neck.rx * 0.55f, m_.y.neckBaseY + 0.008f * H, m_.neck.centreZ + 0.004f);
-        const Vec3 to(sx * m_.biacromialHalf * 0.96f, m_.y.shoulderY - 0.004f * H, 0.002f);
-        d = smin(d, sdTaperedCapsule(p, from, to, m_.neck.rx * 0.42f,
-                                     m_.trapeziusBulge * 0.42f + 0.016f), 0.032f);
+        /* The shoulder girdle: trapezius and clavicle together, as one sloping mass from the side
+           of the neck to the acromion. Its top surface IS the shoulder line, so it has to carry
+           real thickness all the way out; a thin strand left a dip between neck and deltoid. */
+        const Vec3 from(sx * m_.neck.rx * 0.70f, m_.y.neckBaseY - 0.010f * H, m_.neck.centreZ + 0.014f);
+        const Vec3 to(sx * m_.biacromialHalf * 0.88f, m_.y.shoulderY + 0.010f * H, 0.002f);
+        d = smin(d, sdTaperedCapsule(p, from, to, m_.neck.rx * 0.60f + m_.trapeziusBulge * 0.25f,
+                                     m_.deltoidR * 0.50f + m_.trapeziusBulge * 0.10f), 0.040f);
     }
 
     /* --- latissimus / ribs (only visibly present on muscular builds) -------------------- */
@@ -346,12 +430,10 @@ float BodyField::torso(const Vec3& p) const {
                           m_.chest.rz * 0.30f, radii), mergeK);
     }
 
-    /* --- iliac crest / hip bones ------------------------------------------------------- */
-    for (int s = 0; s < 2; ++s) {
-        const float sx = (s == 0) ? 1.0f : -1.0f;
-        d = smin(d, blob(p, {sx * m_.hip.rx * 0.70f, m_.y.hipY + 0.012f * H, -m_.hip.rz * 0.42f},
-                         Vec3(m_.hip.rx * 0.34f, m_.hip.rz * 0.20f, m_.hip.rz * 0.30f)), 0.028f);
-    }
+    /* (Two flattened ellipsoids labelled "iliac crest / hip bones" used to be added here, at the
+       front of the pelvis at the level of the hip girth. The iliac crests are ten centimetres
+       higher than that; at this level the blobs made a horizontal shelf across the lower belly,
+       which every garment then inherited.) */
 
     /*
      * --- neck ------------------------------------------------------------------------------
@@ -368,33 +450,27 @@ float BodyField::torso(const Vec3& p) const {
      * how well the mouth itself was modelled.
      */
     {
+        /* The top of the tube is behind the jaw, inside the skull. It used to lean FORWARD to a
+           point under the mouth, which put the front of the neck level with the lips: the face
+           had no chin and no jaw line, only a column from the shoulders up to the mouth. A throat
+           lies three to four centimetres behind the chin. */
         const Vec3 neckBase(0.0f, m_.y.neckBaseY - 0.045f * H, m_.neck.centreZ);
-        const Vec3 neckTop(0.0f, m_.y.jawY + 0.010f * H, m_.neck.centreZ - 0.010f * H);
-        d = smin(d, sdTaperedCapsule(p, neckBase, neckTop, m_.neck.rx * 1.22f, m_.neck.rx * 0.94f), 0.030f);
-        /* sterno-mastoid definition on low-body-fat builds */
-        if (m_.bodyFat < 0.24f) {
-            for (int s = 0; s < 2; ++s) {
-                const float sx = (s == 0) ? 1.0f : -1.0f;
-                const Vec3 a(sx * m_.neck.rx * 0.62f, m_.y.neckBaseY - 0.012f * m_.height, -m_.neck.rz * 0.55f);
-                const Vec3 b(sx * m_.neck.rx * 0.30f, m_.y.jawY, -m_.neck.rz * 0.80f);
-                d = smin(d, sdCapsule(p, a, b, m_.neck.rx * 0.13f), 0.022f);
-            }
-        }
+        const Vec3 neckTop(0.0f, m_.y.jawY + 0.010f * H, m_.neck.centreZ + 0.016f);
+        d = smin(d, sdTaperedCapsule(p, neckBase, neckTop, m_.neck.rx * 1.08f, m_.neck.rx * 0.88f), 0.030f);
+        /* (Two capsules labelled "sterno-mastoid" used to run up the FRONT of the throat and
+           meet under the chin. The muscle runs the other way - from the breastbone up and back
+           to behind the ear - and what they made was a thick throat under a chin that then
+           could not be seen.) */
     }
 
-    /* --- fine surface detail: muscle striation & skin break-up -------------------------
-       Applied as a bounded displacement so it never dominates the silhouette. It exists so
-       the baked normal map and the mesh agree: geometric micro-relief reads as real skin
-       under raking light, which flat-shaded decals cannot fake. */
-    {
-        const float striation = noise_.ridged(p * 26.0f, 3, 2.05f, 0.55f) - 0.42f;
-        const float pores = noise_.cell(p, 78.0f) - 0.45f;
-        /* Keep geometric displacement comfortably below the extraction cell size.
-           Fine pores belong in the baked tangent-space normal map; pushing them into the SDF
-           creates sub-cell ridges that alias into speckled triangles on mobile GPUs. */
-        const float amp = 0.00032f * (1.0f - saturate(m_.bodyFat)) + 0.00018f;
-        d -= (striation * 0.20f + pores * 0.10f) * amp;
-    }
+    /*
+     * No surface noise here. This function used to end by displacing the body with ridged and
+     * cellular noise ("striation", "pores") a fraction of a millimetre deep. Fine relief belongs in
+     * the baked normal map, which has its own: in the distance field it cannot be meshed - its
+     * features are smaller than any triangle - so all it contributed was a random error in every
+     * vertex position and normal, and three noise evaluations to every one of the millions of
+     * field samples a build takes.
+     */
     return d;
 }
 
@@ -408,10 +484,13 @@ float BodyField::armChain(const Vec3& p, const Chain& c) const {
     float d = sdTaperedCapsule(p, c.shoulder, c.elbow, m_.upperArmR * 1.02f, m_.elbowR);
     d = smin(d, sdTaperedCapsule(p, c.elbow, c.wrist, m_.elbowR * 0.98f, m_.wristR), 0.016f);
 
-    /* Deltoid cap - the single most important shape for reading a shoulder. */
-    const Vec3 deltoidCentre = c.shoulder + Vec3(sx * m_.deltoidR * 0.28f, m_.deltoidR * 0.30f, 0.0f);
+    /* Deltoid - the single most important shape for reading a shoulder. It wraps the joint and
+       hangs BELOW the acromion: its top is level with the shoulder line, not above it. The cap
+       used to be centred above and outside the joint, so its top reached the height of the neck
+       base and each shoulder was a ball standing beside the neck. */
+    const Vec3 deltoidCentre = c.shoulder + Vec3(sx * m_.deltoidR * 0.10f, -m_.deltoidR * 0.18f, 0.0f);
     d = smin(d, blob(p, deltoidCentre,
-                     Vec3(m_.deltoidR * 1.05f, m_.deltoidR * 1.10f, m_.deltoidR * 0.92f)), 0.030f);
+                     Vec3(m_.deltoidR * 0.92f, m_.deltoidR * 1.20f, m_.deltoidR * 0.94f)), 0.034f);
 
     /* Biceps (anterior), triceps (posterior), brachioradialis (forearm mass). */
     const Vec3 upDir = (c.elbow - c.shoulder).normalizedOr({0, -1, 0});
@@ -429,18 +508,8 @@ float BodyField::armChain(const Vec3& p, const Chain& c) const {
         d = smin(d, blob(p, c.elbow + foreDir * (m_.forearmLen * 0.26f) + Vec3(0, 0, -m_.forearmR * 0.55f),
                          Vec3(m_.forearmR * 0.62f, m_.forearmLen * 0.22f, m_.forearmR * 0.52f + m_.brachioradialisBulge)), 0.018f);
     }
-    /* Ulna groove (subtractive) - a cheap trick that instantly makes an arm look anatomical. */
-    {
-        const Vec3 foreDir = (c.wrist - c.elbow).normalizedOr({0, -1, 0});
-        // A cross product is an axial vector: reflecting the limb across X flips its
-        // Y/Z components as well. Multiply by the side sign to convert it back into a
-        // mirror-equivariant direction, so both forearm grooves occupy corresponding
-        // anatomical positions in the rest pose.
-        const Vec3 grooveAxis = (foreDir.cross(Vec3(sx, 0, 0)) * sx).normalizedOr({0, 0, 1});
-        const float groove = sdCapsule(p, c.elbow + grooveAxis * (m_.forearmR * 0.62f),
-                                       c.wrist + grooveAxis * (m_.wristR * 0.62f), 0.009f);
-        d = smax(d, -groove, 0.020f);
-    }
+    /* (A trench used to be cut along the back of each forearm here, 9 mm deep from elbow to wrist,
+       as "a cheap trick that makes an arm look anatomical". A forearm has no such trench.) */
     /* Wrist cap so the hand domain has a matching tube on its side of the cut plane. */
     d = smin(d, sdCapsule(p, c.wrist, c.wrist + (c.palmCentre - c.wrist) * 0.35f, m_.wristR * 0.98f), 0.010f);
     return d;
@@ -451,8 +520,8 @@ float BodyField::armChain(const Vec3& p, const Chain& c) const {
  * ======================================================================================= */
 float BodyField::legChain(const Vec3& p, const Chain& c) const {
     const float sx = static_cast<float>(c.side);
-    float d = sdTaperedCapsule(p, c.hipJoint, c.knee, m_.thighRx * 1.03f, m_.kneeR);
-    d = smin(d, sdTaperedCapsule(p, c.knee, c.ankle, m_.calfRx * 0.94f, m_.ankleRx), 0.018f);
+    float d = sdTaperedCapsule(p, c.hipJoint, c.knee, m_.thighRx * 1.03f, m_.kneeR * 0.93f);
+    d = smin(d, sdTaperedCapsule(p, c.knee, c.ankle, m_.calfRx * 0.98f, m_.ankleRx), 0.030f);
 
     const Vec3 thighDir = (c.knee - c.hipJoint).normalizedOr({0, -1, 0});
     const Vec3 kneeToAnkle = (c.ankle - c.knee).normalizedOr({0, -1, 0});
@@ -473,8 +542,8 @@ float BodyField::legChain(const Vec3& p, const Chain& c) const {
     }
 
     /* Knee: patella in front, condyles on the sides, popliteal hollow behind. */
-    d = smin(d, blob(p, c.knee + Vec3(0, m_.kneeR * 0.10f, -m_.kneeR * 0.62f),
-                     Vec3(m_.kneeR * 0.60f, m_.kneeR * 0.72f, m_.kneeR * 0.42f)), 0.018f);
+    d = smin(d, blob(p, c.knee + Vec3(0, m_.kneeR * 0.10f, -m_.kneeR * 0.50f),
+                     Vec3(m_.kneeR * 0.56f, m_.kneeR * 0.70f, m_.kneeR * 0.40f)), 0.026f);
     {
         const float popliteal = sdEllipsoid(p - (c.knee + Vec3(0, 0, m_.kneeR * 0.85f)),
                                             Vec3(m_.kneeR * 0.52f, m_.kneeR * 0.62f, m_.kneeR * 0.34f));
@@ -508,16 +577,28 @@ float BodyField::legChain(const Vec3& p, const Chain& c) const {
 /* =======================================================================================
  * Feet
  * ======================================================================================= */
+/*
+ * Where toe `i` (0 = big toe) starts and ends, in the foot's local frame: origin at the ankle,
+ * toe-out already removed, forward = -Z, lateral = +side in X. One function, used by the foot
+ * field and by the nail classifier, so the two cannot disagree.
+ */
+void BodyField::toeSegment(const Chain& c, int i, float ground, float ballZ, Vec3* from, Vec3* to) const {
+    const float sx = static_cast<float>(c.side);
+    static const float kAcross[5] = {-0.335f, -0.120f, 0.055f, 0.210f, 0.350f};   /* medial .. lateral */
+    const float r = m_.toeRadius[i];
+    const float x = sx * m_.footWidth * kAcross[i];
+    /* The toe line slants back from the second toe to the little toe. */
+    const float zStart = ballZ - m_.footLength * 0.040f + m_.footLength * 0.018f * static_cast<float>(i > 1 ? i - 1 : 0);
+    *from = Vec3(x, ground + r * 0.98f, zStart + r * 0.4f);
+    *to = Vec3(x * 1.03f, ground + r * 0.90f, zStart - m_.toeLength[i] + r);
+}
+
 float BodyField::footShape(const Vec3& p, const Chain& c) const {
     const float sx = static_cast<float>(c.side);
     /*
      * The foot is built in a frame anchored at the ANKLE, with toe-out expressed as a yaw about
-     * the vertical through that point. Building it around the world origin instead (as an earlier
-     * revision did) puts both feet on the midline: the left and right soles overlap in the gap
-     * between the legs, the two blobs bridge into one slab under the crotch, and the mesh's
-     * lowest point stops being the sole at all. Every lateral offset below is therefore relative
-     * to the ankle, and the ankle stump capsule sits at the local origin so the foot domain stays
-     * welded to the leg that the shin field is building.
+     * the vertical through that point, so each foot stays under its own leg. Every lateral offset
+     * below is relative to the ankle.
      */
     const float yaw = radians(7.0f) * sx;
     const float cs = std::cos(-yaw), sn = std::sin(-yaw);
@@ -530,86 +611,63 @@ float BodyField::footShape(const Vec3& p, const Chain& c) const {
     const Vec3 heelL = toLocal(c.heel);
     const Vec3 ballL = toLocal(c.ball);
 
-    const float halfW = m_.footWidth * 0.5f;
-    /* `ground` is the contact plane: soleY + soleGap. ground == 0 in the default build, so the
-       avatar drops onto the floor plane exactly. Every primitive below is positioned by its
-       lowest point, which is what keeps the sole flat instead of submerged. */
+    const float L = m_.footLength, W = m_.footWidth, Hf = m_.footHeight;
+    /* `ground` is the contact plane, ankle-relative. Every primitive is placed by its lowest
+       point, and the sole is flattened onto this plane at the end. */
     const float soleGap = 0.002f;
-    const float groundY = m_.y.soleY + soleGap;          /* world contact plane, usually y = 0 */
-    /* The placement maths below is written in the ankle-local frame, so the contact plane has to
-       be expressed ankle-relative as well - mixing the two put the whole foot 63 mm too high. */
-    const float ground = groundY - c.ankle.y;
-    const float archZ = (heelL.z + ballL.z) * 0.5f;
-
-    /* Main foot mass: heel wedge -> arch -> forefoot, as three overlapping rounded boxes.
-       Heel width 0.72 * forefoot, which is what stops the "clown shoe" look of a single box. */
-    const float heelHalfH = m_.footHeight * 0.50f;
-    const float archHalfH = m_.footHeight * 0.44f;
-    const float ballHalfH = m_.footHeight * 0.40f;
-    const float heelRound = m_.footHeight * 0.16f;
-    const float archRound = m_.footHeight * 0.14f;
-    const float ballRound = m_.footHeight * 0.13f;
-    const float heelLen = std::fabs(ballL.z - heelL.z) * 0.42f;
-    const float footLen = std::fabs(ballL.z - heelL.z);
-
-    /* Use overlapping ellipsoids rather than rounded boxes. The previous box-based
-       heel/arch/ball stack produced broad planar patches and a visibly squared-off foot in
-       close-up renders. Ellipsoids preserve the heel-to-ball volume while giving the dorsal
-       surface and side walls continuous curvature. */
-    float d = sdEllipsoid(q - Vec3(heelL.x, ground + heelHalfH + heelRound, heelL.z + heelLen * 0.20f),
-                          Vec3(halfW * 0.72f, heelHalfH + heelRound, heelLen + heelRound));
-    d = smin(d, sdEllipsoid(q - Vec3(ballL.x * 0.35f, ground + archHalfH + archRound, archZ),
-                            Vec3(halfW * 0.80f, archHalfH + archRound, footLen * 0.26f + archRound)), 0.010f);
-    d = smin(d, sdEllipsoid(q - Vec3(ballL.x + sx * 0.002f, ground + ballHalfH + ballRound,
-                                    ballL.z + footLen * 0.06f),
-                            Vec3(halfW * 1.02f, ballHalfH + ballRound, footLen * 0.20f + ballRound)), 0.009f);
-
-    /* Smooth midfoot bridge: no flat box faces or visible block transitions. */
-    d = smin(d, sdEllipsoid(q - Vec3(ballL.x * 0.6f, ground + archHalfH * 0.92f + archRound,
-                                    (ballL.z + heelL.z) * 0.5f),
-                            Vec3(halfW * 0.78f, archHalfH * 0.92f + archRound,
-                                 footLen * 0.30f + archRound)), 0.010f);
-
-    /* Longitudinal arch (subtractive: smax(d, -shape, k) carves instead of adding) and the
-       metatarsal ridge. The arch ellipsoid is centred just above the contact plane so the cut
-       eats the midfoot sole but leaves heel and ball on the ground. */
-    {
-        const float arch = sdEllipsoid(q - Vec3(sx * halfW * 0.32f, ground + m_.footHeight * 0.10f, archZ),
-                                       Vec3(halfW * 0.52f, m_.footHeight * 0.42f, footLen * 0.24f));
-        d = smax(d, -arch, 0.016f);
-        d = smin(d, sdCapsule(q, Vec3(-halfW * 0.6f, ground + ballHalfH * 1.05f, ballL.z),
-                              Vec3(halfW * 0.6f, ground + ballHalfH * 0.98f, ballL.z), m_.footHeight * 0.18f), 0.020f);
-    }
-
-    /* Five toes, phalangeal-length scaled, with slight plantar flexion at the ball.
-       `tx` is medial-to-lateral relative to the ankle, big toe on the medial side. */
-    for (int i = 0; i < 5; ++i) {
-        const float spread = (static_cast<float>(2 - i)) * (m_.footWidth * 0.185f);
-        const float tx = -sx * spread;
-        const float ty = ground + m_.toeRadius[i] * 0.92f;
-        const Vec3 from(tx, ty, ballL.z - m_.toeRadius[i] * 0.4f);
-        const Vec3 to(tx + sx * (0.004f * static_cast<float>(i)), ty - m_.footHeight * 0.015f,
-                      ballL.z - m_.toeLength[i] - m_.toeRadius[i] * 0.4f);
-        d = smin(d, sdTaperedCapsule(q, from, to, m_.toeRadius[i] * 1.05f, m_.toeRadius[i] * 0.92f), 0.008f);
-        /* Nail plate bulge on the dorsal side of the distal phalanx. */
-        d = smin(d, blob(q, to + Vec3(0, m_.toeRadius[i] * 0.34f, -m_.toeRadius[i] * 0.20f),
-                         Vec3(m_.toeRadius[i] * 0.62f, m_.toeRadius[i] * 0.22f, m_.toeRadius[i] * 0.60f)), 0.006f);
-    }
-    /* Ankle stump, at the local origin, so the foot and shin fields overlap across the joint. */
-    d = smin(d, sdCapsule(q, Vec3(0, -0.025f, 0.0f), Vec3(0, 0.025f, 0.002f), m_.ankleRx * 1.02f), 0.014f);
+    const float ground = (m_.y.soleY + soleGap) - c.ankle.y;
+    const float ballZ = ballL.z;
 
     /*
-     * Flatten the sole onto the contact plane.
-     *
-     * Every overlap above is a smooth union, and a smooth union pulls the surface OUTWARD: two
-     * coincident surfaces blend to a surface up to k/4 further out, so the three sole boxes (whose
-     * bottoms all sit exactly on `ground`) blended with k = 14-18 mm pushed the sole 4-5 mm BELOW
-     * the floor. Measured: the field's lowest surface point was y = -0.0035 with ground at +0.002.
-     * Intersecting with the half-space y >= ground afterwards both removes everything below the
-     * plane and leaves a genuinely flat sole to stand on, which is what the renderer and the GLB
-     * exporter need. k is small (4 mm) so the edge where the sole meets the side of the foot stays
-     * a crisp corner - a foot is not a soft object.
+     * Heel, instep, forefoot and the outer border, joined with wide blends so the foot is one
+     * form. The earlier version stacked four ellipsoids with 10 mm blends between a "heel" and a
+     * ball that were 54 mm apart (the heel offset had the wrong sign), which is the ringed lump
+     * in front of the ankle; and it had no heel behind the ankle at all.
      */
+    float d = sdEllipsoid(q - Vec3(0.0f, ground + Hf * 0.42f, heelL.z),
+                          Vec3(W * 0.33f, Hf * 0.46f, L * 0.105f));
+    {
+        /* Instep: a low, wide ridge from the front of the ankle to the ball. The capsule is
+           evaluated in a frame squashed in X, which gives it an elliptical section. */
+        const float wide = 1.45f;
+        const Vec3 qs(q.x / wide, q.y, q.z);
+        const Vec3 a(0.0f, ground + Hf * 0.60f, -L * 0.03f);
+        const Vec3 b(sx * 0.004f / wide, ground + Hf * 0.30f, ballZ + L * 0.02f);
+        d = smin(d, sdTaperedCapsule(qs, a, b, Hf * 0.36f, Hf * 0.27f), 0.022f);
+    }
+    /* Forefoot: the ball, the widest part of the foot. */
+    d = smin(d, sdEllipsoid(q - Vec3(sx * W * 0.03f, ground + Hf * 0.27f, ballZ + L * 0.035f),
+                            Vec3(W * 0.50f, Hf * 0.30f, L * 0.125f)), 0.020f);
+    /* Outer border: on the ground from the heel to the little toe. */
+    d = smin(d, sdCapsule(q, Vec3(sx * W * 0.20f, ground + Hf * 0.17f, heelL.z * 0.5f),
+                          Vec3(sx * W * 0.30f, ground + Hf * 0.16f, ballZ + L * 0.03f), Hf * 0.17f), 0.020f);
+    /* Longitudinal arch: carved on the inner side only, between heel and ball. */
+    {
+        const float arch = sdEllipsoid(q - Vec3(-sx * W * 0.36f, ground - Hf * 0.02f,
+                                                (heelL.z + ballZ) * 0.5f + L * 0.01f),
+                                       Vec3(W * 0.30f, Hf * 0.30f, L * 0.17f));
+        d = smax(d, -arch, 0.014f);
+    }
+
+    /* Toes: side by side, each its own chain, joined to one another with a hard minimum (they
+       touch; a smooth union would web them) and then blended into the forefoot. */
+    float toes = 1e9f;
+    for (int i = 0; i < 5; ++i) {
+        Vec3 from, to;
+        toeSegment(c, i, ground, ballZ, &from, &to);
+        const float tr = m_.toeRadius[i];
+        float t = sdTaperedCapsule(q, from, to, tr * 1.06f, tr * 0.96f);
+        /* Nail plate on top of the last phalanx. */
+        t = smin(t, blob(q, to + Vec3(0.0f, tr * 0.62f, tr * 0.10f), Vec3(tr * 0.66f, tr * 0.30f, tr * 0.62f)), 0.002f);
+        toes = minf(toes, t);
+    }
+    d = smin(d, toes, 0.008f);
+
+    /* Ankle stump, at the local origin, so the foot and shin fields overlap across the joint. */
+    d = smin(d, sdCapsule(q, Vec3(0, -0.025f, 0.0f), Vec3(0, 0.025f, 0.002f), m_.ankleRx * 1.02f), 0.016f);
+
+    /* Flatten the sole onto the contact plane: smooth unions push the surface outward, and the
+       sole has to be a plane to stand on. */
     d = smax(d, ground - q.y, 0.004f);
     return d;
 }
@@ -621,53 +679,76 @@ float BodyField::handShape(const Vec3& p, const Chain& c) const {
     const float sx = static_cast<float>(c.side);
     const Vec3 dirDown = (c.wrist - c.elbow).normalizedOr({0, -1, 0});
     const Vec3 palmNormal(-sx, 0.0f, 0.0f);
-    const Vec3 across = palmNormal.cross(dirDown).normalizedOr({0, 0, 1});
+    /* Same frame as the chain: `across` points from the little finger to the thumb (forward). */
+    const Vec3 across = (palmNormal.cross(dirDown) * -sx).normalizedOr({0, 0, -1});
 
-    /* Palm in its anatomical local frame. A tapered ellipsoid avoids the broad planar
-       patches created by the old rounded-box palm while keeping a wider knuckle end. */
+    /*
+     * Palm: a flat slab with fully rounded edges, in the hand's own frame, a little narrower at
+     * the wrist than at the knuckles. An ellipsoid (the previous shape) comes to a point at both
+     * ends, so at the knuckle line it was a third of the width of the finger row and the fingers
+     * hung off a ball; a box with a large corner radius (the shape before that) was 52 mm thick.
+     */
     const Vec3 q = p - c.palmCentre;
     const float alongDown = q.dot(dirDown);
     const float alongAcross = q.dot(across);
     const float alongNormal = q.dot(palmNormal);
     const float halfLen = m_.handLength * 0.26f;
-    const float taper = 1.0f + 0.08f * saturate(-alongDown / maxf(halfLen, 1e-4f));
-    float d = sdEllipsoid(Vec3(alongAcross, alongDown, alongNormal),
-                          Vec3(m_.palmWidth * 0.47f * taper, halfLen,
-                               m_.palmThickness * 0.58f));
-    /* Thenar (thumb) pad and hypothenar pad remain separate anatomical volumes. */
+    const float edge = m_.palmThickness * 0.44f;
+    const float widen = lerpf(0.84f, 1.0f, saturate((alongDown + halfLen) / maxf(2.0f * halfLen, 1e-4f)));
+    float d = sdRoundBox(Vec3(alongAcross / widen, alongDown, alongNormal),
+                         Vec3(maxf(m_.palmWidth * 0.5f - edge, 1e-4f), maxf(halfLen - edge * 0.5f, 1e-4f),
+                              maxf(m_.palmThickness * 0.5f - edge, 1e-4f)),
+                         edge);
+    /* Thenar pad (base of the thumb) and hypothenar pad (little-finger side), on the palm side. */
     d = smin(d, blob(Vec3(alongAcross, alongDown, alongNormal),
-                     Vec3(m_.palmWidth * 0.42f, m_.handLength * 0.05f, -m_.palmThickness * 0.10f),
-                     Vec3(m_.palmWidth * 0.32f, m_.handLength * 0.16f, m_.palmThickness * 0.52f)), 0.012f);
+                     Vec3(m_.palmWidth * 0.30f, -m_.handLength * 0.07f, m_.palmThickness * 0.22f),
+                     Vec3(m_.palmWidth * 0.26f, m_.handLength * 0.15f, m_.palmThickness * 0.40f)), 0.012f);
+    d = smin(d, blob(Vec3(alongAcross, alongDown, alongNormal),
+                     Vec3(-m_.palmWidth * 0.30f, -m_.handLength * 0.05f, m_.palmThickness * 0.16f),
+                     Vec3(m_.palmWidth * 0.18f, m_.handLength * 0.14f, m_.palmThickness * 0.34f)), 0.012f);
 
-    /* Wrist stump for the cut plane. */
-    d = smin(d, sdCapsule(p, c.wrist - dirDown * 0.02f, c.wrist + dirDown * 0.012f, m_.wristR), 0.012f);
+    /* Wrist: the stump the cut plane needs, tapering into the heel of the hand so that the round
+       forearm becomes the flat palm without a step on the back of the hand. */
+    d = smin(d, sdTaperedCapsule(p, c.wrist - dirDown * 0.02f, c.palmCentre - dirDown * (halfLen * 0.25f),
+                                 m_.wristR, m_.palmThickness * 0.52f), 0.014f);
 
-    /* Fingers: three phalanges each, with joint capsules that keep the silhouette round. */
+    /* Knuckle ridge: the heads of the metacarpals, which is what the fingers actually grow from. */
+    d = smin(d, sdTaperedCapsule(p, c.fingerKnuckle[1], c.fingerKnuckle[4],
+                                 m_.fingerRadius[1] * 1.12f, m_.fingerRadius[4] * 1.12f), 0.008f);
+    d = smin(d, sdTaperedCapsule(p, c.fingerKnuckle[2], c.fingerKnuckle[3],
+                                 m_.fingerRadius[2] * 1.14f, m_.fingerRadius[3] * 1.14f), 0.008f);
+
+    /*
+     * Fingers. Each finger is one smooth chain of three phalanges; DIFFERENT fingers are joined
+     * with a hard minimum, because neighbouring fingers touch at the base and any smooth union
+     * between them webs them into a mitten. The finished row is then blended into the knuckle
+     * ridge, which gives the root of each finger a fillet without bridging the gaps.
+     */
+    float fingers = 1e9f;
     for (int i = 0; i < 5; ++i) {
         const Vec3 j0 = c.fingerKnuckle[i];
         const Vec3 j1 = c.fingerJoints[i][0];
         const Vec3 j2 = c.fingerJoints[i][1];
         const Vec3 j3 = c.fingerJoints[i][2];
-        const float r0 = m_.fingerRadius[i];
-        const float r1 = r0 * (i == 0 ? 0.96f : 0.90f);
-        const float r2 = r0 * (i == 0 ? 0.92f : 0.80f);
-        const float r3 = r0 * (i == 0 ? 0.88f : 0.68f);
-        /* Blend radius kept small (2.5 mm): adjacent fingers are only ~2 mm apart at the base,
-           and a blend comparable to that gap would fuse them into a mitten. The phalanges of
-           one finger overlap along their axis, so the small radius still reads as a smooth joint. */
-        d = smin(d, sdTaperedCapsule(p, j0, j1, r0, r1), 0.0025f);
-        d = smin(d, sdTaperedCapsule(p, j1, j2, r1, r2), 0.0025f);
-        d = smin(d, sdTaperedCapsule(p, j2, j3, r2, r3), 0.0025f);
-        /* Knuckle and inter-phalangeal joint bulges. */
-        d = smin(d, blob(p, j1, Vec3(r1 * 1.10f, r1 * 1.10f, r1 * 1.10f)), 0.0025f);
-        d = smin(d, blob(p, j2, Vec3(r2 * 1.08f, r2 * 1.08f, r2 * 1.08f)), 0.0022f);
-        /* Fingertip pad + nail bed on the dorsal side. */
-        d = smin(d, blob(p, j3 + (j3 - j2).normalizedOr({0, -1, 0}) * (r3 * 0.35f),
-                         Vec3(r3 * 0.90f, r3 * 0.90f, r3 * 0.90f)), 0.0022f);
-        const Vec3 dorsal = (j3 - j2).normalizedOr({0, -1, 0}).cross(across).normalizedOr(palmNormal);
-        d = smin(d, blob(p, j3 - dorsal * (r3 * 0.35f) + (j3 - j2).normalizedOr({0, -1, 0}) * (r3 * 0.75f),
-                         Vec3(r3 * 0.68f, r3 * 0.20f, r3 * 0.55f)), 0.0020f);
+        const bool thumb = (i == 0);
+        const float r0 = m_.fingerRadius[i] * (thumb ? 1.16f : 1.06f);
+        const float r1 = m_.fingerRadius[i] * (thumb ? 1.00f : 0.96f);
+        const float r2 = m_.fingerRadius[i] * (thumb ? 0.94f : 0.88f);
+        const float r3 = m_.fingerRadius[i] * (thumb ? 0.86f : 0.78f);
+        float f = sdTaperedCapsule(p, j0, j1, r0, r1);
+        f = smin(f, sdTaperedCapsule(p, j1, j2, r1, r2), 0.003f);
+        f = smin(f, sdTaperedCapsule(p, j2, j3, r2, r3), 0.003f);
+        /* Joint bulges, slight: enough to read as knuckles, not as beads. */
+        f = smin(f, blob(p, j1, Vec3(r1 * 1.06f, r1 * 1.06f, r1 * 1.06f)), 0.003f);
+        f = smin(f, blob(p, j2, Vec3(r2 * 1.05f, r2 * 1.05f, r2 * 1.05f)), 0.003f);
+        /* Nail plate: a thin raised plate on the DORSAL side (away from the palm) of the tip. */
+        const Vec3 along = (j3 - j2).normalizedOr(dirDown);
+        f = smin(f, blob(p, j3 - palmNormal * (r3 * 0.62f) - along * (r3 * 0.25f),
+                         Vec3(r3 * 0.62f, r3 * 0.62f, r3 * 0.62f) * 0.9f +
+                         along.abs() * (r3 * 0.30f)), 0.002f);
+        fingers = minf(fingers, f);
     }
+    d = smin(d, fingers, 0.006f);
     return d;
 }
 
@@ -697,17 +778,42 @@ Vec3 BodyField::archCentre() const {
     return Vec3(m.x, m.y, m.z + 0.002f + archRz + band + 0.003f);
 }
 
+float BodyField::lipsOutline(const Vec3& p) const {
+    /* Negative inside the outline of the lips, in the plane of the face. Two ellipses - the same
+       two whose solids make the lips' relief in lipsShape() - with a notch at the top for the
+       bow of the upper lip. */
+    if (std::fabs(p.z - mouthCentre_.z) > 0.016f) return 1.0f;
+    const float lw = m_.lipWidth;
+    const float upThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.110f : 0.092f);
+    const float loThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.140f : 0.118f);
+    const float dx = p.x - mouthCentre_.x;
+    const float dy = p.y - mouthCentre_.y;
+    const auto ellipse = [](float x, float y, float rx, float ry) {
+        return (std::sqrt((x / rx) * (x / rx) + (y / ry) * (y / ry)) - 1.0f) * minf(rx, ry);
+    };
+    float upper = ellipse(dx, dy - upThick * 0.80f, lw * 0.50f, upThick);
+    const float notchY = dy - upThick * 2.35f;
+    upper = maxf(upper, upThick * 0.75f - std::sqrt(dx * dx + notchY * notchY));
+    const float lower = ellipse(dx, dy + loThick * 0.78f, lw * 0.45f, loThick);
+    return minf(upper, lower);
+}
+
 float BodyField::lipsShape(const Vec3& p) const {
     const float lw = m_.lipWidth;
     const Vec3 m = mouthCentre_;
-    const float upThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.20f : 0.16f);
-    const float loThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.26f : 0.20f);
-    float lips = sdEllipsoid(p - Vec3(m.x, m.y + upThick * 0.60f, m.z), Vec3(lw * 0.50f, upThick, lw * 0.26f));
-    lips = smin(lips, sdEllipsoid(p - Vec3(m.x, m.y - loThick * 0.55f, m.z), Vec3(lw * 0.46f, loThick, lw * 0.28f)), 0.010f);
+    /* Semi-heights of the upper and lower vermilion. They were 8.4 and 11 mm, which stacked to a
+       30 mm tall mouth; a full adult mouth is about 20 mm from the top of the upper lip to the
+       bottom of the lower one. */
+    const float upThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.110f : 0.092f);
+    const float loThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.140f : 0.118f);
+    /* Upper and lower lip are joined with a HARD minimum: the crease where the two convex forms
+       meet is the lip line, and a smooth union would fill it in. */
+    float lips = sdEllipsoid(p - Vec3(m.x, m.y + upThick * 0.80f, m.z + lw * 0.020f), Vec3(lw * 0.50f, upThick, lw * 0.18f));
+    lips = minf(lips, sdEllipsoid(p - Vec3(m.x, m.y - loThick * 0.78f, m.z + lw * 0.030f), Vec3(lw * 0.45f, loThick, lw * 0.19f)));
     for (int side = 0; side < 2; ++side) {
         const float sx = (side == 0) ? 1.0f : -1.0f;
-        lips = smin(lips, blob(p, Vec3(m.x + sx * lw * 0.50f, m.y - lw * 0.02f, m.z - lw * 0.04f),
-                               Vec3(lw * 0.10f, lw * 0.14f, lw * 0.12f)), 0.008f);
+        lips = smin(lips, blob(p, Vec3(m.x + sx * lw * 0.50f, m.y - lw * 0.01f, m.z + lw * 0.05f),
+                               Vec3(lw * 0.09f, lw * 0.07f, lw * 0.10f)), 0.006f);
     }
     return lips;
 }
@@ -783,9 +889,13 @@ float BodyField::teethShape(const Vec3& p) const {
     float arch = std::fabs(radial) - band;
     arch = smax(arch, p.z - (c.z + archRz * 0.45f), 0.002f);      /* open the back */
 
-    float upper = smax(arch, c.y - p.y, 0.0015f);
+    /* At rest the teeth do not touch: there is a gap of a few millimetres behind the closed
+       lips. Without it the incisal edges met exactly on the lip line and showed through the
+       mouth opening as a white stripe. */
+    const float restGap = crownH * 0.34f;
+    float upper = smax(arch, (c.y + restGap) - p.y, 0.0015f);
     upper = smax(upper, p.y - (c.y + crownH + gumH), 0.0025f);
-    float lower = smax(arch, p.y - c.y, 0.0015f);
+    float lower = smax(arch, p.y - (c.y - restGap), 0.0015f);
     lower = smax(lower, (c.y - crownH - gumH) - p.y, 0.0025f);
     return minf(upper, lower);
 }
@@ -812,80 +922,144 @@ float BodyField::eyeballShape(const Vec3& p, int side) const {
     const float r = m_.eyeRadius;
     /* The socket ceiling used to sit at the eyeball centre; lifting it by a fifth of the radius
        gives the lid a place to close onto and stops the sclera from being sliced flat on top. */
-    const float lidClear = r * 0.22f;
-    float eyeball = (p - Vec3(e.x, e.y + lidClear * 0.0f, e.z)).length() - r;
-    const Vec3 corneaCentre = e + Vec3(0.0f, 0.0f, -r * 0.58f);
-    eyeball = smin(eyeball, sdEllipsoid(p - corneaCentre, Vec3(r * 0.74f, r * 0.68f, r * 0.66f)), 0.005f);
+    float eyeball = (p - e).length() - r;
+    /* The cornea: a dome over the iris, about half the globe's radius across and rising a little
+       over a millimetre from it. It was an ellipsoid three quarters of the radius wide, pushed far
+       enough forward to stand in front of the lids - a bead, not an eye. */
+    const Vec3 corneaCentre = e + Vec3(0.0f, 0.0f, -r * 0.80f);
+    eyeball = smin(eyeball, sdEllipsoid(p - corneaCentre, Vec3(r * 0.50f, r * 0.50f, r * 0.29f)), 0.004f);
     return eyeball;
 }
 
-float BodyField::browShape(const Vec3& p) const {
-    /* Eyebrow band: a dilated copy of the brow ridge capsule, so it selects the ridge's surface
-       and about a millimetre around it - enough for the fibre material to paint the hair. */
+float BodyField::eyeOpening(const Vec3& p, int side) const {
+    return eyeOpening(p, side, nullptr);
+}
+
+float BodyField::eyeOpening(const Vec3& p, int side, bool* upperLid) const {
+    /*
+     * The opening between the lids, seen from the front: a lens with pointed corners. The line
+     * between the corners lies a little below the centre of the eye and tilts up towards the
+     * outside; the upper lid arches over it more than the lower lid sags under it, so the upper
+     * lid covers the top of the iris and the lower lid just meets its bottom edge - which is how a
+     * relaxed eye looks. (It was an ellipse a third of the radius high: a slot, with round ends.)
+     *
+     * faceFeatures() cuts this through the lids, and the classifier accepts a point as "eyeball"
+     * only inside it - so the lid margin, which lies within the classifier's tolerance of the
+     * globe, is skin and not sclera.
+     */
+    const int idx = (side > 0) ? 0 : 1;
+    const float sx = (side > 0) ? 1.0f : -1.0f;
+    const Vec3 e = eyeCentre_[static_cast<size_t>(idx)];
     const float r = m_.eyeRadius;
-    const float browLift = (m_.sex == AF_SEX_FEMALE) ? 1.15f : 1.0f;
+    const float lid = r * kLidThickness;
+    const Vec3 q = p - (e + Vec3(sx * r * 0.04f, -r * 0.12f, -(r + lid) * 0.98f));
+    const float slant = radians(m_.sex == AF_SEX_FEMALE ? 6.0f : 3.0f) * sx;
+    const Vec3 qr(q.x * std::cos(slant) + q.y * std::sin(slant),
+                  -q.x * std::sin(slant) + q.y * std::cos(slant), q.z);
+    const float halfWidth = r * 1.14f;
+    const float rise = (qr.y >= 0.0f) ? r * 0.48f : r * 0.36f;
+    if (upperLid) *upperLid = (qr.y >= 0.0f);
+    const float u = qr.x / halfWidth;
+    /* |y| - rise * (1 - u^2), divided by the length of its gradient to approximate a distance. */
+    const float slope = 2.0f * rise * std::fabs(u) / halfWidth;
+    const float lens = (std::fabs(qr.y) - rise * (1.0f - u * u)) / std::sqrt(1.0f + slope * slope);
+    const float depth = std::fabs(qr.z) - r * 0.66f;
+    return maxf(lens, depth);
+}
+
+float BodyField::browShape(const Vec3& p) const {
+    /*
+     * Eyebrows: an arched band above each eye, thick at the nose end and tapering to a point at
+     * the temple, a little higher and finer on female faces.
+     *
+     * The band is defined as seen from the front - a distance in X and Y only - and applies to the
+     * front of the face. It used to be a pair of capsules at fixed positions in space, so whether a
+     * brow showed depended on where the surface of the forehead happened to be: any change to the
+     * skull buried half of each brow or left it standing off the face.
+     *
+     * Negative inside the band. faceFeatures() raises the skin by this band and the classifier
+     * paints it, so the two cannot disagree.
+     */
+    if (p.z > -m_.head.rz * 0.40f) return 1.0f;
+    const float r = m_.eyeRadius;
+    const bool female = (m_.sex == AF_SEX_FEMALE);
+    const float lift = female ? 1.10f : 1.0f;
+    const float weight = female ? 0.85f : 1.0f;
+    const Vec3 q(p.x, p.y, 0.0f);
     float band = 1e9f;
     for (int side = 0; side < 2; ++side) {
         const float sx = (side == 0) ? 1.0f : -1.0f;
         const Vec3 e = eyeCentre_[static_cast<size_t>(side)];
-        const Vec3 inner(e.x - sx * r * 1.30f, e.y + r * 1.25f * browLift, e.z + r * 0.12f);
-        const Vec3 outer(e.x + sx * r * 1.70f, e.y + r * 1.05f * browLift, e.z - r * 0.10f);
-        band = minf(band, sdTaperedCapsule(p, inner, outer, r * 0.30f, r * 0.20f));
+        const Vec3 inner(e.x - sx * r * 1.00f, e.y + r * 1.26f * lift, 0.0f);
+        const Vec3 peak(e.x + sx * r * 0.62f, e.y + r * 1.50f * lift, 0.0f);
+        const Vec3 outer(e.x + sx * r * 1.80f, e.y + r * 1.22f * lift, 0.0f);
+        band = minf(band, sdTaperedCapsule(q, inner, peak, r * 0.25f * weight, r * 0.20f * weight));
+        band = minf(band, sdTaperedCapsule(q, peak, outer, r * 0.20f * weight, r * 0.06f * weight));
     }
-    return band - m_.eyeRadius * 0.07f;
+    return band;
 }
 
 float BodyField::skull(const Vec3& p) const {
     const float headH = m_.y.crownY - m_.y.chinY;
     const float headC = (m_.y.crownY + m_.y.chinY) * 0.5f;
-    const Vec3 origin(0.0f, headC, 0.0f);
-    const Vec3 q = p - origin;
+    const bool female = (m_.sex == AF_SEX_FEMALE);
+    const float zFront = -m_.head.rz * 0.98f;
 
-    /* Cranium: an ellipsoid with the occiput pulled back and the vertex flattened slightly.
-       The vertical semi-axis is exactly headH/2 so that the very top of the skull IS the
-       stature landmark: a crown that overshoots makes every height check in the SDK a lie. */
-    const Vec3 radii(m_.head.rx * 1.03f, headH * 0.50f, m_.head.rz * 1.10f);
-    float d = sdEllipsoid(q, radii);
-    /* Crown cap: tangent to y = crownY from below (centre at crownY - r, radius r). */
-    {
-        const float crownR = headH * 0.16f;
-        d = smin(d, blob(p, {0.0f, m_.y.crownY - crownR, m_.head.rz * 0.35f},
-                         Vec3(m_.head.rx * 0.95f, crownR, m_.head.rz * 0.72f)), 0.030f);
-    }
+    /*
+     * The head is two masses, the way a head is drawn: the brain case, and the face hung from its
+     * front, tapering to the chin. Everything else is a small addition to those two.
+     *
+     * The previous construction was one ellipsoid with a dozen landmark blobs and four carved
+     * hollows (temples and cheeks). On a lean build every hollow was cut at full depth, and the
+     * jaw-angle blobs sat on the cheeks in front of the ears, so the result was a skull with
+     * lumps rather than a face.
+     *
+     * Brain case: its top is exactly crownY, because the crown is the stature landmark.
+     */
+    const Vec3 cranC(0.0f, headC + headH * 0.085f, m_.head.rz * 0.10f);
+    float d = sdEllipsoid(p - cranC, Vec3(m_.head.rx * 1.03f, headH * 0.415f, m_.head.rz * 1.00f));
     /* Occiput. */
-    d = smin(d, blob(p, {0.0f, headC - headH * 0.06f, m_.head.rz * 0.86f},
-                     Vec3(m_.head.rx * 0.82f, headH * 0.20f, m_.head.rz * 0.34f)), 0.030f);
-    /* Mandible / jawline, narrower in front, with an angular chin. */
-    d = smin(d, blob(p, {0.0f, m_.y.chinY + headH * 0.10f, 0.0f},
-                     Vec3(m_.jaw.rx * 1.02f, headH * 0.14f, m_.jaw.rz * 1.02f)), 0.032f);
-    d = smin(d, blob(p, chin_, Vec3(m_.head.rx * 0.34f, headH * 0.07f, m_.head.rz * 0.34f)), 0.022f);
-    for (int s = 0; s < 2; ++s) {
-        d = smin(d, blob(p, jawCorner_[s], Vec3(m_.jaw.rx * 0.34f, headH * 0.09f, m_.jaw.rz * 0.42f)), 0.024f);
-        d = smin(d, blob(p, cheek_[s], Vec3(m_.head.rx * 0.34f, headH * 0.11f, m_.head.rz * 0.30f)), 0.026f);
-        /* Zygomatic arch. */
-        d = smin(d, sdCapsule(p, {cheek_[s].x * 1.02f, m_.y.eyeY - headH * 0.03f, cheek_[s].z * 0.86f},
-                              earCentre_[s] + Vec3(0, 0, -m_.head.rz * 0.30f), m_.head.rx * 0.06f), 0.020f);
-    }
-    /* Brow ridge (subtle: strong ridges read as male, the amplitude comes from sex/build). */
+    d = smin(d, blob(p, {0.0f, headC - headH * 0.04f, m_.head.rz * 0.80f},
+                     Vec3(m_.head.rx * 0.80f, headH * 0.20f, m_.head.rz * 0.34f)), 0.030f);
+
+    /* Face mass: brow to chin, widest at the cheekbones, narrowing downwards. */
+    /* It is an ellipsoid whose widest level is just under the eyes and whose lower end is the
+       chin, so its outline from the front is the oval a face is: about 0.9 of the skull's width at
+       the cheekbones, three quarters of that at the corners of the jaw. It used to be centred at
+       the level of the nose and as wide as the jaw measurement all the way down, which gave every
+       face the lower half of a cube. */
+    const Vec3 faceC(0.0f, m_.y.chinY + headH * 0.43f, -m_.head.rz * 0.20f);
     {
-        const float ridgeAmp = (m_.sex == AF_SEX_FEMALE) ? 0.62f : 1.0f;
-        d = smin(d, sdCapsule(p, {browRidge_.x - m_.head.rx * 0.78f * ridgeAmp, browRidge_.y, browRidge_.z},
-                              {browRidge_.x + m_.head.rx * 0.78f * ridgeAmp, browRidge_.y, browRidge_.z},
-                              m_.head.rx * 0.13f * ridgeAmp), 0.024f);
+        /* Below its widest level the oval narrows faster than an ellipse does - an egg, small end
+           down - by a sixth on a female face and a tenth on a male one. */
+        Vec3 q = p - faceC;
+        const float ry = headH * 0.44f;
+        const float narrowing = lerpf(1.0f, female ? 0.84f : 0.90f, smoothstepf(0.0f, 1.0f, -q.y / ry));
+        q.x /= narrowing;
+        d = smin(d, sdEllipsoid(q, Vec3(m_.head.rx * (female ? 0.89f : 0.94f), ry, m_.head.rz * 0.80f)), 0.036f);
     }
-    /* Temple hollows and cheek hollows (subtractive). The carve volumes are centred slightly
-       OUTSIDE the skull surface, so only their inner wall intersects the head and the result
-       is a shallow dish rather than a bite taken out of the face. */
+    /* Chin, and the lower border of the mandible running back to the angle of the jaw. */
+    d = smin(d, blob(p, chin_, Vec3(m_.head.rx * (female ? 0.22f : 0.33f), headH * 0.058f,
+                                    m_.head.rz * 0.25f)), 0.022f);
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
-        d = smax(d, -sdEllipsoid(p - Vec3(sx * m_.head.rx * 1.16f, m_.y.eyeY + headH * 0.06f,
-                                          -m_.head.rz * 0.28f),
-                                 Vec3(m_.head.rx * 0.42f, headH * 0.10f, m_.head.rz * 0.40f)), 0.026f);
-        if (m_.bodyFat < 0.26f) {
-            d = smax(d, -sdEllipsoid(p - Vec3(sx * m_.head.rx * 0.94f, m_.y.chinY + headH * 0.30f,
-                                              -m_.head.rz * 0.92f),
-                                     Vec3(m_.head.rx * 0.34f, headH * 0.115f, m_.head.rz * 0.34f)), 0.024f);
-        }
+        const Vec3 chinSide(sx * m_.head.rx * (female ? 0.17f : 0.24f), m_.y.chinY + headH * 0.045f, zFront * 0.66f);
+        d = smin(d, sdTaperedCapsule(p, chinSide, jawCorner_[s], headH * (female ? 0.026f : 0.040f),
+                                     headH * (female ? 0.030f : 0.050f)), 0.024f);
+        /* Cheekbone and the soft cheek below it. */
+        /* These two stand a few millimetres proud of the oval, no more. They used to stand one to
+           two centimetres proud, which is a face with something in each cheek. */
+        d = smin(d, blob(p, {sx * m_.head.rx * 0.70f, m_.y.eyeY - headH * 0.095f, zFront * 0.56f},
+                         Vec3(m_.head.rx * 0.20f, headH * 0.055f, m_.head.rz * 0.20f)), 0.020f);
+        d = smin(d, blob(p, Vec3(cheek_[s].x, cheek_[s].y, zFront * 0.58f),
+                         Vec3(m_.head.rx * 0.24f, headH * 0.090f, m_.head.rz * 0.20f)), 0.020f);
+    }
+    /* Brow ridge: slight, and slighter still on female faces. */
+    {
+        const float amp = female ? 0.55f : 1.0f;
+        d = smin(d, sdCapsule(p, {-m_.head.rx * 0.58f, browRidge_.y, browRidge_.z + m_.head.rz * 0.11f},
+                              {m_.head.rx * 0.58f, browRidge_.y, browRidge_.z + m_.head.rz * 0.11f},
+                              m_.head.rz * 0.10f * (0.75f + 0.25f * amp)), 0.024f);
     }
     /* Ears: flattened, slightly rotated discs with a concha cavity. */
     for (int s = 0; s < 2; ++s) {
@@ -906,77 +1080,80 @@ float BodyField::skull(const Vec3& p) const {
 
 float BodyField::faceFeatures(const Vec3& p) const {
     const float headH = m_.y.crownY - m_.y.chinY;
+    const bool female = (m_.sex == AF_SEX_FEMALE);
     float d = skull(p);
 
-    /* Nose: dorsum, tip, alae, nostril notches. The ridge runs from the brow to the tip. */
+    /* Nose: dorsum from the nasion to the tip, the tip itself, the two alae, and the nostrils. */
     {
-        const Vec3 bridge(noseBridge_.x, noseBridge_.y, noseBridge_.z);
-        const Vec3 tip(noseTip_.x, noseTip_.y, noseTip_.z);
-        const float width = m_.head.rx * 0.19f;
-        float nose = sdTaperedCapsule(p, bridge + Vec3(0, headH * 0.02f, 0), tip, width * 0.62f, width * 0.86f);
-        nose = smin(nose, blob(p, tip + Vec3(0, -headH * 0.008f, width * 0.10f),
-                               Vec3(width * 0.72f, width * 0.62f, width * 0.72f)), 0.010f);
+        const Vec3 bridge = noseBridge_;
+        const Vec3 tip = noseTip_;
+        const float w = m_.head.rx * (female ? 0.115f : 0.135f);
+        float nose = sdTaperedCapsule(p, bridge, tip + Vec3(0, headH * 0.012f, w * 0.55f), w * 0.72f, w * 0.92f);
+        nose = smin(nose, blob(p, tip + Vec3(0, 0, w * 0.30f), Vec3(w * 1.05f, w * 0.95f, w * 1.05f)), 0.006f);
         for (int s = 0; s < 2; ++s) {
             const float sx = (s == 0) ? 1.0f : -1.0f;
-            nose = smin(nose, blob(p, tip + Vec3(sx * width * 0.72f, -headH * 0.004f, width * 0.05f),
-                                   Vec3(width * 0.48f, width * 0.40f, width * 0.44f)), 0.008f);
-            const float notch = sdEllipsoid(p - (tip + Vec3(sx * width * 0.44f, -headH * 0.020f, -width * 0.10f)),
-                                            Vec3(width * 0.30f, width * 0.28f, width * 0.26f));
-            nose = smax(nose, -notch - 0.003f, 0.008f);
+            nose = smin(nose, blob(p, tip + Vec3(sx * w * 1.30f, -headH * 0.012f, w * 1.45f),
+                                   Vec3(w * 0.85f, w * 0.72f, w * 1.00f)), 0.006f);
+            const float nostril = sdEllipsoid(p - (tip + Vec3(sx * w * 0.80f, -headH * 0.034f, w * 1.20f)),
+                                              Vec3(w * 0.42f, w * 0.36f, w * 0.62f));
+            nose = smax(nose, -nostril, 0.003f);
         }
-        /* Philtrum groove. */
-        const float philtrum = sdCapsule(p, tip + Vec3(0, -headH * 0.022f, -width * 0.20f),
-                                         mouthCentre_ + Vec3(0, headH * 0.020f, -headH * 0.005f), width * 0.16f);
-        nose = smax(nose, -philtrum - 0.002f, 0.010f);
-        d = smin(d, nose, 0.018f);
+        /* Columella down to the upper lip. */
+        nose = smin(nose, sdCapsule(p, tip + Vec3(0, -headH * 0.020f, w * 0.75f),
+                                    tip + Vec3(0, -headH * 0.045f, w * 1.90f), w * 0.36f), 0.004f);
+        d = smin(d, nose, 0.014f);
     }
 
+    /* The muzzle: the gentle forward swell of the upper jaw and teeth that the lips lie on. Without
+       it the mouth sits in a flat or hollow band between the nose and the chin. */
+    d = smin(d, blob(p, mouthCentre_ + Vec3(0.0f, headH * 0.018f, m_.head.rz * 0.20f),
+                     Vec3(m_.head.rx * 0.42f, headH * 0.100f, m_.head.rz * 0.205f)), 0.016f);
     /* Lips: the shared vermilion envelope (see lipsShape) blended into the face. */
-    d = smin(d, lipsShape(p), 0.012f);
+    d = smin(d, lipsShape(p), 0.008f);
 
-    /* Eye sockets: subtract so an eyeball placed at eyeCentre_ sits inside a real orbit with
-       a visible lid margin. The lids themselves are added back as thin crescents. */
+    /*
+     * Eyes. For each eye, in this order:
+     *   1. a shallow dish in the face, so the eye sits under the brow rather than on a flat front;
+     *   2. the lids: a thin shell around the eyeball, blended into brow and cheek;
+     *   3. the opening, an almond cut through everything that is in front of the eyeball;
+     *   4. the eyeball itself, last and with a hard minimum, so the lid margin stays a crisp edge.
+     *
+     * The previous eye was a deep socket carved 1.5 radii wide with two ellipsoid "lids" above and
+     * below it. Nothing closed the corners, so the result was a small bead at the bottom of a pit.
+     */
+    const float r = m_.eyeRadius;
+    const float lid = r * kLidThickness;
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
         const Vec3 e = eyeCentre_[s];
-        const float r = m_.eyeRadius;
-        const float socket = sdEllipsoid(p - (e + Vec3(0, 0, r * 0.30f)),
-                                         Vec3(r * 1.55f, r * 1.35f, r * 1.25f));
-        d = smax(d, -socket, 0.014f);
-        /* Upper lid. */
-        d = smin(d, sdEllipsoid(p - (e + Vec3(0, r * 0.62f, -r * 0.22f)),
-                                Vec3(r * 1.42f, r * 0.72f, r * 0.95f)), 0.010f);
-        /* Lower lid. */
-        d = smin(d, sdEllipsoid(p - (e + Vec3(0, -r * 0.66f, -r * 0.20f)),
-                                Vec3(r * 1.38f, r * 0.60f, r * 0.92f)), 0.010f);
-        /* Inner canthus (epicanthic fold) and outer canthus. */
-        d = smin(d, blob(p, e + Vec3(-sx * r * 1.28f, r * 0.10f, -r * 0.10f),
-                         Vec3(r * 0.55f, r * 0.62f, r * 0.72f)), 0.008f);
-        /* Eyebrow ridge mass - thin, wide, angled with regard to sex. */
-        const float browLift = (m_.sex == AF_SEX_FEMALE) ? 1.15f : 1.0f;
-        const Vec3 inner = {e.x - sx * r * 1.30f, e.y + r * 1.25f * browLift, e.z + r * 0.12f};
-        const Vec3 outer = {e.x + sx * r * 1.70f, e.y + r * 1.05f * browLift, e.z - r * 0.10f};
-        d = smin(d, sdTaperedCapsule(p, inner, outer, r * 0.30f, r * 0.20f), 0.014f);
+        const float dish = sdEllipsoid(p - (e + Vec3(sx * r * 0.10f, r * 0.05f, -r * 0.62f)),
+                                       Vec3(r * 1.70f, r * 1.12f, r * 0.80f));
+        d = smax(d, -dish, 0.012f);
+        d = smin(d, (p - e).length() - (r + lid), 0.007f);
+    }
+    for (int side : {-1, 1}) {
+        d = smax(d, -eyeOpening(p, side), 0.0010f);
+    }
+    (void)female;
+    /* Eyebrows: the skin inside the brow band stands 0.7 mm proud, fading over the band's edge.
+       See browShape(). */
+    d -= 0.0007f * (1.0f - smoothstepf(-0.0012f, 0.0012f, browShape(p)));
+
+    /* Eyeballs, added LAST. The join with the lid margin is rounded over less than a millimetre:
+       enough for the mesher to have a surface to follow round the base of the lid (a perfectly
+       sharp inside corner is where its vertices were left standing as spikes), too little to
+       blend the white of the eye into the lid. */
+    for (int side : {-1, 1}) {
+        d = smin(d, eyeballShape(p, side), 0.0008f);
     }
 
     /*
-     * Eyeballs, added LAST: the socket carve above is subtractive, so an eyeball unioned before it
-     * would be scooped out along with the orbit. Sclera + cornea sit inside the socket with the
-     * lids overlapping the corneal bulge, which is what gives the renderer a refraction volume and
-     * an eye that does not look painted on.
+     * No surface noise here either. The face ended with cellular "pore" noise: cells 5 mm across,
+     * up to 0.2 mm deep, on everything including the eyeballs. Once the face is meshed finely
+     * enough to resolve a lid margin it resolves those cells too, and they appear as a mosaic of
+     * tiles on the eye and as crosses on the brow and the lips. Skin texture is the normal map's
+     * job.
      */
-    for (int side = 0; side < 2; ++side) {
-        d = smin(d, eyeballShape(p, side), 0.003f);
-    }
-
-    /* Fine facial micro-relief. Amplitude is deliberately tiny (0.35 mm) - it exists to give
-       the normal map something real to agree with, and to break up specular highlights. */
-    {
-        const float pores = noise_.cell(p, 190.0f) - 0.42f;
-        const float fine = noise_.fbm(p * 60.0f, 3, 2.1f, 0.5f);
-        const float amp = lerpf(0.00055f, 0.00022f, saturate((m_.age - 16.0f) / 54.0f));
-        d -= (pores * 0.6f + fine * 0.45f) * amp;
-    }
     return d;
 }
 
@@ -994,27 +1171,54 @@ float BodyField::body(const Vec3& p) const {
      * Same-side limb-to-torso blends keep a smooth union, where a real fillet is wanted and the
      * parts genuinely overlap.
      */
-    const float dLeft = smin(smin(d, armChain(p, left_), 0.034f), legChain(p, left_), 0.030f);
-    const float dRight = smin(smin(d, armChain(p, right_), 0.034f), legChain(p, right_), 0.030f);
+    const float dLeft = smin(smin(d, armChain(p, left_), armFillet(p, left_)), legChain(p, left_), 0.030f);
+    const float dRight = smin(smin(d, armChain(p, right_), armFillet(p, right_)), legChain(p, right_), 0.030f);
     return minf(dLeft, dRight);
+}
+
+float BodyField::armFillet(const Vec3& p, const Chain& c) const {
+    /*
+     * Blend radius between an arm and the trunk: the full fillet at the shoulder and the armpit,
+     * falling to zero (a hard union) by the lower third of the upper arm.
+     *
+     * A constant radius blended the WHOLE arm with the trunk. The forearm and hand hang within a
+     * few centimetres of the hip, and a smooth minimum pulls both surfaces towards each other
+     * across such a gap: the hip grew a bump opposite the wrist, large enough to come through the
+     * trousers.
+     */
+    const Vec3 axis = (c.elbow - c.shoulder).normalizedOr({0.0f, -1.0f, 0.0f});
+    const float along = (p - c.shoulder).dot(axis);
+    return 0.034f * (1.0f - smoothstepf(m_.upperArmLen * 0.40f, m_.upperArmLen * 0.85f, along));
+}
+
+float BodyField::trunkAndLegs(const Vec3& p) const {
+    /* The body without its arms: what a garment's trunk and trouser legs are an offset of. */
+    const float t = torso(p);
+    return minf(smin(t, legChain(p, left_), 0.030f), smin(t, legChain(p, right_), 0.030f));
+}
+
+float BodyField::skinUnion(const Vec3& p) const {
+    /* The unclothed body: trunk and limbs with each hand and foot, then the head. Left and right
+       are joined with a hard minimum (see body()). */
+    const float dBody = body(p);
+    const float dLeft = smin(smin(dBody, hand(p, 1), 0.006f), foot(p, 1), 0.006f);
+    const float dRight = smin(smin(dBody, hand(p, -1), 0.006f), foot(p, -1), 0.006f);
+    return smin(minf(dLeft, dRight), head(p), 0.012f);   /* neck blend */
 }
 
 void BodyField::applyOralShapes(float& d, const Vec3& p) const {
     /*
-     * The mouth, in three cuts, ordered so the results compose:
-     *   1. the aperture, a slot through the front wall of the lips -> a real opening in the skin;
-     *   2. the cavity behind it, big enough to hold the dental arches and the tongue;
-     *   3. teeth and tongue, unioned back in as shells living inside that void.
+     * The mouth interior: an aperture through the lips, the cavity behind it, and the teeth and
+     * tongue inside. It is built only when apparel().openMouth is set.
      *
-     * This runs on the FINAL union (the whole body: trunk, neck, head, limbs), not inside head().
-     * A hole is a property of the finished solid, not of one of the parts that happen to be there:
-     * when the mouth was carved in the head's field alone, the trunk's neck - which is a 5 cm tube
-     * whose top sits just under the jaw - was smooth-unioned over the cavity afterwards and filled
-     * it back in, leaving a face with lips and no mouth behind them.
-     *
-     * A hard-ish maximum (k = 1.5 mm) is right for the aperture: a soft one rounds the lip line
-     * into a dimple and destroys the vermilion border the texture bake reads as lip material.
+     * By default the mouth is CLOSED and none of this exists. The opening is a slot about 3 mm
+     * tall, which is at or below the finest extraction cell: whether the lattice resolved it was
+     * a matter of phase, and where it half-resolved it the lips came out as torn, stretched
+     * triangles with the teeth showing through as a white stripe. A closed mouth is the rest
+     * pose of a face, it extracts as one clean surface, and it does not spend a tenth of the
+     * mesh on teeth and tongue that nothing can see.
      */
+    if (!apparel_.openMouth) return;
     d = smax(d, -mouthAperture(p), 0.0015f);
     d = smax(d, -oralCavity(p), 0.008f);
     d = smin(d, teethShape(p), 0.003f);
@@ -1022,6 +1226,12 @@ void BodyField::applyOralShapes(float& d, const Vec3& p) const {
 }
 
 float BodyField::head(const Vec3& p) const {
+    /* The head domain ends where its neck stub does. Below that, a conservative distance is all
+       the union needs, and the facial features do not have to be evaluated. */
+    {
+        const float lowest = m_.y.neckBaseY - 0.045f * m_.height - m_.neck.rx * 1.25f;
+        if (p.y < lowest - 0.04f) return lowest - p.y;
+    }
     float d = faceFeatures(p);
     /*
      * The neck: a tapered tube from the shoulders up to just BENEATH the chin. Two constraints
@@ -1036,18 +1246,29 @@ float BodyField::head(const Vec3& p) const {
      * Capping the tube 10 mm below the chin satisfies both: it still crosses the 1.45 m plane, and
      * it stays clear of the cavity, which bottoms out 20 mm above the chin.
      */
+    /* The same tube as the trunk's (see torso()): the two must be identical for the union across
+       the neck to be seamless. Its front is now well behind the mouth, so it no longer has to stop
+       short of the chin to keep out of the oral cavity. */
     const Vec3 neckBase(0.0f, m_.y.neckBaseY - 0.045f * m_.height, m_.neck.centreZ);
-    const Vec3 neckTop(0.0f, m_.y.chinY - 0.010f, m_.neck.centreZ - 0.006f);
-    d = smin(d, sdTaperedCapsule(p, neckBase, neckTop, m_.neck.rx * 1.22f, m_.neck.rx * 0.94f), 0.030f);
+    const Vec3 neckTop(0.0f, m_.y.jawY + 0.010f * m_.height, m_.neck.centreZ + 0.016f);
+    d = smin(d, sdTaperedCapsule(p, neckBase, neckTop, m_.neck.rx * 1.08f, m_.neck.rx * 0.88f), 0.012f);
     return d;
 }
 
 float BodyField::hand(const Vec3& p, int side) const {
-    return handShape(p, chain(side));
+    const Chain& c = chain(side);
+    /* Everything of the hand lies within one hand length of the palm centre. */
+    const float away = (p - c.palmCentre).length() - m_.handLength;
+    if (away > 0.04f) return away;
+    return handShape(p, c);
 }
 
 float BodyField::foot(const Vec3& p, int side) const {
-    return footShape(p, chain(side));
+    const Chain& c = chain(side);
+    /* Everything of the foot lies within one foot length of the midfoot. */
+    const float away = (p - (c.ankle + c.ball) * 0.5f).length() - m_.footLength * 0.80f;
+    if (away > 0.04f) return away;
+    return footShape(p, c);
 }
 
 /* =======================================================================================
@@ -1104,14 +1325,18 @@ float BodyField::clothUpper(const Vec3& p) const {
     const float H = m_.height;
     float thickness = 0.005f;        /* T-shirt                        */
     float hemY = m_.y.hipY - 0.02f * H;
-    float topY = m_.y.shoulderY + 0.015f;
+    /* The garment reaches the base of the neck and the neckline is cut out of it (see below). The
+       top used to be a horizontal plane 15 mm above the shoulder joint, which sliced every upper
+       garment straight across the chest and left the shoulders bare between collar and sleeve. */
+    float topY = m_.y.neckBaseY + 0.012f * H;
+    float neckDrop = 0.016f * H;     /* how far the front of the neckline dips below the neck base */
     float sleeveReach = 0.0f;
     float skirtHemY = 0.0f;          /* > 0 turns the upper piece into a dress */
     bool  gearPlates = false;
     switch (apparel_.outfit) {
         case 1:  /* T-shirt   */ thickness = 0.005f; sleeveReach = m_.upperArmLen * 0.35f; break;
         case 2:  /* Full-length dress */ thickness = 0.004f; hemY = m_.y.hipY - 0.02f * H;
-                                 topY = m_.y.shoulderY + 0.020f; sleeveReach = 0.0f;
+                                 neckDrop = 0.050f * H; sleeveReach = 0.0f;
                                  skirtHemY = m_.y.soleY + 0.010f * H; break;
         case 3:  /* Suit      */ thickness = 0.011f; sleeveReach = m_.upperArmLen + m_.forearmLen * 0.92f;
                                  hemY = m_.y.hipY + 0.02f * H; break;
@@ -1131,22 +1356,66 @@ float BodyField::clothUpper(const Vec3& p) const {
     }
     (void)gearPlates;
     thickness = maxf(thickness, minLayer());
+    /* Well above the collar or below the hem there is no garment: a conservative distance. */
+    {
+        const float lowest = (skirtHemY > 0.0f) ? minf(hemY, skirtHemY) : hemY;
+        if (p.y < lowest - 0.05f) return lowest - p.y - 0.01f;
+        if (p.y > topY + 0.05f) return p.y - topY - 0.01f;
+    }
 
-    /* The band: a super-elliptical column through the torso, from the hem to the collar. */
-    const float y = clampf(p.y, hemY, topY);
-    const float rx = torsoProfileRx(y) * 1.10f + thickness;
-    const float rz = torsoProfileRz(y) * 1.10f + thickness;
-    const float cz = torsoProfileCz(y);
-    const float nx = p.x / rx;
-    const float nz = (p.z - cz) / rz;
-    const float e = 2.45f;
-    const float kk = std::pow(std::pow(std::fabs(nx), e) + std::pow(std::fabs(nz), e), 1.0f / e);
-    const float radial = (kk - 1.0f) * minf(rx, rz);
-    float domain = smax(radial, maxf(hemY - p.y, p.y - topY), 0.010f);
+    /*
+     * The band: everything between the hem and the collar. It used to be a super-elliptical
+     * column fitted round the trunk's profile as well, whose job was to keep the arms out of the
+     * garment. The garment is now an offset of the trunk alone (see below), so there is nothing to
+     * keep out - and the column was tighter than the body at its corners, where it cut holes in the
+     * cloth over the hip bones and the bust.
+     */
+    float domain = maxf(hemY - p.y, p.y - topY);
 
-    /* Arms out of the band, then the sleeves back in. */
-    domain = smax(domain, -armsCut(p, thickness), 0.008f);
-    domain = smin(domain, sleeveSolid(p, thickness, sleeveReach), 0.012f);
+    /* Neckline: an opening around the neck, deeper at the front than at the back. */
+    {
+        const Vec3 nc(0.0f, m_.y.neckBaseY + 0.020f * H, m_.neck.centreZ - neckDrop * 0.55f);
+        const float hole = sdEllipsoid(p - nc, Vec3(m_.neck.rx * 1.22f + neckDrop * 0.55f,
+                                                   0.024f * H + neckDrop,
+                                                   m_.neck.rz * 1.30f + neckDrop * 0.75f));
+        domain = smax(domain, -hole, 0.006f);
+    }
+
+    /*
+     * The garment is the body's own surface, moved outwards by the cloth's thickness and kept only
+     * where the garment is. "Where the garment is" has two parts with different limits: on the
+     * trunk, between the hem and the neckline; on each arm, as far as the sleeve reaches. A point
+     * belongs to the trunk or to an arm according to which of the two it is nearer, and the two
+     * parts overlap by a centimetre so that they are one piece of cloth.
+     *
+     * The body's surface here includes the fillet that joins arm and trunk at the armpit. Two
+     * earlier constructions got that wrong in opposite ways. The first offset the whole body and
+     * cut the arms out of the trunk's band, which removed the trunk's cloth wherever a hand hung
+     * near it (holes at the hips). The second offset the trunk and each sleeve separately and
+     * joined them with the armpit fillet - but below the end of a short sleeve there is no sleeve
+     * to join, so the fillet of skin between arm and trunk stood out through the cloth behind
+     * each armpit.
+     */
+    const float trunk = trunkAndLegs(p);
+    float upperGarment = 1e9f;
+    for (int side = -1; side <= 1; side += 2) {
+        const Chain& c = chain(side);
+        const float arm = armChain(p, c);
+        const float surface = smin(trunk, arm, armFillet(p, c));
+        /* Positive on the arm's side of the surface halfway between arm and trunk. */
+        const float towardsArm = (trunk - arm) * 0.5f;
+        const Vec3 armAxis = (c.elbow - c.shoulder).normalizedOr({0.0f, -1.0f, 0.0f});
+        const float sleeveEnd = (p - c.shoulder).dot(armAxis) - sleeveReach;
+        /* Inside the sleeve the two parts overlap by a centimetre. Past its end there is no sleeve
+           for the trunk's cloth to join, and there it must stop short of the halfway surface, or
+           it wraps the inside of the bare arm wherever the arm hangs near the body. */
+        const float overlap = lerpf(0.010f, -0.003f, smoothstepf(0.0f, 0.015f, sleeveEnd));
+        const float onTrunk = smax(domain, towardsArm - overlap, 0.004f);
+        const float onSleeve = smax(sleeveEnd, -towardsArm - 0.010f, 0.004f);
+        /* Feathered at every edge - collar, hem, sleeve end. See layerOffset(). */
+        upperGarment = minf(upperGarment, surface - layerOffset(minf(onTrunk, onSleeve), thickness,
+                                                                clampf(thickness * 4.0f, 0.016f, 0.040f)));
+    }
 
     /* A dress skirt must be a real volume outside the body. Previously the cone was
        only unioned into the clipping domain for body(p)-thickness, so points beyond the body
@@ -1161,14 +1430,14 @@ float BodyField::clothUpper(const Vec3& p) const {
         const float krz = m_.waist.rz * 1.30f * flare;
         const float nkx = p.x / krx;
         const float nkz = (p.z - m_.waist.centreZ) / krz;
+        const float e = 2.45f;
         const float k2 = std::pow(std::pow(std::fabs(nkx), e) + std::pow(std::fabs(nkz), e), 1.0f / e);
         const float skirt = maxf((k2 - 1.0f) * minf(krx, krz), maxf(skirtHemY - p.y, p.y - waistY));
         skirtShell = smax(skirt, -body(p), 0.004f);
     }
 
-    /* The fitted upper garment remains an offset of the body. The independent skirt shell
-       is unioned afterwards so its silhouette can extend beyond the body. */
-    const float upperGarment = smax(body(p) - thickness, domain, 0.0018f);
+    /* The independent skirt shell is unioned afterwards so its silhouette can extend beyond
+       the body. */
     return minf(upperGarment, skirtShell);
 }
 
@@ -1178,6 +1447,7 @@ float BodyField::clothLower(const Vec3& p) const {
     float thickness = 0.0f;
     float hemY = 0.0f;
     switch (apparel_.outfit) {
+        case 1:  thickness = 0.010f; hemY = m_.y.ankleY + 0.030f; break;             /* T-shirt: with jeans */
         case 2:  thickness = 0.004f; hemY = m_.y.soleY + 0.010f * H; break; /* full-length dress lining */
         case 3:  thickness = 0.010f; hemY = m_.y.ankleY + 0.045f; break;             /* trousers      */
         case 4:  thickness = 0.014f; hemY = m_.y.ankleY + 0.030f; break;             /* jeans         */
@@ -1186,26 +1456,21 @@ float BodyField::clothLower(const Vec3& p) const {
         case 7:  thickness = 0.024f; hemY = m_.y.ankleY + 0.06f; break;
         case 8:  thickness = 0.0035f; hemY = m_.y.kneeY + m_.shankLen * 0.18f; break; /* shorts      */
         case 9:  thickness = 0.012f; hemY = m_.y.ankleY + 0.06f; break;
-        default: return 1e9f;                                                        /* T-shirt: none */
+        default: return 1e9f;
     }
     thickness = maxf(thickness, minLayer());
     const float topY = m_.y.waistY + 0.030f;
+    if (p.y > topY + 0.05f) return p.y - topY - 0.01f;
+    if (p.y < hemY - 0.05f) return hemY - p.y - 0.01f;
 
-    /* The legs band: hips and both legs, from the hem up past the waist. The gap between the legs
-       is air in the body's field, so the crotch forms by itself - no explicit cut needed. */
-    const float y = clampf(p.y, hemY, topY);
-    const float rx = torsoProfileRx(y) * 1.12f + thickness;
-    const float rz = torsoProfileRz(y) * 1.12f + thickness;
-    const float cz = torsoProfileCz(y);
-    const float nx = p.x / rx;
-    const float nz = (p.z - cz) / rz;
-    const float e = 2.45f;
-    const float kk = std::pow(std::pow(std::fabs(nx), e) + std::pow(std::fabs(nz), e), 1.0f / e);
-    float domain = smax((kk - 1.0f) * minf(rx, rz), maxf(hemY - p.y, p.y - topY), 0.012f);
-    /* Arms hang beside the hips: keep them out of the trousers. */
-    domain = smax(domain, -armsCut(p, thickness + 0.02f), 0.010f);
+    /* From the hem up past the waist. The gap between the legs is air in the body's field, so the
+       crotch forms by itself. */
+    const float domain = maxf(hemY - p.y, p.y - topY);
+    /* Trousers are an offset of the trunk and the legs. The arms are not part of that field, so a
+       hand hanging beside the thigh no longer bites a hole in the cloth. */
     (void)H;
-    return smax(body(p) - thickness, domain, 0.0018f);
+    /* Feathered at the waist and at each hem. See layerOffset(). */
+    return trunkAndLegs(p) - layerOffset(domain, thickness, clampf(thickness * 4.0f, 0.016f, 0.040f));
 }
 
 float BodyField::shoeShape(const Vec3& p) const {
@@ -1326,95 +1591,234 @@ float BodyField::hairShape(const Vec3& p) const {
     if (apparel_.hair == 0) return 1e9f;
     const float headH = m_.y.crownY - m_.y.chinY;
     const float crown = m_.y.crownY;
-    float thickness = 0.008f;
-    float length = 0.0f;        /* how far below the crown the mass hangs */
-    float volume = 0.0f;        /* extra bulk around the skull            */
-    float crest = 0.0f;         /* mohawk: restrict to a midline strip      */
+    float thickness = 0.008f;   /* depth of the layer lying on the scalp                    */
+    float puff = 0.0f;          /* how far the outer silhouette stands off the skull        */
+    float hang = 0.0f;          /* > 0: the mass falls to this height (world Y)             */
+    float backFall = 0.0f;      /* > 0: a sheet continues down the back to this height      */
+    float crest = 0.0f;         /* mohawk: restrict to a midline strip                      */
     float bun = 0.0f, tail = 0.0f, braids = 0.0f;
     switch (apparel_.hair) {
-        case 1: thickness = 0.006f; break;                                  /* buzz       */
-        /* Keep ordinary styles close to the skull. The old broad ellipsoid added 10-24 mm
-           around the whole cranium, turning short/medium/long styles into a smooth helmet.
-           The skull offset above already supplies the hair cap; this is only a restrained
-           silhouette allowance for the temples and crown. Distinct hanging shapes are built
-           below from their own curves. */
-        case 2: thickness = 0.010f; volume = 0.0025f; break;                 /* short      */
-        case 3: thickness = 0.012f; volume = 0.0030f; length = headH * 0.55f; break;
-        case 4: thickness = 0.014f; volume = 0.0035f; length = headH * 2.6f; break; /* long */
-        case 5: thickness = 0.011f; volume = 0.0025f; tail = 0.30f; break;   /* ponytail   */
-        case 6: thickness = 0.011f; volume = 0.0025f; bun = 0.055f; break;   /* bun        */
-        case 7: thickness = 0.011f; volume = 0.0025f; braids = 0.36f; break; /* braids     */
-        case 8: thickness = 0.030f; volume = 0.032f; break;                  /* afro       */
-        case 9: thickness = 0.018f; volume = 0.0020f; crest = 0.030f; break; /* mohawk     */
+        case 1: thickness = 0.006f; break;                                        /* buzz     */
+        case 2: thickness = 0.010f; puff = 0.006f; break;                         /* short    */
+        case 3: thickness = 0.012f; puff = 0.016f;                                /* medium   */
+                hang = m_.y.neckBaseY + 0.014f * m_.height; break;
+        case 4: thickness = 0.012f; puff = 0.018f;                                /* long     */
+                hang = m_.y.neckBaseY + 0.006f * m_.height;
+                backFall = crown - headH * 2.05f; break;
+        case 5: thickness = 0.011f; puff = 0.004f; tail = 0.30f; break;           /* ponytail */
+        case 6: thickness = 0.011f; puff = 0.004f; bun = 0.055f; break;           /* bun      */
+        case 7: thickness = 0.011f; puff = 0.005f; braids = 0.36f; break;         /* braids   */
+        case 8: thickness = 0.014f; puff = 0.048f; break;                         /* afro     */
+        case 9: thickness = 0.018f; puff = 0.002f; crest = 0.030f; break;         /* mohawk   */
         default: return 1e9f;
     }
-
     thickness = maxf(thickness, minLayer() * 0.75f);   /* hair may be a little thinner than cloth */
-    /* The mass: the inflated skull. */
-    float d = head(p) - thickness;
+
+    /* Far from the head there is no hair. Return a conservative distance instead of evaluating
+       the whole head field: this function is sampled at every lattice point of the body. */
+    {
+        float lowest = m_.y.chinY - headH * 0.15f;
+        if (hang > 0.0f) lowest = minf(lowest, hang);
+        if (backFall > 0.0f) lowest = minf(lowest, backFall);
+        if (tail > 0.0f) lowest = minf(lowest, crown - tail - 0.05f);
+        if (braids > 0.0f) lowest = minf(lowest, crown - braids - 0.05f);
+        if (p.y < lowest - 0.04f) return lowest - p.y;
+        if (p.y > crown + 0.12f) return p.y - (crown + 0.08f);
+    }
 
     /*
-     * The hairline: a plane tilted back from the brow. Everything in FRONT of it - the forehead,
-     * the eyes, the whole face - is cut away, so the hair sits where hair sits and the face stays
-     * clear. The tilt follows the brow ridge, which is already an anatomical anchor.
+     * The hairline, as a height that depends on the direction around the head.
+     *
+     * phi is the angle about the vertical axis through the skull: 0 at the nose, 90 degrees at
+     * the ear, 180 at the back. A real hairline is not a plane: it crosses the forehead, drops
+     * at the temple, dips in front of the ear, clears the ear, and falls to the nape behind it.
+     * The previous revision used one tilted plane whose slope had the wrong sign: it kept the
+     * hair in FRONT of the brow and removed it from the back of the skull, which is the visor
+     * over the eyes and the bare occiput seen in every capture.
      */
-    const float tilt = 0.30f + 0.20f * (m_.sex == AF_SEX_FEMALE ? 1.0f : 0.0f);
-    const Vec3 hp(0.0f, browRidge_.y + headH * 0.05f, browRidge_.z + m_.head.rz * 0.10f);
-    const float front = (p - hp).x * 0.0f + (p - hp).y * std::cos(tilt) - (p - hp).z * std::sin(tilt);
-    /* With -Z forward, this plane is positive over the crown and negative at the face.
-       Keep the crown side and clip the facial side so the eyes and forehead stay exposed. */
-    d = smax(d, -front, 0.004f);
-    /* Below the ears the head is bare; the mass must not wrap the jaw. */
-    const float jawCut = eyeCentre_[0].y - headH * 0.14f - p.y;
-    if (length <= 0.0f) d = smax(d, jawCut, 0.006f);
+    const float zc = m_.head.centreZ;
+    const float phi = degrees(std::atan2(std::fabs(p.x), -(p.z - zc)));
+    const float foreheadY = browRidge_.y + headH * 0.235f;
+    const float templeY = browRidge_.y + headH * 0.125f;
+    const float sideburnY = earCentre_[0].y - m_.earLength * 0.05f;
+    const float overEarY = earCentre_[0].y + m_.earLength * 0.52f;
+    const float behindEarY = earCentre_[0].y - m_.earLength * 0.40f;
+    const float napeY = m_.y.chinY + headH * 0.10f;
+    const auto hairlineAt = [&](float a) {
+        if (a < 40.0f) return lerpf(foreheadY, templeY, smoothstepf(14.0f, 40.0f, a));
+        if (a < 55.0f) return lerpf(templeY, sideburnY, smoothstepf(40.0f, 55.0f, a));
+        if (a < 66.0f) return lerpf(sideburnY, overEarY, smoothstepf(55.0f, 66.0f, a));
+        if (a < 102.0f) return overEarY;
+        if (a < 120.0f) return lerpf(overEarY, behindEarY, smoothstepf(102.0f, 120.0f, a));
+        return lerpf(behindEarY, napeY, smoothstepf(120.0f, 180.0f, a));
+    };
+    /* Lower edge of the hanging mass: the hairline in front, the hang height behind the temples. */
+    const auto lowerEdgeAt = [&](float a) {
+        const float l = hairlineAt(a);
+        return (hang > 0.0f) ? lerpf(l, hang, smoothstepf(46.0f, 70.0f, a)) : l;
+    };
+    /*
+     * Signed distance from p to an edge given as a height for each direction round the head:
+     * negative above the edge (where the hair is), positive below it.
+     *
+     * `height - p.y` is not that distance - where the edge climbs steeply round the head (at the
+     * temple it rises six centimetres in fifteen degrees) the value changes several times faster
+     * than the position does. Nor is the same value divided by the edge's slope, which an earlier
+     * revision used: that is right only at the edge itself, and far above a steep stretch of it
+     * the result collapses towards zero, so every steep stretch of hairline cut a groove through
+     * the hair all the way to the crown.
+     *
+     * What is wanted is the distance to the curve in the unrolled surface of a cylinder through
+     * p: arc length one way, height the other. The nearest point of the curve cannot be further
+     * round than the height difference, which bounds the search.
+     */
+    const float radius = maxf(0.03f, std::sqrt(p.x * p.x + (p.z - zc) * (p.z - zc)));
+    const auto edgeDistance = [&](const auto& height) {
+        const float dy = p.y - height(phi);
+        float best = dy * dy;
+        const float reachDeg = minf(degrees(std::fabs(dy) / radius), 75.0f);
+        if (reachDeg > 0.05f) {
+            /* The curve is taken as straight between samples and the distance to each piece is
+               exact, so the result is continuous. (The distance to the samples alone is not smooth:
+               it terraced the hair like a contour map.) */
+            const int kSteps = 8;
+            float prevArc = 0.0f, prevDh = 0.0f;
+            for (int i = -kSteps; i <= kSteps; ++i) {
+                const float offDeg = reachDeg * static_cast<float>(i) / static_cast<float>(kSteps);
+                /* The edge is the same on both sides of the head, so directions past the nose or
+                   past the back fold over. */
+                float aDeg = phi + offDeg;
+                if (aDeg < 0.0f) aDeg = -aDeg;
+                if (aDeg > 180.0f) aDeg = 360.0f - aDeg;
+                const float arc = radius * radians(offDeg);
+                const float dh = height(aDeg) - p.y;
+                if (i > -kSteps) {
+                    /* Distance from the origin to the segment (prevArc, prevDh)-(arc, dh). */
+                    const float ex = arc - prevArc, ey = dh - prevDh;
+                    const float len2 = ex * ex + ey * ey;
+                    const float t = (len2 > 1e-12f) ? clampf(-(prevArc * ex + prevDh * ey) / len2, 0.0f, 1.0f) : 0.0f;
+                    const float cx = prevArc + ex * t, cy = prevDh + ey * t;
+                    best = minf(best, cx * cx + cy * cy);
+                }
+                prevArc = arc; prevDh = dh;
+            }
+        }
+        return (dy > 0.0f ? -1.0f : 1.0f) * std::sqrt(best);
+    };
+    const float lineCut = edgeDistance(hairlineAt);
 
-    /* Bulk: a volume that follows the skull outwards, for volume without thickness. */
-    if (volume > 0.0f) {
-        const Vec3 c(0.0f, (crown + m_.y.eyeY) * 0.5f, m_.head.centreZ + m_.head.rz * 0.12f);
-        const float v = sdEllipsoid(p - c, Vec3(m_.head.rx * 1.02f + volume, headH * 0.52f + volume,
-                                               m_.head.rz * 1.02f + volume * 1.2f));
-        d = smin(d, smax(v, -front, 0.004f), 0.010f);
+    /* The layer on the scalp: the skull inflated by the hair's depth, kept above the hairline. */
+    const float skinD = head(p);
+    float d = skinD - layerOffset(lineCut, thickness, 0.030f);
+
+    /*
+     * Volume. The outer silhouette is a dome over the cranium that continues downwards as an
+     * elliptical tube, and the mass is the WALL of that bell: a solid bell would fill the space
+     * between the neck and the hair and read as a hood. The wall is open towards the face - the
+     * same hairline bounds it there - and, for styles that hang, it falls behind the temples to
+     * `hang`, so the hair frames the face instead of crossing it.
+     *
+     * This replaces a rounded box placed behind the skull, which was wider than the head and
+     * appeared as two slabs beside it.
+     */
+    if (puff > 0.0f) {
+        const float headC = (crown + m_.y.chinY) * 0.5f;
+        const float ra = m_.head.rx * 1.03f + thickness + puff;
+        const float rb = m_.head.rz * 1.10f + thickness + puff * 0.9f;
+        const float ry = headH * 0.50f + thickness + puff * 0.55f;
+        const Vec3 c(0.0f, headC, zc + m_.head.rz * 0.04f);
+        const Vec3 q = p - c;
+        float outer;
+        if (q.y >= 0.0f) {
+            outer = sdEllipsoid(q, Vec3(ra, ry, rb));
+        } else {
+            /* Below the widest point the bell narrows a little, the way hair gathers. */
+            const float t = saturate(-q.y / maxf(1e-3f, headC - (hang > 0.0f ? hang : napeY)));
+            const float a = ra * lerpf(1.0f, 0.93f, t);
+            const float bz = rb * lerpf(1.0f, 0.88f, t);
+            const float k = std::sqrt((q.x / a) * (q.x / a) + (q.z / bz) * (q.z / bz));
+            outer = (k - 1.0f) * minf(a, bz);
+        }
+        const float wall = maxf(0.024f, thickness + puff * 0.8f);
+        float inner;
+        {
+            const Vec3 ri(maxf(ra - wall, 0.01f), maxf(ry - wall, 0.01f), maxf(rb - wall, 0.01f));
+            if (q.y >= 0.0f) {
+                inner = sdEllipsoid(q, ri);
+            } else {
+                const float k = std::sqrt((q.x / ri.x) * (q.x / ri.x) + (q.z / ri.z) * (q.z / ri.z));
+                inner = (k - 1.0f) * minf(ri.x, ri.z);
+            }
+        }
+        /*
+         * The space inside the bell is hollow only where it is clear of the skin by 8 mm. Hair that
+         * hangs beside a face lies against the temple and leaves the cheek lower down; with a
+         * hollow that was simply "inside the inner wall" the gap between hair and cheek closed to
+         * nothing where the two met, and no mesh can follow a gap of zero width - it came out as a
+         * row of spikes down the cheek. Now the hair lies on the skin until the gap is wide enough
+         * to be a shape, and the gap ends in a rounded end.
+         */
+        float hollow = smax(inner, 0.008f - skinD, 0.006f);
+        /* ...and only below the jaw, round the neck. On the head the hair is solid from the scalp
+           to its outer surface: a cavity there has nothing to show, and where the hair thins
+           towards the hairline it was laid open as a slot under a flap. */
+        hollow = smax(hollow, p.y - (m_.y.jawY + 0.010f), 0.010f);
+        float bell = smax(outer, -hollow, 0.006f);
+        /* The free edge of the mass - below the jaw, where it hangs clear of the neck - is rounded
+           over almost its whole thickness. */
+        const float edgeCut = edgeDistance(lowerEdgeAt);
+        bell = smax(bell, edgeCut, 0.026f);
+        /*
+         * Where the mass lies against the head - across the forehead, at the temples, down the
+         * side of the face to the jaw - it may stand no further off the skin than a ramp that
+         * starts from nothing at its edge. Hair grows out of a hairline; it does not begin as a
+         * wall three centimetres high. (As a wall it was a visor over the forehead and a cheek
+         * plate beside the face, and the foot of the wall was a crease the mesher drew as a
+         * saw-tooth.) Below the jaw the limit is released: there the hair hangs free.
+         */
+        const float below = maxf(0.0f, (m_.y.jawY + 0.005f) - p.y);
+        /* The limit applies near the edge only: from five centimetres in it rises without bound. */
+        const float inward = maxf(0.0f, -edgeCut - 0.050f);
+        /* ...and, for hair that hangs, on the face's side only: round the back the lower edge is
+           a free edge, a hand's breadth from the neck. */
+        const float behind = (hang > 0.0f) ? 0.30f * smoothstepf(60.0f, 76.0f, phi) : 0.0f;
+        const float release = 40.0f * below * below + 2.0f * inward + 30.0f * inward * inward + behind;
+        bell = smax(bell, skinD - (layerOffset(edgeCut, thickness + puff, 0.070f) + release), 0.008f);
+        /* A hard union: near the edge the two are the same surface, and a smooth union of a
+           surface with itself inflates it. */
+        d = minf(d, bell);
     }
+
+    /* Hair that continues down the back: a sheet lying on whatever is outermost there. */
+    if (backFall > 0.0f && p.z > zc && p.y < hang + 0.03f) {
+        const float surface = minf(body(p), clothUpper(p));
+        const float halfW = m_.head.rx * lerpf(1.30f, 1.05f, saturate((hang - p.y) / maxf(1e-3f, hang - backFall)));
+        float sheet = smax(surface - 0.016f, -(surface - 0.002f), 0.003f);
+        sheet = smax(sheet, std::fabs(p.x) - halfW, 0.012f);
+        sheet = smax(sheet, maxf(backFall - p.y, p.y - (hang + 0.02f)), 0.012f);
+        sheet = smax(sheet, (zc + m_.head.rz * 0.25f) - p.z, 0.010f);
+        d = smin(d, sheet, 0.008f);
+    }
+
     /* A crest keeps only a strip along the midline; used by the mohawk. */
     if (crest > 0.0f) d = smax(d, std::fabs(p.x) - crest, 0.008f);
 
-    /* Styles that hang: a curtain of hair at the back, widening as it falls. */
-    if (length > 0.0f) {
-        const float topY = crown - headH * 0.05f;
-        const float botY = crown - length;
-        const float t = saturate((topY - p.y) / maxf(1e-3f, topY - botY));
-        /* Build a real three-dimensional hair volume behind the skull. The previous
-           max-field was intersected with zero, leaving a nearly zero-thickness curtain:
-           it could look like a dark sheet in profile and disappear at oblique angles.
-           A rounded solid follows the taper of the hanging section and survives mesh
-           extraction at the mobile voxel pitch. */
-        const float midT = 0.5f;
-        const float midBackZ = m_.head.centreZ + m_.head.rz * (0.35f + 0.55f * midT);
-        const float halfW = m_.head.rx * (0.95f + 0.45f * midT);
-        const float halfDepth = maxf(m_.head.rz * 0.34f, 0.022f);
-        const Vec3 curtainCentre(0.0f, (topY + botY) * 0.5f,
-                                 midBackZ + halfDepth);
-        const Vec3 curtainHalf(halfW, (topY - botY) * 0.5f, halfDepth);
-        const float curtain = sdRoundBox(p - curtainCentre, curtainHalf,
-                                         minf(0.025f, halfDepth * 0.45f));
-        d = smin(d, curtain, 0.012f);
-    }
     /* Ponytail: a tapered rope from the crown, sweeping down and back. */
     if (tail > 0.0f) {
-        const Vec3 a(0.0f, crown - headH * 0.12f, m_.head.centreZ + m_.head.rz * 1.02f);
-        const Vec3 b(0.0f, crown - tail, m_.head.centreZ + m_.head.rz * 1.45f);
+        const Vec3 a(0.0f, crown - headH * 0.12f, zc + m_.head.rz * 1.02f);
+        const Vec3 b(0.0f, crown - tail, zc + m_.head.rz * 1.45f);
         d = smin(d, sdTaperedCapsule(p, a, b, m_.head.rx * 0.34f, m_.head.rx * 0.10f), 0.010f);
     }
     /* Bun: a flattened ball at the back of the crown. */
     if (bun > 0.0f) {
-        const Vec3 c(0.0f, crown - headH * 0.16f, m_.head.centreZ + m_.head.rz * 0.98f);
+        const Vec3 c(0.0f, crown - headH * 0.16f, zc + m_.head.rz * 0.98f);
         d = smin(d, sdEllipsoid(p - c, Vec3(bun * 0.95f, bun * 0.80f, bun * 0.70f)), 0.010f);
     }
     /* Braids: two ropes falling in front of the shoulders. */
     if (braids > 0.0f) {
         for (int side = -1; side <= 1; side += 2) {
-            const Vec3 a(side * m_.head.rx * 0.85f, crown - headH * 0.35f, m_.head.centreZ + m_.head.rz * 0.55f);
-            const Vec3 b(side * m_.head.rx * 1.15f, crown - braids, m_.head.centreZ + m_.head.rz * 0.30f);
+            const Vec3 a(side * m_.head.rx * 0.85f, crown - headH * 0.35f, zc + m_.head.rz * 0.55f);
+            const Vec3 b(side * m_.head.rx * 1.15f, crown - braids, zc + m_.head.rz * 0.30f);
             d = smin(d, sdTaperedCapsule(p, a, b, m_.head.rx * 0.20f, m_.head.rx * 0.13f), 0.008f);
         }
     }
@@ -1422,11 +1826,18 @@ float BodyField::hairShape(const Vec3& p) const {
 }
 
 float BodyField::apparelField(const Vec3& p) const {
+    return apparelField(p, nullptr);
+}
+
+float BodyField::apparelField(const Vec3& p, float* hairOut) const {
+    if (hairOut) *hairOut = 1e9f;
     if (!hasApparel()) return 1e9f;
     float d = minf(clothUpper(p), clothLower(p));
     d = minf(d, shoeShape(p));
     d = minf(d, gearShape(p));
-    d = minf(d, hairShape(p));
+    const float hair = hairShape(p);
+    if (hairOut) *hairOut = hair;
+    d = minf(d, hair);
     return d;
 }
 
@@ -1477,23 +1888,60 @@ int BodyField::classifyRegion(const Vec3& p) const {
      * silent failure this ordering prevents. Precedence runs outermost layer first: a pauldron
      * covers a jacket sleeve, and a boot covers a trouser hem.
      */
-    if (apparel_.footwear != 0 && shoeShape(p) < kOnSurface) return REGION_SHOE;
-    if (apparel_.hair != 0 && hairShape(p) < kOnSurface) return REGION_HAIR;
-    if ((apparel_.outfit == 5 || apparel_.outfit == 6 || apparel_.outfit == 7) &&
-        gearShape(p) < kOnSurface) return REGION_GEAR;
-    if (apparel_.outfit != 0 && clothUpper(p) < kOnSurface) return REGION_CLOTH_UPPER;
-    if (apparel_.outfit != 0 && clothLower(p) < kOnSurface) return REGION_CLOTH_LOWER;
+    {
+        float nearest = 1e9f;
+        int nearestRegion = -1;
+        const auto test = [&](float d, int region) {
+            if (d < nearest) { nearest = d; nearestRegion = region; }
+            return d < kOnSurface;
+        };
+        if (apparel_.footwear != 0 && test(shoeShape(p), REGION_SHOE)) return REGION_SHOE;
+        if (apparel_.hair != 0 && test(hairShape(p), REGION_HAIR)) return REGION_HAIR;
+        if ((apparel_.outfit == 5 || apparel_.outfit == 6 || apparel_.outfit == 7) &&
+            test(gearShape(p), REGION_GEAR)) return REGION_GEAR;
+        if (apparel_.outfit != 0 && test(clothUpper(p), REGION_CLOTH_UPPER)) return REGION_CLOTH_UPPER;
+        if (apparel_.outfit != 0 && test(clothLower(p), REGION_CLOTH_LOWER)) return REGION_CLOTH_LOWER;
+        /*
+         * Not within tolerance of any garment. That does not make the point skin: in a concave
+         * crease - between the two trouser legs, under a collar, along a hairline - a mesh vertex
+         * can sit a few millimetres off both surfaces, and labelling it skin by default painted
+         * skin-coloured specks along every such crease. The nearer surface decides.
+         */
+        if (nearestRegion >= 0 && nearest < skinUnion(p)) return nearestRegion;
+    }
 
-    if (teethShape(p) < kOnSurface) return REGION_TEETH;
-    if (tongueShape(p) < kOnSurface) return REGION_TONGUE;
-    if (lipsShape(p) < kOnSurface) return REGION_LIPS;
-    if (browShape(p) < kOnSurface) return REGION_LASH;
+    if (apparel_.openMouth) {
+        if (teethShape(p) < kOnSurface) return REGION_TEETH;
+        if (tongueShape(p) < kOnSurface) return REGION_TONGUE;
+        /* The walls of the oral cavity are mucosa, not skin. */
+        if (oralCavity(p) < kOnSurface * 0.5f) return REGION_TONGUE;
+    }
+    /* Lips: the outline of the vermilion as seen from the front. The surface there is a blend of
+       the lips' own form with the face around it and can lie a couple of millimetres off the
+       former, so "within tolerance of the lip shape" painted only a rim. */
+    if (lipsOutline(p) < 0.0f) return REGION_LIPS;
+    if (browShape(p) < 0.0f) return REGION_LASH;
     // eyeballShape accepts anatomical side values (+1 = left, -1 = right).
     // Passing loop indices 0/1 silently reversed the eye material assignment.
     for (int side : {-1, 1}) {
-        if (eyeballShape(p, side) < kOnSurface) {
+        /*
+         * On the globe AND inside the opening between the lids. Both tolerances are a fraction of
+         * a millimetre: mesh vertices now lie within a few hundredths of a millimetre of the
+         * surface, and with the general 1.5 mm tolerance the whole lid margin - which stands
+         * 1.6 mm off the globe - was painted as the white of the eye.
+         */
+        const float globe = eyeballShape(p, side);
+        if (globe > 0.004f) continue;
+        bool upper = false;
+        const float opening = eyeOpening(p, side, &upper);
+        if (globe < 0.00030f && opening < 0.00020f) {
             return (side > 0) ? REGION_EYE_L : REGION_EYE_R;
         }
+        /* The lash line: the edge of the upper lid, and a thinner line along the lower one. It is
+           what separates the eye from the face at any distance; without it the white of the eye
+           runs straight into skin. */
+        const float band = upper ? 0.0013f : 0.0006f;
+        if (opening >= 0.0f && opening < band && globe < 0.0030f) return REGION_LASH;
     }
     /* Nails: dorsal side of each distal phalanx. */
     for (int side = -1; side <= 1; side += 2) {
@@ -1502,12 +1950,27 @@ int BodyField::classifyRegion(const Vec3& p) const {
         for (int i = 0; i < 5; ++i) {
             const float r = m_.fingerRadius[i];
             const Vec3 tip = c.fingerTip[i];
-            if ((p - tip).length() < r * 1.6f && (p - tip).dot(palmNormal) > r * 0.25f) return REGION_NAIL;
+            /* Dorsal side of the fingertip: away from the palm, i.e. against palmNormal. The
+               test used the opposite sign and painted the nails on the finger pads. */
+            if ((p - tip).length() < r * 1.35f && (p - tip).dot(palmNormal) < -r * 0.30f) return REGION_NAIL;
         }
-        for (int i = 0; i < 5; ++i) {
-            const float r = m_.toeRadius[i];
-            const Vec3 tip = c.ball + Vec3(0, 0, -(m_.toeLength[i] + r));
-            if ((p - tip).length() < r * 1.8f && (p.y - tip.y) > 0.0f) return REGION_NAIL;
+        {
+            /* Toenails: the top of the last phalanx of each toe, found with the same toe
+               placement the foot field uses. */
+            const float yaw = radians(7.0f) * static_cast<float>(side);
+            const float cs = std::cos(-yaw), sn = std::sin(-yaw);
+            const Vec3 t = p - c.ankle;
+            const Vec3 q(t.x * cs - t.z * sn, t.y, t.x * sn + t.z * cs);
+            const float ground = (m_.y.soleY + 0.002f) - c.ankle.y;
+            const Vec3 bt = c.ball - c.ankle;
+            const float ballZ = bt.x * sn + bt.z * cs;
+            for (int i = 0; i < 5; ++i) {
+                Vec3 from, to;
+                toeSegment(c, i, ground, ballZ, &from, &to);
+                const float r = m_.toeRadius[i];
+                const Vec3 rel = q - (to + Vec3(0.0f, r * 0.62f, r * 0.10f));
+                if (rel.length() < r * 0.95f && rel.y > -r * 0.10f) return REGION_NAIL;
+            }
         }
     }
     return REGION_SKIN;

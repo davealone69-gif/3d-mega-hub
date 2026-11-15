@@ -223,6 +223,14 @@ int32_t af_engine_abi_version(void);
    AF_ERR_BUDGET_EXCEEDED rather than triggering an OOM kill. */
 int32_t af_engine_set_memory_budget(af_engine* engine, uint64_t bytes);
 
+/* Build quality. AF_QUALITY_FULL is the default and is what the app generates. AF_QUALITY_DRAFT
+   extracts on a 16 mm lattice with one refinement round and no trunk refinement: about a tenth of
+   the triangles, in a few seconds. It builds the same skeleton, weights and clips, so it is what
+   the native tests use when they need a rigged avatar and not its surface detail. Must be set
+   before af_engine_fit_anatomy / af_engine_run_all. */
+typedef enum af_quality { AF_QUALITY_DRAFT = 0, AF_QUALITY_FULL = 1 } af_quality;
+int32_t af_engine_set_quality(af_engine* engine, int32_t quality);
+
 int32_t af_engine_create(const af_spec* spec, const af_callbacks* callbacks, af_engine** out_engine);
 void    af_engine_destroy(af_engine* engine);
 int32_t af_engine_reset(af_engine* engine, const af_spec* spec);
@@ -363,18 +371,51 @@ void    af_arena_free(void* ptr);
  * with an error and leave the engine exactly as it was: the import is built beside the live state
  * and swapped in only once it is complete.
  *
- * WHAT IS NOT APPLIED, deliberately and visibly: the file's skin, joint hierarchy and animation
- * clips. Posing runs on the engine's own rig, which is built from the anthropometric solve; an
- * imported file cannot silently half-adopt a foreign skeleton, because a figure that looks rigged
- * and does not animate is exactly the kind of plausible fake this project forbids. When the file
- * does carry a skeleton or clips, the import succeeds, an AF_LOG_WARN names what was skipped, and
- * the engine's joint count reads 0 until it is re-rigged.
+ * THE SKELETON: when the file's skin is this engine's own rig (an avatar this engine exported),
+ * it is adopted - joints, rest transforms, inverse bind matrices and the per-vertex weights - and
+ * the clip library is bound to it, so the avatar can be posed and animated again exactly as it
+ * could before export. `af_engine_animation_count` then lists the animations the FILE carries.
+ *
+ * WHAT IS NOT APPLIED, and reported with an AF_LOG_WARN every time: a skeleton that is not this
+ * rig (the model is shown static and the joint count reads 0), animation channels of such a file,
+ * and morph targets (facial blendshapes are available on a generated avatar, not on an import).
  *
  * Returns AF_OK, or AF_ERR_INVALID_ARG / AF_ERR_UNSUPPORTED / AF_ERR_IO / AF_ERR_OUT_OF_MEMORY.
  * `af_engine_last_error` carries the reader's specific reason.
  */
 int32_t af_engine_import_glb(af_engine* engine, const char* absolute_path);
 int32_t af_engine_import_glb_from_memory(af_engine* engine, const uint8_t* bytes, size_t size);
+
+/* ------------------------------------------------------------------ skeletal animation -- */
+/*
+ * Playback data of the model the engine currently holds, whichever way it got there:
+ *
+ *   - after generation (`af_engine_rig` + `af_engine_bake_animation`): the engine's rig and
+ *     every clip of its built-in library;
+ *   - after `af_engine_import_glb` of a file this engine exported: the rig restored from the
+ *     file's skin, and those animations of the file that the clip library can play (matched by
+ *     name; the pose data is the library's, which is what the file's channels were sampled from).
+ *     A file with any other skeleton has no animations here.
+ *
+ * `af_engine_evaluate_animation` does not touch the engine's vertex buffers. It writes one
+ * column-major 4x4 SKIN matrix per joint (joint world transform x inverse bind matrix), indexed
+ * the way `af_vertex::joints` indexes them, so a renderer can blend the bind-pose vertices on the
+ * GPU: `skinned = sum_k weights[k] * skin[joints[k]] * position`. Passing `animation = -1`
+ * evaluates the rest pose (identity skin matrices for a file exported in its bind pose).
+ *
+ * Time handling is the caller's: `time_seconds` is clamped to [0, duration]; looping, speed and
+ * seeking are playback state, not asset state. The call does not modify the engine and does not
+ * allocate after its first use on a thread; it may be made every frame on the thread that owns
+ * the engine.
+ *
+ * Returns the number of joints written (>= 0) or a negative af_result.
+ */
+int32_t af_engine_skin_joint_count(const af_engine* engine);
+int32_t af_engine_animation_count(const af_engine* engine);
+int32_t af_engine_animation_name(const af_engine* engine, int32_t animation, char* out_name, int32_t max_bytes);
+float   af_engine_animation_duration(const af_engine* engine, int32_t animation);
+int32_t af_engine_evaluate_animation(const af_engine* engine, int32_t animation, float time_seconds,
+                                     float* out_skin_matrices4x4, int32_t max_joints);
 
 /* ------------------------------------------------------------------ diagnostics ---------- */
 /* Validates the live post-skin vertex buffer. The report is always populated when capacity > 0;

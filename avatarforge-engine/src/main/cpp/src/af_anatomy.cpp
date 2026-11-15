@@ -121,8 +121,10 @@ BodyMetrics Anatomy::solve(const af_spec& spec) {
     m.y.neckBaseY  = (0.855f - torsoBias + shoulderBias * 0.5f) * H;
     /* +Y is up. The chin is therefore the smaller ordinate, below the jaw corner; spelling this
        out here prevents a visually catastrophic but numerically plausible swap. */
-    m.y.chinY      = (0.870f - torsoBias * 0.5f) * H;
-    m.y.jawY       = (0.893f - torsoBias * 0.5f) * H;
+    /* Chin to crown is an eighth of the stature less a little (222 mm at 1.75 m). It was 235 mm,
+       all of the excess below the eyes: a long lower face on every avatar. */
+    m.y.chinY      = (0.877f - torsoBias * 0.5f) * H;
+    m.y.jawY       = (0.898f - torsoBias * 0.5f) * H;
     m.y.eyeY       = (0.936f - torsoBias * 0.25f) * H;
     m.y.crownY     = H;
     m.y.calfMaxY   = lerpf(m.y.ankleY, m.y.kneeY, 0.34f);
@@ -239,7 +241,13 @@ BodyMetrics Anatomy::solve(const af_spec& spec) {
     /* ---------- widths ---------------------------------------------------------------- */
     /* Biacromial breadth is correlated with chest girth; the regression keeps a tall slim
        person from acquiring a heavy person's shoulders. */
-    const float biacromialCm = (female ? 36.6f : 41.5f) + (circ.chest - (female ? 93.5f : 102.3f)) * 0.16f
+    /* `circ` is in METRES here (see the unit boundary above) and the regression is written in
+       centimetres. The chest term used the metre value directly, which made it about -15 cm for
+       every body: the result always fell below the lower clamp, and every avatar was built with
+       a 28 cm biacromial breadth - narrower than its own rib cage. That is why the shoulders
+       were two balls beside the neck instead of a shoulder line. */
+    const float chestCm = circ.chest * 100.0f;
+    const float biacromialCm = (female ? 36.6f : 41.5f) + (chestCm - (female ? 93.5f : 102.3f)) * 0.16f
                              + (H - populationHeight) * 100.0f * 0.10f;
     m.biacromialHalf = clampf(biacromialCm / 100.0f, 0.28f, 0.60f) * 0.5f;
     m.armPitHalf = m.chest.rx * 0.86f;
@@ -265,11 +273,16 @@ BodyMetrics Anatomy::solve(const af_spec& spec) {
     m.noseLength  = (m.y.eyeY - m.y.chinY) * 0.42f;
     m.lipWidth    = m.faceWidth * 0.42f;
     m.earLength   = (m.y.crownY - m.y.chinY) * 0.24f;
-    m.eyeSeparation = m.head.rx * 0.72f;
+    /* Pupil-to-pupil distance. 0.72 of the head's half width gave 51 mm on an adult head, which
+       is well below the adult range (about 58 to 66 mm) and made the face read as pinched. */
+    m.eyeSeparation = m.head.rx * 0.88f;
     m.eyeRadius   = m.head.rx * 0.172f;
     m.irisRadius  = m.eyeRadius * 0.52f;
-    m.mouthY      = lerpf(m.y.chinY, m.y.eyeY, 0.30f);
-    m.eyeZ        = -m.head.rz * 0.78f;   /* eyeballs sit forward of centre   */
+    /* The line between the lips lies 0.39 of the way from the chin up to the eyes: about a third
+       of the lower face is above it (nose to mouth) and two thirds below (mouth to chin). It was
+       0.30, which gave a 34 mm upper lip and a 36 mm chin - a muzzle. */
+    m.mouthY      = lerpf(m.y.chinY, m.y.eyeY, 0.39f);
+    m.eyeZ        = -m.head.rz * 0.745f;  /* eyeball centres; the cornea ends up just behind the brow */
     m.mouthWidth  = m.lipWidth * 1.15f;   /* mouth corners extend past lips   */
     m.bustSep     = m.bustSeg.rx * 0.62f; /* breast centres inside the bust seg*/
 
@@ -310,13 +323,22 @@ BodyMetrics Anatomy::solve(const af_spec& spec) {
     m.ankleRx = m.wristR * 1.20f;
     m.ankleRz = m.ankleRx * kDepthAnkle / 1.0f;
     m.footHeight = 0.040f * H;
-    m.footHeelZ  = -0.048f * H;
-    m.toeLength[0] = m.footLength * 0.20f;
-    m.toeLength[1] = m.footLength * 0.17f;
-    m.toeLength[2] = m.footLength * 0.155f;
-    m.toeLength[3] = m.footLength * 0.135f;
-    m.toeLength[4] = m.footLength * 0.110f;
-    for (int i = 0; i < 5; ++i) m.toeRadius[i] = m.footWidth * (0.062f - 0.005f * i);
+    /* Offset of the heel's centre from the ankle along Z. Forward is -Z, so the heel, which is
+       BEHIND the ankle, has a positive offset. The value used to be -0.048 H: it put the "heel"
+       84 mm in front of the ankle, left 54 mm between heel and ball for the whole foot, and gave
+       the avatar no heel at all. */
+    m.footHeelZ  = 0.016f * H;
+    /* Length of each toe beyond the ball of the foot, and its radius. The radii were 4 to 6 mm,
+       a third of a real toe's, which drew the toes as spikes. */
+    m.toeLength[0] = m.footLength * 0.185f;
+    m.toeLength[1] = m.footLength * 0.170f;
+    m.toeLength[2] = m.footLength * 0.150f;
+    m.toeLength[3] = m.footLength * 0.128f;
+    m.toeLength[4] = m.footLength * 0.105f;
+    {
+        const float toeScale[5] = {0.120f, 0.088f, 0.082f, 0.076f, 0.070f};
+        for (int i = 0; i < 5; ++i) m.toeRadius[i] = m.footWidth * toeScale[i];
+    }
 
     /* ---------- soft tissue --------------------------------------------------------- */
     /* Bulge amplitudes are the *additional* radius the SDF adds over the gross segment.

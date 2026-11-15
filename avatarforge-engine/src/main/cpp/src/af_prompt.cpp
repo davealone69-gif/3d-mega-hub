@@ -192,6 +192,7 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
        or "68 cm waist, 96 cm hips" would set the waist twice. */
     std::vector<bool> consumed(words.size(), false);
     bool leatherModifier = false, plateModifier = false, spaceModifier = false;
+    bool sawTshirt = false;   /* a T-shirt named in THIS prompt; "jeans" then completes it */
     for (const Word& w0 : words) {
         if (w0.text == "leather") leatherModifier = true;
         if (w0.text == "plate" || w0.text == "cuirass" || w0.text == "breastplate") plateModifier = true;
@@ -336,8 +337,14 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
             /* "dark hair" is a hair colour; "dark skin" is a skin tone. The qualifier decides. */
             if (pendingMelanin >= 0.0f) {
                 if (spec->hair_tone[0] == 0.0f) {
-                    const float v = std::fmax(0.02f, 1.0f - pendingMelanin);
-                    spec->hair_tone[0] = v; spec->hair_tone[1] = v * 0.94f; spec->hair_tone[2] = v * 0.90f;
+                    /* A base colour, like every other entry of the colour table: fair hair for a
+                       "light" qualifier through brown to near-black for "dark". The old value was a
+                       neutral grey (0.12 for "dark hair"), which only looked dark because the
+                       renderer multiplied it by the default hair colour. */
+                    const float t = std::pow(std::fmin(1.0f, std::fmax(0.0f, pendingMelanin)), 0.6f);
+                    spec->hair_tone[0] = 0.60f + (0.022f - 0.60f) * t;
+                    spec->hair_tone[1] = 0.45f + (0.016f - 0.45f) * t;
+                    spec->hair_tone[2] = 0.24f + (0.012f - 0.24f) * t;
                 }
                 pendingMelanin = -1.0f;
             }
@@ -411,10 +418,17 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
 
         if (anyOf(w, kBare, 4)) { spec->outfit = AF_OUTFIT_NONE; spec->footwear = AF_FOOTWEAR_NONE; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kAthleticWear, 4)) { spec->outfit = AF_OUTFIT_ATHLETIC; record(out, w, "outfit", &matched); continue; }
-        if (anyOf(w, kTshirt, 4)) { spec->outfit = AF_OUTFIT_TSHIRT; record(out, w, "outfit", &matched); continue; }
+        if (anyOf(w, kTshirt, 4)) { spec->outfit = AF_OUTFIT_TSHIRT; sawTshirt = true; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kDress, 2)) { spec->outfit = AF_OUTFIT_DRESS; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kSuit, 3)) { spec->outfit = AF_OUTFIT_SUIT; spec->footwear = AF_FOOTWEAR_BOOT; record(out, w, "outfit", &matched); continue; }
-        if (anyOf(w, kJeans, 2)) { spec->outfit = AF_OUTFIT_JEANS_JACKET; record(out, w, "outfit", &matched); continue; }
+        if (anyOf(w, kJeans, 2)) {
+            /* "t-shirt and jeans" is a T-shirt worn with jeans, which is what AF_OUTFIT_TSHIRT builds.
+               It used to become the jacket outfit, because "jeans" came last and the T-shirt outfit
+               had no trousers at all. */
+            if (!sawTshirt) spec->outfit = AF_OUTFIT_JEANS_JACKET;
+            record(out, w, "outfit", &matched);
+            continue;
+        }
         if (anyOf(w, kJacket, 3)) { spec->outfit = AF_OUTFIT_JEANS_JACKET; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kLeather, 3)) { spec->outfit = AF_OUTFIT_ARMOR_LEATHER; spec->footwear = AF_FOOTWEAR_BOOT; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kPlate, 6)) {
