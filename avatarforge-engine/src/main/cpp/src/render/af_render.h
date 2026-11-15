@@ -211,6 +211,23 @@ public:
     virtual int   currentClip() const = 0;
     virtual float clipTime() const = 0;
 
+    /* GPU-skinned playback of the animations the attached model carries (af_engine_animation_*).
+       The bind-pose vertices stay on the GPU; each frame the renderer evaluates one skin matrix
+       per joint (af_engine_evaluate_animation) and the vertex shader blends with them, so playing
+       an animation uploads a few kilobytes per frame instead of the whole vertex buffer, which is
+       what setClip() does and what makes it unusable on a million-triangle avatar.
+       `animation` indexes af_engine_animation_name(); -1 returns the figure to its bind pose.
+       A backend without it keeps these defaults and reports no support. */
+    virtual bool  supportsSkinnedPlayback() const { return false; }
+    virtual bool  setAnimation(int animation, float speed, bool loop) {
+        (void)animation; (void)speed; (void)loop;
+        return false;
+    }
+    virtual void  setAnimationPlayback(float speed, bool loop, bool paused) { (void)speed; (void)loop; (void)paused; }
+    virtual void  seekAnimation(float seconds) { (void)seconds; }
+    virtual int   currentAnimation() const { return -1; }
+    virtual float animationTime() const { return 0.0f; }
+
     /* Waits for the GPU to idle. Needed before the engine frees or rebuilds buffers that the
        renderer may still be reading (e.g. before af_engine_destroy or a geometry rebuild). */
     virtual void waitIdle() = 0;

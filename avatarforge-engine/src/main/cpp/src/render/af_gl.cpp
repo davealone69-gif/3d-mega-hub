@@ -156,6 +156,12 @@ public:
     void setClip(int clip, float speed, bool loop) override;
     int currentClip() const override { return clip_; }
     float clipTime() const override { return clipTime_; }
+    bool supportsSkinnedPlayback() const override { return skinBlockReady_ && skinUbo_ != 0; }
+    bool setAnimation(int animation, float speed, bool loop) override;
+    void setAnimationPlayback(float speed, bool loop, bool paused) override;
+    void seekAnimation(float seconds) override;
+    int currentAnimation() const override { return animation_; }
+    float animationTime() const override { return animationTime_; }
     void waitIdle() override { glFinish(); }
     RendererStats stats() const override { return stats_; }
     std::vector<uint8_t> readbackPixels() const override { return verificationPixels_; }
@@ -173,6 +179,8 @@ private:
     void updateScene(float deltaSeconds);
     void updateSceneGraph();
     void updateAnimation(float deltaSeconds);
+    void updateSkinnedAnimation(float deltaSeconds);
+    void uploadSkinBlock(bool active);
     void drawShadowPass();
     void drawForwardPass();
     void drawBloom();
@@ -254,6 +262,19 @@ private:
     float clipSpeed_ = 1.0f;
     bool clipLoop_ = true;
     float clipTime_ = 0.0f;
+    /* GPU skinning: one std140 block { mat4 joints[kMaxSkinJoints]; vec4 params; } at binding 3. */
+    static constexpr int kMaxSkinJoints = 128;
+    static constexpr GLuint kSkinBinding = 3;
+    GLuint skinUbo_ = 0;
+    bool skinBlockReady_ = false;      /* both avatar programs declare the block                 */
+    bool skinActive_ = false;          /* the block currently holds a pose, params.x == 1        */
+    bool cpuPosed_ = false;            /* setClip() left the CPU vertex stream away from bind    */
+    int animation_ = -1;
+    float animationSpeed_ = 1.0f;
+    bool animationLoop_ = true;
+    bool animationPaused_ = false;
+    float animationTime_ = 0.0f;
+    std::vector<float> skinBlock_;
     int32_t vertexCount_ = 0;
     int32_t indexCount_ = 0;
     uint32_t materialStride_ = 256;
@@ -504,6 +525,19 @@ bool GlRenderer::createPrograms(std::string* error) {
         const GLuint postIndex = glGetUniformBlockIndex(p, "PostBlock");
         if (postIndex != GL_INVALID_INDEX) glUniformBlockBinding(p, postIndex, 2);
     }
+    /* The skin block belongs to the two programs that draw the avatar's vertices. Skinned
+       playback is offered only when both have it: a figure that moves while its shadow stays in
+       the bind pose would be wrong on screen. */
+    {
+        const GLuint forwardSkin = glGetUniformBlockIndex(forwardProgram_, "AfSkinBlock");
+        const GLuint shadowSkin = glGetUniformBlockIndex(shadowProgram_, "AfSkinBlock");
+        if (forwardSkin != GL_INVALID_INDEX) glUniformBlockBinding(forwardProgram_, forwardSkin, kSkinBinding);
+        if (shadowSkin != GL_INVALID_INDEX) glUniformBlockBinding(shadowProgram_, shadowSkin, kSkinBinding);
+        skinBlockReady_ = forwardSkin != GL_INVALID_INDEX && shadowSkin != GL_INVALID_INDEX;
+        AF_GL_LOGI("GPU skinning block: forward=%d shadow=%d ready=%d",
+                   forwardSkin != GL_INVALID_INDEX ? 1 : 0, shadowSkin != GL_INVALID_INDEX ? 1 : 0,
+                   skinBlockReady_ ? 1 : 0);
+    }
     if (!hasCameraBlock) {
         *error = "no program declared the CameraBlock uniform block (shader/ABI mismatch)";
         return false;
@@ -705,8 +739,8 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     glGenVertexArrays(1, &emptyVao_);
     glGenVertexArrays(1, &lineVao_);
 
-    /* Avatar VAO: exact canonical af_vertex layout. The forward shader consumes locations 0..4.
-       JOINTS/WEIGHTS at byte offsets 64/72 are CPU-side data today; no shader inputs 5/6 exist. */
+    /* Avatar VAO: exact canonical af_vertex layout. The forward shader consumes locations 0..6:
+       JOINTS/WEIGHTS at byte offsets 64/72 feed the skin block when an animation plays. */
     static_assert(sizeof(af_vertex) == 88, "GLES vertex stride must remain 88 bytes");
     static_assert(offsetof(af_vertex, pos) == 0 && offsetof(af_vertex, normal) == 12 &&
                   offsetof(af_vertex, tangent) == 24 && offsetof(af_vertex, uv) == 40 &&
@@ -734,13 +768,22 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
                           reinterpret_cast<const void*>(offsetof(af_vertex, color)));
     logVertexAttribute(4, 4, offsetof(af_vertex, color));
+    /* Locations 5 and 6: the four joints and weights of each vertex, for GPU skinning. Joints
+       are integers and must be bound with the I-pointer call, or the shader reads them as
+       normalised floats. */
+    glEnableVertexAttribArray(5);
+    glVertexAttribIPointer(5, 4, GL_UNSIGNED_SHORT, sizeof(af_vertex),
+                           reinterpret_cast<const void*>(offsetof(af_vertex, joints)));
+    glEnableVertexAttribArray(6);
+    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
+                          reinterpret_cast<const void*>(offsetof(af_vertex, weights)));
     const char* attributeNames[5] = {"aPos", "aNormal", "aTangent", "aUv", "aColor"};
     for (GLint i = 0; i < 5; ++i) {
         const GLint shaderLocation = glGetAttribLocation(forwardProgram_, attributeNames[i]);
         AF_GL_LOGI("Shader input %s -> location %d (expected %d)", attributeNames[i], shaderLocation, i);
         if (shaderLocation != i) AF_GL_LOGE("Shader input location mismatch for %s", attributeNames[i]);
     }
-    AF_GL_LOGI("af_vertex layout: size=%zu pos=0 normal=12 tangent=24 uv=40 color=48 joints=64 weights=72; locations 5/6 intentionally unused (CPU skinning path)",
+    AF_GL_LOGI("af_vertex layout: size=%zu pos=0 normal=12 tangent=24 uv=40 color=48 joints=64 weights=72; locations 5/6 = joints/weights (GPU skinning)",
                sizeof(af_vertex));
     const GLenum vaoSetupError = glGetError();
     if (vaoSetupError != GL_NO_ERROR) AF_GL_LOGE("VAO setup GL error=0x%x", vaoSetupError);
@@ -784,6 +827,20 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     glBufferData(GL_UNIFORM_BUFFER, GLsizeiptr(materialStride_) * 32, nullptr, GL_DYNAMIC_DRAW);
     materialCapacity_ = GLint64(materialStride_) * 32;
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+    /* The skin block always has a buffer behind it: a draw with a declared uniform block and no
+       buffer bound is an error, whether or not the shader reads the block. params.x == 0 means
+       "do not skin", which is the state of every model that is not playing an animation. */
+    skinBlock_.assign(static_cast<size_t>(kMaxSkinJoints) * 16 + 4, 0.0f);
+    for (int j = 0; j < kMaxSkinJoints; ++j) {
+        float* m = &skinBlock_[static_cast<size_t>(j) * 16];
+        m[0] = m[5] = m[10] = m[15] = 1.0f;
+    }
+    glGenBuffers(1, &skinUbo_);
+    glBindBuffer(GL_UNIFORM_BUFFER, skinUbo_);
+    glBufferData(GL_UNIFORM_BUFFER, GLsizeiptr(skinBlock_.size() * sizeof(float)), skinBlock_.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase(GL_UNIFORM_BUFFER, kSkinBinding, skinUbo_);
 
     /* Atlas placeholders: 1x1 white, so the sampler bindings are always valid (the shaders gate
        every lookup on the material's has_*_tex flags). */
@@ -1184,6 +1241,10 @@ void GlRenderer::updateSceneGraph() {
     visibilityReady_ = false;
     visibility_.clear();
     if (!engine_) return;
+    /* Visibility is decided from each submesh's bind-pose bounds. While the vertex shader is
+       moving the vertices those bounds are not where the geometry is, so nothing is culled and
+       every submesh is drawn in full. */
+    if (skinActive_) return;
     if (!sceneGraph_) sceneGraph_ = af_scene_bridge_create();
     if (!sceneGraph_) {
         AF_GL_LOGE("Could not allocate the imported scene visibility bridge");
@@ -1222,6 +1283,14 @@ void GlRenderer::updateScene(float deltaSeconds) {
     projectToSh(env_, &sh_, 1024);
 
     modelBounds(engine_, scene_.modelMin, scene_.modelMax, &scene_.hasModel);
+    if (skinActive_ && scene_.hasModel) {
+        /* The bounds are those of the bind pose; a figure that is waving, kicking or jumping
+           reaches outside them. Widen what the clip planes and the shadow map are fitted to. The
+           floor stays where the bind pose stands. */
+        scene_.modelMin[0] -= 0.60f; scene_.modelMax[0] += 0.60f;
+        scene_.modelMin[2] -= 0.60f; scene_.modelMax[2] += 0.60f;
+        scene_.modelMax[1] += 0.45f;
+    }
     /* depthZeroToOne = false: GL clip space, which is also why the ES dialect of the shaders has
        AF_CLIP_Y = +1 and rescales the shadow lookup's z. */
     buildCameraUbo(&scene_, camera_, options_, env_, sh_, surfaceWidth_, surfaceHeight_, false);
@@ -1328,8 +1397,94 @@ void GlRenderer::updateScene(float deltaSeconds) {
     buildSkeletonLines();
 }
 
+void GlRenderer::uploadSkinBlock(bool active) {
+    if (!skinUbo_) return;
+    skinBlock_[static_cast<size_t>(kMaxSkinJoints) * 16] = active ? 1.0f : 0.0f;
+    glBindBuffer(GL_UNIFORM_BUFFER, skinUbo_);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, GLsizeiptr(skinBlock_.size() * sizeof(float)), skinBlock_.data());
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase(GL_UNIFORM_BUFFER, kSkinBinding, skinUbo_);
+    skinActive_ = active;
+}
+
+void GlRenderer::updateSkinnedAnimation(float deltaSeconds) {
+    const int joints = af_engine_skin_joint_count(engine_);
+    const float duration = af_engine_animation_duration(engine_, animation_);
+    if (joints <= 0 || joints > kMaxSkinJoints || !supportsSkinnedPlayback()) {
+        /* The model changed under the renderer, or it has more joints than the block holds. */
+        animation_ = -1;
+        if (skinActive_) uploadSkinBlock(false);
+        return;
+    }
+    if (!animationPaused_ && std::isfinite(deltaSeconds) && deltaSeconds > 0.0f) {
+        animationTime_ += deltaSeconds * animationSpeed_;
+    }
+    if (duration > 0.0f) {
+        if (animationLoop_) {
+            animationTime_ = std::fmod(animationTime_, duration);
+            if (animationTime_ < 0.0f) animationTime_ += duration;
+        } else {
+            animationTime_ = std::max(0.0f, std::min(duration, animationTime_));
+        }
+    } else {
+        animationTime_ = 0.0f;
+    }
+    const int written = af_engine_evaluate_animation(engine_, animation_, animationTime_,
+                                                     skinBlock_.data(), kMaxSkinJoints);
+    if (written != joints) {
+        AF_GL_LOGE("Animation %d could not be evaluated (rc=%d, joints=%d); returning to the bind pose",
+                   animation_, written, joints);
+        animation_ = -1;
+        for (int j = 0; j < kMaxSkinJoints; ++j) {
+            float* m = &skinBlock_[static_cast<size_t>(j) * 16];
+            for (int k = 0; k < 16; ++k) m[k] = (k % 5 == 0) ? 1.0f : 0.0f;
+        }
+        uploadSkinBlock(false);
+        return;
+    }
+    uploadSkinBlock(true);
+}
+
+bool GlRenderer::setAnimation(int animation, float speed, bool loop) {
+    if (!engine_ || !supportsSkinnedPlayback()) return false;
+    if (animation >= af_engine_animation_count(engine_)) return false;
+    const int joints = af_engine_skin_joint_count(engine_);
+    if (animation >= 0 && (joints <= 0 || joints > kMaxSkinJoints)) return false;
+    /* The vertex shader skins the BIND pose. If setClip() deformed the CPU vertex stream, put it
+       back first; that is one full upload, after which playback uploads only the skin block. */
+    if (clip_ >= 0 || cpuPosed_) {
+        clip_ = -1;
+        clipTime_ = 0.0f;
+        if (af_engine_apply_clip(engine_, AF_CLIP_REST, 0.0f) == AF_OK) meshDirty_ = true;
+        cpuPosed_ = false;
+    }
+    animation_ = animation < 0 ? -1 : animation;
+    animationSpeed_ = std::isfinite(speed) ? std::max(0.0f, std::min(4.0f, speed)) : 1.0f;
+    animationLoop_ = loop;
+    animationPaused_ = false;
+    animationTime_ = 0.0f;
+    if (animation_ < 0) uploadSkinBlock(false);
+    return true;
+}
+
+void GlRenderer::setAnimationPlayback(float speed, bool loop, bool paused) {
+    animationSpeed_ = std::isfinite(speed) ? std::max(0.0f, std::min(4.0f, speed)) : 1.0f;
+    animationLoop_ = loop;
+    animationPaused_ = paused;
+}
+
+void GlRenderer::seekAnimation(float seconds) {
+    if (std::isfinite(seconds)) animationTime_ = std::max(0.0f, seconds);
+}
+
 void GlRenderer::updateAnimation(float deltaSeconds) {
-    if (!engine_ || clip_ < 0) return;
+    if (!engine_) return;
+    if (animation_ >= 0) {
+        updateSkinnedAnimation(deltaSeconds);
+        return;
+    }
+    if (clip_ < 0) return;
+    cpuPosed_ = true;
     const float duration = af_engine_clip_duration(engine_, clip_);
     if (duration <= 0.0f) return;
     clipTime_ += deltaSeconds * clipSpeed_;
@@ -1343,6 +1498,12 @@ void GlRenderer::updateAnimation(float deltaSeconds) {
 }
 
 void GlRenderer::setClip(int clip, float speed, bool loop) {
+    /* The CPU path and the skinned path must not both move the figure. */
+    if (animation_ >= 0) {
+        animation_ = -1;
+        uploadSkinBlock(false);
+    }
+    if (clip >= 0) cpuPosed_ = true;
     clip_ = clip;
     clipSpeed_ = speed;
     clipLoop_ = loop;
@@ -1948,8 +2109,9 @@ void GlRenderer::destroyAll() {
                                         bloomDownProgram_, bloomUpProgram_, compositeProgram_,
                                         debugMagentaProgram_};
             for (GLuint p : programs) if (p) glDeleteProgram(p);
-            const GLuint buffers[7] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, lodIndexIbo_, groundVbo_};
+            const GLuint buffers[8] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, lodIndexIbo_, groundVbo_, skinUbo_};
             for (GLuint b : buffers) if (b) glDeleteBuffers(1, &b);
+            skinUbo_ = 0;
             lodIndexIbo_ = 0;
             avatarLods_.clear();
             lodReady_ = false;

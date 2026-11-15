@@ -731,6 +731,77 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResetCamera(
     session->renderer->setCamera(session->camera);
 }
 
+/*
+ * Built-in animation of the model in this session. The list is what the engine can play on the
+ * skeleton it holds (af_engine_animation_*): every clip of an avatar this engine generated or
+ * exported, nothing for a file whose skeleton it did not adopt. It is empty too when the backend
+ * cannot skin on the GPU, because the alternative - re-posing and re-uploading every vertex each
+ * frame - is not usable on a million-triangle avatar. All of these run on the render thread.
+ */
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetAnimations(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (!stringClass) return nullptr;
+    int count = 0;
+    if (session && session->engine && session->renderer &&
+        session->renderer->supportsSkinnedPlayback() &&
+        af_engine_skin_joint_count(session->engine) > 0) {
+        count = std::max(0, af_engine_animation_count(session->engine));
+    }
+    jobjectArray result = env->NewObjectArray(count, stringClass, nullptr);
+    if (!result) return nullptr;
+    for (int i = 0; i < count; ++i) {
+        char name[96] = {0};
+        if (af_engine_animation_name(session->engine, i, name, static_cast<int32_t>(sizeof(name))) <= 0) {
+            std::snprintf(name, sizeof(name), "animation %d", i + 1);
+        }
+        const float duration = af_engine_animation_duration(session->engine, i);
+        const std::string entry = std::string(name) + "|" + std::to_string(std::isfinite(duration) ? duration : 0.0f);
+        jstring text = env->NewStringUTF(entry.c_str());
+        if (!text) return result;
+        env->SetObjectArrayElement(result, i, text);
+        env->DeleteLocalRef(text);
+    }
+    return result;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetAnimation(
+    JNIEnv* env, jobject, jlong handle, jint animation, jfloat speed, jboolean loop) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return JNI_FALSE;
+    return jniBarrier<jboolean>(env, "AvatarForge animation", JNI_FALSE, [&]() -> jboolean {
+        return session->renderer->setAnimation(static_cast<int>(animation), speed, loop == JNI_TRUE)
+            ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetAnimationPlayback(
+    JNIEnv*, jobject, jlong handle, jfloat speed, jboolean loop, jboolean paused) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->renderer->setAnimationPlayback(speed, loop == JNI_TRUE, paused == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSeekAnimation(
+    JNIEnv*, jobject, jlong handle, jfloat seconds) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->renderer->seekAnimation(seconds);
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetAnimationTime(
+    JNIEnv*, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return 0.0f;
+    return session->renderer->animationTime();
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeDestroy(
     JNIEnv*, jobject, jlong handle) {

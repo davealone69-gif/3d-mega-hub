@@ -122,6 +122,36 @@ class GeneratedAvatarRuntimeTest {
     }
 
 
+    /** What the SurfaceView shows right now, as ARGB pixels, read back through the window. */
+    private fun captureSurfacePixels(instrumentation: Instrumentation, view: SurfaceView): IntArray {
+        val width = view.width
+        val height = view.height
+        assertTrue("The SurfaceView has no size to capture", width > 0 && height > 0)
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        try {
+            val latch = CountDownLatch(1)
+            val outcome = AtomicInteger(Int.MIN_VALUE)
+            instrumentation.runOnMainSync {
+                PixelCopy.request(
+                    view,
+                    bitmap,
+                    { result ->
+                        outcome.set(result)
+                        latch.countDown()
+                    },
+                    Handler(Looper.getMainLooper())
+                )
+            }
+            assertTrue("PixelCopy of the animated view timed out", latch.await(30, TimeUnit.SECONDS))
+            assertEquals("PixelCopy of the animated view failed", PixelCopy.SUCCESS, outcome.get())
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            return pixels
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     @Test(timeout = 900000)
     fun generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -270,6 +300,52 @@ class GeneratedAvatarRuntimeTest {
             assertTrue("Production renderer raised GL errors: ${telemetry?.toJson()}", telemetry?.glErrorFrames == 0)
             assertTrue("Production renderer had EGL swap failures: ${telemetry?.toJson()}", telemetry?.eglErrorFrames == 0)
             assertTrue("Production renderer had failed draw calls: ${telemetry?.toJson()}", telemetry?.failedDrawCalls == 0)
+
+            /*
+             * Built-in animation. The renderer has to list this avatar's animations, play one by
+             * GPU skinning, keep presenting frames without a GL error, and what is on screen has
+             * to change. "t_pose" is used because it is a held pose: the picture differs from the
+             * rest pose by the same amount whenever the frame is taken.
+             */
+            val animatedView = checkNotNull(surfaceView) { "The production SurfaceView was not created" }
+            val clips = animatedView.animationClips
+            evidence.put("animationClips", JSONArray(clips.map { it.name }))
+            saveEvidence()
+            assertTrue("The production renderer listed no animations for a generated avatar", clips.isNotEmpty())
+            val restPicture = captureSurfacePixels(instrumentation, animatedView)
+            val pose = clips.firstOrNull { it.name == "t_pose" } ?: clips.first()
+            val framesBefore = animatedView.animatedFramesPresented.get()
+            animatedView.playAnimation(pose.index)
+            val animationDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(240)
+            while (animatedView.animatedFramesPresented.get() < framesBefore + 3 && System.nanoTime() < animationDeadline) {
+                Thread.sleep(250)
+            }
+            val animatedFrames = animatedView.animatedFramesPresented.get() - framesBefore
+            val posedPicture = captureSurfacePixels(instrumentation, animatedView)
+            var changedPixels = 0
+            if (restPicture.size == posedPicture.size) {
+                for (i in restPicture.indices) {
+                    val before = restPicture[i]
+                    val after = posedPicture[i]
+                    val difference = kotlin.math.abs(Color.red(before) - Color.red(after)) +
+                        kotlin.math.abs(Color.green(before) - Color.green(after)) +
+                        kotlin.math.abs(Color.blue(before) - Color.blue(after))
+                    if (difference > 36) changedPixels++
+                }
+            }
+            val animatedTelemetry = AvatarForgeSurfaceView.latestTelemetry?.takeIf { it.assetName == result.file.name }
+            evidence.put("animationPlayed", pose.name)
+                .put("animationPlayingIndex", animatedView.playingAnimation)
+                .put("animatedFramesPresented", animatedFrames)
+                .put("animationChangedPixels", changedPixels)
+                .put("animationTelemetry", animatedTelemetry?.toJson() ?: JSONObject.NULL)
+            saveEvidence()
+            android.util.Log.i("AvatarForge", "ANIMATION_EVIDENCE played=${pose.name} frames=$animatedFrames changedPixels=$changedPixels clips=${clips.size}")
+            assertTrue("The renderer refused to play '${pose.name}'", animatedView.playingAnimation == pose.index)
+            assertTrue("Fewer than three frames were presented while '${pose.name}' played: $animatedFrames", animatedFrames >= 3)
+            assertTrue("Playing '${pose.name}' changed only $changedPixels pixels of the picture", changedPixels >= 2_000)
+            assertTrue("GL errors while an animation played: ${animatedTelemetry?.toJson()}", animatedTelemetry?.glErrorFrames == 0)
+            assertTrue("Failed draw calls while an animation played: ${animatedTelemetry?.toJson()}", animatedTelemetry?.failedDrawCalls == 0)
         } catch (failure: Throwable) {
             evidence.put("failure", failure.message ?: failure.javaClass.simpleName)
                 .put("lastRendererStatus", latestStatus.get())

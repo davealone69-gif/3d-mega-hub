@@ -409,6 +409,12 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                 bytes = readBounded(stream)
                 if (bytes!!.isEmpty()) error("Selected GLB is empty")
                 GlbValidator.validate(bytes!!)
+                // gltfio reserves morph storage for every vertex of every target. An avatar this app
+                // generated needs several hundred megabytes of it, and asking for that ended the
+                // process on the phone. Such a file is turned away here, whoever sent it.
+                GlbPreviewRouting.animationPreviewRefusal(
+                    GlbPreviewRouting.summarize(java.io.ByteArrayInputStream(bytes!!))
+                )?.let { reason -> error("this preview cannot open the file: $reason") }
             } catch (error: Exception) {
                 failure = error
             }

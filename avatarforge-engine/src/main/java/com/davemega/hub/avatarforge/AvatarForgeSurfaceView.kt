@@ -49,6 +49,82 @@ class AvatarForgeSurfaceView(
     @Volatile private var surfaceHeight = 0
     @Volatile private var renderThread: Thread? = null
 
+    /** One animation the renderer can play on the model in this view. */
+    data class AnimationClip(val index: Int, val name: String, val durationSeconds: Float)
+
+    /**
+     * Built-in animation. Requests are recorded here on the UI thread and carried out by the
+     * render thread before its next frame, because the native renderer belongs to that thread.
+     */
+    private val animationLock = Any()
+    private var requestedAnimation = NO_ANIMATION
+    private var animationRequestPending = false
+    private var requestedSpeed = 1f
+    private var requestedLoop = true
+    private var requestedPaused = false
+    private var playbackRequestPending = false
+    private var requestedSeekSeconds = Float.NaN
+    @Volatile private var animationListener: ((List<AnimationClip>) -> Unit)? = null
+
+    /** The animations of the loaded model; empty until the renderer has started, or if it has none. */
+    @Volatile
+    var animationClips: List<AnimationClip> = emptyList()
+        private set
+
+    /** The animation now playing ([NO_ANIMATION] at rest) and where it is, as the renderer reports them. */
+    @Volatile
+    var playingAnimation: Int = NO_ANIMATION
+        private set
+    @Volatile
+    var animationPositionSeconds: Float = 0f
+        private set
+
+    /** Frames presented while an animation was applied; instrumentation waits on this. */
+    val animatedFramesPresented = AtomicInteger(0)
+
+    /** Called on the main thread once the renderer knows which animations the model has. */
+    fun setAnimationListener(listener: ((List<AnimationClip>) -> Unit)?) {
+        animationListener = listener
+        val known = animationClips
+        if (listener != null && known.isNotEmpty()) mainHandler.post { listener(known) }
+    }
+
+    /** Plays the animation at [index] from its start; [NO_ANIMATION] returns the model to rest. */
+    fun playAnimation(index: Int) {
+        synchronized(animationLock) {
+            requestedAnimation = index
+            requestedPaused = false
+            animationRequestPending = true
+        }
+    }
+
+    fun setAnimationPaused(paused: Boolean) {
+        synchronized(animationLock) {
+            requestedPaused = paused
+            playbackRequestPending = true
+        }
+    }
+
+    fun setAnimationSpeed(speed: Float) {
+        synchronized(animationLock) {
+            requestedSpeed = if (speed.isFinite()) speed.coerceIn(0.1f, 3.0f) else 1f
+            playbackRequestPending = true
+        }
+    }
+
+    fun setAnimationLoop(loop: Boolean) {
+        synchronized(animationLock) {
+            requestedLoop = loop
+            playbackRequestPending = true
+        }
+    }
+
+    fun seekAnimation(seconds: Float) {
+        synchronized(animationLock) {
+            requestedSeekSeconds = seconds
+        }
+    }
+
     private val cameraLock = Any()
     private var pendingYawDeg = 0f
     private var pendingPitchDeg = 0f
@@ -247,6 +323,17 @@ class AvatarForgeSurfaceView(
                 session = telemetry
                 recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion)
                 onStatus("AvatarForge GLES renderer active · $apiVersion · ${glbFile.name}")
+                val clips = parseAnimations(nativeGetAnimations(nativeHandle))
+                animationClips = clips
+                playingAnimation = NO_ANIMATION
+                animationPositionSeconds = 0f
+                Log.i(TAG, "ANIMATIONS count=${clips.size} names=${clips.joinToString(",") { it.name }}")
+                animationListener?.let { listener -> mainHandler.post { listener(clips) } }
+                // A surface that came back (the app returned to the foreground) starts a new native
+                // session at rest; carry on with the animation the user had chosen.
+                synchronized(animationLock) {
+                    if (requestedAnimation != NO_ANIMATION) animationRequestPending = true
+                }
                 var lastFrame = System.nanoTime()
                 var lastWidth = surfaceWidth
                 var lastHeight = surfaceHeight
@@ -281,10 +368,46 @@ class AvatarForgeSurfaceView(
                     } else if (deltaYaw != 0f || deltaPitch != 0f || zoomScale != 1f) {
                         nativeOrbitCamera(nativeHandle, deltaYaw, deltaPitch, zoomScale)
                     }
+                    var startAnimation = false
+                    var animationIndex = NO_ANIMATION
+                    var playbackChanged = false
+                    var speed = 1f
+                    var loop = true
+                    var paused = false
+                    var seekSeconds = Float.NaN
+                    synchronized(animationLock) {
+                        startAnimation = animationRequestPending
+                        animationIndex = requestedAnimation
+                        playbackChanged = playbackRequestPending
+                        speed = requestedSpeed
+                        loop = requestedLoop
+                        paused = requestedPaused
+                        seekSeconds = requestedSeekSeconds
+                        animationRequestPending = false
+                        playbackRequestPending = false
+                        requestedSeekSeconds = Float.NaN
+                    }
+                    if (startAnimation) {
+                        val accepted = animationIndex == NO_ANIMATION || animationIndex in animationClips.indices
+                        if (accepted && nativeSetAnimation(nativeHandle, animationIndex, speed, loop)) {
+                            playingAnimation = animationIndex
+                            nativeSetAnimationPlayback(nativeHandle, speed, loop, paused)
+                        } else {
+                            playingAnimation = NO_ANIMATION
+                            Log.w(TAG, "Animation $animationIndex was refused by the renderer (${animationClips.size} available)")
+                        }
+                    } else if (playbackChanged) {
+                        nativeSetAnimationPlayback(nativeHandle, speed, loop, paused)
+                    }
+                    if (seekSeconds.isFinite()) nativeSeekAnimation(nativeHandle, seekSeconds)
                     val now = System.nanoTime()
                     val delta = ((now - lastFrame).toDouble() / 1_000_000_000.0).coerceIn(0.001, 0.1).toFloat()
                     lastFrame = now
                     val presentedThisFrame = nativeRender(nativeHandle, delta)
+                    if (playingAnimation != NO_ANIMATION) {
+                        animationPositionSeconds = nativeGetAnimationTime(nativeHandle)
+                        if (presentedThisFrame) animatedFramesPresented.incrementAndGet()
+                    }
                     val renderReturned = System.nanoTime()
                     val stats = nativeGetStats(nativeHandle)
                     check(stats.size == 9) { "AvatarForge returned ${stats.size} renderer statistics; expected 9." }
@@ -868,7 +991,21 @@ class AvatarForgeSurfaceView(
     private external fun nativeGetInfo(handle: Long): String
     private external fun nativeGetStats(handle: Long): IntArray
     private external fun nativeGetMetrics(handle: Long): LongArray?
+    private external fun nativeGetAnimations(handle: Long): Array<String>?
+    private external fun nativeSetAnimation(handle: Long, animation: Int, speed: Float, loop: Boolean): Boolean
+    private external fun nativeSetAnimationPlayback(handle: Long, speed: Float, loop: Boolean, paused: Boolean)
+    private external fun nativeSeekAnimation(handle: Long, seconds: Float)
+    private external fun nativeGetAnimationTime(handle: Long): Float
     private external fun nativeDestroy(handle: Long)
+
+    private fun parseAnimations(entries: Array<String>?): List<AnimationClip> =
+        entries.orEmpty().mapIndexed { index, entry ->
+            AnimationClip(
+                index = index,
+                name = entry.substringBeforeLast('|').ifBlank { "animation ${index + 1}" },
+                durationSeconds = entry.substringAfterLast('|', "0").toFloatOrNull()?.takeIf { it.isFinite() } ?: 0f
+            )
+        }
 
     companion object {
         private const val TAG = "AvatarForge"
@@ -886,6 +1023,8 @@ class AvatarForgeSurfaceView(
         private const val METRIC_COUNT = 32
         private const val METRIC_LAYOUT_VERSION = 1L
         const val TELEMETRY_FILE = "renderer_telemetry.json"
+        /** "No animation": the model stands in its rest pose. */
+        const val NO_ANIMATION = -1
 
         /**
          * Most recent measured snapshot from any AvatarForge render session in this process,

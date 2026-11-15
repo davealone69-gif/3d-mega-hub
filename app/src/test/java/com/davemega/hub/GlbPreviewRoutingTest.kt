@@ -47,6 +47,54 @@ class GlbPreviewRoutingTest {
     }
 
     @Test
+    fun generatedAvatarIsNeverOfferedTheAnimationPreview() {
+        // The file that ended the process on the phone: an avatar of this app, sent to gltfio by hand.
+        val summary = summarize(
+            """{"asset":{"version":"2.0","generator":"AvatarForge 0.10.1"},"skins":[{}],"animations":[{}],
+               "accessors":[{"count":621802}],
+               "meshes":[{"primitives":[{"attributes":{"POSITION":0},"targets":[{},{}]}]}]}"""
+        )
+        assertNotNull(summary)
+        assertEquals(621802L, summary!!.vertexCount)
+        assertEquals(2L * 621802L, summary.morphVertexTargets)
+        assertNotNull(GlbPreviewRouting.animationPreviewRefusal(summary))
+        assertFalse(GlbPreviewRouting.mayOfferAnimationPreview(summary))
+        assertFalse(GlbPreviewRouting.opensInAnimationPreview(summary))
+    }
+
+    @Test
+    fun foreignFileWithHugeMorphStorageIsRefused() {
+        // 52 targets over 621 802 vertices is about 740 MB of morph storage in gltfio.
+        val targets = (1..52).joinToString(",") { "{}" }
+        val summary = summarize(
+            """{"asset":{"version":"2.0","generator":"Some exporter"},"animations":[{}],
+               "accessors":[{"count":621802}],
+               "meshes":[{"primitives":[{"attributes":{"POSITION":0},"targets":[$targets]}]}]}"""
+        )
+        assertNotNull(summary)
+        assertEquals(52, summary!!.morphTargetCount)
+        assertTrue(summary.morphVertexTargets > GlbPreviewRouting.MAX_MORPH_VERTEX_TARGETS)
+        val refusal = GlbPreviewRouting.animationPreviewRefusal(summary)
+        assertNotNull(refusal)
+        assertTrue(refusal!!.contains("MB"))
+        assertFalse(GlbPreviewRouting.opensInAnimationPreview(summary))
+    }
+
+    @Test
+    fun smallForeignFileWithMorphTargetsIsStillAllowed() {
+        // The Khronos AnimatedMorphCube: 24 vertices, 2 targets, 1 animation.
+        val summary = summarize(
+            """{"asset":{"version":"2.0","generator":"glTF Tools for Unity"},"animations":[{}],
+               "accessors":[{"count":24}],
+               "meshes":[{"primitives":[{"attributes":{"POSITION":0},"targets":[{},{}]}]}]}"""
+        )
+        assertNotNull(summary)
+        assertNull(GlbPreviewRouting.animationPreviewRefusal(summary))
+        assertTrue(GlbPreviewRouting.mayOfferAnimationPreview(summary))
+        assertTrue(GlbPreviewRouting.opensInAnimationPreview(summary))
+    }
+
+    @Test
     fun riggedFileWithoutClipsHasNothingToPlay() {
         // The shape of the owner's prepared reference avatar: a skin, joints and weights, no clips.
         val summary = summarize(

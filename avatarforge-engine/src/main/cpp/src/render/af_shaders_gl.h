@@ -3,6 +3,13 @@
  *
  * GLES 3.10 sources for the OpenGL ES backend: the same files that produced the
  * SPIR-V table, with the Vulkan-specific qualifiers compiled out.
+ *
+ * EDITED BY HAND IN THIS REPOSITORY, 2026-11-15: the main() of forward.vert and shadow.vert, and
+ * the declarations just above them (attributes 5 and 6, the AfSkinBlock uniform block), for GPU
+ * skinning. The generator and its GLSL sources live in the AvatarForge repository and are not
+ * vendored here. Regenerating this file from them drops the change until forward.vert and
+ * shadow.vert there carry it too. af_shaders_vk.h (SPIR-V) was not changed: the Vulkan backend
+ * has no skinned playback.
  */
 #ifndef AF_SHADERS_GL_H
 #define AF_SHADERS_GL_H
@@ -3685,14 +3692,42 @@ static const char kSrc_forward_vert[] =
     "layout(location = 2) in vec4 aTangent;\n"
     "layout(location = 3) in vec2 aUv;\n"
     "layout(location = 4) in vec4 aColor;\n"
+    "layout(location = 5) in uvec4 aJoints;\n"
+    "layout(location = 6) in vec4 aWeights;\n"
+    "\n"
+    "/*\n"
+    " * GPU skinning. One skin matrix per joint (joint world transform x inverse bind matrix), written\n"
+    " * by af_engine_evaluate_animation() and indexed the way af_vertex::joints indexes them.\n"
+    " * uSkinParams.x > 0.5 while an animation plays; otherwise the vertex is passed through as it is,\n"
+    " * which is every static model and every avatar at rest.\n"
+    " */\n"
+    "layout(std140) uniform AfSkinBlock {\n"
+    "    mat4 uSkinJoints[128];\n"
+    "    vec4 uSkinParams;\n"
+    "} afBones;\n"
     "\n"
     "void main() {\n"
-    "    vWorldPos = aPos;\n"
-    "    vNormal = aNormal;\n"
-    "    vTangent = aTangent;\n"
+    "    vec3 skinnedPos = aPos;\n"
+    "    vec3 skinnedNormal = aNormal;\n"
+    "    vec3 skinnedTangent = aTangent.xyz;\n"
+    "    float skinTotal = aWeights.x + aWeights.y + aWeights.z + aWeights.w;\n"
+    "    if (afBones.uSkinParams.x > 0.5 && skinTotal > 0.000001) {\n"
+    "        uvec4 skinIndex = min(aJoints, uvec4(127u));\n"
+    "        mat4 skinMatrix = afBones.uSkinJoints[skinIndex.x] * aWeights.x\n"
+    "                        + afBones.uSkinJoints[skinIndex.y] * aWeights.y\n"
+    "                        + afBones.uSkinJoints[skinIndex.z] * aWeights.z\n"
+    "                        + afBones.uSkinJoints[skinIndex.w] * aWeights.w;\n"
+    "        skinnedPos = (skinMatrix * vec4(aPos, 1.0)).xyz / skinTotal;\n"
+    "        mat3 skinRotation = mat3(skinMatrix);\n"
+    "        skinnedNormal = skinRotation * aNormal;\n"
+    "        skinnedTangent = skinRotation * aTangent.xyz;\n"
+    "    }\n"
+    "    vWorldPos = skinnedPos;\n"
+    "    vNormal = skinnedNormal;\n"
+    "    vTangent = vec4(skinnedTangent, aTangent.w);\n"
     "    vUv = aUv;\n"
     "    vColor = aColor;\n"
-    "    gl_Position = afClip(cam.uViewProj * vec4(aPos, 1.0));\n"
+    "    gl_Position = afClip(cam.uViewProj * vec4(skinnedPos, 1.0));\n"
     "}\n"
 ;
 
@@ -8900,9 +8935,32 @@ static const char kSrc_shadow_vert[] =
     "#endif /* AF_COMMON_GLSL */\n"
     "\n"
     "layout(location = 0) in vec3 aPos;\n"
+    "layout(location = 5) in uvec4 aJoints;\n"
+    "layout(location = 6) in vec4 aWeights;\n"
+    "\n"
+    "/*\n"
+    " * GPU skinning. One skin matrix per joint (joint world transform x inverse bind matrix), written\n"
+    " * by af_engine_evaluate_animation() and indexed the way af_vertex::joints indexes them.\n"
+    " * uSkinParams.x > 0.5 while an animation plays; otherwise the vertex is passed through as it is,\n"
+    " * which is every static model and every avatar at rest.\n"
+    " */\n"
+    "layout(std140) uniform AfSkinBlock {\n"
+    "    mat4 uSkinJoints[128];\n"
+    "    vec4 uSkinParams;\n"
+    "} afBones;\n"
     "\n"
     "void main() {\n"
-    "    gl_Position = afClip(cam.uLightViewProj * vec4(aPos, 1.0));\n"
+    "    vec3 skinnedPos = aPos;\n"
+    "    float skinTotal = aWeights.x + aWeights.y + aWeights.z + aWeights.w;\n"
+    "    if (afBones.uSkinParams.x > 0.5 && skinTotal > 0.000001) {\n"
+    "        uvec4 skinIndex = min(aJoints, uvec4(127u));\n"
+    "        mat4 skinMatrix = afBones.uSkinJoints[skinIndex.x] * aWeights.x\n"
+    "                        + afBones.uSkinJoints[skinIndex.y] * aWeights.y\n"
+    "                        + afBones.uSkinJoints[skinIndex.z] * aWeights.z\n"
+    "                        + afBones.uSkinJoints[skinIndex.w] * aWeights.w;\n"
+    "        skinnedPos = (skinMatrix * vec4(aPos, 1.0)).xyz / skinTotal;\n"
+    "    }\n"
+    "    gl_Position = afClip(cam.uLightViewProj * vec4(skinnedPos, 1.0));\n"
     "}\n"
 ;
 
