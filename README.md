@@ -19,9 +19,32 @@ Do not create another implementation branch. Do not split work across competing 
 - Animation preview default: **IMPLEMENTED IN SOURCE** — commit `8b80b072187c1e471107fd9bb23ff8bdae9c4790`.
 - Preview-mode explanation and control wording: **IMPLEMENTED IN SOURCE** — commit `0584611d5ffcc8d7b89416d98f14299790c3450f`.
 - README and rig-reference handover: **UPDATED** — commit `3c7e356365ff55db3b915365dfcc284e7cc55aaf`.
-- PR #9 current head: `3c7e356365ff55db3b915365dfcc284e7cc55aaf`.
-- Build/CI for this new head: **UNVERIFIED** — no workflow run or commit status was returned during this update; the execution container could not resolve GitHub to clone/build locally.
+- PR #9 observed head at the latest monitor check: `d66eb22af0c82de12aeafccd70b283d44ddd5c52` (the subsequent README evidence commit will create a new head).
+- Exact-head CI on `d66eb22af0c82de12aeafccd70b283d44ddd5c52`: **FAILED** — production generated-GLB-to-GLES SurfaceView test failed in runs `43673389818` and `43673389819`; Android CI run `43673389854` also failed its instrumented GLES GLB render smoke. See the latest APK monitor snapshot below.
 - `mylove_rig_prepared.glb` binary inspection and clip playback: **UNVERIFIED** — the preserved Dropbox file is recorded below, but its bytes were not available in the build workspace. Do not infer clip count or playback success from its filename.
+
+## Latest APK monitor snapshot: 2026-11-15
+
+**Observed PR #9 state:** open, targeting `main`; branch `integration/avatarforge-renderer-port`; observed head before this README evidence commit: `d66eb22af0c82de12aeafccd70b283d44ddd5c52`. No merge was performed. `main` remains untouched.
+
+### Exact-head Actions evidence for `d66eb22af0c82de12aeafccd70b283d44ddd5c52`
+
+| Workflow / run | Result | Evidence |
+|---|---|---|
+| [Android CI #603](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389854) | **FAILED** | Native host regression, R8/minification, unit tests, lint and debug APK build passed. Instrumented imported-GLB GLES renderer smoke failed with `OutOfMemoryError`: attempted 134,217,744-byte allocation with about 25.1 MB free; instrumentation process crashed |
+| [AvatarForge diagnostic APK/tests #276](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389818) | **FAILED** | Build and basic generated-avatar PixelCopy diagnostic passed. Required `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` failed: only 2 presented frames in 15 seconds; 29 draws; 1,626,176 reported triangles; bounds in frustum; GL/EGL errors zero |
+| [AvatarForge generated-avatar runtime verification #347](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389819) | **FAILED** | The production generated-GLB-to-GLES SurfaceView test failed with the same 2-frame / 15-second assertion |
+| [Release preview and Android emulator smoke #416](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389800) | **PASS, not a readiness substitute** | Emulator install/launch smoke and ephemeral-key signed release preview passed. Neither proves production generated-GLB rendering |
+
+### Artifacts and verification boundary
+
+- Exact-head debug APK artifact: [3D-Mega-Hub-debug-apk, artifact 14145098709](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389854/artifacts/14145098709). Artifact ZIP SHA-256: `49fa25b29fc8e7e8ef68fa8d6c5a0ee0c962799527baf9943ea81a57ac9d793d`.
+- Exact-head diagnostic APK artifact: [3D-Mega-Hub-generated-avatar-diagnostic-debug-apk, artifact 14145536569](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389818/artifacts/14145536569). Artifact ZIP SHA-256: `e9a9e1bf4b95ed411eca402d6a9099fba8e83a9d6f4ae5784d02ca58e609f3f6`.
+- These digests identify the downloaded workflow artifact ZIPs, **not** the APK files inside them.
+- APK package/application ID, APK signing certificate/signature and APK-file SHA-256: **UNVERIFIED**.
+- Samsung SM-S921B installation and runtime: **UNVERIFIED**.
+
+**Readiness decision: NOT READY.** The required production render instrumentation fails, the imported-GLB GLES smoke fails, and APK-level package/signature/hash verification is incomplete. Do not distribute these artifacts as a ready test APK. The README update itself creates a new PR head; all run results above belong only to the observed parent commit and must not be reused as exact-head evidence for the new commit.
 
 ## Latest handover: 2026-11-15
 
@@ -217,10 +240,10 @@ Work through these steps in order, on the single canonical branch. Do not skip a
 | R8/minification | **PASS (older exact source)** | Passed on application source `1deaf264032195989257845b884a5829f06fe9cf`; not current-head evidence |
 | Android lint | **CANCELLED (prior cycle)** | No pass claim |
 | Basic generated-avatar pixel gate | **PASS (older exact source only)** | Run `43528943730`, source `e9e7d76ef4a3f12c5c6a79951b5a1a99570c6228`: basic generated-avatar pixel test passed on Android 11 emulator. This is not the production exported-GLB SurfaceView end-to-end test |
-| Production generated-GLB-to-GLES SurfaceView | **FAILED on prior head** | Run `43534561147`, job `132260325291`, head `705165eebdaa525d75be861763c9a11205f33634`: `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` failed. LOD2 generation reduced the model to 325,491 triangles, but the production renderer presented only 2 frames in 15 seconds. This fails the required gate |
-| Required Android build jobs | **FAILED on prior head** | Run `43534561148` at the same prior head: unit tests, lint, R8, debug APK build and native regression passed, but instrumented GLES renderer smoke failed; bundled-GLB instrumentation also hit `keyDispatchingTimedOut` |
-| Fresh APK artifact | **PARTIAL on prior head** | Fresh debug APK artifact existed for the prior head and ZIP digest matched GitHub artifact digest. Extracted APK SHA-256 was calculated, but package and APK signing-block verification was not complete. It is not a ready APK |
-| Current branch head after this README update | **NEW HEAD; VALIDATION PENDING** | This documentation commit intentionally changes the PR head. All previous run results are historical and cannot satisfy the exact-current-head readiness gate. Re-run required workflows on the new head |
+| Production generated-GLB-to-GLES SurfaceView | **FAILED on observed head** | Runs `43673389818` (job `132688476029`) and `43673389819` (job `132688165314`), head `d66eb22af0c82de12aeafccd70b283d44ddd5c52`: `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` failed. Assertion: no drawable model frame within 15 seconds; `frames=2`, `presented=2`, `draws=29`, `triangles=1626176`, bounds in frustum, `glError=0x0`, `eglError=0x0`. Required gate fails |
+| Required Android build jobs | **PARTIAL / FAILED on observed head** | Android CI run `43673389854`: native host regression, R8, unit tests, lint and debug APK build passed; instrumented imported-GLB GLES render smoke failed with `OutOfMemoryError` allocating 134,217,744 bytes with about 25 MB free. The separate production generated-GLB test also failed as above |
+| Fresh APK artifact | **PARTIAL on observed head** | Fresh debug APK artifacts exist for the exact observed head: run `43673389854`, artifact `14145098709` (`3D-Mega-Hub-debug-apk`), and run `43673389818`, artifact `14145536569` (`3D-Mega-Hub-generated-avatar-diagnostic-debug-apk`). GitHub ZIP digests are recorded in the latest monitor snapshot; APK package, signing certificate and APK SHA-256 have not been verified. Not a ready APK |
+| Current branch head after this README update | **NEW HEAD; VALIDATION PENDING** | The monitor snapshot below applies to parent head `d66eb22af0c82de12aeafccd70b283d44ddd5c52`. This README commit changes the PR head; its own exact-head Actions evidence must be checked separately |
 | Samsung SM-S921B runtime | **UNVERIFIED** | Requires installation and testing on the physical phone |
 | Production signing | **BLOCKED** | Requires owner-provided production keystore in protected CI secrets |
 | Merge to `main` | **BLOCKED BY GATES** | Do not merge until every required gate passes |
