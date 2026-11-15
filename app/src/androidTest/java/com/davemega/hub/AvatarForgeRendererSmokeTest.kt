@@ -80,8 +80,25 @@ class AvatarForgeRendererSmokeTest {
         val directory = File(context.filesDir, "avatars")
         assertTrue("Could not create app-private avatar test directory", directory.isDirectory || directory.mkdirs())
         val glb = File(directory, "avatarforge-webp-extension-smoke.glb")
-        writeRequiredWebpFixture(glb)
+        writeTexturedTriangleFixture(glb, webp = true)
         assertTrue("Generated WebP GLB fixture is empty", glb.length() > 0L)
+        verifyImportedGlbThroughTheApp(glb)
+    }
+
+    /**
+     * A plain JPEG base-colour texture, with no extension: what most downloaded models carry (all
+     * six GLB files of the owner's second reference folder do). The engine has its own PNG decoder
+     * only; JPEG goes through the Android platform decoder, like WebP. Until 2026-11-15 no test
+     * showed that a JPEG texture reaches the screen.
+     */
+    @Test
+    fun jpegTextureIsDecodedAndRenderedByAvatarForge() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.filesDir, "avatars")
+        assertTrue("Could not create app-private avatar test directory", directory.isDirectory || directory.mkdirs())
+        val glb = File(directory, "avatarforge-jpeg-texture-smoke.glb")
+        writeTexturedTriangleFixture(glb, webp = false)
+        assertTrue("Generated JPEG GLB fixture is empty", glb.length() > 0L)
         verifyImportedGlbThroughTheApp(glb)
     }
 
@@ -157,22 +174,54 @@ class AvatarForgeRendererSmokeTest {
             screenshot.isFile && screenshot.length() > 0L)
     }
 
-    private fun writeRequiredWebpFixture(file: File) {
+    /**
+     * One magenta-textured triangle. With [webp] the texture is WebP behind a REQUIRED
+     * EXT_texture_webp; without it the texture is a plain JPEG and the file uses no extension.
+     */
+    private fun writeTexturedTriangleFixture(file: File, webp: Boolean) {
+        val formatName = if (webp) "WebP" else "JPEG"
         val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
         val webpBytes = try {
             bitmap.eraseColor(Color.MAGENTA)
             ByteArrayOutputStream().use { output ->
                 assertTrue(
-                    "Android platform could not encode the WebP fixture",
-                    bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, output)
+                    "Android platform could not encode the $formatName fixture",
+                    bitmap.compress(
+                        if (webp) Bitmap.CompressFormat.WEBP_LOSSY else Bitmap.CompressFormat.JPEG,
+                        100,
+                        output
+                    )
                 )
                 output.toByteArray()
             }
         } finally {
             bitmap.recycle()
         }
-        assertTrue("WebP fixture encoder returned invalid bytes", webpBytes.size >= 12 &&
-            webpBytes[0] == 'R'.code.toByte() && webpBytes[8] == 'W'.code.toByte())
+        if (webp) {
+            assertTrue("WebP fixture encoder returned invalid bytes", webpBytes.size >= 12 &&
+                webpBytes[0] == 'R'.code.toByte() && webpBytes[8] == 'W'.code.toByte())
+        } else {
+            assertTrue("JPEG fixture encoder returned invalid bytes", webpBytes.size >= 4 &&
+                webpBytes[0] == 0xFF.toByte() && webpBytes[1] == 0xD8.toByte())
+        }
+        // The JPEG fixture names a foreign exporter, as a downloaded model does, so the app's
+        // routing has to decide by content that a one-texture opaque model stays on this renderer.
+        val generatorJson = if (webp) {
+            "AvatarForge Android WebP smoke fixture"
+        } else {
+            "pygltflib test fixture (plain JPEG texture)"
+        }
+        val extensionJson = if (webp) {
+            "\"extensionsUsed\":[\"EXT_texture_webp\"],\"extensionsRequired\":[\"EXT_texture_webp\"],"
+        } else {
+            ""
+        }
+        val textureJson = if (webp) {
+            "{\"extensions\":{\"EXT_texture_webp\":{\"source\":0}}}"
+        } else {
+            "{\"source\":0}"
+        }
+        val mimeType = if (webp) "image/webp" else "image/jpeg"
 
         // POSITION(36) + NORMAL(36) + TEXCOORD_0(24) + indices(6) + 2-byte alignment.
         val imageOffset = 104
@@ -198,9 +247,8 @@ class AvatarForgeRendererSmokeTest {
 
         val json = """
             {
-              "asset":{"version":"2.0","generator":"AvatarForge Android WebP smoke fixture"},
-              "extensionsUsed":["EXT_texture_webp"],
-              "extensionsRequired":["EXT_texture_webp"],
+              "asset":{"version":"2.0","generator":"$generatorJson"},
+              $extensionJson
               "scene":0,
               "scenes":[{"nodes":[0]}],
               "nodes":[{"mesh":0}],
@@ -215,8 +263,8 @@ class AvatarForgeRendererSmokeTest {
                 "roughnessFactor":1,
                 "baseColorTexture":{"index":0}
               }}],
-              "textures":[{"extensions":{"EXT_texture_webp":{"source":0}}}],
-              "images":[{"mimeType":"image/webp","bufferView":4}],
+              "textures":[$textureJson],
+              "images":[{"mimeType":"$mimeType","bufferView":4}],
               "accessors":[
                 {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[-0.82,-0.82,0],"max":[0.82,0.82,0]},
                 {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
@@ -392,13 +440,13 @@ class AvatarForgeRendererSmokeTest {
         }
         assertTrue("Captured renderer screenshot is missing", output.isFile && output.length() > 0L)
 
-        if (glb.name.contains("webp-extension")) {
+        if (glb.name.contains("webp-extension") || glb.name.contains("jpeg-texture")) {
             val texturedCenter = capturedImage.getPixel(crop.centerX(), crop.centerY())
             val red = (texturedCenter shr 16) and 0xff
             val green = (texturedCenter shr 8) and 0xff
             val blue = texturedCenter and 0xff
             assertTrue(
-                "Required WebP texture was not visible in PixelCopy SurfaceView buffer at the triangle centre: RGB=($red,$green,$blue)",
+                "The fixture's magenta WebP or JPEG texture was not visible in PixelCopy SurfaceView buffer at the triangle centre: RGB=($red,$green,$blue)",
                 red > green + 20 && blue > green + 20 && red > 40 && blue > 40
             )
         }

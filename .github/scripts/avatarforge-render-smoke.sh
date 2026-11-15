@@ -45,8 +45,10 @@ if [[ "$TEST_STATUS" -ne 0 ]]; then
   exit "$TEST_STATUS"
 fi
 
-if ! grep -Eq 'run finished: 3 tests, 0 failed, 0 ignored' avatarforge-render-smoke-evidence/logcat.txt; then
-  echo "FAIL: instrumentation log does not prove all three renderer tests passed."
+# Four tests: the bundled GLB, a WebP-textured fixture, a JPEG-textured fixture, and the
+# generated-avatar diagnostic.
+if ! grep -Eq 'run finished: 4 tests, 0 failed, 0 ignored' avatarforge-render-smoke-evidence/logcat.txt; then
+  echo "FAIL: instrumentation log does not prove all four renderer tests passed."
   exit 1
 fi
 if ! grep -q '"status"[[:space:]]*:[[:space:]]*"PIXELS_VERIFIED"' avatarforge-render-smoke-evidence/renderer_diagnostics.json; then
@@ -70,17 +72,17 @@ fi
 # Camera interaction and native lifetime are asserted inside the tests; require their evidence
 # lines too, so a silently skipped assertion cannot pass this gate.
 CAMERA_LINES="$(grep -c "CAMERA_EVIDENCE " avatarforge-render-smoke-evidence/avatarforge-logcat.txt || true)"
-if [[ "${CAMERA_LINES:-0}" -lt 2 ]]; then
-  echo "FAIL: expected camera-orbit evidence from both imported-GLB tests, found ${CAMERA_LINES:-0}."
+if [[ "${CAMERA_LINES:-0}" -lt 3 ]]; then
+  echo "FAIL: expected camera-orbit evidence from all three imported-GLB tests, found ${CAMERA_LINES:-0}."
   exit 1
 fi
 RELEASED_LINES="$(grep -c -E "SESSION_EVIDENCE .* live=0([^0-9]|$)" avatarforge-render-smoke-evidence/avatarforge-logcat.txt || true)"
-if [[ "${RELEASED_LINES:-0}" -lt 2 ]]; then
-  echo "FAIL: expected native-session release evidence (live=0) from both imported-GLB tests, found ${RELEASED_LINES:-0}."
+if [[ "${RELEASED_LINES:-0}" -lt 3 ]]; then
+  echo "FAIL: expected native-session release evidence (live=0) from all three imported-GLB tests, found ${RELEASED_LINES:-0}."
   exit 1
 fi
 if [[ ! -s avatarforge-render-smoke-evidence/renderer_telemetry.json ]]; then
   echo "FAIL: the renderer did not persist renderer_telemetry.json at the end of a render session."
   exit 1
 fi
-echo "PASS: all three instrumented renderer tests passed; imported GLB PixelCopy, camera-orbit, native-lifetime and measured telemetry evidence captured."
+echo "PASS: all four instrumented renderer tests passed; imported GLB PixelCopy, camera-orbit, native-lifetime and measured telemetry evidence captured."

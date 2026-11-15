@@ -422,7 +422,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             candidateScene = newScene
             val newView = checkNotNull(candidateEngine.createView()) { "Filament view was null" }
             candidateView = newView
-            newView.setPostProcessingEnabled(false)
+            configureViewQuality(newView)
+            // Without a skybox the background is the renderer's clear colour. This is the stage
+            // colour of the creator (0xFF1C2230) in linear light, so both previews stand on the
+            // same background; until 2026-11-15 this one was black.
+            val clearOptions = Renderer.ClearOptions()
+            clearOptions.clearColor = doubleArrayOf(0.0116, 0.0159, 0.0296, 1.0)
+            clearOptions.clear = true
+            newRenderer.setClearOptions(clearOptions)
 
             candidateCameraEntity = EntityManager.get().create()
             val newCamera = checkNotNull(candidateEngine.createCamera(candidateCameraEntity)) {
@@ -456,16 +463,52 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         }
     }
 
+    /**
+     * Picture quality of the glTF viewer. Until 2026-11-15 Filament's post-processing was switched
+     * off here, which left the picture without a tone curve, without anti-aliasing and without
+     * ambient occlusion: linear light clipped at white, stair-stepped edges, flat creases. This
+     * switches on Filament's own pipeline with its defaults (a filmic tone curve), 4x MSAA with
+     * FXAA on top, screen-space ambient occlusion and shadows from the key light.
+     *
+     * Every one of these is a switch on an existing Filament feature; if a backend rejects one,
+     * the viewer falls back to the plain picture instead of failing to start.
+     */
+    private fun configureViewQuality(target: FilamentView) {
+        try {
+            target.setPostProcessingEnabled(true)
+            target.setAntiAliasing(FilamentView.AntiAliasing.FXAA)
+            val multisampling = FilamentView.MultiSampleAntiAliasingOptions()
+            multisampling.enabled = true
+            multisampling.sampleCount = 4
+            target.setMultiSampleAntiAliasingOptions(multisampling)
+            val occlusion = FilamentView.AmbientOcclusionOptions()
+            occlusion.enabled = true
+            target.setAmbientOcclusionOptions(occlusion)
+            target.setShadowingEnabled(true)
+        } catch (failure: Exception) {
+            Log.w(TAG, "Viewer quality options were rejected; using the plain picture", failure)
+            target.setPostProcessingEnabled(false)
+        } catch (failure: LinkageError) {
+            Log.w(TAG, "Viewer quality options are unavailable in this Filament build; using the plain picture", failure)
+            target.setPostProcessingEnabled(false)
+        }
+    }
+
     private fun createSceneLight() {
         val activeEngine = engine ?: return
         val activeScene = scene ?: return
         val entity = EntityManager.get().create()
         try {
+            // The key light casts shadows (nose, chin, arms across the body). One 2048 map over a
+            // model about two metres high is roughly one texel per millimetre.
+            val shadowOptions = LightManager.ShadowOptions()
+            shadowOptions.mapSize = 2048
             LightManager.Builder(LightManager.Type.DIRECTIONAL)
                 .color(1.0f, 0.96f, 0.90f)
                 .intensity(75_000.0f)
                 .direction(0.0f, -0.8944272f, -0.4472136f)
-                .castShadows(false)
+                .castShadows(true)
+                .shadowOptions(shadowOptions)
                 .build(activeEngine, entity)
             activeScene.addEntity(entity)
             lightEntity = entity

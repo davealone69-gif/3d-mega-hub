@@ -110,6 +110,10 @@ jobs:
     name: Android emulator install and launch smoke
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    # checks: write is used by one step only, to attach a screenshot copy to the commit.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v6
@@ -142,6 +146,18 @@ jobs:
           emulator-options: -memory 4096 -cores 2 -no-window -no-audio -no-boot-anim -gpu swangle -no-snapshot -wipe-data
           emulator-boot-timeout: 900
           script: bash .github/scripts/emulator-smoke.sh
+      - name: Publish small screenshot copies as check runs (readable through the API)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # Evidence only: nothing here may fail the job.
+          python3 -m venv "$RUNNER_TEMP/screenshot-venv" || true
+          "$RUNNER_TEMP/screenshot-venv/bin/pip" install --quiet pillow || true
+          "$RUNNER_TEMP/screenshot-venv/bin/python" .github/scripts/publish_screenshot_check.py \
+            "Emulator screenshot: Avatar Studio with the bundled model (glTF viewer)" \
+            emulator-diagnostics/avatar-studio-screen.png || true
       - uses: actions/upload-artifact@v7
         if: always()
         with:
