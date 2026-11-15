@@ -14,6 +14,9 @@
  *   af_host_render --glb avatar.glb --out sheet.png --height 900 \
  *        --tile 0,0.90,1.90 --tile 90,0.90,1.90 --tile 180,0.90,1.90 --tile 0,1.60,0.34
  *   af_host_render --glb avatar.glb --clip 3 --time 0.4 --out walk.png --tile 35,0.90,1.90
+ *   af_host_render --generate --hair 5 --outfit 3 --footwear 2 --out preset.png --tile 0,0.90,1.90
+ *        (generates with the given presets - numbers as in afcore.h - and draws the result
+ *         straight from the generator's buffers; add --draft for the coarse test quality)
  *
  *   --tile yaw,centreY,extent[,centreX[,centreZ]]   one view; repeat for a sheet (joined left to right)
  *   --mode lit|clay|region|normal                   default lit
@@ -169,7 +172,8 @@ int main(int argc, char** argv) {
     std::vector<Tile> tiles;
     int height = 800, clip = -1;
     float aspect = 0.5f, pitch = 4.0f, clipTime = 0.0f;
-    bool report = false, joints = false;
+    bool report = false, joints = false, generate = false, draft = false;
+    int genSex = AF_SEX_FEMALE, genBuild = AF_BUILD_ATHLETIC, genHair = AF_HAIR_MEDIUM, genOutfit = AF_OUTFIT_TSHIRT, genFootwear = AF_FOOTWEAR_NONE;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -178,20 +182,39 @@ int main(int argc, char** argv) {
         else if (a == "--pitch") pitch = static_cast<float>(std::atof(next().c_str()));
         else if (a == "--clip") clip = std::atoi(next().c_str()); else if (a == "--time") clipTime = static_cast<float>(std::atof(next().c_str()));
         else if (a == "--report") report = true; else if (a == "--joints") joints = true;
+        else if (a == "--generate") generate = true; else if (a == "--draft") draft = true;
+        else if (a == "--sex") genSex = std::atoi(next().c_str()); else if (a == "--build") genBuild = std::atoi(next().c_str());
+        else if (a == "--hair") genHair = std::atoi(next().c_str()); else if (a == "--outfit") genOutfit = std::atoi(next().c_str());
+        else if (a == "--footwear") genFootwear = std::atoi(next().c_str());
         else if (a == "--tile") {
             Tile t; const std::string s = next();
             std::sscanf(s.c_str(), "%f,%f,%f,%f,%f", &t.yaw, &t.cy, &t.extent, &t.cx, &t.cz);
             tiles.push_back(t);
         }
     }
-    if (glb.empty()) { std::fprintf(stderr, "usage: af_host_render --glb file.glb [--report] [--out sheet.png --tile yaw,cy,extent ...]\n"); return 2; }
+    if (glb.empty() && !generate) {
+        std::fprintf(stderr, "usage: af_host_render (--glb file.glb | --generate [--sex N --build N --hair N --outfit N --footwear N --draft])\n"
+                             "                      [--report] [--joints] [--out sheet.png --tile yaw,cy,extent ...]\n");
+        return 2;
+    }
 
     af_spec spec; af_spec_init(&spec);
+    if (generate) {
+        spec.sex = genSex; spec.build = genBuild; spec.hair_style = genHair; spec.outfit = genOutfit; spec.footwear = genFootwear;
+        spec.height_m = 1.75f;
+    }
     af_engine* e = nullptr;
     if (af_engine_create(&spec, nullptr, &e) != AF_OK || !e) { std::fprintf(stderr, "engine create failed\n"); return 1; }
-    const int rc = af_engine_import_glb(e, glb.c_str());
+    int rc = AF_OK;
+    if (generate) {
+        /* Straight from the generator's buffers: no export, no import. */
+        if (draft) af_engine_set_quality(e, AF_QUALITY_DRAFT);
+        rc = af_engine_run_all(e);
+    } else {
+        rc = af_engine_import_glb(e, glb.c_str());
+    }
     const char* err = af_engine_last_error(e);
-    if (rc != AF_OK) { std::printf("IMPORT FAILED rc=%d: %s\n", rc, err ? err : ""); af_engine_destroy(e); return 1; }
+    if (rc != AF_OK) { std::printf("%s FAILED rc=%d: %s\n", generate ? "GENERATE" : "IMPORT", rc, err ? err : ""); af_engine_destroy(e); return 1; }
     if (clip >= 0) {
         const int crc = af_engine_apply_clip(e, clip, clipTime);
         char name[64] = {0}; af_engine_clip_name(clip, name, sizeof(name));
@@ -212,7 +235,7 @@ int main(int argc, char** argv) {
             for (int c = 0; c < 3; ++c) { mn[c] = std::min(mn[c], verts[i].pos[c]); mx[c] = std::max(mx[c], verts[i].pos[c]); }
             if (verts[i].weights[0] + verts[i].weights[1] + verts[i].weights[2] + verts[i].weights[3] > 0.5f) ++weighted;
         }
-        std::printf("import: OK  last_error/warning: \"%s\"\n", err ? err : "");
+        std::printf("%s: OK  last_error/warning: \"%s\"\n", generate ? "generate" : "import", err ? err : "");
         std::printf("vertices=%d triangles=%d submeshes=%d materials=%d\n", vcount, icount / 3, subCount, matCount);
         std::printf("bounds min=(%.3f,%.3f,%.3f) max=(%.3f,%.3f,%.3f)\n", mn[0], mn[1], mn[2], mx[0], mx[1], mx[2]);
         std::printf("engine joints=%d  skin joints=%d  animations=%d  vertices with skin weights=%d\n",

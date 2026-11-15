@@ -91,6 +91,7 @@ fun AvatarStudioScreen(
     var animationPosition by remember { mutableStateOf(0.0f) }
     val hasImportedFile = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.isFile == true
     var generationJob by remember { mutableStateOf<Job?>(null) }
+    var appearance by remember { mutableStateOf(AppearanceSelection()) }
     val generating = generationJob?.isActive == true
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -371,6 +372,48 @@ fun AvatarStudioScreen(
                 } else {
                     Text("UNAVAILABLE: ${engineHealth.problem ?: "native engine health check failed"}")
                 }
+                Text("Appearance presets", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "The engine's own hair, clothing, footwear, build, skin-tone and colour options. " +
+                        "They are sent to the engine as an explicit spec, not as prompt words.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                AppearanceControls(
+                    selection = appearance,
+                    enabled = !generating && !isImporting,
+                    onChange = { appearance = it }
+                )
+                Button(
+                    onClick = {
+                        val chosen = appearance
+                        generationJob = scope.launch {
+                            generationStatus = "Generating from the appearance presets: ${chosen.summary()}."
+                            try {
+                                pixelDiagnosticPath = null
+                                val result = AvatarForgeEngine.generate(
+                                    context = context,
+                                    spec = chosen.toSpec(),
+                                    prompt = AppearanceCatalogue.PRESET_PROMPT
+                                )
+                                onGenerated(Uri.fromFile(result.file), result.file.name)
+                                generationStatus = "Generated from presets (${chosen.summary()}): ${result.triangleCount} triangles · " +
+                                    "${result.vertexCount} vertices · ${result.jointCount} joints."
+                            } catch (cancelled: CancellationException) {
+                                generationStatus = "Generation cancelled."
+                            } catch (failure: Exception) {
+                                generationStatus = "Generation failed: ${failure.message ?: failure.javaClass.simpleName}"
+                            } finally {
+                                generationJob = null
+                            }
+                        }
+                    },
+                    enabled = engineHealth.usable && !generating && !isImporting,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (generating) "Generating…" else "Generate from these presets")
+                }
+                Text("Or describe it in words", style = MaterialTheme.typography.titleSmall)
                 OutlinedTextField(
                     value = generationPrompt,
                     onValueChange = { generationPrompt = it.take(500) },
