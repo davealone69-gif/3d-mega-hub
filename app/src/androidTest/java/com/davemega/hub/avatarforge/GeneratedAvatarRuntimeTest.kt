@@ -122,31 +122,57 @@ class GeneratedAvatarRuntimeTest {
     }
 
 
-    /** What the SurfaceView shows right now, as ARGB pixels, read back through the window. */
+    /**
+     * What the SurfaceView shows right now, as ARGB pixels, read back through the window.
+     *
+     * PixelCopy takes the buffer that was queued last and gives the GPU half a second to finish
+     * it. The emulator's software GPU needs ten seconds and more for one frame of a generated
+     * avatar, so a copy can come back as ERROR_TIMEOUT although nothing is wrong with the
+     * picture. That happened once in CI (run 43740886806 on 787e030) and failed this test. So
+     * ERROR_TIMEOUT and ERROR_SOURCE_NO_DATA are asked again, over about half a minute; every
+     * other result fails at once. The view holds one pose while this runs, so a later copy shows
+     * the same picture.
+     */
     private fun captureSurfacePixels(instrumentation: Instrumentation, view: SurfaceView): IntArray {
         val width = view.width
         val height = view.height
         assertTrue("The SurfaceView has no size to capture", width > 0 && height > 0)
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
-            val latch = CountDownLatch(1)
-            val outcome = AtomicInteger(Int.MIN_VALUE)
-            instrumentation.runOnMainSync {
-                PixelCopy.request(
-                    view,
-                    bitmap,
-                    { result ->
-                        outcome.set(result)
-                        latch.countDown()
-                    },
-                    Handler(Looper.getMainLooper())
+            val waitsMs = longArrayOf(0L, 1_000L, 2_000L, 4_000L, 8_000L, 8_000L, 8_000L)
+            var lastResult = Int.MIN_VALUE
+            for ((attempt, waitMs) in waitsMs.withIndex()) {
+                if (waitMs > 0L) SystemClock.sleep(waitMs)
+                val latch = CountDownLatch(1)
+                val outcome = AtomicInteger(Int.MIN_VALUE)
+                instrumentation.runOnMainSync {
+                    PixelCopy.request(
+                        view,
+                        bitmap,
+                        { result ->
+                            outcome.set(result)
+                            latch.countDown()
+                        },
+                        Handler(Looper.getMainLooper())
+                    )
+                }
+                assertTrue("PixelCopy of the animated view timed out", latch.await(30, TimeUnit.SECONDS))
+                lastResult = outcome.get()
+                if (lastResult == PixelCopy.SUCCESS) {
+                    if (attempt > 0) Log.i("AvatarForge", "PIXEL_COPY_RETRY succeeded on attempt ${attempt + 1}")
+                    val pixels = IntArray(width * height)
+                    bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+                    return pixels
+                }
+                assertTrue(
+                    "PixelCopy of the animated view failed with result=$lastResult on attempt ${attempt + 1}",
+                    lastResult == PixelCopy.ERROR_TIMEOUT || lastResult == PixelCopy.ERROR_SOURCE_NO_DATA
                 )
+                Log.w("AvatarForge", "PIXEL_COPY_RETRY attempt=${attempt + 1} result=$lastResult")
             }
-            assertTrue("PixelCopy of the animated view timed out", latch.await(30, TimeUnit.SECONDS))
-            assertEquals("PixelCopy of the animated view failed", PixelCopy.SUCCESS, outcome.get())
-            val pixels = IntArray(width * height)
-            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-            return pixels
+            throw AssertionError(
+                "PixelCopy of the animated view failed after ${waitsMs.size} attempts; lastResult=$lastResult"
+            )
         } finally {
             bitmap.recycle()
         }
