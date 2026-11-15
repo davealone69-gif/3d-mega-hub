@@ -12,6 +12,17 @@ All implementation, fixes, tests and handover updates are to be made on one bran
 
 Do not create another implementation branch. Do not split work across competing branches. Do not force-push. Keep historical branches as recovery references until the canonical branch is verified and the owner explicitly authorises branch deletion.
 
+## Latest implementation update: 2026-11-15
+
+**Animation UI change committed on the canonical branch.** Imported file-based GLBs now open directly in the existing Filament gltfio preview, which already drives the GLB `Animator` each render frame. The user no longer has to discover and manually enable the alternate preview before animation controls can appear. The AvatarForge GLES preview remains available as an explicit alternate mode; its native importer still does not apply imported skeletal animation.
+
+- Animation preview default: **IMPLEMENTED IN SOURCE** — commit `8b80b072187c1e471107fd9bb23ff8bdae9c4790`.
+- Preview-mode explanation and control wording: **IMPLEMENTED IN SOURCE** — commit `0584611d5ffcc8d7b89416d98f14299790c3450f`.
+- README and rig-reference handover: **UPDATED** — commit `3c7e356365ff55db3b915365dfcc284e7cc55aaf`.
+- PR #9 current head: `3c7e356365ff55db3b915365dfcc284e7cc55aaf`.
+- Build/CI for this new head: **UNVERIFIED** — no workflow run or commit status was returned during this update; the execution container could not resolve GitHub to clone/build locally.
+- `mylove_rig_prepared.glb` binary inspection and clip playback: **UNVERIFIED** — the preserved Dropbox file is recorded below, but its bytes were not available in the build workspace. Do not infer clip count or playback success from its filename.
+
 ## Latest handover: 2026-11-15
 
 **Overall avatar-comparison status: MEASURED_WITH_GAPS. No verdict.** This update records the complete supplied aligned cross-section report. Artifact identities, geometry measurements and classifications below are agent-reported; they have not been independently recomputed in this repository workspace. This is not a build, renderer-runtime or phone-verification claim.
