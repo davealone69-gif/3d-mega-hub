@@ -1426,6 +1426,22 @@ float BodyField::hairShape(const Vec3& p) const {
         const float curtain = sdRoundBox(p - curtainCentre, curtainHalf,
                                          minf(0.025f, halfDepth * 0.45f));
         d = smin(d, curtain, 0.012f);
+
+        /*
+         * Long/medium hair needs separated clump reads, not one uninterrupted rounded slab.
+         * Carve four shallow, tapered channels into the visible rear surface. These are broad
+         * enough to survive the 8 mm mobile extraction lattice and remain part of the same
+         * watertight field (unlike disconnected decorative planes).
+         */
+        const float grooveZ = curtainCentre.z + curtainHalf.z * 0.78f;
+        for (int groove = -2; groove <= 1; ++groove) {
+            const float x = (static_cast<float>(groove) + 0.5f) * m_.head.rx * 0.42f;
+            const Vec3 grooveTop(x, topY - headH * 0.035f, grooveZ);
+            const Vec3 grooveBottom(x * 1.08f, botY + headH * 0.035f, grooveZ);
+            const float cut = sdTaperedCapsule(p, grooveTop, grooveBottom,
+                                               0.0095f, 0.0065f);
+            d = smax(d, -cut, 0.0015f);
+        }
     }
     /* Ponytail: a tapered rope from the crown, sweeping down and back. */
     if (tail > 0.0f) {
