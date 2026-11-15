@@ -73,6 +73,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var lastAnimationTickNanos = 0L
     private var animationFrameCounter = 0
     private var animationInfoListener: ((Int, Int, Boolean, Boolean, Float, Float, Float) -> Unit)? = null
+    // One label per clip of the loaded file, in the file's order: see GlbClipNames.
+    private var animationNames: List<String> = emptyList()
+    private var animationNamesListener: ((List<String>) -> Unit)? = null
+    private var renderedFrames = 0L
+    private var modelShown = false
 
     private var running = false
     private var statusListener: ((String) -> Unit)? = null
@@ -167,6 +172,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     if (activeRenderer.beginFrame(activeSwapChain, frameTimeNanos)) {
                         activeRenderer.render(activeView)
                         activeRenderer.endFrame()
+                        renderedFrames++
                         if (lastFrameTime == 0L) {
                             lastFrameTime = frameTimeNanos
                             val backendName = activeBackend?.displayName() ?: "unknown backend"
@@ -202,6 +208,49 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     fun setAnimationInfoListener(listener: (Int, Int, Boolean, Boolean, Float, Float, Float) -> Unit) {
         animationInfoListener = listener
         publishAnimationInfo()
+    }
+
+    /** Receives the clip labels of the loaded file, and an empty list when no model is loaded. */
+    fun setAnimationNamesListener(listener: (List<String>) -> Unit) {
+        animationNamesListener = listener
+        listener(animationNames)
+    }
+
+    /**
+     * What the viewer holds and plays at this moment. Call it on the main thread, where all of the
+     * viewer's state lives. The screen does not need it (it has the listeners); the instrumented
+     * test reads it to check what a tap or a seek did.
+     */
+    data class PlaybackState(
+        val status: String,
+        val modelShown: Boolean,
+        val clipNames: List<String>,
+        val selectedClip: Int,
+        val playing: Boolean,
+        val loop: Boolean,
+        val speed: Float,
+        val positionSeconds: Float,
+        val durationSeconds: Float,
+        val renderedFrames: Long
+    )
+
+    fun playbackState(): PlaybackState {
+        val activeAnimator = animator
+        val duration = if (activeAnimator != null && animationCount > 0) {
+            activeAnimator.getAnimationDuration(selectedAnimation.coerceIn(0, animationCount - 1)).takeIf { it.isFinite() } ?: 0f
+        } else 0f
+        return PlaybackState(
+            status = lastStatus,
+            modelShown = modelShown,
+            clipNames = animationNames,
+            selectedClip = selectedAnimation,
+            playing = animationPlaying,
+            loop = animationLoop,
+            speed = animationSpeed,
+            positionSeconds = animationPositionSeconds,
+            durationSeconds = duration,
+            renderedFrames = renderedFrames
+        )
     }
 
     private fun publishAnimationInfo() {
@@ -739,6 +788,13 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             activeScene.addEntities(pending.entities)
             animator = pending.instance.animator
             animationCount = animator?.animationCount ?: 0
+            val loadedAnimator = animator
+            animationNames = GlbClipNames.displayNames(
+                List(animationCount) { index ->
+                    runCatching { loadedAnimator?.getAnimationName(index) }.getOrNull()
+                }
+            )
+            animationNamesListener?.invoke(animationNames)
             selectedAnimation = 0
             animationPositionSeconds = 0f
             animationPlaying = animationCount > 0
@@ -752,6 +808,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             publishAnimationInfo()
             frameCamera(pending.boundingBox)
             filamentAsset = pending
+            modelShown = true
             pendingAsset = null
             val label = pendingAssetUri?.lastPathSegment ?: BUNDLED_MODEL
             pendingAssetUri = null
@@ -828,8 +885,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         scene?.removeEntities(current.entities)
         assetLoader?.let { loader -> safelyDestroy("glTF asset") { loader.destroyAsset(current) } }
         filamentAsset = null
+        modelShown = false
         animator = null
         animationCount = 0
+        animationNames = emptyList()
+        animationNamesListener?.invoke(animationNames)
         selectedAnimation = 0
         animationPositionSeconds = 0f
         animationPlaying = false

@@ -27,6 +27,17 @@ jobs:
       - name: Run native regression tests
         run: ctest --test-dir build/native-tests --output-on-failure
 
+  model-tools:
+    name: Model tools self-test (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Convert a generated showcase file with figures_to_clips.py and check the result
+        run: |
+          python3 -m venv "$RUNNER_TEMP/model-tools-venv"
+          "$RUNNER_TEMP/model-tools-venv/bin/pip" install --quiet numpy
+          "$RUNNER_TEMP/model-tools-venv/bin/python" tools/glb_figures/test_figures_to_clips.py
+
   unit-tests:
     name: Unit tests
     runs-on: ubuntu-latest
@@ -144,7 +155,9 @@ jobs:
             "generated avatar (GLES renderer)" \
             avatarforge-render-smoke-evidence/generated_avatar_diagnostic.png \
             "last imported GLB (GLES renderer)" \
-            avatarforge-render-smoke-evidence/imported_glb_diagnostic.png || true
+            avatarforge-render-smoke-evidence/imported_glb_diagnostic.png \
+            "rigged test figure, clip Wave at 0 s and at 1 s (glTF viewer)" \
+            avatarforge-render-smoke-evidence/gltf_viewer_clip_poses.png || true
       - name: Upload AvatarForge renderer evidence
         if: always()
         uses: actions/upload-artifact@v7

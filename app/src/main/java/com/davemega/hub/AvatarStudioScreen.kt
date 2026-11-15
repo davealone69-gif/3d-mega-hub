@@ -119,6 +119,8 @@ fun AvatarStudioScreen(
     var animationSpeed by remember { mutableStateOf(1.0f) }
     var animationDuration by remember { mutableStateOf(0.0f) }
     var animationPosition by remember { mutableStateOf(0.0f) }
+    // One label per clip of the file shown in the gltfio preview, in the file's order.
+    var animationNames by remember { mutableStateOf<List<String>>(emptyList()) }
     // The built-in animations of an avatar shown by the GLES renderer.
     var avatarView by remember { mutableStateOf<AvatarForgeSurfaceView?>(null) }
     var avatarClips by remember(avatarUri) { mutableStateOf<List<AvatarForgeSurfaceView.AnimationClip>>(emptyList()) }
@@ -287,6 +289,7 @@ fun AvatarStudioScreen(
                                             animationDuration = duration
                                             animationPosition = position
                                         }
+                                        setAnimationNamesListener { names -> animationNames = names }
                                         setModel(avatarUri)
                                         filamentPreviewView = this
                                     }
@@ -340,6 +343,19 @@ fun AvatarStudioScreen(
                 }
             }
 
+            // A file from elsewhere: its own clips, by the names its author gave them.
+            if (useFilamentAnimationPreview && animationNames.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    animationNames.forEachIndexed { index, name ->
+                        CreatorChip(name, selectedAnimation == index) { filamentPreviewView?.selectAnimation(index) }
+                    }
+                }
+            }
+
             /* ------------------------------------------------------------ section panel ------ */
             Column(
                 modifier = Modifier
@@ -361,7 +377,11 @@ fun AvatarStudioScreen(
                         Text("Motion", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         if (useFilamentAnimationPreview) {
                             if (animationCount > 0) {
-                                Text("Animations in this file · ${selectedAnimation + 1} of $animationCount · ${"%.2f".format(animationDuration)} s")
+                                Text(
+                                    "Animations in this file · ${selectedAnimation + 1} of $animationCount · " +
+                                        "${animationNames.getOrNull(selectedAnimation) ?: "Clip ${selectedAnimation + 1}"} · " +
+                                        "${"%.2f".format(animationDuration)} s"
+                                )
                                 Row(
                                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
