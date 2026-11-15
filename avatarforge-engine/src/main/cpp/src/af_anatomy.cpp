@@ -37,6 +37,11 @@ CircTable defaultsFor(int sex, int build) {
     const CircTable femaleAthletic { 31.5f,  88.0f,  72.0f,  68.0f,  93.5f,  54.0f,  34.0f, 27.0f, 23.0f, 15.0f };
     const CircTable femaleMuscular { 34.5f, 100.0f,  82.0f,  76.0f, 103.0f,  61.0f,  37.0f, 32.0f, 26.0f, 16.2f };
     const CircTable femaleHeavy    { 35.5f, 106.0f,  92.0f,  94.0f, 112.0f,  65.0f,  39.5f, 32.0f, 26.5f, 16.6f };
+    /* Curvy: the average frame with a waist a little under it and hips and thighs well over it
+       (waist : hip 0.68 against the average build's 0.80). For a male body it is the average
+       frame with a fuller hip and thigh. */
+    const CircTable femaleCurvy    { 32.0f,  95.0f,  76.0f,  72.0f, 106.0f,  62.5f,  36.5f, 28.5f, 24.0f, 15.4f };
+    const CircTable maleCurvy      { 38.0f, 103.0f,  93.0f,  86.0f, 105.0f,  61.0f,  39.0f, 34.0f, 28.5f, 17.3f };
 
     const bool female = (sex == AF_SEX_FEMALE);
     switch (build) {
@@ -44,6 +49,7 @@ CircTable defaultsFor(int sex, int build) {
         case AF_BUILD_ATHLETIC: return female ? femaleAthletic : maleAthletic;
         case AF_BUILD_MUSCULAR: return female ? femaleMuscular : maleMuscular;
         case AF_BUILD_HEAVY:    return female ? femaleHeavy : maleHeavy;
+        case AF_BUILD_CURVY:    return female ? femaleCurvy : maleCurvy;
         case AF_BUILD_AVERAGE:
         default:                return female ? femaleAverage : maleAverage;
     }
@@ -87,6 +93,18 @@ BodyMetrics Anatomy::solve(const af_spec& spec) {
     m.bust = saturate(spec.bust >= 0.0f ? spec.bust : 0.4f);
     m.age = clampf(spec.age_years > 0.0f ? spec.age_years : 30.0f, 16.0f, 70.0f);
     m.seed = static_cast<uint32_t>(spec.seed > 0 ? spec.seed : 1337);
+    /*
+     * The shape offsets added after the first release of af_spec. Zero is the default for each,
+     * which is also what an older caller's shorter struct delivers.
+     *
+     * Bust and glute describe an adult body, and are honoured for adults only: under 18 the
+     * engine uses its own defaults whatever the caller asked for.
+     */
+    const bool adult = m.age >= 18.0f;
+    const auto offset = [](float v) { return std::isfinite(v) ? clampf(v, -1.0f, 1.0f) : 0.0f; };
+    m.glute = adult ? offset(spec.glute) : 0.0f;
+    if (!adult) m.bust = 0.40f;
+    for (int i = 0; i < AF_FACE_PARAM_COUNT; ++i) m.face[i] = offset(spec.face[i]);
 
     /* ---------- stature ----------------------------------------------------------------
        af_spec is an SI contract: height_m is already metres. A zero/non-finite value can still
@@ -375,12 +393,17 @@ BodyMetrics Anatomy::solve(const af_spec& spec) {
     m.latBulge            = maxf(0.0f, m.chest.rx  * (0.12f * muscleExcess));
     m.abDepth             = maxf(0.0f, m.waist.rz  * (0.06f * muscleExcess));
     m.obliqueBulge        = maxf(0.0f, m.waist.rx  * (0.05f * muscleExcess));
-    m.gluteBulge          = m.hip.rz * (0.16f + 0.10f * clampf(fatExcess, -0.5f, 1.0f) + (female ? 0.06f : 0.0f));
+    m.gluteBulge          = m.hip.rz * maxf(0.04f, 0.16f + 0.10f * clampf(fatExcess, -0.5f, 1.0f) + (female ? 0.06f : 0.0f)
+                                                   + 0.24f * m.glute);
     m.bellyBulge          = m.waist.rz * maxf(0.0f, fatExcess) * 0.55f;
 
     /* Female chest volume: bust girth already encodes total volume; the bulge term shapes
        the breasts on top of the ribcage rather than growing the ribcage itself. */
-    if (female) {
+    /* That holds when the caller gave a bust girth. When it did not, the girths are the build's
+       table values, which say the same thing (about 0.35) for every build - so af_spec.bust,
+       the field a caller sets to choose a size, was read and then overwritten here, and did
+       nothing. Now a measured girth decides when there is one, and af_spec.bust when not. */
+    if (female && spec.chest_cm > 1.0f && adult) {
         const float bustCirc = circ.chest;   /* already metres at this point */
         const float ribR = circumToRadius(circ.underbust, kDepthBust);
         const float bustR = circumToRadius(bustCirc, kDepthBust);

@@ -24,12 +24,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
@@ -65,6 +67,11 @@ import kotlinx.coroutines.launch
  * Laid out after the "Create Your Avatar" guide: the avatar on a stage, a rail of sections beside
  * it, the chosen section's options underneath as pictures, colour dots and sliders, and three
  * actions - Randomize, Save, Create. The sections are the ones the engine has options for.
+ *
+ * The choices themselves follow the owner's second reference, a dark picture creator: ethnicity;
+ * body type, breast size and butt size; hair colour and hair style - each as pictures with the
+ * name written over them. Its dark look is the default here and the header switches to the light
+ * look of the first guide.
  *
  * An avatar made here is drawn by the AvatarForge GLES renderer, which also plays its animations:
  * the strip under the stage starts them and the Motion section has the rest of the controls. The
@@ -120,7 +127,9 @@ fun AvatarStudioScreen(
     var avatarSpeed by remember(avatarUri) { mutableStateOf(1.0f) }
     var generationJob by remember { mutableStateOf<Job?>(null) }
     var appearance by remember { mutableStateOf(AppearanceSelection()) }
-    var category by remember { mutableStateOf(CreatorCategory.HAIR) }
+    var category by remember { mutableStateOf(CreatorCategory.LOOK) }
+    val creatorPrefs = remember { context.getSharedPreferences("avatar_creator", Context.MODE_PRIVATE) }
+    var darkCreator by remember { mutableStateOf(creatorPrefs.getBoolean("dark_look", true)) }
     var showAdvanced by remember { mutableStateOf(false) }
     val generating = generationJob?.isActive == true
     val controlsEnabled = !generating && !isImporting
@@ -131,21 +140,31 @@ fun AvatarStudioScreen(
         avatarView?.playAnimation(index)
     }
 
-    MaterialTheme(colorScheme = CreatorColours) {
+    MaterialTheme(colorScheme = if (darkCreator) CreatorColoursDark else CreatorColours) {
+        // Text that names no colour takes the content colour, which comes from the app's own theme
+        // outside this screen; on the dark look that would be dark text on a dark sheet.
+        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onBackground) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(28.dp))
-                .background(CreatorBackdrop)
+                .background(if (darkCreator) CreatorBackdropDark else CreatorBackdrop)
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                "Create Your Avatar",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Create Your Avatar",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.weight(1f)
+                )
+                CreatorChip(if (darkCreator) "\u2600 Light" else "\u263E Dark", selected = false) {
+                    darkCreator = !darkCreator
+                    creatorPrefs.edit().putBoolean("dark_look", darkCreator).apply()
+                }
+            }
             if (isDebuggable) {
                 OutlinedButton(
                     onClick = {
@@ -330,8 +349,10 @@ fun AvatarStudioScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 when (category) {
+                    CreatorCategory.LOOK -> LookPanel(appearance, controlsEnabled) { appearance = it }
                     CreatorCategory.HAIR -> HairPanel(appearance, controlsEnabled) { appearance = it }
                     CreatorCategory.BODY -> BodyPanel(appearance, controlsEnabled) { appearance = it }
+                    CreatorCategory.FACE -> FacePanel(appearance, controlsEnabled) { appearance = it }
                     CreatorCategory.SKIN -> SkinPanel(appearance, controlsEnabled) { appearance = it }
                     CreatorCategory.OUTFIT -> OutfitPanel(appearance, controlsEnabled) { appearance = it }
                     CreatorCategory.SHOES -> ShoesPanel(appearance, controlsEnabled) { appearance = it }
@@ -709,6 +730,7 @@ fun AvatarStudioScreen(
                     }
                 }
             }
+        }
         }
     }
 }

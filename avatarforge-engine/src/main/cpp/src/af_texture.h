@@ -41,6 +41,11 @@ struct MaterialDef {
 /** One material per af_region; used by the GLB material table and by the baker. */
 const MaterialDef& materialForRegion(int region);
 
+/** User-selected hair colour, falling back to the engine's natural default. */
+Vec3 hairBaseColorForSpec(const af_spec& spec);
+/** Multiplicative root-to-tip pigment gradient for baked hair colour. */
+float hairRootTipTint(const BodyMetrics& metrics, float worldY);
+
 struct TextureSet {
     int width = 0;
     int height = 0;

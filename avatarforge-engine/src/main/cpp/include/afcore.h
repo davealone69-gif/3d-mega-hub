@@ -86,13 +86,33 @@ typedef struct af_callbacks {
 typedef enum af_sex { AF_SEX_UNSPECIFIED = 0, AF_SEX_MALE = 1, AF_SEX_FEMALE = 2 } af_sex;
 
 typedef enum af_build { AF_BUILD_AVERAGE = 0, AF_BUILD_SLIM = 1, AF_BUILD_ATHLETIC = 2,
-                        AF_BUILD_MUSCULAR = 3, AF_BUILD_HEAVY = 4 } af_build;
+                        AF_BUILD_MUSCULAR = 3, AF_BUILD_HEAVY = 4,
+                        AF_BUILD_CURVY = 5   /* narrow waist, full hips and thighs */ } af_build;
 
 typedef enum af_hair_style {
     AF_HAIR_NONE = 0, AF_HAIR_BUZZ = 1, AF_HAIR_SHORT = 2, AF_HAIR_MEDIUM = 3,
     AF_HAIR_LONG = 4, AF_HAIR_PONYTAIL = 5, AF_HAIR_BUN = 6, AF_HAIR_BRAIDS = 7,
-    AF_HAIR_AFRO = 8, AF_HAIR_MOHAWK = 9
+    AF_HAIR_AFRO = 8, AF_HAIR_MOHAWK = 9,
+    AF_HAIR_BOB = 10,          /* cut level at the jaw, blunt ends                          */
+    AF_HAIR_BANGS = 11,        /* shoulder length with a fringe across the forehead         */
+    AF_HAIR_CURLY = 12,        /* a full mass of curls to the shoulders                     */
+    AF_HAIR_BOX_BRAIDS = 13    /* many long braids from the scalp                           */
 } af_hair_style;
+
+/* Indices into af_spec.face. Each value is an offset from the engine's default face, -1..+1,
+   and 0 is that default. They move a feature across its ordinary adult range; none of them is a
+   likeness of anybody. */
+typedef enum af_face_param {
+    AF_FACE_NOSE_WIDTH = 0,    /* width across the wings of the nose                         */
+    AF_FACE_NOSE_BRIDGE = 1,   /* height of the bridge: low (-) to high (+)                  */
+    AF_FACE_LIP_FULLNESS = 2,
+    AF_FACE_EYE_TILT = 3,      /* outer corner of the eye lower (-) or higher (+)            */
+    AF_FACE_EYE_OPENNESS = 4,  /* height of the opening between the lids                     */
+    AF_FACE_CHEEKBONES = 5,
+    AF_FACE_JAW_WIDTH = 6,
+    AF_FACE_RESERVED = 7,
+    AF_FACE_PARAM_COUNT = 8
+} af_face_param;
 
 typedef enum af_outfit {
     AF_OUTFIT_NONE = 0,        /* real unclothed base surface; adult-only (age >= 18)          */
@@ -104,7 +124,8 @@ typedef enum af_outfit {
     AF_OUTFIT_ARMOR_LEATHER = 6,
     AF_OUTFIT_SPACESUIT = 7,
     AF_OUTFIT_ATHLETIC = 8,
-    AF_OUTFIT_COAT = 9
+    AF_OUTFIT_COAT = 9,
+    AF_OUTFIT_SWIMWEAR = 10    /* two-piece: bandeau top and briefs; trunks on a male body       */
 } af_outfit;
 
 typedef enum af_footwear { AF_FOOTWEAR_NONE = 0, AF_FOOTWEAR_SNEAKER = 1, AF_FOOTWEAR_BOOT = 2,
@@ -141,6 +162,16 @@ typedef struct af_spec {
 
     /* Text prompt that produced this spec (informational; stored in the GLB as metadata). */
     char      prompt[512];
+
+    /* ---- appended after the first release of this struct -------------------------------
+       A caller built before these fields passes a smaller struct_size; the engine then sees
+       zeros here, and zero means "the default" for every one of them.
+
+       `bust` (above) and `glute` shape an ADULT body. For age_years below 18 the engine
+       ignores both and uses its defaults. */
+    float     glute;            /* -1..+1 gluteal volume, 0 => the build's default            */
+    float     eye_tone[3];      /* linear-sRGB iris colour, 0 => derived from skin_melanin    */
+    float     face[AF_FACE_PARAM_COUNT];  /* see af_face_param; 0 => the default face         */
 } af_spec;
 
 void af_spec_init(af_spec* spec);

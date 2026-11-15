@@ -41,6 +41,23 @@ const MaterialDef& materialForRegion(int region) {
     return kMaterials[region];
 }
 
+Vec3 hairBaseColorForSpec(const af_spec& spec) {
+    const float* tone = spec.hair_tone;
+    if (tone[0] > 0.0f || tone[1] > 0.0f || tone[2] > 0.0f) {
+        return Vec3(clampf(tone[0], 0.0f, 1.0f),
+                    clampf(tone[1], 0.0f, 1.0f),
+                    clampf(tone[2], 0.0f, 1.0f));
+    }
+    return materialForRegion(REGION_HAIR).baseColor;
+}
+
+float hairRootTipTint(const BodyMetrics& metrics, float worldY) {
+    const float headHeight = maxf(metrics.y.crownY - metrics.y.chinY, 0.05f);
+    const float rootToTip = saturate((metrics.y.crownY - worldY) /
+                                     maxf(headHeight * 2.6f, 0.05f));
+    return lerpf(0.78f, 1.06f, rootToTip);
+}
+
 uint64_t textureSetBytes(const TextureSet& set) {
     return static_cast<uint64_t>(set.baseColor.size()) + set.normal.size() + set.metallicRoughness.size() +
            set.occlusion.size() + set.subsurface.size();
@@ -208,7 +225,9 @@ void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
                    Vec3(m.head.rx * 1.05f, m.head.rz * 0.35f, m.head.rz * 0.95f)) * 0.30f;       /* scalp */
     blush = saturate(blush);
     const float blushNoise = 0.75f + 0.5f * fbm(n, p * 22.0f, 3);
-    const float erythema = blush * 0.22f * blushNoise;
+    /* The flush is blood seen through the skin, and melanin hides it: the same amount of red that
+       warms a pale cheek was added to a dark one unchanged, and stood on it as two red patches. */
+    const float erythema = blush * 0.22f * blushNoise * lerpf(1.0f, 0.25f, saturate(ctx.spec->skin_melanin));
     albedo.x = saturate(albedo.x + erythema * 0.55f);
     albedo.y = saturate(albedo.y - erythema * 0.06f);
     albedo.z = saturate(albedo.z - erythema * 0.10f);
@@ -325,10 +344,17 @@ void evaluateEye(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut*
            appear with low melanin, and the hue varies by a few degrees between individuals). */
         const float hueShift = ctx.noise.hash3f(101, which, 7) - 0.5f;
         const float eumelanin = ctx.spec->skin_melanin;
-        const Vec3 base = Vec3(0.34f + 0.30f * (1.0f - eumelanin) + hueShift * 0.06f,
-                               0.30f + 0.28f * (1.0f - eumelanin) + hueShift * 0.03f,
-                               0.20f + 0.34f * (1.0f - eumelanin) - hueShift * 0.02f).lerp(
+        Vec3 base = Vec3(0.34f + 0.30f * (1.0f - eumelanin) + hueShift * 0.06f,
+                         0.30f + 0.28f * (1.0f - eumelanin) + hueShift * 0.03f,
+                         0.20f + 0.34f * (1.0f - eumelanin) - hueShift * 0.02f).lerp(
             Vec3(0.20f, 0.11f, 0.05f), saturate(eumelanin * 1.25f));
+        /* ...unless the caller chose one (af_spec.eye_tone, appended to the spec later). */
+        {
+            const float* e = ctx.spec->eye_tone;
+            if (e[0] > 0.0f || e[1] > 0.0f || e[2] > 0.0f) {
+                base = Vec3(clampf(e[0], 0.0f, 1.0f), clampf(e[1], 0.0f, 1.0f), clampf(e[2], 0.0f, 1.0f));
+            }
+        }
         const float fibres = fbm(ctx.noise, Vec3(std::cos(angle), std::sin(angle), t * 6.0f) * 40.0f, 3, 2.5f, 0.55f);
         const float limbal = saturate((t - 0.72f) / 0.28f);
         const float collarette = 1.0f - saturate(std::fabs(t - 0.48f) * 5.0f);
@@ -632,6 +658,9 @@ void evaluateSurface(const MaterialContext& ctx, const SurfaceSample& s, Surface
                is not one flat value. */
             const float strand = fbm(ctx.noise, Vec3(s.position.x * 140.0f, s.position.y * 9.0f, s.position.z * 140.0f), 2);
             out->albedo = ctx.tone[s.region] * (0.80f + 0.40f * strand);
+            /* Root to tip (integration f6882b1): darker at the root, a little lighter at the
+               ends. The chosen colour itself is in ctx.tone, so it reaches the GLB in this map. */
+            if (s.region == REGION_HAIR) out->albedo = out->albedo * hairRootTipTint(*ctx.m, s.position.y);
             out->roughness = mat.roughness;
             out->anisotropyHint = 1.0f;
             if (s.region == REGION_HAIR && ctx.spec->hair_style == AF_HAIR_BUZZ) {
@@ -650,6 +679,31 @@ void evaluateSurface(const MaterialContext& ctx, const SurfaceSample& s, Surface
                 out->roughness = 0.70f;
                 out->anisotropyHint = 0.0f;
                 out->reliefGradient = Vec3((curl - 0.5f) * 5.0f, (clump - 0.5f) * 4.0f, 0.0f);
+            } else if (s.region == REGION_HAIR && ctx.spec->hair_style == AF_HAIR_CURLY) {
+                /* Loose curls: larger than the afro's, with deeper shade between the locks. */
+                const float curl = fbm(ctx.noise, s.position * 120.0f, 3, 2.1f, 0.55f);
+                const float lock = fbm(ctx.noise, s.position * 30.0f, 2, 2.0f, 0.5f);
+                out->albedo = ctx.tone[REGION_HAIR] * (0.66f + 0.46f * curl) * (0.78f + 0.40f * lock)
+                              * hairRootTipTint(*ctx.m, s.position.y);
+                out->roughness = 0.62f;
+                out->anisotropyHint = 0.2f;
+                out->reliefGradient = Vec3((curl - 0.5f) * 4.0f, (lock - 0.5f) * 4.0f, 0.0f);
+            } else if (s.region == REGION_HAIR && ctx.spec->hair_style == AF_HAIR_BOX_BRAIDS) {
+                /*
+                 * Braids: each rope is crossed by its plait every 13 mm, drawn as a light band
+                 * and a dark one. Neighbouring ropes are half a step apart (the phase follows the
+                 * position round the head in steps), so the bands do not line up into hoops.
+                 * Above the ears the hair is parted flat to the scalp and is not banded.
+                 */
+                const float headH = ctx.m->y.crownY - ctx.m->y.chinY;
+                const float round = std::atan2(s.position.x, s.position.z - ctx.m->head.centreZ);
+                const float rope = std::floor(round * 9.0f);
+                const float phase = (static_cast<int>(rope) & 1) ? 3.14159265f : 0.0f;
+                const float band = 0.5f + 0.5f * std::sin(s.position.y * (6.28318530f / 0.013f) + phase);
+                const float below = smoothstepf(0.0f, headH * 0.20f, ctx.m->y.crownY - headH * 0.25f - s.position.y);
+                out->albedo = out->albedo * lerpf(1.0f, 0.62f + 0.62f * band, below);
+                out->roughness = 0.66f;
+                out->anisotropyHint = 0.3f;
             }
             break;
         }
@@ -706,7 +760,8 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
             /* The spec carries one garment colour. It dresses the upper garment; the lower one
                takes it only where the outfit is a single piece or a matching set. Jeans stay denim. */
             const int o = spec.outfit;
-            if (o == AF_OUTFIT_DRESS || o == AF_OUTFIT_SUIT || o == AF_OUTFIT_SPACESUIT || o == AF_OUTFIT_ATHLETIC) {
+            if (o == AF_OUTFIT_DRESS || o == AF_OUTFIT_SUIT || o == AF_OUTFIT_SPACESUIT || o == AF_OUTFIT_ATHLETIC ||
+                o == AF_OUTFIT_SWIMWEAR) {
                 ctx.tone[REGION_CLOTH_LOWER] = c;
             }
         }
@@ -725,6 +780,7 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
                 case AF_OUTFIT_ARMOR_LEATHER: up = Vec3(0.150f, 0.160f, 0.085f); lo = Vec3(0.055f, 0.036f, 0.022f); break; /* olive, brown    */
                 case AF_OUTFIT_SPACESUIT:     up = Vec3(0.760f, 0.760f, 0.740f); lo = up; break;                       /* white              */
                 case AF_OUTFIT_COAT:          up = Vec3(0.330f, 0.205f, 0.090f); lo = Vec3(0.026f, 0.026f, 0.030f); break; /* camel, charcoal */
+                case AF_OUTFIT_SWIMWEAR:      up = Vec3(0.016f, 0.016f, 0.019f); lo = up; break;                       /* black              */
                 default: break;
             }
         } else if (spec.outfit == AF_OUTFIT_COAT) {

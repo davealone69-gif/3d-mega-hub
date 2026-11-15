@@ -174,6 +174,8 @@ int main(int argc, char** argv) {
     float aspect = 0.5f, pitch = 4.0f, clipTime = 0.0f;
     bool report = false, joints = false, generate = false, draft = false;
     int genSex = AF_SEX_FEMALE, genBuild = AF_BUILD_ATHLETIC, genHair = AF_HAIR_MEDIUM, genOutfit = AF_OUTFIT_TSHIRT, genFootwear = AF_FOOTWEAR_NONE;
+    float genBust = -1.0f, genGlute = 0.0f, genMuscle = -1.0f, genFat = -1.0f, genMelanin = -1.0f, genStature = 1.75f, genAge = -1.0f;
+    float genFace[8] = {0, 0, 0, 0, 0, 0, 0, 0}, genHairTone[3] = {0, 0, 0}, genEyeTone[3] = {0, 0, 0}, genClothTone[3] = {0, 0, 0};
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         const auto next = [&]() { return i + 1 < argc ? std::string(argv[++i]) : std::string(); };
@@ -186,6 +188,18 @@ int main(int argc, char** argv) {
         else if (a == "--sex") genSex = std::atoi(next().c_str()); else if (a == "--build") genBuild = std::atoi(next().c_str());
         else if (a == "--hair") genHair = std::atoi(next().c_str()); else if (a == "--outfit") genOutfit = std::atoi(next().c_str());
         else if (a == "--footwear") genFootwear = std::atoi(next().c_str());
+        /* The rest of the spec, so that every option of the creator can be drawn here. */
+        else if (a == "--bust") genBust = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--glute") genGlute = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--muscle") genMuscle = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--fat") genFat = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--melanin") genMelanin = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--stature") genStature = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--age") genAge = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--face") { const std::string v = next(); std::sscanf(v.c_str(), "%f,%f,%f,%f,%f,%f,%f,%f", &genFace[0], &genFace[1], &genFace[2], &genFace[3], &genFace[4], &genFace[5], &genFace[6], &genFace[7]); }
+        else if (a == "--hairtone") { const std::string v = next(); std::sscanf(v.c_str(), "%f,%f,%f", &genHairTone[0], &genHairTone[1], &genHairTone[2]); }
+        else if (a == "--eyetone") { const std::string v = next(); std::sscanf(v.c_str(), "%f,%f,%f", &genEyeTone[0], &genEyeTone[1], &genEyeTone[2]); }
+        else if (a == "--clothtone") { const std::string v = next(); std::sscanf(v.c_str(), "%f,%f,%f", &genClothTone[0], &genClothTone[1], &genClothTone[2]); }
         else if (a == "--tile") {
             Tile t; const std::string s = next();
             std::sscanf(s.c_str(), "%f,%f,%f,%f,%f", &t.yaw, &t.cy, &t.extent, &t.cx, &t.cz);
@@ -193,7 +207,9 @@ int main(int argc, char** argv) {
         }
     }
     if (glb.empty() && !generate) {
-        std::fprintf(stderr, "usage: af_host_render (--glb file.glb | --generate [--sex N --build N --hair N --outfit N --footwear N --draft])\n"
+        std::fprintf(stderr, "usage: af_host_render (--glb file.glb | --generate [--sex N --build N --hair N --outfit N --footwear N --draft\n"
+                             "                         --bust F --glute F --muscle F --fat F --melanin F --stature M --age Y\n"
+                             "                         --face a,b,c,d,e,f,g,h --hairtone r,g,b --eyetone r,g,b --clothtone r,g,b])\n"
                              "                      [--report] [--joints] [--out sheet.png --tile yaw,cy,extent ...]\n");
         return 2;
     }
@@ -201,7 +217,15 @@ int main(int argc, char** argv) {
     af_spec spec; af_spec_init(&spec);
     if (generate) {
         spec.sex = genSex; spec.build = genBuild; spec.hair_style = genHair; spec.outfit = genOutfit; spec.footwear = genFootwear;
-        spec.height_m = 1.75f;
+        spec.height_m = genStature;
+        if (genBust >= 0.0f) spec.bust = genBust;
+        spec.glute = genGlute;
+        if (genMuscle >= 0.0f) spec.muscle = genMuscle;
+        if (genFat >= 0.0f) spec.body_fat = genFat;
+        if (genMelanin >= 0.0f) spec.skin_melanin = genMelanin;
+        if (genAge > 0.0f) spec.age_years = genAge;
+        for (int c = 0; c < 8; ++c) spec.face[c] = genFace[c];
+        for (int c = 0; c < 3; ++c) { spec.hair_tone[c] = genHairTone[c]; spec.eye_tone[c] = genEyeTone[c]; spec.cloth_tone[c] = genClothTone[c]; }
     }
     af_engine* e = nullptr;
     if (af_engine_create(&spec, nullptr, &e) != AF_OK || !e) { std::fprintf(stderr, "engine create failed\n"); return 1; }

@@ -135,7 +135,7 @@ bool isGarmentWord(const std::string& w) {
 
 bool isHairWord(const std::string& w) {
     static const char* const k[] = {"hair", "braid", "braids", "ponytail", "bun", "afro", "mohawk",
-                                    "locks", "dreadlocks", "bald", "buzz"};
+                                    "locks", "dreadlocks", "bald", "buzz", "bob", "bangs", "fringe", "curls"};
     return anyOf(w, k, static_cast<int>(sizeof(k) / sizeof(k[0])));
 }
 
@@ -281,12 +281,13 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
         static const char* const kSlim[] = {"slim", "skinny", "thin", "lean", "slender", "petite", "lithe"};
         static const char* const kAthletic[] = {"athletic", "fit", "toned", "sporty", "swimmer"};
         static const char* const kMuscular[] = {"muscular", "buff", "ripped", "jacked", "bodybuilder", "strongman"};
-        static const char* const kHeavy[] = {"heavy", "stocky", "chubby", "plump", "curvy", "overweight", "burly"};
+        static const char* const kHeavy[] = {"heavy", "stocky", "chubby", "plump", "overweight", "burly"};
         static const char* const kAverage[] = {"average", "normal", "medium", "regular"};
         if (anyOf(w, kSlim, 7)) { spec->build = AF_BUILD_SLIM; spec->body_fat = 0.14f; spec->muscle = 0.35f; record(out, w, "build", &matched); continue; }
         if (anyOf(w, kAthletic, 5)) { spec->build = AF_BUILD_ATHLETIC; spec->muscle = 0.60f; spec->body_fat = 0.18f; record(out, w, "build", &matched); continue; }
         if (anyOf(w, kMuscular, 6)) { spec->build = AF_BUILD_MUSCULAR; spec->muscle = 0.85f; spec->body_fat = 0.16f; record(out, w, "build", &matched); continue; }
-        if (anyOf(w, kHeavy, 7)) { spec->build = AF_BUILD_HEAVY; spec->body_fat = 0.42f; record(out, w, "build", &matched); continue; }
+        if (anyOf(w, kHeavy, 6)) { spec->build = AF_BUILD_HEAVY; spec->body_fat = 0.42f; record(out, w, "build", &matched); continue; }
+        if (w == "curvy") { spec->build = AF_BUILD_CURVY; spec->body_fat = 0.27f; record(out, w, "build", &matched); continue; }
         const std::string nextWord = (i + 1 < words.size()) ? words[i + 1].text : "";
         const bool mediumHairQualifier =
             w == "medium" &&
@@ -330,6 +331,9 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
             else if (w == "bun") spec->hair_style = AF_HAIR_BUN;
             else if (w == "afro") spec->hair_style = AF_HAIR_AFRO;
             else if (w == "mohawk") spec->hair_style = AF_HAIR_MOHAWK;
+            else if (w == "bob") spec->hair_style = AF_HAIR_BOB;
+            else if (w == "bangs" || w == "fringe") spec->hair_style = AF_HAIR_BANGS;
+            else if (w == "curls") spec->hair_style = AF_HAIR_CURLY;
             else if (anyOf(w, kBraids, 4)) spec->hair_style = AF_HAIR_BRAIDS;
             else if (pendingStyle >= 0) {
                 spec->hair_style = pendingStyle;
@@ -418,6 +422,7 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
 
         if (anyOf(w, kBare, 4)) { spec->outfit = AF_OUTFIT_NONE; spec->footwear = AF_FOOTWEAR_NONE; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kAthleticWear, 4)) { spec->outfit = AF_OUTFIT_ATHLETIC; record(out, w, "outfit", &matched); continue; }
+        if (w == "swimwear" || w == "swimsuit" || w == "bikini") { spec->outfit = AF_OUTFIT_SWIMWEAR; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kTshirt, 4)) { spec->outfit = AF_OUTFIT_TSHIRT; sawTshirt = true; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kDress, 2)) { spec->outfit = AF_OUTFIT_DRESS; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kSuit, 3)) { spec->outfit = AF_OUTFIT_SUIT; spec->footwear = AF_FOOTWEAR_BOOT; record(out, w, "outfit", &matched); continue; }

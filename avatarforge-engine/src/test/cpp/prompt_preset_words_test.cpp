@@ -32,6 +32,10 @@ const Case kCases[] = {
     {"woman with braids", HAIR, AF_HAIR_BRAIDS, "braids"},
     {"woman with an afro", HAIR, AF_HAIR_AFRO, "afro"},
     {"man with a mohawk", HAIR, AF_HAIR_MOHAWK, "mohawk"},
+    {"woman with a bob", HAIR, AF_HAIR_BOB, "bob"},
+    {"woman with bangs", HAIR, AF_HAIR_BANGS, "bangs"},
+    {"woman with a fringe", HAIR, AF_HAIR_BANGS, "bangs (fringe)"},
+    {"woman with curls", HAIR, AF_HAIR_CURLY, "curly"},
     /* Outfits. */
     {"woman in a t-shirt", OUTFIT, AF_OUTFIT_TSHIRT, "t-shirt"},
     {"woman in a black t-shirt and jeans", OUTFIT, AF_OUTFIT_TSHIRT, "t-shirt with jeans"},
@@ -43,6 +47,8 @@ const Case kCases[] = {
     {"astronaut in a spacesuit", OUTFIT, AF_OUTFIT_SPACESUIT, "spacesuit"},
     {"woman in sportswear", OUTFIT, AF_OUTFIT_ATHLETIC, "athletic"},
     {"man in a long coat", OUTFIT, AF_OUTFIT_COAT, "coat"},
+    {"woman in a bikini", OUTFIT, AF_OUTFIT_SWIMWEAR, "swimwear"},
+    {"man in swimwear", OUTFIT, AF_OUTFIT_SWIMWEAR, "swimwear"},
     /* Footwear. */
     {"woman in a t-shirt wearing sneakers", FOOTWEAR, AF_FOOTWEAR_SNEAKER, "sneaker"},
     {"woman in a coat wearing boots", FOOTWEAR, AF_FOOTWEAR_BOOT, "boot"},

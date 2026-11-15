@@ -24,7 +24,10 @@ enum class Sex(val value: Int) {
 
 /** Values match `af_build`. */
 enum class Build(val value: Int) {
-    AVERAGE(0), SLIM(1), ATHLETIC(2), MUSCULAR(3), HEAVY(4);
+    AVERAGE(0), SLIM(1), ATHLETIC(2), MUSCULAR(3), HEAVY(4),
+
+    /** Narrow waist, full hips and thighs. */
+    CURVY(5);
 
     companion object {
         fun of(value: Int) = entries.firstOrNull { it.value == value } ?: AVERAGE
@@ -33,7 +36,19 @@ enum class Build(val value: Int) {
 
 /** Values match `af_hair_style`. */
 enum class HairStyle(val value: Int) {
-    NONE(0), BUZZ(1), SHORT(2), MEDIUM(3), LONG(4), PONYTAIL(5), BUN(6), BRAIDS(7), AFRO(8), MOHAWK(9);
+    NONE(0), BUZZ(1), SHORT(2), MEDIUM(3), LONG(4), PONYTAIL(5), BUN(6), BRAIDS(7), AFRO(8), MOHAWK(9),
+
+    /** Cut level at the jaw. */
+    BOB(10),
+
+    /** Shoulder length with a fringe across the forehead. */
+    BANGS(11),
+
+    /** A full mass of curls to the shoulders. */
+    CURLY(12),
+
+    /** Many long braids from the scalp. */
+    BOX_BRAIDS(13);
 
     companion object {
         fun of(value: Int) = entries.firstOrNull { it.value == value } ?: MEDIUM
@@ -43,7 +58,10 @@ enum class HairStyle(val value: Int) {
 /** Values match `af_outfit`. */
 enum class Outfit(val value: Int) {
     NONE(0), TSHIRT(1), DRESS(2), SUIT(3), JEANS_JACKET(4), ARMOR_PLATE(5),
-    ARMOR_LEATHER(6), SPACESUIT(7), ATHLETIC(8), COAT(9);
+    ARMOR_LEATHER(6), SPACESUIT(7), ATHLETIC(8), COAT(9),
+
+    /** A two-piece: bandeau top and briefs; trunks on a male body. */
+    SWIMWEAR(10);
 
     companion object {
         fun of(value: Int) = entries.firstOrNull { it.value == value } ?: NONE
@@ -56,6 +74,19 @@ enum class Footwear(val value: Int) {
 
     companion object {
         fun of(value: Int) = entries.firstOrNull { it.value == value } ?: NONE
+    }
+}
+
+/**
+ * Indices into [AvatarSpec.face], matching `af_face_param`. Each value is an offset from the
+ * engine's default face, -1..+1, and 0 is that default.
+ */
+enum class FaceParam(val index: Int) {
+    NOSE_WIDTH(0), NOSE_BRIDGE(1), LIP_FULLNESS(2), EYE_TILT(3), EYE_OPENNESS(4), CHEEKBONES(5), JAW_WIDTH(6);
+
+    companion object {
+        /** Length of [AvatarSpec.face]; one more than the last index, the last slot being reserved. */
+        const val COUNT = 8
     }
 }
 
@@ -101,7 +132,7 @@ data class AvatarSpec(
     val muscle: Float = 0.45f,
     /** 0..1; 0.10 shredded, 0.45 heavy. */
     val bodyFat: Float = 0.22f,
-    /** 0..1 feminine chest volume. */
+    /** 0..1 feminine chest volume. Honoured for adults only; see [glute]. */
     val bust: Float = 0.45f,
 
     /* Tape measurements, centimetres. 0 = derive. */
@@ -134,6 +165,16 @@ data class AvatarSpec(
     /** 0..1 override, negative = material default. */
     val gearMetalness: Float = -1f,
 
+    /**
+     * -1..+1 gluteal volume about the build's default (0). Like [bust] it shapes an adult body:
+     * for [ageYears] below 18 the engine ignores both and uses its defaults.
+     */
+    val glute: Float = 0f,
+    /** Linear sRGB iris colour; all zero = derived from [skinMelanin]. */
+    val eyeTone: FloatArray = FloatArray(3),
+    /** Offsets from the default face, indexed by [FaceParam]; all zero = the default face. */
+    val face: FloatArray = FloatArray(FaceParam.COUNT),
+
     /** The prompt this spec came from; informational, stored in the exported GLB. */
     val prompt: String = "",
     /** True only after the user explicitly chooses an outfit in the editor. Not part of the native ABI. */
@@ -142,9 +183,10 @@ data class AvatarSpec(
     val adultModeConfirmed: Boolean = false,
 ) {
     init {
-        require(skinTone.size == 3 && hairTone.size == 3 && clothTone.size == 3 && gearTone.size == 3) {
+        require(skinTone.size == 3 && hairTone.size == 3 && clothTone.size == 3 && gearTone.size == 3 && eyeTone.size == 3) {
             "colour triplets must be 3 floats each (linear sRGB)"
         }
+        require(face.size == FaceParam.COUNT) { "face must hold ${FaceParam.COUNT} offsets" }
     }
 
     /** Human-facing centimetres, derived from the canonical metre value. */
@@ -234,6 +276,9 @@ data class AvatarSpec(
         for (c in 0 until 3) out[i++] = gearTone[c]
         out[i++] = clothRoughness
         out[i++] = gearMetalness
+        out[i++] = glute
+        for (c in 0 until 3) out[i++] = eyeTone[c]
+        for (c in 0 until FaceParam.COUNT) out[i++] = face[c]
         check(i == FLOAT_FIELDS) { "spec packing drifted: wrote $i of $FLOAT_FIELDS floats" }
         return out
     }
@@ -248,7 +293,7 @@ data class AvatarSpec(
         internal const val INT_FIELDS = 7
 
         /** Must match `kSpecFloatCount` in native/src/android/af_jni.cpp. */
-        internal const val FLOAT_FIELDS = 33
+        internal const val FLOAT_FIELDS = 45
 
         /**
          * Reads a packed spec back out of the arrays the native side wrote (used by
@@ -293,6 +338,9 @@ data class AvatarSpec(
                 gearTone = floatArrayOf(f(), f(), f()),
                 clothRoughness = f(),
                 gearMetalness = f(),
+                glute = f(),
+                eyeTone = floatArrayOf(f(), f(), f()),
+                face = FloatArray(FaceParam.COUNT) { f() },
                 prompt = prompt,
             )
             check(i == FLOAT_FIELDS) { "spec unpacking drifted: read $i of $FLOAT_FIELDS floats" }

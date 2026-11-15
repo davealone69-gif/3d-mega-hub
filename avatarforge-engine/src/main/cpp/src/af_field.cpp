@@ -165,7 +165,10 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
     rzProfile_.add(lerpf(hipY, waistY, 0.5f), lerpf(m_.hip.rz * 0.86f, m_.waist.rz, 0.55f));
     rzProfile_.add(waistY, m_.waist.rz);
     rzProfile_.add(underbustY, m_.underbust.rz);
-    rzProfile_.add(bustY, m_.bust > 0.05f && female ? m_.underbust.rz * 1.08f : m_.chest.rz * 0.99f);
+    /* A female rib cage at the bust is the underbust's, whatever the bust: the chest girth counts
+       the breasts, and they are added in torso(). (Below a bust of 0.05 the full chest girth was
+       used as rib cage instead, so the flattest chest was also the deepest one.) */
+    rzProfile_.add(bustY, female ? m_.underbust.rz * 1.08f : m_.chest.rz * 0.99f);
     rzProfile_.add(armpitY, m_.chest.rz);
     rzProfile_.add(lerpf(armpitY, shoulderY, 0.6f), m_.chest.rz * 0.92f);
     rzProfile_.add(shoulderY, m_.chest.rz * 0.80f);
@@ -304,15 +307,23 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
     /* Anchors on the face. Depths are fractions of zFront, the front of the head, so the features
        sit ON the facial surface that skull() builds: the nasion and the brow slightly behind it,
        the nose tip in front of it, the mouth and the chin stepping back below the nose. */
-    noseBridge_ = {0.0f, m_.y.eyeY + headH * 0.012f, zFront * 0.945f};
-    noseTip_ = {0.0f, m_.y.eyeY - headH * 0.185f, zFront * 1.225f};
+    /*
+     * af_spec.face moves the features across their ordinary range about these defaults. The
+     * bridge of the nose is the largest of those differences in depth: from a low bridge, level
+     * with the inner corners of the eyes, to a high one that stands 5 mm further forward, the
+     * tip going with it by about half as much. (Forward is -Z.)
+     */
+    const float bridgeF = m_.face[AF_FACE_NOSE_BRIDGE];
+    noseBridge_ = {0.0f, m_.y.eyeY + headH * 0.012f, zFront * 0.945f - headH * 0.022f * bridgeF};
+    noseTip_ = {0.0f, m_.y.eyeY - headH * 0.185f, zFront * 1.225f - headH * 0.012f * bridgeF};
     chin_ = {0.0f, m_.y.chinY + headH * 0.062f, zFront * 0.75f};
     browRidge_ = {0.0f, m_.y.eyeY + headH * 0.062f, zFront * 0.95f};
     mouthCentre_ = {0.0f, m_.mouthY, zFront * 0.925f};
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
         /* Angle of the jaw: below the ear lobe, at the back of the face. */
-        jawCorner_[s] = {sx * m_.jaw.rx * (female ? 0.66f : 0.80f), m_.y.chinY + headH * 0.20f, -m_.head.rz * 0.04f};
+        jawCorner_[s] = {sx * m_.jaw.rx * (female ? 0.66f : 0.80f) * (1.0f + 0.10f * m_.face[AF_FACE_JAW_WIDTH]),
+                         m_.y.chinY + headH * 0.20f, -m_.head.rz * 0.04f};
         cheek_[s] = {sx * m_.head.rx * 0.56f, m_.y.chinY + headH * 0.30f, zFront * 0.70f};
         /* One eye centre for everything: the field, the rig and the texture bake all read
            metrics.eyeZ. The field used its own depth, 11 mm in front of the one the iris was
@@ -362,16 +373,38 @@ float BodyField::torso(const Vec3& p) const {
 
     /* --- chest: pectorals / bust ------------------------------------------------------- */
     if (female && m_.bust > 0.02f) {
-        const float r = m_.chest.rx * (0.40f + 0.10f * m_.bust);
-        const Vec3 radii(r * 0.92f, r * lerpf(0.85f, 1.05f, m_.bust), r * lerpf(0.82f, 1.02f, m_.bust));
-        const float cx = m_.chest.rx * 0.44f;
+        /*
+         * The size is af_spec.bust, 0..1, and it now runs over the whole range a caller can ask
+         * for: from almost flat (9 mm of projection) through the default (about 40 mm) to very
+         * full (82 mm). It used to stop at 62 mm, and - see Anatomy::solve - the value itself
+         * never arrived, so every female avatar had the same chest.
+         *
+         * With size the form changes as well as the scale, the way it does: the mass widens and
+         * deepens, its centres move apart so that the two stay two, and it hangs lower; and the
+         * slope from the collarbone down to the apex is filled, so a full bust is not a ball
+         * stuck on the chest.
+         */
+        const float b = saturate(m_.bust);
+        const float scale = H / 1.70f;
+        const float r = m_.chest.rx * (0.36f + 0.20f * b);
+        const Vec3 radii(r * 0.92f, r * lerpf(0.86f, 1.04f, b), r * lerpf(0.80f, 1.00f, b));
+        const float cx = m_.chest.rx * (0.43f + 0.09f * b);
+        const float cy = m_.y.bustY + 0.004f * H - 0.026f * H * b * b;
         /* Centre the breast so that it projects from the FRONT of the rib cage (forward is -Z).
            The old expression evaluated to +62 mm, i.e. behind the spine: the breasts were two
            mounds on the back and the chest was flat. The projection grows with the bust value. */
         const float chestFrontZ = torsoProfileCz(m_.y.bustY) - torsoProfileRz(m_.y.bustY);
-        const float projection = lerpf(0.018f, 0.062f, saturate(m_.bust)) * (H / 1.70f);
+        const float projection = (0.006f + 0.076f * b) * scale;
         const float cz2 = chestFrontZ + radii.z - projection;
-        d = smin(d, blob2(p, cx, m_.y.bustY + 0.004f * H, cz2, radii), 0.026f);
+        float bust = blob2(p, cx, cy, cz2, radii);
+        if (b > 0.30f) {
+            /* The upper slope: a flatter mass above and behind the apex, growing with size. */
+            const float t = saturate((b - 0.30f) / 0.70f);
+            const Vec3 upper(radii.x * 0.84f, radii.y * 0.95f, radii.z * lerpf(0.50f, 0.60f, t));
+            bust = smin(bust, blob2(p, cx * 0.90f, cy + radii.y * lerpf(0.42f, 0.62f, t),
+                                    chestFrontZ + upper.z - projection * lerpf(0.26f, 0.36f, t), upper), 0.034f);
+        }
+        d = smin(d, bust, 0.026f);
     } else {
         const float pecR = m_.chest.rx * (0.42f + 0.10f * m_.muscle);
         const Vec3 radii(pecR, pecR * 0.72f, pecR * 0.52f);
@@ -398,15 +431,29 @@ float BodyField::torso(const Vec3& p) const {
 
     /* --- belly (adipose, heavy builds) -------------------------------------------------- */
     if (m_.bellyBulge > 1e-4f) {
-        const Vec3 radii(m_.waist.rx * 0.82f, (m_.y.waistY - m_.y.hipY) * 0.52f, m_.waist.rz * 0.55f);
-        d = smin(d, blob(p, {0.0f, lerpf(m_.y.hipY, m_.y.waistY, 0.55f), -m_.waist.rz * 0.95f}, radii), 0.035f);
+        /* The abdomen grows with the amount of fat: from nothing, forwards and downwards. It was
+           one size - the largest - for any body fat above the baseline, and round as a ball; now
+           it is as deep as bellyBulge says, wider and taller than it is deep, and sits lower. */
+        const float rz = m_.waist.rz * 0.28f + m_.bellyBulge * 0.52f;
+        const Vec3 radii(m_.waist.rx * 0.90f, (m_.y.waistY - m_.y.hipY) * 0.66f, rz);
+        d = smin(d, blob(p, {0.0f, lerpf(m_.y.hipY, m_.y.waistY, 0.46f), -(m_.waist.rz * 0.72f + m_.bellyBulge * 0.50f)}, radii), 0.045f);
     }
 
     /* --- glutes ------------------------------------------------------------------------ */
     {
-        const float gz = m_.hip.rz * (0.50f + 0.10f * saturate(m_.bodyFat));
-        const Vec3 radii(m_.hip.rx * 0.50f, m_.hip.rz * 0.60f, m_.hip.rz * 0.52f);
-        d = smin(d, blob2(p, m_.hip.rx * 0.45f, m_.y.hipY - m_.hip.rz * 0.36f, gz, radii), 0.034f);
+        /*
+         * af_spec.glute, -1..+1, changes the gluteal mass about the build's default (0): how far
+         * it stands out behind, how wide and how deep it is. Smaller is also flatter and sits a
+         * little higher; larger is rounder, wider and hangs a little lower.
+         */
+        const float g = m_.glute;
+        const float size = 1.0f + 0.24f * g;
+        const float gz = m_.hip.rz * (0.50f + 0.10f * saturate(m_.bodyFat) + (g >= 0.0f ? 0.21f : 0.20f) * g);
+        const Vec3 radii(m_.hip.rx * 0.50f * (1.0f + 0.17f * g), m_.hip.rz * 0.60f * (1.0f + 0.30f * g), m_.hip.rz * 0.52f * size);
+        /* A larger mass joins the thigh and the small of the back over a wider blend, or it reads
+           as a ball set on the pelvis. */
+        d = smin(d, blob2(p, m_.hip.rx * (0.45f + 0.035f * g), m_.y.hipY - m_.hip.rz * (0.36f + 0.12f * g), gz, radii),
+                 0.034f + 0.024f * maxf(g, 0.0f));
     }
 
     /* --- spinal furrow -------------------------------------------------------------------
@@ -806,8 +853,10 @@ float BodyField::lipsOutline(const Vec3& p) const {
        bow of the upper lip. */
     if (std::fabs(p.z - mouthCentre_.z) > 0.016f) return 1.0f;
     const float lw = m_.lipWidth;
-    const float upThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.110f : 0.092f);
-    const float loThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.140f : 0.118f);
+    /* af_spec.face: fuller or thinner lips, by up to two fifths either way. */
+    const float full = 1.0f + 0.40f * m_.face[AF_FACE_LIP_FULLNESS];
+    const float upThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.110f : 0.092f) * full;
+    const float loThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.140f : 0.118f) * full;
     const float dx = p.x - mouthCentre_.x;
     const float dy = p.y - mouthCentre_.y;
     const auto ellipse = [](float x, float y, float rx, float ry) {
@@ -826,12 +875,16 @@ float BodyField::lipsShape(const Vec3& p) const {
     /* Semi-heights of the upper and lower vermilion. They were 8.4 and 11 mm, which stacked to a
        30 mm tall mouth; a full adult mouth is about 20 mm from the top of the upper lip to the
        bottom of the lower one. */
-    const float upThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.110f : 0.092f);
-    const float loThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.140f : 0.118f);
+    /* af_spec.face: fuller or thinner lips, by up to two fifths either way. */
+    const float full = 1.0f + 0.40f * m_.face[AF_FACE_LIP_FULLNESS];
+    const float upThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.110f : 0.092f) * full;
+    const float loThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.140f : 0.118f) * full;
     /* Upper and lower lip are joined with a HARD minimum: the crease where the two convex forms
        meet is the lip line, and a smooth union would fill it in. */
-    float lips = sdEllipsoid(p - Vec3(m.x, m.y + upThick * 0.80f, m.z + lw * 0.020f), Vec3(lw * 0.50f, upThick, lw * 0.18f));
-    lips = minf(lips, sdEllipsoid(p - Vec3(m.x, m.y - loThick * 0.78f, m.z + lw * 0.030f), Vec3(lw * 0.45f, loThick, lw * 0.19f)));
+    /* Fuller lips also stand further forward (their depth grows by a quarter of what their height does). */
+    const float deep = 1.0f + 0.25f * (full - 1.0f) / 0.40f * 0.40f;
+    float lips = sdEllipsoid(p - Vec3(m.x, m.y + upThick * 0.80f, m.z + lw * 0.020f), Vec3(lw * 0.50f, upThick, lw * 0.18f * deep));
+    lips = minf(lips, sdEllipsoid(p - Vec3(m.x, m.y - loThick * 0.78f, m.z + lw * 0.030f), Vec3(lw * 0.45f, loThick, lw * 0.19f * deep)));
     for (int side = 0; side < 2; ++side) {
         const float sx = (side == 0) ? 1.0f : -1.0f;
         lips = smin(lips, blob(p, Vec3(m.x + sx * lw * 0.50f, m.y - lw * 0.01f, m.z + lw * 0.05f),
@@ -975,11 +1028,13 @@ float BodyField::eyeOpening(const Vec3& p, int side, bool* upperLid) const {
     const float r = m_.eyeRadius;
     const float lid = r * kLidThickness;
     const Vec3 q = p - (e + Vec3(sx * r * 0.04f, -r * 0.12f, -(r + lid) * 0.98f));
-    const float slant = radians(m_.sex == AF_SEX_FEMALE ? 6.0f : 3.0f) * sx;
+    /* af_spec.face: the tilt of the line between the corners (5 degrees either way) and the
+       height of the opening (three tenths either way). */
+    const float slant = radians((m_.sex == AF_SEX_FEMALE ? 6.0f : 3.0f) + 5.0f * m_.face[AF_FACE_EYE_TILT]) * sx;
     const Vec3 qr(q.x * std::cos(slant) + q.y * std::sin(slant),
                   -q.x * std::sin(slant) + q.y * std::cos(slant), q.z);
     const float halfWidth = r * 1.14f;
-    const float rise = (qr.y >= 0.0f) ? r * 0.48f : r * 0.36f;
+    const float rise = ((qr.y >= 0.0f) ? r * 0.48f : r * 0.36f) * (1.0f + 0.30f * m_.face[AF_FACE_EYE_OPENNESS]);
     if (upperLid) *upperLid = (qr.y >= 0.0f);
     const float u = qr.x / halfWidth;
     /* |y| - rise * (1 - u^2), divided by the length of its gradient to approximate a distance. */
@@ -1056,13 +1111,17 @@ float BodyField::skull(const Vec3& p) const {
            down - by a sixth on a female face and a tenth on a male one. */
         Vec3 q = p - faceC;
         const float ry = headH * 0.44f;
-        const float narrowing = lerpf(1.0f, female ? 0.84f : 0.90f, smoothstepf(0.0f, 1.0f, -q.y / ry));
+        /* af_spec.face: a wider or narrower jaw changes how fast the oval narrows; broader
+           cheekbones widen it at its widest level. */
+        const float jawF = m_.face[AF_FACE_JAW_WIDTH];
+        const float cheekF = m_.face[AF_FACE_CHEEKBONES];
+        const float narrowing = lerpf(1.0f, (female ? 0.84f : 0.90f) + 0.075f * jawF, smoothstepf(0.0f, 1.0f, -q.y / ry));
         q.x /= narrowing;
-        d = smin(d, sdEllipsoid(q, Vec3(m_.head.rx * (female ? 0.89f : 0.94f), ry, m_.head.rz * 0.80f)), 0.036f);
+        d = smin(d, sdEllipsoid(q, Vec3(m_.head.rx * ((female ? 0.89f : 0.94f) + 0.030f * cheekF), ry, m_.head.rz * 0.80f)), 0.036f);
     }
     /* Chin, and the lower border of the mandible running back to the angle of the jaw. */
-    d = smin(d, blob(p, chin_, Vec3(m_.head.rx * (female ? 0.22f : 0.33f), headH * 0.058f,
-                                    m_.head.rz * 0.25f)), 0.022f);
+    d = smin(d, blob(p, chin_, Vec3(m_.head.rx * (female ? 0.22f : 0.33f) * (1.0f + 0.22f * m_.face[AF_FACE_JAW_WIDTH]),
+                                    headH * 0.058f, m_.head.rz * 0.25f)), 0.022f);
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
         const Vec3 chinSide(sx * m_.head.rx * (female ? 0.17f : 0.24f), m_.y.chinY + headH * 0.045f, zFront * 0.66f);
@@ -1071,8 +1130,14 @@ float BodyField::skull(const Vec3& p) const {
         /* Cheekbone and the soft cheek below it. */
         /* These two stand a few millimetres proud of the oval, no more. They used to stand one to
            two centimetres proud, which is a face with something in each cheek. */
-        d = smin(d, blob(p, {sx * m_.head.rx * 0.70f, m_.y.eyeY - headH * 0.095f, zFront * 0.56f},
-                         Vec3(m_.head.rx * 0.20f, headH * 0.055f, m_.head.rz * 0.20f)), 0.020f);
+        {
+            /* af_spec.face: more prominent cheekbones are larger, further out and further forward. */
+            const float cheekF = m_.face[AF_FACE_CHEEKBONES];
+            const float grow = 1.0f + 0.30f * cheekF;
+            d = smin(d, blob(p, {sx * m_.head.rx * (0.70f + 0.035f * cheekF), m_.y.eyeY - headH * 0.095f,
+                                 zFront * (0.56f + 0.035f * cheekF)},
+                             Vec3(m_.head.rx * 0.20f * grow, headH * 0.055f * grow, m_.head.rz * 0.20f * grow)), 0.020f);
+        }
         d = smin(d, blob(p, Vec3(cheek_[s].x, cheek_[s].y, zFront * 0.58f),
                          Vec3(m_.head.rx * 0.24f, headH * 0.090f, m_.head.rz * 0.20f)), 0.020f);
     }
@@ -1110,14 +1175,19 @@ float BodyField::faceFeatures(const Vec3& p) const {
         const Vec3 bridge = noseBridge_;
         const Vec3 tip = noseTip_;
         const float w = m_.head.rx * (female ? 0.115f : 0.135f);
-        float nose = sdTaperedCapsule(p, bridge, tip + Vec3(0, headH * 0.012f, w * 0.55f), w * 0.72f, w * 0.92f);
-        nose = smin(nose, blob(p, tip + Vec3(0, 0, w * 0.30f), Vec3(w * 1.05f, w * 0.95f, w * 1.05f)), 0.006f);
+        /* af_spec.face: the width across the wings (the wings move out and grow, the tip
+           broadens with them, the nostrils follow), and the bridge (a high bridge is also a
+           narrower ridge; a low one is broad and soft). */
+        const float wideF = m_.face[AF_FACE_NOSE_WIDTH];
+        const float ridge = 1.0f - 0.14f * m_.face[AF_FACE_NOSE_BRIDGE];
+        float nose = sdTaperedCapsule(p, bridge, tip + Vec3(0, headH * 0.012f, w * 0.55f), w * 0.72f * ridge, w * 0.92f);
+        nose = smin(nose, blob(p, tip + Vec3(0, 0, w * 0.30f), Vec3(w * (1.05f + 0.20f * wideF), w * 0.95f, w * 1.05f)), 0.006f);
         for (int s = 0; s < 2; ++s) {
             const float sx = (s == 0) ? 1.0f : -1.0f;
-            nose = smin(nose, blob(p, tip + Vec3(sx * w * 1.30f, -headH * 0.012f, w * 1.45f),
-                                   Vec3(w * 0.85f, w * 0.72f, w * 1.00f)), 0.006f);
-            const float nostril = sdEllipsoid(p - (tip + Vec3(sx * w * 0.80f, -headH * 0.034f, w * 1.20f)),
-                                              Vec3(w * 0.42f, w * 0.36f, w * 0.62f));
+            nose = smin(nose, blob(p, tip + Vec3(sx * w * (1.30f + 0.48f * wideF), -headH * 0.012f, w * 1.45f),
+                                   Vec3(w * (0.85f + 0.16f * wideF), w * 0.72f, w * 1.00f)), 0.006f);
+            const float nostril = sdEllipsoid(p - (tip + Vec3(sx * w * (0.80f + 0.34f * wideF), -headH * 0.034f, w * 1.20f)),
+                                              Vec3(w * (0.42f + 0.07f * wideF), w * 0.36f, w * 0.62f));
             nose = smax(nose, -nostril, 0.003f);
         }
         /* Columella down to the upper lip. */
@@ -1469,7 +1539,7 @@ float BodyField::clothUpper(const Vec3& p) const {
     float thickness = 0.005f;        /* T-shirt                        */
     float hemY = m_.y.hipY - 0.02f * H;
     /* The garment reaches the base of the neck and the neckline is cut out of it. */
-    const float topY = m_.y.neckBaseY + 0.012f * H;
+    float topY = m_.y.neckBaseY + 0.012f * H;
     float neckDrop = 0.016f * H;     /* how far the front of the neckline dips below the neck base */
     float sleeveReach = 0.0f;
     float skirtHemY = 0.0f;          /* > 0: the garment has a skirt down to here */
@@ -1503,6 +1573,18 @@ float BodyField::clothUpper(const Vec3& p) const {
                  thickness = maxf(0.018f, layer + 0.008f); sleeveReach = wristReach * 0.965f;
                  neckDrop = 0.012f * H; hemY = m_.y.crotchY - m_.thighLen * 0.20f;
                  skirtHemY = m_.y.kneeY - 0.015f * H; skirtFlare = 1.10f; break;
+        case 10: {
+            /* Swimwear: a bandeau across the bust and nothing else above the hips - no shoulders,
+               no sleeves (a negative reach means there is no sleeve at all). It covers the bust
+               at any size: its lower edge follows the bust down as the bust grows. A male body
+               wears trunks only. */
+            if (m_.sex == AF_SEX_MALE) return 1e9f;
+            const float b = saturate(m_.bust);
+            thickness = 0.0035f; sleeveReach = -0.30f; neckDrop = 0.0f;
+            hemY = m_.y.underbustY - 0.010f * H - 0.034f * H * b * b;
+            topY = m_.y.bustY + 0.036f * H;
+            break;
+        }
         default: return 1e9f;
     }
     thickness = maxf(thickness, layer);
@@ -1540,16 +1622,33 @@ float BodyField::clothLower(const Vec3& p) const {
         case 7:  thickness = maxf(0.028f, minLayer() + 0.010f); hemY = m_.y.ankleY + 0.040f; break;
         case 8:  thickness = 0.0035f; hemY = m_.y.kneeY + m_.shankLen * 0.18f; break; /* shorts      */
         case 9:  thickness = 0.010f; hemY = m_.y.ankleY + 0.035f; break;
+        case 10: thickness = 0.0035f;                                                 /* swimwear      */
+                 hemY = (m_.sex == AF_SEX_MALE) ? m_.y.crotchY - m_.thighLen * 0.24f : m_.y.crotchY - 0.014f * H;
+                 break;
         default: return 1e9f;
     }
     thickness = maxf(thickness, minLayer());
-    const float topY = m_.y.waistY + 0.030f;
+    const bool briefs = (apparel_.outfit == 10 && m_.sex != AF_SEX_MALE);
+    /* Swimwear sits on the hips; everything else comes up past the waist. */
+    const float topY = (apparel_.outfit == 10) ? m_.y.hipY + 0.036f * H : m_.y.waistY + 0.030f;
     if (p.y > topY + 0.05f) return p.y - topY - 0.01f;
     if (p.y < hemY - 0.05f) return hemY - p.y - 0.01f;
 
     /* From the hem up past the waist. The gap between the legs is air in the body's field, so the
        crotch forms by itself. */
-    const float domain = maxf(hemY - p.y, p.y - topY);
+    float domain = maxf(hemY - p.y, p.y - topY);
+    if (briefs) {
+        /*
+         * Briefs have no level hem: the leg opening runs from between the legs up to the hip at
+         * the side, steeply in front and more gently behind, where the cloth covers the seat. The
+         * line is a height for each distance from the middle; its slope is about 0.7, so the
+         * height difference is scaled to stand for a distance.
+         */
+        const float t = saturate(std::fabs(p.x) / maxf(1e-3f, m_.hip.rx * 0.98f));
+        const float behind = smoothstepf(-0.015f, 0.025f, p.z - m_.hip.centreZ);
+        const float legY = lerpf(hemY, topY - 0.024f * H, std::pow(t, lerpf(1.10f, 2.30f, behind)));
+        domain = maxf((legY - p.y) * 0.80f, p.y - topY);
+    }
     /* Trousers are an offset of the trunk and the legs. The arms are not part of that field, so a
        hand hanging beside the thigh no longer bites a hole in the cloth. */
     (void)H;
@@ -1846,6 +1945,9 @@ float BodyField::gearField(const Vec3& p, int* pieceOut) const {
 }
 
 static const float kBraidLength = 0.46f;   /* from the crown to the end of a plait */
+/* Amplitude of the afro's coil-scale undulation. The integration branch used 1.6 mm, which a
+   render at the app's quality does not show at all; at 3 mm the outline stops being a ball. */
+static const float kAfroCoil = 0.0030f;
 
 void BodyField::setApparel(const ApparelOptions& a) {
     apparel_ = a;
@@ -1939,6 +2041,10 @@ float BodyField::hairShape(const Vec3& p) const {
     float backFall = 0.0f;      /* > 0: a sheet continues down the back to this height      */
     float crest = 0.0f;         /* mohawk: restrict to a midline strip                      */
     float bun = 0.0f, tail = 0.0f, braids = 0.0f, afro = 0.0f;
+    bool blunt = false;         /* bob: a level cut with a square edge                      */
+    bool fringe = false;        /* bangs: the front hangs over the forehead to the brows    */
+    float curl = 0.0f;          /* curly: amplitude of the coils in the mass                */
+    bool ropes = false;         /* box braids: the mass is divided into separate braids     */
     switch (apparel_.hair) {
         case 1: thickness = 0.004f; break;                                        /* buzz     */
         case 2: thickness = 0.010f; puff = 0.006f; break;                         /* short    */
@@ -1952,6 +2058,15 @@ float BodyField::hairShape(const Vec3& p) const {
         case 7: thickness = 0.010f; braids = kBraidLength; break;                 /* braids   */
         case 8: thickness = 0.012f; afro = 0.066f; break;                         /* afro     */
         case 9: thickness = 0.018f; puff = 0.002f; crest = 0.030f; break;         /* mohawk   */
+        case 10: thickness = 0.012f; puff = 0.015f; blunt = true;                 /* bob      */
+                 hang = m_.y.chinY - headH * 0.015f; break;
+        case 11: thickness = 0.012f; puff = 0.016f; fringe = true;                /* bangs    */
+                 hang = m_.y.neckBaseY + 0.014f * m_.height; break;
+        case 12: thickness = 0.014f; puff = 0.040f; curl = 0.0042f;               /* curly    */
+                 hang = m_.y.neckBaseY + 0.022f * m_.height; break;
+        case 13: thickness = 0.012f; puff = 0.015f; ropes = true;                 /* box braids */
+                 hang = m_.y.neckBaseY + 0.006f * m_.height;
+                 backFall = crown - headH * 2.20f; break;
         default: return 1e9f;
     }
     thickness = maxf(thickness, minLayer() * 0.75f);   /* hair may be a little thinner than cloth */
@@ -1986,8 +2101,22 @@ float BodyField::hairShape(const Vec3& p) const {
     const float overEarY = earCentre_[0].y + m_.earLength * 0.52f;
     const float behindEarY = earCentre_[0].y - m_.earLength * 0.40f;
     const float napeY = m_.y.chinY + headH * 0.10f;
+    /* From the integration branch (09b87e3): a shallow widow's point at the centre and a gentle
+       recession above the temples, so the front of the hairline is a curve and not a level
+       line. They are heights for a direction here, because this hairline is one. */
+    const float widowPeak = headH * 0.014f;
+    const float templeRecession = headH * 0.024f;
+    /* Bangs: across the forehead the hair comes down to just above the brows, level, and rises
+       to the ordinary line at the temples. */
+    const float fringeY = browRidge_.y + headH * 0.030f;
     const auto hairlineAt = [&](float a) {
-        if (a < 40.0f) return lerpf(foreheadY, templeY, smoothstepf(14.0f, 40.0f, a));
+        if (fringe && a < 44.0f) return lerpf(fringeY, templeY, smoothstepf(31.0f, 44.0f, a));
+        if (a < 40.0f) {
+            const float base = lerpf(foreheadY, templeY, smoothstepf(14.0f, 40.0f, a));
+            const float peak = widowPeak * maxf(0.0f, 1.0f - a / 11.0f);
+            const float recess = templeRecession * smoothstepf(7.0f, 19.0f, a) * (1.0f - smoothstepf(21.0f, 33.0f, a));
+            return base - peak + recess;
+        }
         if (a < 55.0f) return lerpf(templeY, sideburnY, smoothstepf(40.0f, 55.0f, a));
         if (a < 66.0f) return lerpf(sideburnY, overEarY, smoothstepf(55.0f, 66.0f, a));
         if (a < 102.0f) return overEarY;
@@ -2048,10 +2177,51 @@ float BodyField::hairShape(const Vec3& p) const {
         return (dy > 0.0f ? -1.0f : 1.0f) * std::sqrt(best);
     };
     const float lineCut = edgeDistance(hairlineAt);
+    /*
+     * Clump channels (integration f6480ce): hair that hangs reads as locks and not as one slab
+     * when its back is divided by shallow channels. Four of them at the spacing used there, each
+     * a tube lying in the outer surface of the hair: `outerD` is the distance to that surface and
+     * `amount` fades the channels out (towards the crown, and round the sides of the head). They
+     * taper towards the ends and are sized for the 8 mm lattice.
+     */
+    const auto clumpChannel = [&](float outerD, float amount) {
+        const float down = saturate((crown - headH * 0.30f - p.y) / maxf(1e-3f, headH * 1.6f));
+        const float fade = amount * smoothstepf(0.0f, headH * 0.25f, crown - headH * 0.30f - p.y);
+        const float r = lerpf(0.0090f, 0.0065f, down) * fade;
+        /* A tube this thin does not reach the surface. "Far" is a metre, not the 1e9 used for
+           "no apparel": a smooth maximum against 1e9 loses the other operand to rounding and
+           returns exactly zero, which the mesher draws as blocks. */
+        if (r < 0.0032f) return 1.0f;
+        float nearest = 1e9f;
+        for (int g = -2; g <= 1; ++g) {
+            const float xg = (static_cast<float>(g) + 0.5f) * m_.head.rx * 0.42f;
+            nearest = minf(nearest, std::fabs(p.x - xg));
+        }
+        const float h = outerD - 0.003f;         /* the tube's axis is 3 mm outside the surface */
+        return std::sqrt(nearest * nearest + h * h) - r;
+    };
+    /*
+     * Box braids: the same idea taken further. The hanging mass is cut by a channel every 22 mm
+     * all the way round the head, deep enough that what is left between two channels is a rope.
+     * `across` is the position round the head, in metres along the surface.
+     */
+    const auto ropeChannel = [&](float outerD, float across, float amount) {
+        const float pitch = 0.022f;
+        const float fade = amount * smoothstepf(0.0f, headH * 0.20f, crown - headH * 0.22f - p.y);
+        const float r = 0.0080f * fade;
+        if (r < 0.0032f) return 1.0f;
+        const float k = across / pitch;
+        const float nearest = std::fabs(k - std::floor(k + 0.5f)) * pitch;
+        const float h = outerD - 0.0022f;
+        return std::sqrt(nearest * nearest + h * h) - r;
+    };
 
     /* The layer on the scalp: the skull inflated by the hair's depth, kept above the hairline. */
     const float skinD = head(p);
-    float d = skinD - layerOffset(lineCut, thickness, 0.030f);
+    /* A fringe has an edge: it reaches its depth within a centimetre and a half of its lower end,
+       where the ordinary hairline takes three. */
+    const float lineRamp = fringe ? lerpf(0.015f, 0.030f, smoothstepf(31.0f, 44.0f, phi)) : 0.030f;
+    float d = skinD - layerOffset(lineCut, thickness, lineRamp);
 
     /*
      * Volume. The outer silhouette is a dome over the cranium that continues downwards as an
@@ -2076,8 +2246,9 @@ float BodyField::hairShape(const Vec3& p) const {
         } else {
             /* Below the widest point the bell narrows a little, the way hair gathers. */
             const float t = saturate(-q.y / maxf(1e-3f, headC - (hang > 0.0f ? hang : napeY)));
-            const float a = ra * lerpf(1.0f, 0.93f, t);
-            const float bz = rb * lerpf(1.0f, 0.88f, t);
+            /* (A bob keeps its width to the cut; curls spread.) */
+            const float a = ra * lerpf(1.0f, blunt ? 0.99f : (curl > 0.0f ? 1.04f : 0.93f), t);
+            const float bz = rb * lerpf(1.0f, blunt ? 0.96f : (curl > 0.0f ? 1.00f : 0.88f), t);
             const float k = std::sqrt((q.x / a) * (q.x / a) + (q.z / bz) * (q.z / bz));
             outer = (k - 1.0f) * minf(a, bz);
         }
@@ -2106,10 +2277,22 @@ float BodyField::hairShape(const Vec3& p) const {
            towards the hairline it was laid open as a slot under a flap. */
         hollow = smax(hollow, p.y - (m_.y.jawY + 0.010f), 0.010f);
         float bell = smax(outer, -hollow, 0.006f);
+        if (curl > 0.0f) {
+            /* Curls: the coil-scale field of the afro (integration 09b87e3), at an amplitude
+               that shows in the outline. Applied before the hairline shapes the edge. */
+            const float fx = p.x * 118.0f + 0.37f, fy = p.y * 112.0f - 0.21f, fz = p.z * 118.0f + 0.63f;
+            bell += curl * (std::sin(fx) * std::sin(fy) * std::sin(fz)
+                            + 0.45f * std::sin(fx * 0.53f + fy * 0.31f) * std::sin(fz * 0.61f - fy * 0.27f));
+        } else if (ropes) {
+            bell = smax(bell, -ropeChannel(outer, radians(phi) * maxf(ra, rb), 1.0f), 0.0015f);
+        } else if (hang > 0.0f && !blunt) {
+            bell = smax(bell, -clumpChannel(outer, smoothstepf(118.0f, 138.0f, phi)), 0.0015f);
+        }
         /* The free edge of the mass - below the jaw, where it hangs clear of the neck - is rounded
            over almost its whole thickness. */
         const float edgeCut = edgeDistance(lowerEdgeAt);
-        bell = smax(bell, edgeCut, 0.026f);
+        /* (A bob's edge is a cut: rounded over a few millimetres only, behind the temples.) */
+        bell = smax(bell, edgeCut, blunt ? lerpf(0.026f, 0.007f, smoothstepf(50.0f, 72.0f, phi)) : 0.026f);
         /*
          * Where the mass lies against the head - across the forehead, at the temples, down the
          * side of the face to the jaw - it may stand no further off the skin than a ramp that
@@ -2136,6 +2319,8 @@ float BodyField::hairShape(const Vec3& p) const {
         const float surface = minf(body(p), clothUpper(p));
         const float halfW = m_.head.rx * lerpf(1.30f, 1.05f, saturate((hang - p.y) / maxf(1e-3f, hang - backFall)));
         float sheet = smax(surface - 0.016f, -(surface - 0.002f), 0.003f);
+        sheet = smax(sheet, ropes ? -ropeChannel(surface - 0.016f, std::fabs(p.x) + 0.011f, 1.0f)
+                                  : -clumpChannel(surface - 0.016f, 1.0f), 0.0015f);
         sheet = smax(sheet, std::fabs(p.x) - halfW, 0.012f);
         sheet = smax(sheet, maxf(backFall - p.y, p.y - (hang + 0.02f)), 0.012f);
         sheet = smax(sheet, (zc + m_.head.rz * 0.25f) - p.z, 0.010f);
@@ -2167,6 +2352,21 @@ float BodyField::hairShape(const Vec3& p) const {
         const Vec3 c(0.0f, headC + headH * 0.15f, zc + m_.head.rz * 0.10f);
         const Vec3 radii(m_.head.rx + afro, headH * 0.42f + afro, m_.head.rz + afro * 0.95f);
         float mass = sdEllipsoid(p - c, radii);
+        /*
+         * Coil-scale undulation (integration 09b87e3): a bounded three-axis clump field breaks
+         * the single smooth outline into broad overlapping coils. It is coarse enough for the
+         * 8 mm lattice and is applied to the mass before the hairline feathers it, so the edge
+         * on the forehead is not disturbed.
+         */
+        {
+            const float fx = p.x * 92.0f + 0.37f;
+            const float fy = p.y * 88.0f - 0.21f;
+            const float fz = p.z * 92.0f + 0.63f;
+            const float coil = std::sin(fx) * std::sin(fy) * std::sin(fz);
+            const float secondary = std::sin(fx * 0.53f + fy * 0.31f) *
+                                    std::sin(fz * 0.61f - fy * 0.27f);
+            mass += kAfroCoil * coil + kAfroCoil * 0.28f * secondary;
+        }
         /* Feathered to nothing at the hairline itself, like the layer on the scalp. */
         const float rise = layerOffset(lineCut, thickness, 0.030f) + 1.8f * maxf(0.0f, -lineCut);
         mass = smax(mass, skinD - rise, 0.016f);

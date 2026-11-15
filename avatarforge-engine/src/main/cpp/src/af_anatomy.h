@@ -101,6 +101,10 @@ struct BodyMetrics {
     float hipHalfWidth = 0.0f;     /* centre of thigh to centre of thigh / 2      */
     float legSeparation = 0.0f;    /* hip joint x offset                          */
 
+    /* --- the caller's shape offsets (af_spec.glute, af_spec.face), clamped to -1..+1 --- */
+    float glute = 0.0f;
+    float face[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+
     /* --- facial proportions (derived from head metrics) --- */
     float faceWidth = 0.0f, faceHeight = 0.0f, noseLength = 0.0f, lipWidth = 0.0f, earLength = 0.0f;
     float eyeSeparation = 0.0f, eyeRadius = 0.0f, irisRadius = 0.0f, mouthY = 0.0f;

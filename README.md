@@ -4,6 +4,45 @@ One Android app that generates, imports and renders 3D avatars on the phone. The
 
 **Handover of 2026-11-15 (UTC). PR #12 remains the working review path and is not merged to `main`. The owner has now installed and tested the new APK on a Samsung SM-S921B: general app operation is reported good; avatar appearance and animation capability remain unfinished.**
 
+## Avatar quality implementation handover — procedural hair
+
+**Work branch:** `integration/avatarforge-renderer-port`  
+**Implementation commits:**
+- `3960f4d32caec799435edf6beb6a03ff29b8916b` — replace the two smooth braid ropes with deterministic three-strand interlocking tapered geometry.
+- `09b87e33f7e459eba212c4144db254c7b62c473d` — replace the flat hairline cut with a curved temple-recession / widow-peak profile; add low-amplitude coil-scale surface variation to the Afro field.
+- `8370967eb9248ad298e693a3357c00d1dfa0b91e` — add native regression coverage sampling all nine selectable procedural hair styles for finite, non-empty geometry.
+- `f6480cefd96ab094fc2c792111bdb617c8924463` — add four shallow clump channels to medium/long rear hair, sized for the 8 mm extraction lattice.
+- `f6882b16633331e30f411fb1bc2946a8008d8407` — bake a root-to-tip pigment gradient separately from the hair material factor; preserve custom `hair_tone` in GLB export; add native tests for default/custom colour and gradient direction.
+
+**Status**
+- Braid silhouette geometry, curved hairline, Afro coil-scale field, long-hair clump channels, and root-to-tip pigment gradient: **IMPLEMENTED IN SOURCE; FINAL-HEAD CI PENDING**.
+- Nine-style finite/non-empty field regression and hair tone / gradient helper regression: **IMPLEMENTED IN SOURCE; FINAL-HEAD CI PENDING**.
+- Existing GLES Kajiya–Kay hair specular path: **PRESENT IN SOURCE**; its strand direction remains a world-up approximation rather than groom-authored per-strand vectors.
+- Shared scalp-cap socket asset, fitted hairline baby-hair cards, strand-card shells, flyaways, shared strand atlas/mask channels, alpha-to-coverage/depth-prepass profiling, and dedicated three-level hair LODs: **NOT IMPLEMENTED**.
+- Visual validation, triangle/card budgets, overdraw/GPU timings, APK build and S24 runtime: **UNVERIFIED**.
+
+The implementation remains in the existing AvatarForge signed-distance-field, texture-bake and GLB export pipeline. It does not replace existing presets or add mock assets. The braid, coil and clump geometry is deterministic and field-evaluated. The native regression samples all nine selectable hair IDs for finite, non-empty geometry; it is not a visual-quality test. The colour regression verifies natural/custom material factors and root-to-tip gradient direction; it does not substitute for visual inspection.
+
+Every README update changes the branch head. Collect all final verification against the resulting exact head, and do not reuse older workflow results as exact-head evidence.
+
+### How those commits were carried onto `arena/1a5b3043-3d-mega-hub` (PR #12)
+
+The section above is the integration branch's own text, merged unchanged. This branch had already replaced the hair code those commits edit (the hairline is a height for each direction round the head, the hanging styles are a hollow bell and a sheet down the back, the plaits are laid over the shoulders), so the merge conflicted in `af_field.cpp`, `af_glb.cpp` and `af_texture.cpp`. Each commit was carried over by hand:
+
+| Integration commit | On this branch | State |
+|---|---|---|
+| `3960f4d` three-strand braids | **Not taken.** Measured in this branch's body field, the straight guide line of those plaits is inside the body from the base of the neck downwards and 7 cm under the surface at its lower end (female and male, 1.70 m), so the lower half of each plait would be buried in the trunk. The plaits here stay the bead chains that rest on the neck, collarbone and chest. A new style, box braids (`AF_HAIR_BOX_BRAIDS`), divides the hanging hair into ropes instead | field measured; host render of this branch's plaits and of box braids looked at |
+| `09b87e3` hairline | **Ported** into the hairline by direction: widow's point 1.4 % and temple recession 2.4 % of the head's height, the integration branch's values | host render before and after looked at |
+| `09b87e3` Afro coil field | **Ported** onto this branch's Afro mass, at 3.0 mm instead of 1.6 mm: at 1.6 mm a render at the app's quality showed no difference at all. The same field at 4.2 mm gives the new curly style its outline | host render looked at |
+| `8370967` hairstyle regression | **Merged**, and extended from nine styles to thirteen | host `ctest` passes |
+| `f6480ce` clump channels | **Ported** onto the back of the bell and the sheet down the back. The first version returned `1e9` for "no channel here", and a smooth maximum against `1e9` rounds the other operand away and returns exactly zero: the hair came out as blocks. "Far" is now one metre | host render looked at |
+| `f6882b1` root-to-tip colour, hair colour in the GLB | **Ported** as a multiplier inside the baked colour. On this branch the base colour texture carries the colour once and the material factor is white, so the chosen hair colour already reached the GLB; the factor carries it only for a file without a texture. Both helper functions and their tests are merged | host `ctest` passes |
+
+"Looked at" means a host software render at the app's quality, seen by the author of this README. None of it has been seen on a phone.
+
+
+## Single source of truth
+
 **Start here:** [Avatar assets and animation master document](#avatar-assets-and-animation-master-document-2026-11-15), the newest section, then [`docs/AVATAR_ASSETS_ANIMATION_MASTER.html`](docs/AVATAR_ASSETS_ANIMATION_MASTER.html).
 
 ## Where the work is
