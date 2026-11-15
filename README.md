@@ -5,23 +5,23 @@
 ## Avatar quality implementation handover — procedural hair
 
 **Work branch:** `integration/avatarforge-renderer-port`  
-**Implementation commits:**  
+**Implementation commits:**
 - `3960f4d32caec799435edf6beb6a03ff29b8916b` — replace the two smooth braid ropes with deterministic three-strand interlocking tapered geometry.
 - `09b87e33f7e459eba212c4144db254c7b62c473d` — replace the flat hairline cut with a curved temple-recession / widow-peak profile; add low-amplitude coil-scale surface variation to the Afro field.
 - `8370967eb9248ad298e693a3357c00d1dfa0b91e` — add native regression coverage sampling all nine selectable procedural hair styles for finite, non-empty geometry.
+- `f6480cefd96ab094fc2c792111bdb617c8924463` — add four shallow clump channels to medium/long rear hair, sized for the 8 mm extraction lattice.
+- `f6882b16633331e30f411fb1bc2946a8008d8407` — bake a root-to-tip pigment gradient separately from the hair material factor; preserve custom `hair_tone` in GLB export; add native tests for default/custom colour and gradient direction.
 
 **Status**
-- Braid silhouette geometry: **IMPLEMENTED IN SOURCE; CI PENDING**.
-- Curved hairline: **IMPLEMENTED IN SOURCE; CI PENDING**.
-- Afro coil-scale field variation: **IMPLEMENTED IN SOURCE; CI PENDING**.
-- Nine-style finite/non-empty field regression: **IMPLEMENTED IN SOURCE; CI PENDING**.
-- Shared scalp-cap socket asset, fitted hairline baby-hair cards, strand-card shells, flyaways, strand atlas, root/tip/streak masks, GLES anisotropic hair shader, alpha-to-coverage/depth-prepass profiling, and three-level hair LODs: **NOT IMPLEMENTED**.
+- Braid silhouette geometry, curved hairline, Afro coil-scale field, long-hair clump channels, and root-to-tip pigment gradient: **IMPLEMENTED IN SOURCE; FINAL-HEAD CI PENDING**.
+- Nine-style finite/non-empty field regression and hair tone / gradient helper regression: **IMPLEMENTED IN SOURCE; FINAL-HEAD CI PENDING**.
+- Existing GLES Kajiya–Kay hair specular path: **PRESENT IN SOURCE**; its strand direction remains a world-up approximation rather than groom-authored per-strand vectors.
+- Shared scalp-cap socket asset, fitted hairline baby-hair cards, strand-card shells, flyaways, shared strand atlas/mask channels, alpha-to-coverage/depth-prepass profiling, and dedicated three-level hair LODs: **NOT IMPLEMENTED**.
 - Visual validation, triangle/card budgets, overdraw/GPU timings, APK build and S24 runtime: **UNVERIFIED**.
 
-The implementation remains in the existing AvatarForge signed-distance-field and GLB generation pipeline. It does not replace existing presets or add mock assets. The braid and coil geometry are field-evaluated, deterministic and allocation-free. Do not describe this as the complete layered hair system until the missing asset/shader/LOD work and validation are complete.
+The implementation remains in the existing AvatarForge signed-distance-field, texture-bake and GLB export pipeline. It does not replace existing presets or add mock assets. The braid, coil and clump geometry is deterministic and field-evaluated. The native regression samples all nine selectable hair IDs for finite, non-empty geometry; it is not a visual-quality test. The colour regression verifies natural/custom material factors and root-to-tip gradient direction; it does not substitute for visual inspection.
 
-The native test checks all nine hair IDs in a bounded head-space sample envelope. It is a geometry-presence / finite-value regression, not a visual-quality test. CI evidence must be collected for the exact current branch head; every README update changes that head and requires fresh exact-head workflows.
-
+Every README update changes the branch head. Collect all final verification against the resulting exact head, and do not reuse older workflow results as exact-head evidence.
 
 
 ## Single source of truth
