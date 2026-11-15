@@ -23,7 +23,7 @@ One render thread owns the EGL context, the engine, the renderer and the `ANativ
 - A renderer failure and a teardown failure are reported together in the final status. Neither replaces the other.
 - The UI thread never waits for the render thread. When a screen closes, Android can take the Surface away while a frame is still being drawn; that frame is counted as "cut off by surface shutdown" with its EGL code, not as an error. A failed swap while the session is meant to be rendering is an error.
 - Visible-pixel verification (debug builds) needs three presented frames. The render thread then finishes the frame's GPU work, asks PixelCopy for the real SurfaceView, and holds the next frame until the copy is answered. The background sampled at the four corners is subtracted and at least 5,000 geometry pixels are required.
-- Imported GLBs are shown as static meshes. The importer does not apply a file's skeleton or animation clips and does not read its morph targets, so the on-screen joint count is zero. Posing and facial animation need the engine's own rig, which exists only inside the engine session that generated the avatar. The app exports a generated avatar and then imports it, so generated avatars are also shown static.
+- A GLB written by this engine keeps its skeleton and clips on import (since `b636f23`): the app exports a generated avatar, imports it, and the renderer skins it on the GPU and can play its 15 animations (since `a5e93a8`; proved on the CI emulator, not on the phone). Any other GLB is shown as a static mesh with a joint count of zero: the importer does not apply a foreign skeleton or its clips. Morph targets are never read, so no avatar on screen has facial animation.
 
 ## Measured diagnostics
 

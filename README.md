@@ -43,7 +43,13 @@ The section above is the integration branch's own text, merged unchanged. This b
 
 ## Single source of truth
 
-**Start here:** [Avatar assets and animation master document](#avatar-assets-and-animation-master-document-2026-11-15), the newest section, then [`docs/AVATAR_ASSETS_ANIMATION_MASTER.html`](docs/AVATAR_ASSETS_ANIMATION_MASTER.html).
+**Start here:** [Avatar assets and animation master document](#avatar-assets-and-animation-master-document-2026-11-15), then [`docs/AVATAR_ASSETS_ANIMATION_MASTER.html`](docs/AVATAR_ASSETS_ANIMATION_MASTER.html).
+
+| If you want | Read |
+|---|---|
+| The machine described for an agent who will work on it: parts, pipeline, build, tests, measured numbers, mistakes already made | [`AGENTS.md`](AGENTS.md) |
+| The known faults with their repairs, the route to photoreal avatars, the recommended parts and the performance plan for the Galaxy S24 | [`docs/PHOTOREAL_UPGRADE_PLAN.md`](docs/PHOTOREAL_UPGRADE_PLAN.md). A recommendation: nothing in it is built yet |
+| What was verified, where and when | this file, from here down |
 
 ## Where the work is
 
@@ -52,7 +58,7 @@ The section above is the integration branch's own text, merged unchanged. This b
 | Working branch | [`arena/1a5b3043-3d-mega-hub`](https://github.com/davealone69-gif/3d-mega-hub/tree/arena/1a5b3043-3d-mega-hub) |
 | Review path | [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12) into `integration/avatarforge-renderer-port`, then [PR #9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) into `main` |
 | Current code head | `2920265ae822d08f6508e8eac917a9817e232e1e` (`2920265`). All five workflows passed on it and its phone-test APK is published; see [Verification results](#verification-results). It merges the integration branch at `13117dc` and adds the choices of the owner's picture reference to the creator. The commit after it adds only documents. Measurements further down that name `3facc3d`, `797d156`, `041e31d` or `a5e93a8` are from those older commits |
-| README update | Updated after the owner's third message of 2026-11-15: three screenshots of a picture creator and a folder of body references, with the words "These are very important". The documents-only commit does not change app code or the tested APK |
+| README update | Updated after the owner's third message of 2026-11-15: three screenshots of a picture creator and a folder of body references, with the words "These are very important". The documents-only commit does not change app code or the tested APK. A second documents commit answers the owner's fourth message ("describe this machine ... repairs ... how we can get to 3d photo realistic avatars") with `AGENTS.md` and `docs/PHOTOREAL_UPGRADE_PLAN.md`, and corrects two stale sentences about imported models in `BUILD_AND_VERIFY.md` and `PROJECT_STATUS.md` |
 | Record for the head commit | In the description of [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). A commit cannot contain the results of its own workflow runs, so the record for the head, with the APK to install, is kept there |
 | `main` | `aaee4443dbf53ef4707cce01d99f71a59e903ec7`, not modified. No force-push anywhere |
 
