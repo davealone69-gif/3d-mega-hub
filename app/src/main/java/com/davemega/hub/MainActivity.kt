@@ -162,9 +162,16 @@ private fun MegaHubApp(
                     }
                 }
                 GlbValidator.validate(outputFile)
+                // A model whose textures would not fit in memory is replaced by a copy with smaller ones.
+                val prepared = ImportedGlbPreparation.fitTextures(outputFile, AndroidGlbImageScaler) { progress ->
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        activity.runOnUiThread { avatarImportStatus = progress }
+                    }
+                }
+                temporaryFile = prepared.file
                 val fileName = "imported-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}.glb"
                 val destination = File(directory, fileName)
-                Files.move(outputFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                Files.move(prepared.file.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
                 temporaryFile = null
                 val importedUri = Uri.fromFile(destination)
                 prefs.edit().putString("avatar_uri", importedUri.toString())
@@ -174,7 +181,8 @@ private fun MegaHubApp(
                         avatarUri = importedUri
                         avatarName = fileName
                         avatarImporting = false
-                        avatarImportStatus = "Imported and structurally validated · ${destination.length() / 1024L} KiB"
+                        avatarImportStatus = "Imported and structurally validated · ${destination.length() / 1024L} KiB" +
+                            (prepared.note?.let { " · $it" } ?: "")
                     }
                 }
             } catch (failure: Exception) {
@@ -223,10 +231,16 @@ private fun MegaHubApp(
                 }
                 // Remote sources receive the same bounded structural validation as document-picker imports.
                 GlbValidator.validate(outputFile)
+                val prepared = ImportedGlbPreparation.fitTextures(outputFile, AndroidGlbImageScaler) { progress ->
+                    if (!activity.isFinishing && !activity.isDestroyed) {
+                        activity.runOnUiThread { avatarImportStatus = progress }
+                    }
+                }
+                temporaryFile = prepared.file
                 val safeStem = displayName.removeSuffix(".glb").replace(Regex("[^A-Za-z0-9._-]"), "_").take(48).ifEmpty { "remote" }
                 val fileName = "$safeStem-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}.glb"
                 val destination = File(directory, fileName)
-                Files.move(outputFile.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
+                Files.move(prepared.file.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
                 temporaryFile = null
                 val importedUri = Uri.fromFile(destination)
                 prefs.edit().putString("avatar_uri", importedUri.toString())
@@ -236,7 +250,8 @@ private fun MegaHubApp(
                         avatarUri = importedUri
                         avatarName = displayName
                         avatarImporting = false
-                        avatarImportStatus = "Downloaded & validated $displayName · ${destination.length() / 1024L} KiB"
+                        avatarImportStatus = "Downloaded & validated $displayName · ${destination.length() / 1024L} KiB" +
+                            (prepared.note?.let { " · $it" } ?: "")
                     }
                 }
             } catch (failure: Exception) {

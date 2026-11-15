@@ -4,6 +4,9 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import android.view.Choreographer
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -12,6 +15,7 @@ import com.google.android.filament.Camera
 import com.google.android.filament.Engine
 import com.google.android.filament.EntityManager
 import com.google.android.filament.Filament
+import com.google.android.filament.IndirectLight
 import com.google.android.filament.LightManager
 import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
@@ -30,7 +34,9 @@ import java.io.File
 import java.io.InputStream
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.sin
 
 /** Filament gltfio viewer. GLES is primary; Vulkan is an optional fallback. */
 class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolder.Callback {
@@ -44,6 +50,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var swapChain: SwapChain? = null
     private var cameraEntity = 0
     private var lightEntity = 0
+    private var indirectLight: IndirectLight? = null
     private var activeBackend: Engine.Backend? = null
 
     private var materialProvider: UbershaderProvider? = null
@@ -72,6 +79,45 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var modelUri: Uri? = null
     private var hasModelRequest = false
     private var modelLoadToken = 0
+
+    // The orbit camera: where the loaded model was framed, and how the user has turned it since.
+    private var framedCenterX = 0.0
+    private var framedCenterY = 0.9
+    private var framedCenterZ = 0.0
+    private var framedRadius = 0.9f
+    private var orbitYawDegrees = 0f
+    private var orbitPitchDegrees = DEFAULT_PITCH_DEGREES
+    private var orbitZoom = 1f
+    private var lastTouchX = 0f
+    private var lastTouchY = 0f
+    private var activePointerId = MotionEvent.INVALID_POINTER_ID
+
+    private val scaleDetector = ScaleGestureDetector(
+        context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val factor = detector.scaleFactor
+                if (factor.isFinite() && factor > 0f) {
+                    orbitZoom = (orbitZoom / factor).coerceIn(MIN_ZOOM, MAX_ZOOM)
+                    applyOrbitCamera()
+                }
+                return true
+            }
+        }
+    )
+
+    private val tapDetector = GestureDetector(
+        context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                orbitYawDegrees = 0f
+                orbitPitchDegrees = DEFAULT_PITCH_DEGREES
+                orbitZoom = 1f
+                applyOrbitCamera()
+                return true
+            }
+        }
+    )
 
     private data class RendererSession(
         val engine: Engine,
@@ -219,6 +265,53 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     }
 
     /** A null URI selects the bundled sample GLB. */
+    /** One finger turns the model, two fingers zoom, a double tap puts the camera back. */
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            parent?.requestDisallowInterceptTouchEvent(true)
+        }
+        tapDetector.onTouchEvent(event)
+        scaleDetector.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                activePointerId = event.getPointerId(0)
+                lastTouchX = event.x
+                lastTouchY = event.y
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!scaleDetector.isInProgress && event.pointerCount == 1) {
+                    val index = event.findPointerIndex(activePointerId)
+                    if (index >= 0) {
+                        val x = event.getX(index)
+                        val y = event.getY(index)
+                        val span = max(1, minOf(width, height)).toFloat()
+                        orbitYawDegrees -= ((x - lastTouchX) / span) * 180.0f
+                        orbitPitchDegrees = (orbitPitchDegrees + ((y - lastTouchY) / span) * 120.0f).coerceIn(-MAX_PITCH_DEGREES, MAX_PITCH_DEGREES)
+                        lastTouchX = x
+                        lastTouchY = y
+                        applyOrbitCamera()
+                    }
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                val pointerIndex = event.actionIndex
+                if (event.getPointerId(pointerIndex) == activePointerId) {
+                    val newIndex = if (pointerIndex == 0) 1 else 0
+                    if (newIndex < event.pointerCount) {
+                        activePointerId = event.getPointerId(newIndex)
+                        lastTouchX = event.getX(newIndex)
+                        lastTouchY = event.getY(newIndex)
+                    }
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                activePointerId = MotionEvent.INVALID_POINTER_ID
+                parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return true
+    }
+
     fun setModel(uri: Uri?) {
         if (hasModelRequest && modelUri == uri) return
         hasModelRequest = true
@@ -383,6 +476,29 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             EntityManager.get().destroy(entity)
             throw failure
         }
+        // One directional light leaves every surface that faces away from it black. This adds light
+        // from all round as spherical harmonics: a uniform term and a little more from above. The
+        // viewer works without it, so a failure here is logged and not fatal.
+        try {
+            val ambient = IndirectLight.Builder()
+                .irradiance(
+                    2,
+                    floatArrayOf(
+                        0.80f, 0.80f, 0.84f,
+                        0.16f, 0.17f, 0.20f,
+                        0.00f, 0.00f, 0.00f,
+                        0.00f, 0.00f, 0.00f
+                    )
+                )
+                .intensity(AMBIENT_INTENSITY)
+                .build(activeEngine)
+            activeScene.indirectLight = ambient
+            indirectLight = ambient
+        } catch (failure: Exception) {
+            Log.w(TAG, "Ambient light could not be created; continuing with the key light only", failure)
+        } catch (failure: LinkageError) {
+            Log.w(TAG, "Ambient light native call failed; continuing with the key light only", failure)
+        }
     }
 
     private fun initializeGltfLoaders() {
@@ -400,23 +516,47 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             var bytes: ByteArray? = null
             var failure: Exception? = null
             try {
-                val stream = when {
-                    uri == null -> context.assets.open(BUNDLED_MODEL)
-                    uri.scheme == "file" -> File(uri.path ?: error("Selected file URI has no path")).inputStream()
-                    else -> context.contentResolver.openInputStream(uri)
-                        ?: error("Android could not open the selected GLB URI")
+                val file = if (uri != null && uri.scheme == "file") {
+                    File(uri.path ?: error("Selected file URI has no path"))
+                } else {
+                    null
                 }
-                bytes = readBounded(stream)
+                if (file != null) {
+                    // Decided from the JSON chunk and the image headers, before the model is read:
+                    //  - gltfio reserves morph storage for every vertex of every target, and an avatar
+                    //    this app generated needs several hundred megabytes of it. Asking for that
+                    //    ended the process on the phone;
+                    //  - it decodes every texture to RGBA with a mip chain, and a model from a desktop
+                    //    tool can need more than a gigabyte.
+                    // Such a file is turned away here, whoever sent it.
+                    require(file.length() <= MAX_MODEL_BYTES) {
+                        "GLB exceeds the viewer's ${MAX_MODEL_BYTES / (1024L * 1024L)} MiB safety limit"
+                    }
+                    GlbPreviewRouting.animationPreviewRefusal(GlbPreviewRouting.summarize(file))
+                        ?.let { reason -> error("this preview cannot open the file: $reason") }
+                    // readBytes allocates the file's length once; the stream path below doubles it.
+                    bytes = file.readBytes()
+                } else {
+                    val stream = if (uri == null) {
+                        context.assets.open(BUNDLED_MODEL)
+                    } else {
+                        context.contentResolver.openInputStream(uri)
+                            ?: error("Android could not open the selected GLB URI")
+                    }
+                    bytes = readBounded(stream)
+                }
                 if (bytes!!.isEmpty()) error("Selected GLB is empty")
                 GlbValidator.validate(bytes!!)
-                // gltfio reserves morph storage for every vertex of every target. An avatar this app
-                // generated needs several hundred megabytes of it, and asking for that ended the
-                // process on the phone. Such a file is turned away here, whoever sent it.
-                GlbPreviewRouting.animationPreviewRefusal(
-                    GlbPreviewRouting.summarize(java.io.ByteArrayInputStream(bytes!!))
-                )?.let { reason -> error("this preview cannot open the file: $reason") }
+                if (file == null) {
+                    GlbPreviewRouting.animationPreviewRefusal(
+                        GlbPreviewRouting.summarize(java.io.ByteArrayInputStream(bytes!!))
+                    )?.let { reason -> error("this preview cannot open the file: $reason") }
+                }
             } catch (error: Exception) {
                 failure = error
+            } catch (error: OutOfMemoryError) {
+                bytes = null
+                failure = IllegalStateException("the file is too large to read into memory")
             }
             post {
                 if (token != modelLoadToken || engine !== activeEngine) return@post
@@ -527,7 +667,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             val label = pendingAssetUri?.lastPathSegment ?: BUNDLED_MODEL
             pendingAssetUri = null
             lastReportedLoadProgress = -1
-            reportStatus("GLB loaded and GPU resources submitted: $label · ${pending.entities.size} nodes · $animationCount animation(s)")
+            reportStatus("GLB loaded and GPU resources submitted: $label · ${pending.entities.size} nodes · $animationCount animation(s) · drag to turn, pinch to zoom, double-tap to reset")
         } catch (failure: Exception) {
             Log.e(TAG, "Asynchronous GLB resource load failed", failure)
             destroyPendingAsset()
@@ -553,17 +693,42 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     }
 
     private fun frameCamera(bounds: com.google.android.filament.Box) {
-        val activeCamera = camera ?: return
         val center = bounds.center
         val half = bounds.halfExtent
-        val radius = max(half[0], max(half[1], half[2])).takeIf { it.isFinite() && it > 0.01f } ?: 0.9f
-        val distance = (radius * 3.2f).coerceIn(1.0f, 80.0f)
+        framedRadius = max(half[0], max(half[1], half[2])).takeIf { it.isFinite() && it > 0.01f } ?: 0.9f
+        framedCenterX = center[0].toDouble()
+        framedCenterY = center[1].toDouble()
+        framedCenterZ = center[2].toDouble()
+        orbitYawDegrees = 0f
+        orbitPitchDegrees = DEFAULT_PITCH_DEGREES
+        orbitZoom = 1f
+        applyOrbitCamera()
+    }
+
+    /**
+     * Puts the camera on a sphere round the framed model: yaw about the vertical axis, pitch above
+     * or below the horizon, zoom as a factor on the framing distance. The near and far planes follow
+     * the distance, so a model authored in centimetres is framed as well as one in metres.
+     */
+    private fun applyOrbitCamera() {
+        val activeCamera = camera ?: return
+        val distance = ((framedRadius * 3.2f).coerceIn(0.2f, 5000.0f) * orbitZoom).toDouble()
         val width = surfaceView.width.coerceAtLeast(1)
         val height = surfaceView.height.coerceAtLeast(1)
-        activeCamera.setProjection(45.0, width.toDouble() / height.toDouble(), 0.03, max(1000.0, distance.toDouble() * 20.0), Camera.Fov.VERTICAL)
+        activeCamera.setProjection(
+            45.0,
+            width.toDouble() / height.toDouble(),
+            max(0.01, distance * 0.01),
+            max(1000.0, distance * 20.0),
+            Camera.Fov.VERTICAL
+        )
+        val yaw = Math.toRadians(orbitYawDegrees.toDouble())
+        val pitch = Math.toRadians(orbitPitchDegrees.toDouble())
         activeCamera.lookAt(
-            center[0].toDouble(), (center[1] + radius * 0.12f).toDouble(), (center[2] + distance).toDouble(),
-            center[0].toDouble(), center[1].toDouble(), center[2].toDouble(),
+            framedCenterX + distance * cos(pitch) * sin(yaw),
+            framedCenterY + distance * sin(pitch),
+            framedCenterZ + distance * cos(pitch) * cos(yaw),
+            framedCenterX, framedCenterY, framedCenterZ,
             0.0, 1.0, 0.0
         )
     }
@@ -594,7 +759,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             return
         }
         view?.setViewport(Viewport(0, 0, width, height))
-        camera?.setProjection(45.0, width.toDouble() / height.toDouble(), 0.03, 1000.0, Camera.Fov.VERTICAL)
+        applyOrbitCamera()
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -627,6 +792,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             safelyDestroy("scene light entity") { EntityManager.get().destroy(lightEntity) }
         }
         lightEntity = 0
+        indirectLight?.let { ambient ->
+            safelyDestroy("ambient light removal") { scene?.indirectLight = null }
+            safelyDestroy("ambient light") { activeEngine.destroyIndirectLight(ambient) }
+        }
+        indirectLight = null
         destroyResources(activeEngine, swapChain, view, scene, camera, cameraEntity, renderer)
         engine = null
         renderer = null
@@ -680,6 +850,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         private const val TAG = "MegaHubRenderer"
         private const val BUNDLED_MODEL = "models/female.glb"
         private const val MAX_MODEL_BYTES = 128L * 1024L * 1024L
+        private const val AMBIENT_INTENSITY = 15_000.0f
+        private const val DEFAULT_PITCH_DEGREES = 2.15f
+        private const val MAX_PITCH_DEGREES = 85.0f
+        private const val MIN_ZOOM = 0.15f
+        private const val MAX_ZOOM = 4.0f
         const val DIAGNOSTICS_PREFS = "renderer_diagnostics"
         const val LAST_CHECKPOINT = "last_checkpoint"
     }

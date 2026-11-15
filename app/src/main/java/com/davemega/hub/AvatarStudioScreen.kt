@@ -105,8 +105,9 @@ fun AvatarStudioScreen(
     var telemetryLines by remember { mutableStateOf<List<String>>(emptyList()) }
     val importedFile = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.takeIf { it.isFile }
     val fileSummary = remember(avatarUri) { importedFile?.let { GlbPreviewRouting.summarize(it) } }
-    // A file from elsewhere that carries clips opens in the gltfio preview, which plays them. An
-    // avatar made here stays on the GLES renderer, which animates it itself; gltfio cannot hold it.
+    // A file from elsewhere that carries clips, several colour textures or a transparent material
+    // opens in the gltfio preview, which draws it as its author made it. An avatar made here stays
+    // on the GLES renderer, which animates it itself; gltfio cannot hold it.
     var useFilamentAnimationPreview by remember(avatarUri) {
         mutableStateOf(GlbPreviewRouting.opensInAnimationPreview(fileSummary))
     }
@@ -620,11 +621,11 @@ fun AvatarStudioScreen(
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open animation-capable Filament preview")
+                                Text(if (useFilamentAnimationPreview) "Use the engine's own renderer" else "Open in the glTF viewer (all materials, file animations)")
                             }
                         } else if (refusal != null) {
                             Text(
-                                "The Filament animation preview is not offered for this file: $refusal.",
+                                "The glTF viewer is not offered for this file: $refusal.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
