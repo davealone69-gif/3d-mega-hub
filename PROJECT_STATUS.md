@@ -94,7 +94,8 @@ The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `wo
 
 | Feature | Status |
 |---|---|
-| Skeletal animation, posing and facial animation of the avatar shown in the app | **MISSING**. Imported GLBs are static, and generated avatars are shown through export and import. |
+| Skeletal animation of the model shown in the app | No longer missing; **not verified on the phone**. An avatar made here plays its 15 built-in clips on the GPU (CI emulator, since `a5e93a8`). A rigged file from elsewhere plays its own clips in the glTF viewer, chosen by name (CI emulator with a test figure, since `ff9e6ba`). Clips made for another skeleton cannot be played on an avatar made here: retargeting is **MISSING** |
+| Posing and facial animation | **MISSING**. Blendshapes are written to the file and dropped on import; nothing drives them. |
 | Voice lip-sync and visemes | **MISSING**. Text-to-speech output works. |
 | Embedded language model | **MISSING**. Ollama is an external service. |
 | Photo-to-identity reconstruction | **MISSING**. Prompts are parsed deterministically. |

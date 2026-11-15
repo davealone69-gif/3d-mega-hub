@@ -6,7 +6,7 @@ The owner shared a Dropbox folder named `3d real` with seven GLB files: three di
 
 Status words are the project's. "Host" means the engine's importer run on a Linux host; nothing here has been run on the phone.
 
-A second folder, `New folder (2)`, followed an hour later with eight more models. It is recorded in [section 6](#6-the-second-folder-new-folder-2).
+A second folder, `New folder (2)`, followed an hour later with eight more models. It is recorded in [section 6](#6-the-second-folder-new-folder-2). A file with 14 animations followed that; it is in [section 7](#7-a-file-with-14-animations).
 
 ## 1. What each file is
 
@@ -163,5 +163,75 @@ Nothing changes in [`PHOTOREAL_UPGRADE_PLAN.md`](PHOTOREAL_UPGRADE_PLAN.md). The
 | JPEG texture test (above) | All six GLB files of this folder depend on it and nothing tested it | CI emulator, two runs |
 | The glTF viewer has a tone curve, anti-aliasing, ambient occlusion and shadows (`FilamentPreviewView.kt`) | "Heather" and "Ink" open there. Filament's post-processing was switched off | Screenshots from the CI emulator with the bundled figure, [README](../README.md#the-owners-3d-reference-models-and-the-imported-model-viewer-2026-11-15). None of the owner's models has been drawn by it anywhere |
 | Emulator screenshots can be read back from CI | Until now the author of these documents had not seen a frame of the app | [AGENTS.md](../AGENTS.md), section 7 |
+
+**Nothing in this section has been run on the phone.**
+
+## 7. A file with 14 animations
+
+The owner's next message was a link to one more file in `3d real`: `beautiful_realistic_undressed_girls_-_14_anims.glb`, 38.6 MB. **Neither that file nor the copy converted from it is in this repository or in any APK.** It was inspected by structure, by untextured shape renders of every motion and by one textured render of the still figure on the host.
+
+### 7.1 What it is
+
+It is a showcase scene, not an avatar file: **15 copies of one rigged figure** standing in two rows about 8 m wide. Fourteen copies each play a different motion and one stands still in a T-pose. All 14 motions sit in **one** animation track (2,730 channels, 9.33 s, 30 frames a second).
+
+| | |
+|---|---|
+| The file says about itself | Title "Beautiful Realistic Undressed Girls - 14 Anims", author Polygonal Studios, licence label CC-BY 4.0, a Sketchfab source page |
+| One figure | 20,381 vertices, 28,605 triangles in three parts: body, a hair-and-face part drawn with transparency, scalp. 1.65 m tall |
+| Skeleton | 66 joints with Mixamo names (`mixamorig:Hips` and so on), the same in every copy |
+| Whole file | 305,715 vertices, 429,075 triangles, 45 materials, 1,083 nodes |
+| Textures | Two sets of three PNG images: body 2048 x 1024, hair and face 1024 x 1024, scalp 64 x 64. 32 MiB decoded |
+| Morph targets | none |
+| glTF validator | The source fails it (the time stamps of its animation are stored in a way the format forbids); viewers read it anyway |
+
+- **An adult woman, unclothed.** The motions are dances, exercise moves and idles.
+- **Game-style, not photoreal.** 28,605 triangles and one colour image for the body, no normal or roughness map. Its value is the movement, not the look.
+- **Rights.** The CC-BY label, the author and the source are written in the file. The joint names are those of Adobe's Mixamo service, so the motions are probably Mixamo library clips; that is an inference from the names. Whether the uploader may pass them on under CC-BY was not established. Like the other models, it is treated as the owner's private reference.
+
+### 7.2 What the app does with it
+
+**As it is:** "Import GLB" opens it in the glTF viewer, because it carries a clip. The camera frames the whole scene, so the 15 figures are small, and Motion offers one clip of 9.33 s in which all 14 move at once. That follows from the routing rule and the viewer's code; the file itself has not been opened on any device here.
+
+**Converted:** [`tools/glb_figures/figures_to_clips.py`](../tools/glb_figures/figures_to_clips.py) turns such a file into one figure with one named clip per motion. The converted copy is 4.4 MB: the still figure at the origin, facing the camera, with 15 clips. It is in the owner's Dropbox as `/avatar/from-agent/models/one_figure_14_clips_from_beautiful_realistic_undressed_girls.glb`.
+
+| # | Clip | Length | When it repeats |
+|---|---|---|---|
+| 1 | Jumping jacks | 1.10 s | seamless: the source repeats it, one period kept |
+| 2 | Arms up flex | 8.53 s | seamless: it ends where it starts |
+| 3 | Squats arms up | 1.90 s | seamless, one period kept |
+| 4 | Sit-ups | 9.23 s | seamless |
+| 5 | Dance 1 | 2.40 s | seamless, one period kept |
+| 6 | Standing gesturing | 9.30 s | **jumps**: the source cuts it off |
+| 7 | Walk in place | 1.20 s | seamless, one period kept |
+| 8 | Dance 2 arm raised | 7.33 s | seamless |
+| 9 | Dance 3 wide stance | 8.10 s | seamless |
+| 10 | Dance 4 spins | 2.30 s | seamless, one period kept |
+| 11 | Strut in place | 2.60 s | seamless, one period kept |
+| 12 | Idle looking around | 9.30 s | small jump: cut off in the source |
+| 13 | Arms out stepping | 5.47 s | seamless, one period kept |
+| 14 | Idle arms crossed | 9.30 s | **jumps**: cut off in the source |
+| 15 | T-pose | 1.00 s | the rest pose, still |
+
+- The names are descriptions written here from the shape renders. The source names nothing: its one track is called "Animation".
+- **Checked on the host:** with both files skinned on the CPU at five times of every clip, no vertex of the converted figure is further than 0.000007 m from the same vertex of its source copy. The converted file passes the Khronos glTF validator with no error and no warning. Author, licence and source are kept in it, with a note of what was changed.
+- **Not checked:** the converted file has not been opened in the app on any device, and no picture of it has come from the glTF viewer.
+
+### 7.3 What was changed (`ff9e6ba`)
+
+| Change | Why | Evidence |
+|---|---|---|
+| **Clip names and a clip strip** (`GlbClipNames.kt`, `FilamentPreviewView.kt`, `AvatarStudioScreen.kt`). A file shown by the glTF viewer gets a row of chips under the stage, one per clip, with the names from the file; one tap plays a clip. The Motion line shows the name too | The viewer offered clips only as "1 of 15" with Previous and Next | Labels: `GlbClipNamesTest`, eight unit tests. The strip and the tap: `GlbClipPreviewTest` on the CI emulator, below. **IMPLEMENTED IN SOURCE** |
+| **`tools/glb_figures/figures_to_clips.py`** (Python, numpy) | A showcase file is a crowd with one clip in any viewer | `test_figures_to_clips.py`: 24 checks on a generated showcase of four copies, in the CI job "Model tools self-test (Python)" (the commit message says 23). On the owner's file: the two checks above. It has run on one real file |
+| **`GlbClipPreviewTest`**, an instrumented test with a generated rigged figure (`make_test_figure.py`: boxes, seven joints, clips Wave, March and Bow) | Nothing in CI had ever given the glTF viewer a skeleton or a clip: the bundled sample has neither | CI emulator (Android 11), run [43739150428](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43739150428): the file opened in the glTF viewer, which listed Wave, March and Bow; a tap on the March chip chose that clip; with Wave held at 0 s and at 1 s, 350 of 9,216 sampled points of the picture differed, and none after going back to 0 s. The two pictures were read back and looked at: arm down, arm raised. **REAL + VERIFIED on the emulator**, for the test figure |
+
+The build with these changes is the pre-release `phone-test-ff9e6ba`; the link and its checksum are in the [README](../README.md#verification-results). **To try it on the phone:** install that build, then "Import GLB" with the converted file from Dropbox. It should open as one figure facing you, with 15 named chips under it.
+
+All 15 clips set the same joints, so changing from one clip to another leaves nothing of the first behind.
+
+### 7.4 What it means for the plan
+
+- **It is the first of the owner's files that moves**, and it shows the cheapest route to more movement: clips made for the Mixamo skeleton exist in large numbers.
+- **The app's own avatars cannot use these clips yet.** A generated avatar has its own skeleton of 71 joints and its 15 built-in clips are written for it. Carrying a clip from one skeleton to another (retargeting) is not implemented. It would be an import step: read a rigged file's clips, map the joints by name, and play the result on the avatar. It is R19 in [`PHOTOREAL_UPGRADE_PLAN.md`](PHOTOREAL_UPGRADE_PLAN.md); not started.
+- **The conversion runs on a computer, not in the app.** Doing it at import inside the app is possible and not started.
 
 **Nothing in this section has been run on the phone.**

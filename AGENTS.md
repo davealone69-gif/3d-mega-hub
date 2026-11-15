@@ -2,7 +2,7 @@
 
 Read this first. It says what the repository is, how the parts fit, how to build and test, what has been measured and where, and which mistakes have already been made.
 
-- Checked against the source at commit `2920265` (engine and creator) and `96152cd` (imported models, glTF viewer, CI screenshots) on 2026-11-15.
+- Checked against the source at commit `2920265` (engine and creator), `96152cd` (imported models, glTF viewer, CI screenshots) and `ff9e6ba` (clips of imported files, model tools) on 2026-11-15.
 - The plan for reaching photoreal avatars is a separate file: [docs/PHOTOREAL_UPGRADE_PLAN.md](docs/PHOTOREAL_UPGRADE_PLAN.md).
 - The item-by-item inventory with evidence links is [docs/AVATAR_ASSETS_ANIMATION_MASTER.html](docs/AVATAR_ASSETS_ANIMATION_MASTER.html). The current results are in [README.md](README.md).
 
@@ -74,7 +74,8 @@ Line counts are of `2920265`.
 | `app/.../MainActivity.kt` | The hub and its five pages |
 | `app/.../AvatarStudioScreen.kt` | Avatar Studio: stage, rail of sections, Randomize, Save, Create avatar, animation strip, dark and light look |
 | `app/.../AvatarCreatorPanels.kt`, `AppearanceControls.kt` | The sections (Look, Body, Hair, Face, Skin, Outfit, Shoes, Motion), picture cards, colour tiles; `AppearanceSelection` maps each choice to spec values |
-| `app/.../GlbPreviewRouting.kt`, `FilamentPreviewView.kt` | Which preview a file opens in, and the Filament preview (orbit, zoom, one shadow-casting directional light plus ambient; 4x MSAA, FXAA, ambient occlusion, PBR Neutral tone curve). A generated avatar is never sent to Filament, and neither is a file whose textures exceed the budget |
+| `app/.../GlbPreviewRouting.kt`, `FilamentPreviewView.kt` | Which preview a file opens in, and the Filament preview (orbit, zoom, one shadow-casting directional light plus ambient; 4x MSAA, FXAA, ambient occlusion, PBR Neutral tone curve). A generated avatar is never sent to Filament, and neither is a file whose textures exceed the budget. The preview plays the file's own clips (`selectAnimation`, pause, loop, speed, seek) and reports its state through `playbackState()` |
+| `app/.../GlbClipNames.kt` | The labels of an imported file's clips: the names in the file, tidied; "Clip N" for a clip without one; repeated names numbered. The screen shows them as a strip of chips under the stage |
 | `app/.../GlbTextureBudget.kt`, `AndroidGlbImageScaler.kt`, `ImportedGlbPreparation.kt` | Import step: reads every embedded image's pixel size from its header and, when the decoded textures exceed 448 MiB, writes a copy of the GLB with those images halved. Everything else is copied byte for byte |
 | `app/src/main/res/drawable-nodpi/preset_*.jpg` | 51 card pictures, each a host render of the engine's own output |
 
@@ -84,7 +85,8 @@ Line counts are of `2920265`.
 |---|---|
 | `avatarforge-engine/src/test/cpp/` | Nine host tests run by `ctest`: sampling regression (shape, bust, glute, adult rule, face, hair styles, swimwear), GLB extensions, camera frustum, LOD, scene visibility, imported PBR, import robustness (fuzz), animation round trip, prompt words. Two tools: `af_host_probe` (generate and write a GLB with a report), `af_host_render` (generate or load, then software-render to PNG) |
 | `avatarforge-engine/src/test/java`, `app/src/test/java` | JVM unit tests: spec packing, GLB validator, telemetry, routing, the mapping from creator choices to spec values |
-| `app/src/androidTest/` | `AvatarForgeRendererSmokeTest`, `GeneratedAvatarRuntimeTest`: generate on the emulator, draw through the production view, read the pixels back, start an animation, read them again |
+| `app/src/androidTest/` | `AvatarForgeRendererSmokeTest`, `GeneratedAvatarRuntimeTest`: generate on the emulator, draw through the production view, read the pixels back, start an animation, read them again. `GlbClipPreviewTest`: a rigged file with three clips through the glTF viewer; clip names, a tap on a clip's chip, and the picture at two times of a clip. Its model is `app/src/androidTest/assets/rigged_test_figure.glb`, written by `make_test_figure.py` |
+| `tools/glb_figures/` | Python tools for model files; no model is stored in the repository. `figures_to_clips.py` (needs numpy): a "showcase" GLB with N copies of one rigged figure, each moving differently inside one animation track, becomes one figure with one named clip per motion; `--report` describes a file without writing, `--verify` skins source and result on the CPU and prints the largest vertex distance. `make_test_figure.py` (no dependencies): a rigged figure of boxes, `single` or `showcase`. `test_figures_to_clips.py`: 24 checks, must print "ALL PASSED" |
 | `tools/avatar_master_doc/build_doc.py` | Builds the master HTML from the source and `doc_extra.json`. Must print 0 unresolved links and 0 unmatched patterns |
 | `.github/workflows/` | Five workflows, see section 7 |
 
@@ -150,7 +152,7 @@ CI, five workflows:
 
 | Workflow file | What it proves | Starts by itself on a PR into the integration branch |
 |---|---|---|
-| `android.yml` | Unit tests, lint, native C++ tests, R8, debug APK, GLES render smoke on an emulator | No: dispatch it |
+| `android.yml` | Unit tests, lint, native C++ tests, model tools self-test, R8, debug APK, render smoke on an emulator (five instrumented tests: four on the app's own renderer, one on the glTF viewer) | No: dispatch it |
 | `avatarforge-diagnostic-apk.yml` | Host tests; builds the debug APK and verifies generated-avatar pixels on an emulator; downloads the artifact again and inspects the APK | No: dispatch it |
 | `avatarforge-generated-runtime.yml` | Generate, draw through the production view, pixel check, animation check | Yes |
 | `release-preview.yml` | Release build path and emulator smoke | No: dispatch it |
@@ -168,7 +170,7 @@ CI, five workflows:
       | tr -d '\n' | base64 -d > screenshot.jpg
   ```
 
-  `release-preview.yml` stores the Avatar Studio with the bundled model in the glTF viewer; `android.yml` stores the generated avatar and the last imported GLB as the app's own renderer drew them. They are evidence, not tests: nothing judges the picture.
+  `release-preview.yml` stores the Avatar Studio with the bundled model in the glTF viewer. `android.yml` stores the generated avatar and the last imported GLB as the app's own renderer drew them, and from `GlbClipPreviewTest` the rigged test figure at two times of a clip as the glTF viewer drew it, and the screen with the clip strip and the Motion section. They are evidence, not tests: nothing judges the picture.
 - Each CI debug APK is signed with a key made for that one job. Android will not install it over another build: uninstall first.
 
 ## 8. What has been measured, and where
@@ -179,6 +181,7 @@ CI, five workflows:
 | Phone | every later build | **Nothing verified.** The owner reported "animation crashes and no built in controls" on `041e31d`; the cause is inferred (a generated avatar sent to the Filament preview), not confirmed |
 | CI emulator | `2920265` | Gown avatar, 2,125,600 triangles: 323,702 geometry pixels through the production view; 15 animations listed; `t_pose` started; 81,407 pixels changed; no crash or ANR. Native heap 734 MB |
 | Host | `2920265` | `ctest` 9 of 9. 65 full-quality generations, all exit code 0. Default avatar: 623,493 vertices, 1,148,034 triangles, GLB 66.7 MB, 42 s |
+| CI emulator | `ff9e6ba` | A rigged test figure with three clips in the glTF viewer: clips listed by name, a tapped chip chose its clip, 350 of 9,216 sampled points changed between two times of one clip and none after returning. The first test of that viewer's picture; the figure is made of boxes |
 | Host | `e4655c3` | Three reference models from the owner, imported with the engine's importer: record in [docs/OWNER_MODELS_2026-11-15.md](docs/OWNER_MODELS_2026-11-15.md). The realistic one has 27,292 triangles of body skin and four 4096 x 4096 skin textures |
 
 ## 9. How to add things
@@ -216,7 +219,9 @@ Process:
 - **Look at the app before describing it.** Since `50bbe25` two jobs store small copies of emulator screenshots as check runs on the commit, named "Evidence only: emulator screenshot, ...": the Avatar Studio with the bundled model in the glTF viewer (`release-preview.yml`), and the generated avatar and the last imported GLB as the app's own renderer draws them (`android.yml`). `.github/scripts/publish_screenshot_check.py` has the two `gh api` commands that read one back. They are evidence, not tests.
 - **A check run made through the API shows up as a job of some workflow run of that commit**, and the publishing gate refuses a run with a job that did not end in success. Evidence checks therefore end in "success" and say "Not a test" in their title. `50bbe25` used "neutral" and cannot be published.
 - The host builds neither the GLES renderer nor Kotlin. A Kotlin or GLSL change is unproved until a workflow finishes.
-- The creator screen has been seen only as one emulator screenshot per commit (since `50bbe25`). No test taps a card.
+- The creator screen has been seen only as emulator screenshots (since `50bbe25`). No test taps a card of the creator; one test taps a clip chip of an imported file (`GlbClipPreviewTest`, since `ff9e6ba`).
+- **A new instrumented test class must be added to the script that runs it.** `.github/scripts/avatarforge-render-smoke.sh` names its test classes and the number of tests it expects; a class that is not listed there never runs.
+- **In a UI test, scroll the creator by a slow drag on the category rail.** A finger on the 3D view turns the model instead of moving the page, and a quick swipe flings the page past its target. The strip under the stage is below the fold of a small screen.
 
 ## 11. Known faults
 
