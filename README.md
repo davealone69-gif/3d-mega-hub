@@ -170,7 +170,7 @@ The full list of fifteen, with the release-engineering causes, is in [PROJECT_ST
 - **Earlier README.** Its geometry report is preserved in [docs/AVATAR_GEOMETRY_EVIDENCE.md](docs/AVATAR_GEOMETRY_EVIDENCE.md), its validation policy and readiness gate in [BUILD_AND_VERIFY.md](BUILD_AND_VERIFY.md), its quality plan and owner-tested ledger in [docs/AVATAR_QUALITY_PLAN.md](docs/AVATAR_QUALITY_PLAN.md), and its verification ledger and renderer investigation in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 - **Protected 83 MB GLB.** Regenerated from source byte for byte: 83,430,312 bytes, SHA-256 `56b072cb43203fe9c2ca0b231d28a3601b59914465647fa1da95a6890daccd6c`. It was never in the repository and still is not. Only the exporter with accessor bounds reproduces it, which is the difference between the earlier local workspace and the remote branch.
 - **Yaw explanation.** The +6.0472° yaw was not an alignment; the stored mesh is already mirror-symmetric. Corrected in [docs/AVATAR_GEOMETRY_EVIDENCE.md](docs/AVATAR_GEOMETRY_EVIDENCE.md), which also preserves the cross-section report, the mirror-matcher finding and the unmatched-ID bound.
-- **"D2 findings" and "README merge preview".** **MISSING** under those names in every branch, every pull request, Dropbox and Google Drive.
+- **"D2 findings" and "README merge preview".** **PARTIAL / UNVERIFIED**: not found under those exact names in the previously inspected repository/PR/Dropbox locations. Google Drive was not searchable in this handover because its connector is currently disabled by the ChatGPT workspace administrator; do not treat Drive as searched or conclude that the material is absent there. Recheck when access or a direct document link/export is available.
 
 ## Documents
 
