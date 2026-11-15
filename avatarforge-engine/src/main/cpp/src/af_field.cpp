@@ -1410,12 +1410,48 @@ float BodyField::hairShape(const Vec3& p) const {
         const Vec3 c(0.0f, crown - headH * 0.16f, m_.head.centreZ + m_.head.rz * 0.98f);
         d = smin(d, sdEllipsoid(p - c, Vec3(bun * 0.95f, bun * 0.80f, bun * 0.70f)), 0.010f);
     }
-    /* Braids: two ropes falling in front of the shoulders. */
+    /*
+     * Braids: two three-strand plaits. Each strand follows the same tapered guide, but
+     * winds around it with a 120-degree phase offset. The field is sampled deterministically
+     * (no allocations, random state or frame-dependent inputs) so marching-tetrahedra sees
+     * the interlock as actual silhouette geometry rather than a painted/card-only detail.
+     * The segment pitch is deliberately larger than the extraction cell to avoid aliasing
+     * the crossings on mid-range mobile devices.
+     */
     if (braids > 0.0f) {
+        constexpr int kBraidSegments = 18;
+        constexpr float kTwoPi = 6.28318530718f;
         for (int side = -1; side <= 1; side += 2) {
-            const Vec3 a(side * m_.head.rx * 0.85f, crown - headH * 0.35f, m_.head.centreZ + m_.head.rz * 0.55f);
-            const Vec3 b(side * m_.head.rx * 1.15f, crown - braids, m_.head.centreZ + m_.head.rz * 0.30f);
-            d = smin(d, sdTaperedCapsule(p, a, b, m_.head.rx * 0.20f, m_.head.rx * 0.13f), 0.008f);
+            const Vec3 start(side * m_.head.rx * 0.78f,
+                             crown - headH * 0.34f,
+                             m_.head.centreZ + m_.head.rz * 0.48f);
+            const Vec3 finish(side * m_.head.rx * 1.12f,
+                              crown - braids,
+                              m_.head.centreZ + m_.head.rz * 0.24f);
+            const Vec3 guide = finish - start;
+            const Vec3 axis = guide.normalizedOr({0.0f, -1.0f, 0.0f});
+            const Vec3 reference = std::fabs(axis.dot({0.0f, 0.0f, 1.0f})) < 0.90f
+                ? Vec3(0.0f, 0.0f, 1.0f) : Vec3(1.0f, 0.0f, 0.0f);
+            const Vec3 u = axis.cross(reference).normalizedOr({1.0f, 0.0f, 0.0f});
+            const Vec3 v = axis.cross(u).normalizedOr({0.0f, 0.0f, 1.0f});
+            const float orbit = m_.head.rx * 0.105f;
+            const float strandRadius = m_.head.rx * 0.105f;
+            for (int strand = 0; strand < 3; ++strand) {
+                Vec3 previous;
+                for (int segment = 0; segment <= kBraidSegments; ++segment) {
+                    const float t = static_cast<float>(segment) / kBraidSegments;
+                    const float angle = kTwoPi * t * 2.4f + kTwoPi * strand / 3.0f;
+                    const Vec3 centre = start + guide * t +
+                        u * (std::cos(angle) * orbit) + v * (std::sin(angle) * orbit);
+                    const float taper = lerpf(1.0f, 0.72f, t);
+                    if (segment > 0) {
+                        d = smin(d, sdTaperedCapsule(p, previous, centre,
+                            strandRadius * lerpf(1.0f, 0.72f, (t - 1.0f / kBraidSegments)),
+                            strandRadius * taper), 0.0015f);
+                    }
+                    previous = centre;
+                }
+            }
         }
     }
     return d;
