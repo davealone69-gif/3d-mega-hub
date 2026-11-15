@@ -185,6 +185,17 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         publishAnimationInfo()
     }
 
+    fun stopAnimation() {
+        animationPlaying = false
+        animationPositionSeconds = 0f
+        lastAnimationTickNanos = 0L
+        if (animationCount > 0) {
+            animator?.applyAnimation(selectedAnimation.coerceIn(0, animationCount - 1), 0f)
+            animator?.updateBoneMatrices()
+        }
+        publishAnimationInfo()
+    }
+
     fun setAnimationLoop(loop: Boolean) {
         animationLoop = loop
         publishAnimationInfo()
