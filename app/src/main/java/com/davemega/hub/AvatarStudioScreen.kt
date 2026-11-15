@@ -67,7 +67,11 @@ fun AvatarStudioScreen(
     }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
     var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
-    var useFilamentAnimationPreview by remember { mutableStateOf(false) }
+    // Imported GLBs open in the animation-capable gltfio preview by default.
+    // The native AvatarForge GLES renderer currently does not skin imported GLBs.
+    var useFilamentAnimationPreview by remember(avatarUri) {
+        mutableStateOf(avatarUri != null && avatarUri.scheme == "file")
+    }
     var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
     var animationCount by remember { mutableStateOf(0) }
     var selectedAnimation by remember { mutableStateOf(0) }
