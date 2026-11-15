@@ -55,7 +55,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var lastReportedLoadProgress = -1
     private var animator: Animator? = null
     private var animationCount = 0
-    private var animationStartNanos = 0L
+    private var selectedAnimation = 0
+    private var animationPositionSeconds = 0f
+    private var animationPlaying = true
+    private var animationLoop = true
+    private var animationSpeed = 1.0f
+    private var lastAnimationTickNanos = 0L
+    private var animationFrameCounter = 0
+    private var animationInfoListener: ((Int, Int, Boolean, Boolean, Float, Float, Float) -> Unit)? = null
 
     private var running = false
     private var statusListener: ((String) -> Unit)? = null
@@ -87,11 +94,25 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     updatePendingAssetLoad()
                     val activeAnimator = animator
                     if (activeAnimator != null && animationCount > 0) {
-                        val duration = activeAnimator.getAnimationDuration(0)
+                        val index = selectedAnimation.coerceIn(0, animationCount - 1)
+                        val duration = activeAnimator.getAnimationDuration(index)
                         if (duration.isFinite() && duration > 0f) {
-                            val elapsedSeconds = ((frameTimeNanos - animationStartNanos).coerceAtLeast(0L)) / 1_000_000_000f
-                            activeAnimator.applyAnimation(0, elapsedSeconds % duration)
+                            val elapsedSeconds = if (lastAnimationTickNanos == 0L) 0f else
+                                ((frameTimeNanos - lastAnimationTickNanos).coerceAtLeast(0L)) / 1_000_000_000f
+                            lastAnimationTickNanos = frameTimeNanos
+                            if (animationPlaying) {
+                                animationPositionSeconds += elapsedSeconds * animationSpeed
+                                if (animationLoop) {
+                                    animationPositionSeconds %= duration
+                                } else if (animationPositionSeconds >= duration) {
+                                    animationPositionSeconds = duration
+                                    animationPlaying = false
+                                }
+                            }
+                            activeAnimator.applyAnimation(index, animationPositionSeconds.coerceIn(0f, duration))
                             activeAnimator.updateBoneMatrices()
+                            animationFrameCounter++
+                            if (animationFrameCounter % 15 == 0) publishAnimationInfo()
                         }
                     }
                     if (activeRenderer.beginFrame(activeSwapChain, frameTimeNanos)) {
@@ -127,6 +148,63 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     fun setStatusListener(listener: (String) -> Unit) {
         statusListener = listener
         listener(lastStatus)
+    }
+
+    fun setAnimationInfoListener(listener: (Int, Int, Boolean, Boolean, Float, Float, Float) -> Unit) {
+        animationInfoListener = listener
+        publishAnimationInfo()
+    }
+
+    private fun publishAnimationInfo() {
+        val activeAnimator = animator
+        val duration = if (activeAnimator != null && animationCount > 0) {
+            activeAnimator.getAnimationDuration(selectedAnimation.coerceIn(0, animationCount - 1)).takeIf { it.isFinite() } ?: 0f
+        } else 0f
+        animationInfoListener?.invoke(
+            animationCount, selectedAnimation, animationPlaying, animationLoop,
+            animationSpeed, duration, animationPositionSeconds
+        )
+    }
+
+    fun selectAnimation(index: Int) {
+        if (animationCount <= 0) return
+        selectedAnimation = index.coerceIn(0, animationCount - 1)
+        animationPositionSeconds = 0f
+        animationPlaying = true
+        lastAnimationTickNanos = 0L
+        animator?.let {
+            it.applyAnimation(selectedAnimation, 0f)
+            it.updateBoneMatrices()
+        }
+        publishAnimationInfo()
+    }
+
+    fun setAnimationPlaying(playing: Boolean) {
+        animationPlaying = playing && animationCount > 0
+        lastAnimationTickNanos = 0L
+        publishAnimationInfo()
+    }
+
+    fun setAnimationLoop(loop: Boolean) {
+        animationLoop = loop
+        publishAnimationInfo()
+    }
+
+    fun setAnimationSpeed(speed: Float) {
+        if (speed.isFinite() && speed > 0f) animationSpeed = speed.coerceIn(0.1f, 3.0f)
+        publishAnimationInfo()
+    }
+
+    fun seekAnimation(positionSeconds: Float) {
+        val activeAnimator = animator ?: return
+        if (animationCount <= 0) return
+        val duration = activeAnimator.getAnimationDuration(selectedAnimation.coerceIn(0, animationCount - 1))
+        if (!duration.isFinite() || duration <= 0f) return
+        animationPositionSeconds = positionSeconds.coerceIn(0f, duration)
+        activeAnimator.applyAnimation(selectedAnimation, animationPositionSeconds)
+        activeAnimator.updateBoneMatrices()
+        lastAnimationTickNanos = 0L
+        publishAnimationInfo()
     }
 
     /** A null URI selects the bundled sample GLB. */
@@ -415,7 +493,17 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             activeScene.addEntities(pending.entities)
             animator = pending.instance.animator
             animationCount = animator?.animationCount ?: 0
-            animationStartNanos = System.nanoTime()
+            selectedAnimation = 0
+            animationPositionSeconds = 0f
+            animationPlaying = animationCount > 0
+            animationLoop = true
+            lastAnimationTickNanos = 0L
+            animationFrameCounter = 0
+            animator?.takeIf { animationCount > 0 }?.let {
+                it.applyAnimation(0, 0f)
+                it.updateBoneMatrices()
+            }
+            publishAnimationInfo()
             frameCamera(pending.boundingBox)
             filamentAsset = pending
             pendingAsset = null
@@ -471,6 +559,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         filamentAsset = null
         animator = null
         animationCount = 0
+        selectedAnimation = 0
+        animationPositionSeconds = 0f
+        animationPlaying = false
+        lastAnimationTickNanos = 0L
+        publishAnimationInfo()
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
