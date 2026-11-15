@@ -19,6 +19,39 @@ The rule is one implementation line, `integration/avatarforge-renderer-port`. Th
 
 Status labels: **REAL + VERIFIED**, **UNVERIFIED**, **PARTIAL**, **MISSING**, **BLOCKED**. "Verified on the emulator" never means verified on the phone.
 
+## Avatar and animation findings update (2026-11-15)
+
+The owner's latest phone test adds an important asset observation: **a version of `mylove.glb` containing a skeleton also loaded in the app**. The owner could not identify a visible difference in the avatar's appearance compared with the prior version. Record this as **REAL + VERIFIED (owner-observed load)** for successful file loading only. It does not prove that the Hub renderer applies the skeleton, deforms the mesh, evaluates poses or plays animation. The visible appearance remains unresolved.
+
+### Corrected animation inventory
+
+Earlier wording in this README that implied there was no animation implementation anywhere was too broad. Source inspection found substantial existing functionality that should be reused:
+
+- **AvatarForge** has an authored animation/pose system, skeletal rig and skin-weight implementation, facial blendshape channels, native pose sampling/application, GLES deformation/rendering, an Android viewer with pose/animation controls, and a GLB exporter with an `includeAnimations` option. A 75-joint rig and 52 facial blendshape channels were observed in the inspected source revision; verify exact counts against the current pinned revision before depending on them.
+- **3D-Mega-Hub `FilamentPreviewView.kt`** already obtains Filament's `Animator` from a loaded `FilamentAsset`, reads the animation count, applies animation index 0 using elapsed time, and updates bone matrices before rendering. This is existing playback code, but it currently auto-plays the first clip and does not establish user-facing clip controls on the main avatar screen.
+- **3D-Mega-Hub's user-facing generated/imported avatar route** uses `AvatarForgeSurfaceView` / the native GLES path, while `FilamentPreviewView` is used for the bundled sample. The prior inspected GLB importer/render telemetry reported 0 joints on the displayed mesh, despite the generated GLB containing joints and blendshapes. Therefore the main route's skinning/animation integration remains unproven and is a concrete connection gap to investigate.
+
+The correct status is not “no animation code exists”. It is **PARTIAL**: animation capability exists in AvatarForge and a separate Filament preview path, but end-to-end animation of the generated/imported avatar in the actual Hub screen, with usable controls, is not verified and remains unavailable to the owner. Do not write a second animation engine. Trace the actual screen route, verify the generated/exported GLB's skin and clip payload, then connect the existing AvatarForge and/or Filament implementation with the smallest required adapter and controls.
+
+### Donor-repository screening
+
+- `3d4me`: reusable procedural body/geometry and customisation work; inspected version does not provide a complete rig/animation system.
+- `Aura-Studio-Avatar`: an animation interface exists, but inspected `LogAnimationEngine` is a logging stub, not real playback.
+- Private `morph-lab-game`: render loop and input handling found; no proven skeletal-avatar clip pipeline found in the inspected code.
+- `DD3-Intro`: intro/video project, not an avatar animation engine.
+
+These were read-only inspections. No donor repository was modified. Treat these as findings from the inspected revisions, not guarantees about future/current changes.
+
+### Current owner-observed results
+
+| Test / observation | Status | What it proves |
+|---|---|---|
+| Previously tested diagnostic APK installed and generally operated on Samsung SM-S921B | **REAL + VERIFIED (owner-reported)** | Basic install and general operation, not avatar quality or animation |
+| `mylove.glb` version containing a skeleton loaded in the app | **REAL + VERIFIED (owner-observed load)** | The file loaded; no evidence yet that its skeleton was evaluated or applied |
+| Owner could not tell that the skeleton version looked different | **REAL + VERIFIED (owner observation)** | No discernible visual change was observed; appearance/deformation remains unresolved |
+| Main Hub screen can animate the avatar with user controls | **MISSING / UNVERIFIED** | No working user-facing animation capability has been demonstrated |
+
+
 ## Status against the definition of done
 
 | # | Item | Status | Evidence |
@@ -42,10 +75,10 @@ Status labels: **REAL + VERIFIED**, **UNVERIFIED**, **PARTIAL**, **MISSING**, **
 
 ## Next action
 
-The owner has completed the initial Samsung APK test and reports that the app is generally working. Do not keep treating the basic phone install/launch check as pending. The next work is avatar completion, not another broad renderer rewrite:
+The owner has completed the initial Samsung APK test and reports that the app is generally working. Do not keep treating the basic phone install/launch check as pending. The next work is avatar completion by reusing existing code, not another broad renderer rewrite:
 
 1. Diagnose and improve the generated avatar's visible appearance at the source: body construction, proportions, mesh deformation, surface/material generation and export. Compare actual generated GLBs and screenshots against agreed visual acceptance criteria; do not infer quality from successful rendering or GLB validation.
-2. Implement a complete usable animation feature, because the owner confirms there is currently no way in the app to animate an avatar. This includes a supported animation source/clip pipeline, skeleton/skin preservation through generation/export/import, runtime playback and user-facing controls (at minimum select/load, play, pause, stop, seek and loop where supported). Do not claim animation works merely because a GLB contains joints or clips.
+2. Trace the actual main avatar route and connect existing AvatarForge rig/pose/clip functionality and/or the existing Filament `Animator` playback path. Verify the actual generated GLB's skin and animation payload, imported joint count and visible deformation. Add only missing adapters and user-facing controls (select, play, pause, resume, stop, seek, loop and speed). Do not build a duplicate animation engine or claim animation works merely because a GLB contains a skeleton or clips.
 3. Keep the working renderer and current tested APK baseline intact. Make focused changes on the existing implementation line; do not create a competing app or parallel implementation branch.
 4. Capture phone-side `renderer_telemetry.json` and `renderer_diagnostics.json` when practical. These are still needed to verify detailed Samsung performance, thermal, memory and lifecycle behaviour, even though the owner has confirmed the APK itself works generally.
 5. Update this README with each evidence-backed milestone. A feature is not **REAL + VERIFIED** until it is built, installed and exercised on the phone.
@@ -62,7 +95,7 @@ For production signing: add the keystore and its three passwords as protected re
 - **Crash containment.** A C++ exception in the renderer becomes a reported renderer failure instead of an app abort.
 - **Release engineering.** The signed APK and AAB are read back and checked against the Gradle configuration; two clean builds must be byte-identical. The debug APK for the phone is inspected, downloaded again on a second machine and tied to the test that ran it. It is published as a direct download only when the readiness gate holds for its commit.
 
-Not implemented: an end-to-end animation feature or any user-facing way to animate an avatar. The current GLB import/render path displays static meshes; the imported mesh has 0 joints in renderer telemetry even though the generated GLB carries joints and blendshapes. Animation clips, skinning, posing, facial animation and playback controls are therefore **MISSING**, not merely hidden or unverified. Avatar appearance quality is also **UNFIXED** per the owner's 2026-11-15 phone feedback. Lip-sync, an embedded language model and photo-based identity are also not implemented. See [PROJECT_STATUS.md](PROJECT_STATUS.md).
+Not implemented end-to-end: usable animation of the avatar on the main Hub screen with user-facing controls. Existing AvatarForge animation/pose code and Filament GLB playback are documented in [Avatar and animation findings update](#avatar-and-animation-findings-update-2026-11-15). The inspected GLES import/render telemetry reported 0 joints on the displayed mesh, while the generated GLB carried joints and blendshapes. The skeleton-bearing `mylove.glb` was subsequently observed to load, but the owner saw no discernible visual difference. Skinning, pose evaluation and playback on the actual Hub avatar route remain **PARTIAL / UNVERIFIED**, not evidence that no animation code exists. Avatar appearance quality is also **UNFIXED** per the owner's 2026-11-15 phone feedback. Lip-sync, an embedded language model and photo-based identity are also not implemented. See [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 ## Build and test results for `3facc3d`
 
@@ -157,7 +190,7 @@ The full list of fifteen, with the release-engineering causes, is in [PROJECT_ST
 |---|---|
 | General APK operation on Samsung SM-S921B | **REAL + VERIFIED (owner-reported)** | Owner installed and tested the new APK on 2026-11-15 and reported that everything generally works apart from the avatar issues. Detailed telemetry, sustained performance, heat, memory and lifecycle remain **UNVERIFIED**. |
 | Production signing | **BLOCKED** on the owner's keystore |
-| End-to-end avatar animation pipeline | **MISSING**: current generated/imported avatar path renders static meshes; the owner has no way to animate an avatar in the app. Skeleton/skin/clip preservation, runtime playback and controls are not implemented end to end. |
+| End-to-end avatar animation on the main Hub screen | **PARTIAL / UNVERIFIED**: substantial AvatarForge animation code and Filament GLB playback already exist, but their connection to the main GLES avatar route and usable controls is not demonstrated. Owner reports no way to animate the avatar in the app. |
 | Avatar visual quality | **UNFIXED**: owner explicitly confirmed on 2026-11-15 that the appearance is still not fixed. Successful generation, export or rendering does not establish acceptable visual quality. [docs/AVATAR_QUALITY_PLAN.md](docs/AVATAR_QUALITY_PLAN.md) |
 | Performance of the default avatar on the phone | **UNVERIFIED**: 1.1 to 1.6 million triangles with 4x MSAA. Measure before tuning |
 | Native libraries are not stripped | **PARTIAL**: every build prints "Unable to strip". Finding O4 of the review |
