@@ -87,6 +87,9 @@ struct BodyMetrics {
     float thighRx = 0.0f, thighRz = 0.0f, kneeR = 0.0f, calfRx = 0.0f, calfRz = 0.0f, ankleRx = 0.0f, ankleRz = 0.0f;
     float quadBulge = 0.0f, hamstringBulge = 0.0f, adductorBulge = 0.0f, gastrocBulge = 0.0f, tibialisBulge = 0.0f;
     float footLength = 0.0f, footWidth = 0.0f, footHeelZ = 0.0f, footHeight = 0.0f;
+    /* High heels: how far the ankle stands above where it would on a flat foot. The foot is
+       pitched about the ankle and the toes stay on the floor; see BodyField::footLocal. */
+    float heelLift = 0.0f;
     float toeLength[5] = {0, 0, 0, 0, 0};
     float toeRadius[5] = {0, 0, 0, 0, 0};
     float fingerLength[5] = {0, 0, 0, 0, 0};   /* thumb, index, middle, ring, little */

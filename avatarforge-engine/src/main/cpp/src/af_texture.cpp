@@ -170,6 +170,11 @@ struct MaterialContext {
     float eyeRadius = 0.008f;
     float ageFactor = 0.0f;
     Vec3 tone[13];                /* colour baked for each region: the spec's, or the default */
+    bool clothGiven = false;      /* the spec names a garment colour                         */
+    bool gearGiven = false;       /* the spec names an equipment colour                      */
+    const BodyField* field = nullptr;   /* the dressed field: parts of garments (may be null) */
+    int outfit = 0;
+    int footwear = 0;             /* BodyField::footwearKind()                               */
 };
 
 void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out) {
@@ -418,12 +423,39 @@ void evaluateCloth(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOu
     const float weft = std::sin(q.z * 6.2831853f) * 0.5f + 0.5f;
     const float twill = (warp + weft) * 0.5f;
     const float fuzz = fbm(ctx.noise, s.position * 240.0f, 2, 2.1f, 0.5f);
-    const Vec3& tone = ctx.tone[upper ? REGION_CLOTH_UPPER : REGION_CLOTH_LOWER];
-    Vec3 albedo = tone * (0.94f + 0.08f * twill) * (0.98f + 0.04f * fuzz);
+    Vec3 tone = ctx.tone[upper ? REGION_CLOTH_UPPER : REGION_CLOTH_LOWER];
+    float weave = 1.0f;          /* how much of the weave shows: none on a button */
+    float roughness = mat.roughness;
+    const int part = ctx.field ? ctx.field->apparelPart(s.position, upper ? REGION_CLOTH_UPPER : REGION_CLOTH_LOWER)
+                               : PART_BASE;
+    if (part != PART_BASE) {
+        const int o = ctx.outfit;
+        switch (part) {
+            case PART_SHIRT:
+                tone = (o == AF_OUTFIT_COAT) ? Vec3(0.030f, 0.028f, 0.027f) : Vec3(0.80f, 0.80f, 0.78f);
+                break;
+            case PART_TIE:    tone = Vec3(0.26f, 0.018f, 0.026f); roughness = 0.45f; break;
+            case PART_BUTTON:
+                tone = (o == AF_OUTFIT_JEANS_JACKET) ? Vec3(0.42f, 0.20f, 0.07f) : Vec3(0.022f, 0.020f, 0.018f);
+                weave = 0.0f; roughness = 0.35f;
+                break;
+            case PART_TRIM:
+                /* Denim is sewn with tan thread; a pressure suit's bearings are grey; elsewhere a
+                   seam or an edge is the cloth's own colour in shadow. */
+                if (o == AF_OUTFIT_JEANS_JACKET || o == AF_OUTFIT_TSHIRT) tone = Vec3(0.50f, 0.30f, 0.11f);
+                else if (o == AF_OUTFIT_SPACESUIT) tone = Vec3(0.20f, 0.21f, 0.23f);
+                else tone = tone * 0.35f;
+                break;
+            case PART_ACCENT: tone = (o == AF_OUTFIT_SPACESUIT) ? Vec3(0.50f, 0.030f, 0.028f) : tone * 0.7f; break;
+            case PART_METAL:  tone = Vec3(0.50f, 0.51f, 0.53f); weave = 0.0f; roughness = 0.35f; break;
+            default: break;
+        }
+    }
+    Vec3 albedo = tone * (1.0f + weave * (0.08f * twill - 0.06f)) * (1.0f + weave * (0.04f * fuzz - 0.02f));
     /* Restrained dye variation; keep the garment colour coherent at full-body viewing distance. */
     albedo *= 1.0f + 0.025f * fbm(ctx.noise, s.position * 8.0f, 3);
     out->albedo = albedo;
-    out->roughness = saturate(mat.roughness - 0.035f * twill + 0.02f * fuzz);
+    out->roughness = saturate(roughness - 0.035f * twill + 0.02f * fuzz);
     out->metallic = 0.0f;
     out->thickness = 0.008f;
     out->scatterRadius = 0.004f;
@@ -435,28 +467,129 @@ void evaluateCloth(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOu
                                std::cos(q.z * 6.2831853f) * amp * 6.2831853f / yarn * 0.5f, 0.0f);
 }
 
+/* Worked steel: the plate of a harness and of a sabaton. `joint` marks the line between plates. */
+void evaluateSteel(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out, bool joint) {
+    const float hammer = fbm(ctx.noise, s.position * 55.0f, 4, 2.1f, 0.5f);
+    const float scratches = saturate((fbm(ctx.noise, Vec3(s.position.x * 350.0f, s.position.y * 12.0f, s.position.z * 350.0f), 2) - 0.5f) * 6.0f);
+    const float edgeWear = 1.0f - s.curvature;
+    Vec3 albedo = (ctx.gearGiven ? ctx.tone[REGION_GEAR] : Vec3(0.27f, 0.29f, 0.33f)) * (0.88f + 0.20f * hammer);
+    albedo = albedo.lerp(Vec3(0.50f, 0.51f, 0.54f), scratches * 0.25f);
+    out->albedo = joint ? Vec3(0.035f, 0.035f, 0.040f) : albedo;
+    out->roughness = joint ? 0.70f : saturate(0.30f + 0.26f * saturate(hammer) + 0.20f * edgeWear - 0.10f * scratches);
+    /* Not fully metallic: with no environment to mirror, a pure metal is black wherever no light
+       is reflected straight at the eye. A share of diffuse keeps plate reading as steel. */
+    out->metallic = joint ? 0.20f : 0.70f;
+    out->thickness = 0.004f;
+    out->scatterRadius = 0.0f;
+    out->occlusion = saturate(0.5f + 0.55f * s.curvature);
+    out->reliefGradient = joint ? Vec3(0, 0, 0) : Vec3(hammer * 1.5f, hammer * -1.1f, 0.0f);
+}
+
 void evaluateShoe(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out) {
-    /* Full-grain leather: pebbled cellular grain on the upper, a fine rubber tread on the sole. */
-    const bool sole = s.position.y < 0.02f;
-    if (sole) {
-        const float tread = fbm(ctx.noise, Vec3(s.position.x * 90.0f, s.position.y * 90.0f, s.position.z * 90.0f), 3, 2.2f, 0.55f);
-        out->albedo = Vec3(0.055f, 0.055f, 0.06f) * (0.85f + 0.3f * saturate(tread));
-        out->roughness = 0.72f;
-        out->reliefGradient = Vec3(0, 0, 0);
-    } else {
-        const float grain = 1.0f - saturate(poreNoise(ctx.noise, s.position, 0.0016f) * 3.0f);
-        const float creases = saturate((fbm(ctx.noise, s.position * 45.0f, 3, 2.3f, 0.55f) - 0.5f) * 4.0f);
-        out->albedo = ctx.tone[REGION_SHOE] * 3.4f * (0.82f + 0.35f * grain) * (1.0f - 0.25f * creases);
-        out->roughness = saturate(0.42f + 0.22f * creases - 0.08f * grain);
-        out->reliefGradient = Vec3(grain * 0.9f, creases * 1.2f, 0.0f);
-    }
+    const int kind = ctx.footwear;
+    const int part = ctx.field ? ctx.field->apparelPart(s.position, REGION_SHOE)
+                               : (s.position.y < 0.02f ? PART_OUTSOLE : PART_BASE);
     out->metallic = 0.0f;
     out->thickness = 0.006f;
     out->scatterRadius = 0.0f;
     out->occlusion = saturate(0.45f + 0.6f * s.curvature);
+    out->reliefGradient = Vec3(0, 0, 0);
+    if (part == PART_OUTSOLE) {
+        const float tread = fbm(ctx.noise, s.position * 90.0f, 3, 2.2f, 0.55f);
+        out->albedo = Vec3(0.030f, 0.030f, 0.033f) * (0.85f + 0.3f * saturate(tread));
+        out->roughness = 0.80f;
+        return;
+    }
+    /* What each kind of shoe is made of, when the spec does not name a colour. */
+    Vec3 base = ctx.tone[REGION_SHOE] * 3.4f;
+    float rough = 0.45f;
+    bool leather = true;
+    switch (kind) {
+        case 1: base = Vec3(0.040f, 0.055f, 0.105f); rough = 0.86f; leather = false; break;  /* navy canvas   */
+        case 2: base = Vec3(0.085f, 0.042f, 0.020f); rough = 0.46f; break;                   /* brown leather */
+        case 4: base = Vec3(0.012f, 0.012f, 0.014f); rough = 0.14f; break;                   /* black patent  */
+        case 5: base = Vec3(0.66f, 0.66f, 0.64f); rough = 0.72f; leather = false; break;     /* suit fabric   */
+        default: break;
+    }
+    if (ctx.gearGiven) base = ctx.tone[REGION_SHOE];
+    switch (part) {
+        case PART_SOLE:
+            out->albedo = (kind == 5) ? Vec3(0.20f, 0.21f, 0.22f) : Vec3(0.80f, 0.80f, 0.77f);
+            out->roughness = 0.62f;
+            return;
+        case PART_TOECAP: out->albedo = Vec3(0.80f, 0.80f, 0.77f); out->roughness = 0.50f; return;
+        case PART_LACE:   out->albedo = Vec3(0.84f, 0.84f, 0.82f); out->roughness = 0.85f; return;
+        case PART_ACCENT: base = base * 1.9f + Vec3(0.02f, 0.02f, 0.02f); break;
+        case PART_TRIM:   base = (kind == 5) ? Vec3(0.24f, 0.25f, 0.27f) : base * 0.42f; break;
+        default: break;
+    }
+    if (leather) {
+        /* Full-grain leather: pebbled cellular grain, creases where it flexes. */
+        const float grain = 1.0f - saturate(poreNoise(ctx.noise, s.position, 0.0016f) * 3.0f);
+        const float creases = saturate((fbm(ctx.noise, s.position * 45.0f, 3, 2.3f, 0.55f) - 0.5f) * 4.0f);
+        out->albedo = base * (0.82f + 0.35f * grain) * (1.0f - 0.25f * creases);
+        out->roughness = saturate(rough + 0.20f * creases - 0.08f * grain);
+        out->reliefGradient = Vec3(grain * 0.9f, creases * 1.2f, 0.0f);
+    } else {
+        const float weave = fbm(ctx.noise, s.position * 240.0f, 2, 2.1f, 0.5f);
+        out->albedo = base * (0.94f + 0.10f * weave);
+        out->roughness = rough;
+    }
 }
 
 void evaluateGear(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out) {
+    const int part = ctx.field ? ctx.field->apparelPart(s.position, REGION_GEAR) : PART_BASE;
+    if (part == PART_STEEL || ((ctx.outfit == AF_OUTFIT_ARMOR_PLATE || !ctx.field) && part == PART_BASE)) {
+        evaluateSteel(ctx, s, out, false);
+        return;
+    }
+    if (part == PART_TRIM && (ctx.outfit == AF_OUTFIT_ARMOR_PLATE || ctx.footwear == 3)) {
+        evaluateSteel(ctx, s, out, true);
+        return;
+    }
+    if (ctx.outfit == AF_OUTFIT_ARMOR_LEATHER) {
+        /* Boiled leather, brass fittings. */
+        Vec3 base = ctx.gearGiven ? ctx.tone[REGION_GEAR] : Vec3(0.150f, 0.076f, 0.032f);
+        float rough = 0.55f, metal = 0.0f;
+        switch (part) {
+            case PART_TRIM:   base = base * 0.22f; rough = 0.80f; break;
+            case PART_ACCENT: base = base * 0.48f; break;
+            case PART_METAL:  base = Vec3(0.56f, 0.40f, 0.15f); rough = 0.34f; metal = 0.65f; break;
+            default: break;
+        }
+        const float grain = 1.0f - saturate(poreNoise(ctx.noise, s.position, 0.0016f) * 3.0f);
+        const float creases = saturate((fbm(ctx.noise, s.position * 45.0f, 3, 2.3f, 0.55f) - 0.5f) * 4.0f);
+        const float leatherLook = (part == PART_METAL) ? 0.0f : 1.0f;
+        out->albedo = base * (1.0f + leatherLook * (0.30f * grain - 0.12f)) * (1.0f - leatherLook * 0.22f * creases);
+        out->roughness = saturate(rough + leatherLook * (0.18f * creases - 0.08f * grain));
+        out->metallic = metal;
+        out->thickness = 0.006f;
+        out->scatterRadius = 0.0f;
+        out->occlusion = saturate(0.5f + 0.55f * s.curvature);
+        out->reliefGradient = Vec3(grain * 0.9f, creases * 1.2f, 0.0f) * leatherLook;
+        return;
+    }
+    if (ctx.outfit == AF_OUTFIT_SPACESUIT) {
+        /* White composite shells, anodised rings, a dark control panel. */
+        Vec3 base(0.70f, 0.70f, 0.69f);
+        float rough = 0.58f, metal = 0.0f;
+        switch (part) {
+            case PART_METAL:  base = Vec3(0.55f, 0.56f, 0.60f); rough = 0.30f; metal = 0.65f; break;
+            case PART_PANEL:  base = Vec3(0.030f, 0.034f, 0.042f); rough = 0.38f; break;
+            case PART_ACCENT: base = Vec3(0.52f, 0.035f, 0.030f); rough = 0.45f; break;
+            case PART_BUTTON: base = Vec3(0.10f, 0.42f, 0.14f); rough = 0.40f; break;
+            case PART_TRIM:   base = Vec3(0.17f, 0.18f, 0.20f); rough = 0.70f; break;
+            default: break;
+        }
+        out->albedo = base * (0.97f + 0.06f * fbm(ctx.noise, s.position * 30.0f, 2));
+        out->roughness = rough;
+        out->metallic = metal;
+        out->thickness = 0.006f;
+        out->scatterRadius = 0.0f;
+        out->occlusion = saturate(0.5f + 0.55f * s.curvature);
+        out->reliefGradient = Vec3(0, 0, 0);
+        return;
+    }
     /* Cast steel: work-hardened plates with a hammered surface and wear along the edges where
        curvature is high. */
     const float hammer = fbm(ctx.noise, s.position * 55.0f, 4, 2.1f, 0.5f);
@@ -501,6 +634,23 @@ void evaluateSurface(const MaterialContext& ctx, const SurfaceSample& s, Surface
             out->albedo = ctx.tone[s.region] * (0.80f + 0.40f * strand);
             out->roughness = mat.roughness;
             out->anisotropyHint = 1.0f;
+            if (s.region == REGION_HAIR && ctx.spec->hair_style == AF_HAIR_BUZZ) {
+                /* A buzz cut is stubble: the scalp shows between the hairs. Baked as solid hair
+                   colour it was the short style again. */
+                const float stubble = fbm(ctx.noise, s.position * 420.0f, 2, 2.1f, 0.5f);
+                const float cover = saturate(0.80f + 0.22f * (stubble - 0.5f) * 2.0f);
+                out->albedo = ctx.skinAlbedo.lerp(ctx.tone[REGION_HAIR], cover);
+                out->roughness = 0.60f;
+                out->anisotropyHint = 0.0f;
+            } else if (s.region == REGION_HAIR && ctx.spec->hair_style == AF_HAIR_AFRO) {
+                /* Tight curls: no direction, strong small-scale light and shade. */
+                const float curl = fbm(ctx.noise, s.position * 210.0f, 3, 2.2f, 0.55f);
+                const float clump = fbm(ctx.noise, s.position * 38.0f, 2, 2.0f, 0.5f);
+                out->albedo = ctx.tone[REGION_HAIR] * (0.62f + 0.50f * curl) * (0.86f + 0.26f * clump);
+                out->roughness = 0.70f;
+                out->anisotropyHint = 0.0f;
+                out->reliefGradient = Vec3((curl - 0.5f) * 5.0f, (clump - 0.5f) * 4.0f, 0.0f);
+            }
             break;
         }
         default:                              evaluateSkin(ctx, s, out); break;
@@ -543,8 +693,13 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
        by the material's base colour factor; it is part of the baked colour now. */
     ctx.skinAlbedo = skinAlbedoFromMelanin(spec.skin_melanin, ctx.undertone) * materialForRegion(REGION_SKIN).baseColor;
     for (int r = 0; r < 13; ++r) ctx.tone[r] = materialForRegion(r).baseColor;
+    ctx.field = options.field;
+    ctx.outfit = spec.outfit;
+    ctx.footwear = options.field ? options.field->footwearKind() : spec.footwear;
     {
         const auto given = [](const float* t) { return t[0] > 0.0f || t[1] > 0.0f || t[2] > 0.0f; };
+        ctx.clothGiven = given(spec.cloth_tone);
+        ctx.gearGiven = given(spec.gear_tone);
         if (given(spec.cloth_tone)) {
             const Vec3 c(spec.cloth_tone[0], spec.cloth_tone[1], spec.cloth_tone[2]);
             ctx.tone[REGION_CLOTH_UPPER] = c;
@@ -554,6 +709,26 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
             if (o == AF_OUTFIT_DRESS || o == AF_OUTFIT_SUIT || o == AF_OUTFIT_SPACESUIT || o == AF_OUTFIT_ATHLETIC) {
                 ctx.tone[REGION_CLOTH_LOWER] = c;
             }
+        }
+        if (!ctx.clothGiven) {
+            /*
+             * No colour named: each outfit in its own. One grey-blue for everything made a suit, a
+             * denim jacket and a coat the same garment with different hems.
+             */
+            Vec3& up = ctx.tone[REGION_CLOTH_UPPER];
+            Vec3& lo = ctx.tone[REGION_CLOTH_LOWER];
+            switch (spec.outfit) {
+                case AF_OUTFIT_DRESS:         up = Vec3(0.300f, 0.022f, 0.045f); lo = up; break;                       /* crimson            */
+                case AF_OUTFIT_SUIT:          up = Vec3(0.018f, 0.022f, 0.036f); lo = up; break;                       /* midnight navy      */
+                case AF_OUTFIT_JEANS_JACKET:  up = Vec3(0.085f, 0.170f, 0.330f); lo = Vec3(0.028f, 0.048f, 0.105f); break; /* denim, indigo   */
+                case AF_OUTFIT_ARMOR_PLATE:   up = Vec3(0.030f, 0.030f, 0.034f); lo = up; break;                       /* arming clothes     */
+                case AF_OUTFIT_ARMOR_LEATHER: up = Vec3(0.150f, 0.160f, 0.085f); lo = Vec3(0.055f, 0.036f, 0.022f); break; /* olive, brown    */
+                case AF_OUTFIT_SPACESUIT:     up = Vec3(0.760f, 0.760f, 0.740f); lo = up; break;                       /* white              */
+                case AF_OUTFIT_COAT:          up = Vec3(0.330f, 0.205f, 0.090f); lo = Vec3(0.026f, 0.026f, 0.030f); break; /* camel, charcoal */
+                default: break;
+            }
+        } else if (spec.outfit == AF_OUTFIT_COAT) {
+            ctx.tone[REGION_CLOTH_LOWER] = Vec3(0.026f, 0.026f, 0.030f);
         }
         if (given(spec.gear_tone)) {
             const Vec3 g(spec.gear_tone[0], spec.gear_tone[1], spec.gear_tone[2]);

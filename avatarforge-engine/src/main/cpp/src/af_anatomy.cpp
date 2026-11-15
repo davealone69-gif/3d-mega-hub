@@ -170,6 +170,21 @@ BodyMetrics Anatomy::solve(const af_spec& spec) {
         m.y.midThighY = lerpf(m.y.crotchY, m.y.kneeY, 0.55f);
     }
 
+    /*
+     * High heels raise the ankle. The stature asked for is kept (the head, and with it every
+     * landmark above the hips, stays where it is), so the rise is taken out of the leg: a little
+     * more from the shank than from the thigh. A person in heels is in fact taller by this much;
+     * the difference here is 45 mm in 1.7 m and is recorded rather than hidden.
+     */
+    m.heelLift = 0.0f;
+    if (spec.footwear == AF_FOOTWEAR_HEEL) {
+        m.heelLift = 0.027f * H;
+        m.y.ankleY += m.heelLift;
+        m.y.kneeY += m.heelLift * 0.45f;
+        m.y.calfMaxY = lerpf(m.y.ankleY, m.y.kneeY, 0.34f);
+        m.y.midThighY = lerpf(m.y.crotchY, m.y.kneeY, 0.55f);
+    }
+
     /* Segment lengths are derived only after every override has moved the complete chain. */
     m.thighLen = m.y.hipY - m.y.kneeY;
     m.shankLen = m.y.kneeY - m.y.ankleY;

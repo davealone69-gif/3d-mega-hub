@@ -262,10 +262,39 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
         c.hipJoint = {sx * m_.legSeparation, m_.y.hipY, 0.0f};
         c.knee = {sx * (m_.legSeparation + 0.004f), m_.y.kneeY, 0.006f};
         c.ankle = {sx * (m_.legSeparation + 0.006f), m_.y.ankleY, -0.004f};
-        c.heel = {c.ankle.x, m_.y.soleY + m_.footHeight * 0.5f, c.ankle.z + m_.footHeelZ};
-        c.ball = {c.ankle.x + sx * 0.008f, m_.y.soleY + m_.footHeight * 0.42f,
+        /*
+         * The foot is modelled flat, in a frame hung from the ankle. Its floor is the real floor
+         * except in heels, where the ankle stands heelLift higher and the frame is pitched about
+         * it until the ball of the foot is back on the ground.
+         */
+        const float flatFloor = m_.y.soleY + m_.heelLift;
+        c.heel = {c.ankle.x, flatFloor + m_.footHeight * 0.5f, c.ankle.z + m_.footHeelZ};
+        c.ball = {c.ankle.x + sx * 0.008f, flatFloor + m_.footHeight * 0.42f,
                   c.ankle.z - m_.footLength * 0.52f};
         c.toeTip = {c.ball.x, c.ball.y, c.ball.z - m_.toeLength[1] - m_.toeRadius[1]};
+        c.heelL = footLocalRaw(c.heel, c);
+        c.ballL = footLocalRaw(c.ball, c);
+        if (m_.heelLift > 0.0f) {
+            /* Pitch: the point of the sole under the ball has to come down to the floor. */
+            const float rise = c.ankle.y - m_.y.soleY;              /* ankle above the floor       */
+            const float gs = rise - m_.heelLift;                    /* ankle above the foot's sole */
+            const float zb = -c.ballL.z;                            /* ball in front of the ankle  */
+            const float reach = std::sqrt(gs * gs + zb * zb);
+            const float pitch = std::atan2(zb, gs) - std::acos(clampf(rise / maxf(reach, 1e-4f), -1.0f, 1.0f));
+            heelSin_ = std::sin(pitch);
+            heelCos_ = std::cos(pitch);
+            heelPivotY_ = -gs * heelCos_ - zb * heelSin_;
+            heelPivotZ_ = gs * heelSin_ - zb * heelCos_;
+            heelShiftY_ = heelPivotY_ + gs;
+            heelShiftZ_ = heelPivotZ_ + zb;
+            const float norm = std::sqrt(heelSin_ * heelSin_ + (heelCos_ + 1.0f) * (heelCos_ + 1.0f));
+            heelBisY_ = -heelSin_ / norm;
+            heelBisZ_ = -(heelCos_ + 1.0f) / norm;
+            const Vec3 toeL = footLocalRaw(c.toeTip, c);
+            c.heel = footPosed(c.heelL, c);
+            c.ball = footPosed(c.ballL, c);
+            c.toeTip = footPosed(toeL, c);
+        }
     }
 
     /* ---- face anchors ------------------------------------------------------------------- */
@@ -600,22 +629,15 @@ float BodyField::footShape(const Vec3& p, const Chain& c) const {
      * the vertical through that point, so each foot stays under its own leg. Every lateral offset
      * below is relative to the ankle.
      */
-    const float yaw = radians(7.0f) * sx;
-    const float cs = std::cos(-yaw), sn = std::sin(-yaw);
-    const Vec3 r = p - c.ankle;
-    const Vec3 q(r.x * cs - r.z * sn, r.y, r.x * sn + r.z * cs);
-    const auto toLocal = [&](const Vec3& w) {
-        const Vec3 t = w - c.ankle;
-        return Vec3(t.x * cs - t.z * sn, t.y, t.x * sn + t.z * cs);
-    };
-    const Vec3 heelL = toLocal(c.heel);
-    const Vec3 ballL = toLocal(c.ball);
+    const Vec3 q = footLocal(p, c);
+    const Vec3 heelL = c.heelL;
+    const Vec3 ballL = c.ballL;
 
     const float L = m_.footLength, W = m_.footWidth, Hf = m_.footHeight;
     /* `ground` is the contact plane, ankle-relative. Every primitive is placed by its lowest
        point, and the sole is flattened onto this plane at the end. */
     const float soleGap = 0.002f;
-    const float ground = (m_.y.soleY + soleGap) - c.ankle.y;
+    const float ground = footGround(c) + soleGap;
     const float ballZ = ballL.z;
 
     /*
@@ -1320,49 +1342,31 @@ float BodyField::sleeveSolid(const Vec3& p, float thickness, float reach) const 
     return d;
 }
 
-float BodyField::clothUpper(const Vec3& p) const {
-    if (apparel_.outfit == 0) return 1e9f;
+float BodyField::frontOpening(const Vec3& p) const {
+    /*
+     * The opening down the front of a garment that is worn open or has lapels: negative inside it,
+     * where the layer underneath shows. A jacket is not a pullover in a darker colour - the shirt
+     * and tie in the V of a suit, the T-shirt between the fronts of a denim jacket, are what the
+     * eye reads the garment by.
+     */
+    const int o = apparel_.outfit;
+    if (o != 3 && o != 4 && o != 9) return 1e9f;
     const float H = m_.height;
-    float thickness = 0.005f;        /* T-shirt                        */
-    float hemY = m_.y.hipY - 0.02f * H;
-    /* The garment reaches the base of the neck and the neckline is cut out of it (see below). The
-       top used to be a horizontal plane 15 mm above the shoulder joint, which sliced every upper
-       garment straight across the chest and left the shoulders bare between collar and sleeve. */
-    float topY = m_.y.neckBaseY + 0.012f * H;
-    float neckDrop = 0.016f * H;     /* how far the front of the neckline dips below the neck base */
-    float sleeveReach = 0.0f;
-    float skirtHemY = 0.0f;          /* > 0 turns the upper piece into a dress */
-    bool  gearPlates = false;
-    switch (apparel_.outfit) {
-        case 1:  /* T-shirt   */ thickness = 0.005f; sleeveReach = m_.upperArmLen * 0.35f; break;
-        case 2:  /* Full-length dress */ thickness = 0.004f; hemY = m_.y.hipY - 0.02f * H;
-                                 neckDrop = 0.050f * H; sleeveReach = 0.0f;
-                                 skirtHemY = m_.y.soleY + 0.010f * H; break;
-        case 3:  /* Suit      */ thickness = 0.011f; sleeveReach = m_.upperArmLen + m_.forearmLen * 0.92f;
-                                 hemY = m_.y.hipY + 0.02f * H; break;
-        case 4:  /* Jeans + jacket */ thickness = 0.014f; sleeveReach = m_.upperArmLen + m_.forearmLen * 0.80f;
-                                 hemY = m_.y.waistY - 0.02f * H; break;
-        case 5:  /* Plate armour */ thickness = 0.020f; sleeveReach = m_.upperArmLen * 0.55f;
-                                 hemY = m_.y.hipY + 0.01f * H; gearPlates = true; break;
-        case 6:  /* Leather armour */ thickness = 0.013f; sleeveReach = m_.upperArmLen + m_.forearmLen * 0.60f;
-                                 hemY = m_.y.hipY; gearPlates = true; break;
-        case 7:  /* Spacesuit */ thickness = 0.026f; sleeveReach = m_.upperArmLen + m_.forearmLen * 1.02f;
-                                 hemY = m_.y.crotchY + 0.01f * H; gearPlates = true; break;
-        case 8:  /* Athletic  */ thickness = 0.0035f; sleeveReach = m_.upperArmLen * 0.22f;
-                                 hemY = m_.y.hipY - 0.03f * H; break;
-        case 9:  /* Coat      */ thickness = 0.017f; sleeveReach = m_.upperArmLen + m_.forearmLen * 1.0f;
-                                 hemY = m_.y.crotchY - m_.thighLen * 0.10f; break;
-        default: return 1e9f;
-    }
-    (void)gearPlates;
-    thickness = maxf(thickness, minLayer());
-    /* Well above the collar or below the hem there is no garment: a conservative distance. */
-    {
-        const float lowest = (skirtHemY > 0.0f) ? minf(hemY, skirtHemY) : hemY;
-        if (p.y < lowest - 0.05f) return lowest - p.y - 0.01f;
-        if (p.y > topY + 0.05f) return p.y - topY - 0.01f;
-    }
+    /* The front of the body only. */
+    const float front = p.z - (m_.chest.centreZ - m_.chest.rz * 0.20f);
+    const float ax = std::fabs(p.x);
+    if (o == 4) return maxf(ax - 0.040f, front);                 /* worn open, collar to hem */
+    const float topY = m_.y.neckBaseY + 0.012f * H;
+    const float apexY = (o == 3) ? lerpf(m_.y.waistY, m_.y.underbustY, 0.55f)
+                                 : lerpf(m_.y.waistY, m_.y.underbustY, 0.95f);
+    const float halfTop = m_.neck.rx * 1.08f + ((o == 3) ? 0.018f : 0.012f);
+    const float w = halfTop * saturate((p.y - apexY) / maxf(1e-3f, topY - apexY));
+    return maxf(maxf(ax - w, apexY - p.y), front);
+}
 
+float BodyField::upperShell(const Vec3& p, float thickness, float hemY, float topY, float neckDrop,
+                            float sleeveReach) const {
+    const float H = m_.height;
     /*
      * The band: everything between the hem and the collar. It used to be a super-elliptical
      * column fitted round the trunk's profile as well, whose job was to keep the arms out of the
@@ -1397,7 +1401,7 @@ float BodyField::clothUpper(const Vec3& p) const {
      * each armpit.
      */
     const float trunk = trunkAndLegs(p);
-    float upperGarment = 1e9f;
+    float shell = 1e9f;
     for (int side = -1; side <= 1; side += 2) {
         const Chain& c = chain(side);
         const float arm = armChain(p, c);
@@ -1413,32 +1417,112 @@ float BodyField::clothUpper(const Vec3& p) const {
         const float onTrunk = smax(domain, towardsArm - overlap, 0.004f);
         const float onSleeve = smax(sleeveEnd, -towardsArm - 0.010f, 0.004f);
         /* Feathered at every edge - collar, hem, sleeve end. See layerOffset(). */
-        upperGarment = minf(upperGarment, surface - layerOffset(minf(onTrunk, onSleeve), thickness,
-                                                                clampf(thickness * 4.0f, 0.016f, 0.040f)));
+        shell = minf(shell, surface - layerOffset(minf(onTrunk, onSleeve), thickness,
+                                                  clampf(thickness * 4.0f, 0.016f, 0.040f)));
     }
+    return shell;
+}
 
-    /* A dress skirt must be a real volume outside the body. Previously the cone was
-       only unioned into the clipping domain for body(p)-thickness, so points beyond the body
-       were still rejected and the supposed flare never existed. Build the skirt as the volume
-       inside its flared cone but outside the body, then union it with the fitted upper garment. */
-    float skirtShell = 1e9f;
+float BodyField::skirtShell(const Vec3& p, float topY, float hemY, float flare, float clearance) const {
+    /*
+     * A skirt: the space inside a column that is fitted at the waist, clears the hips and widens
+     * to the hem - and outside the body. It has to be a volume of its own: an offset of the body
+     * would wrap each leg separately.
+     *
+     * The column follows the trunk's own profile down to the hips, so there is no height at which
+     * the body is wider than the skirt. (The first version started from a ring 16 % wider than the
+     * waist; the hips and the seat stood out through it, a ledge all round at hip height.)
+     */
+    if (p.y > topY + 0.03f) return p.y - topY;
+    if (p.y < hemY - 0.03f) return hemY - p.y;
+    const float hipsY = lerpf(m_.y.crotchY, m_.y.hipY, 0.35f);
+    const float yy = clampf(p.y, hipsY, topY);
+    /* The skirt comes out from under the bodice: no clearance at its top edge, all of it 7 cm
+       lower. At full clearance from the top it stood off the bodice as a ledge round the waist. */
+    clearance *= smoothstepf(topY, topY - 0.07f, p.y);
+    float rx = torsoProfileRx(yy) + clearance;
+    float rz = torsoProfileRz(yy) + clearance + m_.gluteBulge * saturate((topY - yy) / maxf(1e-3f, topY - hipsY));
+    const float cz = torsoProfileCz(yy);
+    /* Never narrower than it was higher up: a skirt hangs from its widest point. */
+    {
+        const float wideX = maxf(m_.hip.rx, m_.waist.rx) + clearance;
+        const float wideZ = maxf(m_.hip.rz, m_.waist.rz) + clearance + m_.gluteBulge;
+        const float t = smoothstepf(topY, hipsY, p.y);
+        rx = maxf(rx, lerpf(rx, wideX, t));
+        rz = maxf(rz, lerpf(rz, wideZ, t));
+    }
+    /* The flare begins gently: a straight widening from the hips left a crease all round them. */
+    const float below = std::pow(saturate((hipsY - p.y) / maxf(1e-3f, hipsY - hemY)), 1.45f);
+    const float widen = 1.0f + (flare - 1.0f) * below;
+    rx *= widen; rz *= widen;
+    const float nx = p.x / rx, nz = (p.z - cz) / rz;
+    const float e = 2.45f;
+    const float k = std::pow(std::pow(std::fabs(nx), e) + std::pow(std::fabs(nz), e), 1.0f / e);
+    const float column = maxf((k - 1.0f) * minf(rx, rz), maxf(hemY - p.y, p.y - topY));
+    return smax(column, -body(p), 0.004f);
+}
+
+float BodyField::clothUpper(const Vec3& p) const {
+    if (apparel_.outfit == 0) return 1e9f;
+    const float H = m_.height;
+    const float layer = minLayer();
+    float thickness = 0.005f;        /* T-shirt                        */
+    float hemY = m_.y.hipY - 0.02f * H;
+    /* The garment reaches the base of the neck and the neckline is cut out of it. */
+    const float topY = m_.y.neckBaseY + 0.012f * H;
+    float neckDrop = 0.016f * H;     /* how far the front of the neckline dips below the neck base */
+    float sleeveReach = 0.0f;
+    float skirtHemY = 0.0f;          /* > 0: the garment has a skirt down to here */
+    float skirtFlare = 1.0f;
+    const float wristReach = m_.upperArmLen + m_.forearmLen;
+    switch (apparel_.outfit) {
+        case 1:  /* T-shirt   */ thickness = 0.005f; sleeveReach = m_.upperArmLen * 0.35f; break;
+        case 2:  /* Full-length dress: fitted to mid-thigh, so whatever the skirt does not cover
+                    is still the dress. */
+                 thickness = 0.004f; hemY = m_.y.crotchY - m_.thighLen * 0.25f;
+                 neckDrop = 0.050f * H; sleeveReach = 0.0f;
+                 skirtHemY = m_.y.soleY + 0.010f * H; skirtFlare = 2.35f; break;
+        case 3:  /* Suit jacket: covers the seat, sleeves to the wrist. */
+                 thickness = maxf(0.014f, layer + 0.006f); sleeveReach = wristReach * 0.955f;
+                 neckDrop = 0.010f * H; hemY = m_.y.crotchY + 0.012f * H; break;
+        case 4:  /* Denim jacket: ends at the top of the hips. */
+                 thickness = maxf(0.016f, layer + 0.007f); sleeveReach = wristReach * 0.945f;
+                 neckDrop = 0.014f * H; hemY = lerpf(m_.y.hipY, m_.y.waistY, 0.45f); break;
+        case 5:  /* Arming doublet under plate: close, long sleeves. */
+                 thickness = 0.006f; sleeveReach = wristReach * 0.95f; neckDrop = 0.006f * H;
+                 hemY = m_.y.hipY - 0.01f * H; break;
+        case 6:  /* Tunic under leather armour. */
+                 thickness = 0.007f; sleeveReach = wristReach * 0.93f; neckDrop = 0.020f * H;
+                 hemY = m_.y.crotchY + 0.01f * H; break;
+        case 7:  /* Spacesuit: one thick layer over everything to the wrist. */
+                 thickness = maxf(0.030f, layer + 0.010f); sleeveReach = wristReach * 0.985f;
+                 neckDrop = 0.004f * H; hemY = m_.y.crotchY + 0.01f * H; break;
+        case 8:  /* Athletic  */ thickness = 0.0035f; sleeveReach = m_.upperArmLen * 0.22f;
+                                 hemY = m_.y.hipY - 0.03f * H; break;
+        case 9:  /* Coat: to the knee. */
+                 thickness = maxf(0.018f, layer + 0.008f); sleeveReach = wristReach * 0.965f;
+                 neckDrop = 0.012f * H; hemY = m_.y.crotchY - m_.thighLen * 0.20f;
+                 skirtHemY = m_.y.kneeY - 0.015f * H; skirtFlare = 1.10f; break;
+        default: return 1e9f;
+    }
+    thickness = maxf(thickness, layer);
+    /* Well above the collar or below the hem there is no garment: a conservative distance. */
+    {
+        const float lowest = (skirtHemY > 0.0f) ? minf(hemY, skirtHemY) : hemY;
+        if (p.y < lowest - 0.05f) return lowest - p.y - 0.01f;
+        if (p.y > topY + 0.05f) return p.y - topY - 0.01f;
+    }
+    /* In the opening of a jacket the layer underneath shows: thinner, so the fronts stand proud. */
+    {
+        const float opening = frontOpening(p);
+        if (opening < 0.02f) thickness = lerpf(layer, thickness, smoothstepf(0.0f, 0.008f, opening));
+    }
+    float d = upperShell(p, thickness, hemY, topY, neckDrop, sleeveReach);
     if (skirtHemY > 0.0f) {
-        const float waistY = m_.y.hipY;
-        const float kw = m_.waist.rx * 1.16f;
-        const float flare = 1.0f + 1.35f * saturate((waistY - p.y) / maxf(1e-3f, waistY - skirtHemY));
-        const float krx = kw * flare;
-        const float krz = m_.waist.rz * 1.30f * flare;
-        const float nkx = p.x / krx;
-        const float nkz = (p.z - m_.waist.centreZ) / krz;
-        const float e = 2.45f;
-        const float k2 = std::pow(std::pow(std::fabs(nkx), e) + std::pow(std::fabs(nkz), e), 1.0f / e);
-        const float skirt = maxf((k2 - 1.0f) * minf(krx, krz), maxf(skirtHemY - p.y, p.y - waistY));
-        skirtShell = smax(skirt, -body(p), 0.004f);
+        const bool coat = (apparel_.outfit == 9);
+        d = minf(d, skirtShell(p, m_.y.waistY, skirtHemY, skirtFlare, coat ? thickness + 0.006f : 0.012f));
     }
-
-    /* The independent skirt shell is unioned afterwards so its silhouette can extend beyond
-       the body. */
-    return minf(upperGarment, skirtShell);
+    return d;
 }
 
 float BodyField::clothLower(const Vec3& p) const {
@@ -1449,13 +1533,13 @@ float BodyField::clothLower(const Vec3& p) const {
     switch (apparel_.outfit) {
         case 1:  thickness = 0.010f; hemY = m_.y.ankleY + 0.030f; break;             /* T-shirt: with jeans */
         case 2:  thickness = 0.004f; hemY = m_.y.soleY + 0.010f * H; break; /* full-length dress lining */
-        case 3:  thickness = 0.010f; hemY = m_.y.ankleY + 0.045f; break;             /* trousers      */
-        case 4:  thickness = 0.014f; hemY = m_.y.ankleY + 0.030f; break;             /* jeans         */
-        case 5:  thickness = 0.018f; hemY = m_.y.ankleY + 0.10f; break;              /* greaves       */
-        case 6:  thickness = 0.013f; hemY = m_.y.ankleY + 0.08f; break;
-        case 7:  thickness = 0.024f; hemY = m_.y.ankleY + 0.06f; break;
+        case 3:  thickness = 0.010f; hemY = m_.y.ankleY + 0.035f; break;             /* trousers      */
+        case 4:  thickness = 0.012f; hemY = m_.y.ankleY + 0.030f; break;             /* jeans         */
+        case 5:  thickness = 0.006f; hemY = m_.y.ankleY + 0.020f; break;             /* hose          */
+        case 6:  thickness = 0.009f; hemY = m_.y.ankleY + 0.030f; break;             /* breeches      */
+        case 7:  thickness = maxf(0.028f, minLayer() + 0.010f); hemY = m_.y.ankleY + 0.040f; break;
         case 8:  thickness = 0.0035f; hemY = m_.y.kneeY + m_.shankLen * 0.18f; break; /* shorts      */
-        case 9:  thickness = 0.012f; hemY = m_.y.ankleY + 0.06f; break;
+        case 9:  thickness = 0.010f; hemY = m_.y.ankleY + 0.035f; break;
         default: return 1e9f;
     }
     thickness = maxf(thickness, minLayer());
@@ -1473,118 +1557,376 @@ float BodyField::clothLower(const Vec3& p) const {
     return trunkAndLegs(p) - layerOffset(domain, thickness, clampf(thickness * 4.0f, 0.016f, 0.040f));
 }
 
-float BodyField::shoeShape(const Vec3& p) const {
-    if (apparel_.footwear == 0) return 1e9f;
-    float thickness = 0.006f;
-    float topY = m_.y.ankleY + 0.055f;     /* shoe height above the ankle */
-    float soleDrop = 0.0f;                 /* heel: how far the sole hangs below the foot */
-    switch (apparel_.footwear) {
-        case 1: thickness = 0.007f; topY = m_.y.ankleY + 0.045f; break;   /* sneaker */
-        case 2: thickness = 0.011f; topY = m_.y.kneeY - m_.shankLen * 0.30f; break; /* boot */
-        case 3: thickness = 0.016f; topY = m_.y.ankleY + 0.075f; break;   /* sabaton */
-        case 4: thickness = 0.004f; topY = m_.y.ankleY + 0.020f; soleDrop = 0.075f; break; /* heel */
-        default: return 1e9f;
+Vec3 BodyField::footLocalRaw(const Vec3& p, const Chain& c) const {
+    /* The foot's own frame, as footShape() builds it: origin at the ankle, toe-out removed,
+       forward = -Z, lateral = +side in X. */
+    const float yaw = radians(7.0f) * static_cast<float>(c.side);
+    const float cs = std::cos(-yaw), sn = std::sin(-yaw);
+    const Vec3 r = p - c.ankle;
+    return Vec3(r.x * cs - r.z * sn, r.y, r.x * sn + r.z * cs);
+}
+
+Vec3 BodyField::footLocal(const Vec3& p, const Chain& c) const {
+    /*
+     * Where p is on the flat foot. Without heels that is the foot's own frame. In heels the foot
+     * is pitched about the ankle and its toes are bent back to lie on the floor, so the pitch is
+     * undone here: behind the ball by turning the point back, in front of it by sliding it back,
+     * with the two blended across the plane that bisects the bend. Everything that shapes or
+     * paints a foot or a shoe goes through this, which is why a shoe pitches with its foot.
+     */
+    const Vec3 q = footLocalRaw(p, c);
+    if (m_.heelLift <= 0.0f) return q;
+    const float turnedY = q.y * heelCos_ - q.z * heelSin_;
+    const float turnedZ = q.y * heelSin_ + q.z * heelCos_;
+    const float slidY = q.y - heelShiftY_;
+    const float slidZ = q.z - heelShiftZ_;
+    const float across = (q.y - heelPivotY_) * heelBisY_ + (q.z - heelPivotZ_) * heelBisZ_;
+    const float w = smoothstepf(-0.014f, 0.014f, across);
+    return Vec3(q.x, lerpf(turnedY, slidY, w), lerpf(turnedZ, slidZ, w));
+}
+
+Vec3 BodyField::footPosed(const Vec3& l, const Chain& c) const {
+    /* The other way, for landmarks and joints: a point of the flat foot, in the world. */
+    Vec3 q = l;
+    if (m_.heelLift > 0.0f) {
+        if (l.z < c.ballL.z) {
+            q.y = l.y + heelShiftY_;
+            q.z = l.z + heelShiftZ_;
+        } else {
+            q.y = l.y * heelCos_ + l.z * heelSin_;
+            q.z = -l.y * heelSin_ + l.z * heelCos_;
+        }
     }
-    thickness = maxf(thickness, minLayer());
+    const float yaw = radians(7.0f) * static_cast<float>(c.side);
+    const float cs = std::cos(yaw), sn = std::sin(yaw);
+    return c.ankle + Vec3(q.x * cs - q.z * sn, q.y, q.x * sn + q.z * cs);
+}
+
+int BodyField::footwearKind() const {
+    /* A spacesuit comes with its boots: bare feet under a pressure suit are not a spacesuit. */
+    if (apparel_.footwear == 0 && apparel_.outfit == 7) return 5;
+    return apparel_.footwear;
+}
+
+float BodyField::shoeTopY() const {
+    switch (footwearKind()) {
+        case 1: return m_.y.ankleY + 0.024f;                    /* sneaker: below the ankle bone */
+        case 2: return m_.y.ankleY + m_.shankLen * 0.52f;       /* boot: mid-calf                */
+        case 3: return m_.y.ankleY + m_.shankLen * 0.34f;       /* sabaton: over the ankle       */
+        case 4: return m_.y.ankleY - 0.006f;                    /* court shoe: under the ankle   */
+        case 5: return m_.y.ankleY + m_.shankLen * 0.40f;       /* suit boot                     */
+        default: return 0.0f;
+    }
+}
+
+float BodyField::shoeShape(const Vec3& p) const {
+    const int kind = footwearKind();
+    if (kind < 1 || kind > 5) return 1e9f;
+    const float L = m_.footLength, W = m_.footWidth, Hf = m_.footHeight;
+    float wall = 0.008f;        /* how far the upper stands off the foot                      */
+    float shaft = 0.0f;         /* > 0: a shaft round the leg, standing this far off the leg  */
+    float soleStep = 0.0f;      /* > 0: the sole stands this far proud of the upper           */
+    float soleTop = 0.0f;       /* height of the sole's top edge above the ground             */
+    switch (kind) {
+        case 1: wall = 0.010f; soleStep = 0.006f; soleTop = 0.026f; break;
+        case 2: wall = 0.010f; shaft = 0.012f; soleStep = 0.004f; soleTop = 0.018f; break;
+        case 3: wall = 0.012f; shaft = 0.015f; break;
+        case 4: wall = 0.005f; break;
+        case 5: wall = 0.020f; shaft = 0.030f; soleStep = 0.006f; soleTop = 0.030f; break;
+        default: break;
+    }
+    wall = maxf(wall, minLayer() * 0.75f);
+    const float topY = shoeTopY();
+    if (p.y > topY + 0.06f) return p.y - topY - 0.02f;
+
     float d = 1e9f;
     for (int side = -1; side <= 1; side += 2) {
         const Chain& c = chain(side);
-        const Chain& c_inner = c;   /* the heel's arch is built from the same foot chain */
+        const float sx = static_cast<float>(side);
+        /* Everything of a shoe lies within a foot length of the midfoot, or along its shaft. */
+        if (shaft <= 0.0f) {
+            const float away = (p - (c.ankle + c.ball) * 0.5f).length() - (L * 0.80f + 0.05f);
+            if (away > 0.04f) { d = minf(d, away); continue; }
+        } else if (std::fabs(p.x - c.ankle.x) > W + 0.12f) {
+            d = minf(d, std::fabs(p.x - c.ankle.x) - W - 0.08f);
+            continue;
+        }
+        const Vec3 q = footLocal(p, c);
+        const float ground = footGround(c) + 0.002f;
+        const float ballZ = c.ballL.z;
+
         /*
-         * The shoe is the inflated foot PLUS a wrap around the ankle, so the opening is a ring
-         * around the leg rather than a hole in the top of the foot. The vertical clip at topY then
-         * cuts the wrap into the shoe's collar.
+         * The last: the form a shoe is built on. It is the foot, inflated, with one rounded box
+         * over all five toes. The shoe used to be the inflated foot alone, which kept every toe
+         * as a separate bump: a sock with a sole, the same for every kind of footwear.
          */
-        const float footSolid = foot(p, side) - thickness;
-        const float wrap = (p - Vec3(c.ankle.x, c.ankle.y - m_.footHeight * 0.35f, c.ankle.z)).length() -
-                           (m_.ankleRx + thickness + 0.006f);
-        float solid = minf(footSolid, wrap);
-        /* A heel is a wedge under the back of the foot, not a raised sole: keep it behind the ball. */
-        if (soleDrop > 0.0f) {
-            const float back = smax(solid, p.z - (c.ball.z + 0.030f), 0.004f);
-            const float spike = sdRoundBox(p - Vec3(c.heel.x, m_.y.soleY + soleDrop * 0.5f, c.heel.z + 0.010f),
-                                           Vec3(m_.footWidth * 0.16f, soleDrop * 0.5f, m_.footWidth * 0.16f), 0.004f);
-            solid = smin(solid, spike, 0.006f);
-            (void)back;
+        float last = footShape(p, c) - wall;
+        {
+            const Vec3 boxC(sx * W * 0.02f, ground + Hf * 0.30f, ballZ - L * 0.125f);
+            const float toeBox = sdEllipsoid(q - boxC, Vec3(W * 0.52f + wall, Hf * 0.36f + wall, L * 0.205f + wall));
+            last = smin(last, toeBox, 0.020f);
+        }
+        if (kind == 3) {
+            /* Sabaton: a pointed toe, and the lames of the instep as shallow steps. */
+            const Vec3 a(sx * W * 0.02f, ground + Hf * 0.26f, ballZ - L * 0.06f);
+            const Vec3 b(sx * W * 0.02f, ground + 0.014f, ballZ - L * 0.44f);
+            last = smin(last, sdTaperedCapsule(q, a, b, W * 0.42f, 0.011f), 0.016f);
+            last -= 0.0025f * (0.5f + 0.5f * std::cos(q.z * (6.2831853f / 0.030f)));
+        }
+        /* The wrap round the ankle: the opening is a ring round the leg, not a hole in the top of
+           the foot. The clip at topY cuts it into the collar. */
+        const float wrap = (q - Vec3(0.0f, -Hf * 0.30f, 0.004f)).length() - (m_.ankleRx + wall + 0.008f);
+        float solid = smin(last, wrap, 0.008f);
+        if (kind == 1) {
+            /* Sneaker: a padded tongue up the instep. */
+            const Vec3 a(0.0f, ground + Hf * 0.78f, -L * 0.15f);
+            const Vec3 b(0.0f, 0.026f, -(m_.ankleRx + 0.012f));
+            solid = smin(solid, sdCapsule(q, a, b, 0.017f), 0.012f);
+        }
+        if (shaft > 0.0f) {
+            /* A shaft: the leg, inflated, from the ankle to the top. */
+            const float leg = legChain(p, c) - shaft;
+            solid = smin(solid, smax(leg, (c.ankle.y - 0.030f) - p.y, 0.010f), 0.014f);
+        }
+        if (soleStep > 0.0f) {
+            /* The sole: the lowest part of the shoe, a few millimetres proud of the upper. */
+            solid = minf(solid, smax(solid - soleStep, q.y - (ground + soleTop), 0.003f));
         }
         /*
          * The shoe has to stand ON the floor. The foot's sole is already at the field's ground
-         * level, so inflating it by the sole's thickness would push the sole through y = 0 and the
-         * avatar would sink into its own floor plane. Clipping at y = 0 flattens the sole exactly
-         * where the ground is, which is both correct and what the grounding contract requires.
+         * level, so inflating it would push the sole through y = 0 and the avatar would sink into
+         * its own floor plane. Clipping at y = 0 flattens the sole exactly where the ground is.
          */
-        solid = smax(solid, -p.y, 0.0025f);
-        if (soleDrop > 0.0f) {
-            /* Heel: raise the arch. The toe pad and the heel block keep the floor, the midfoot is
-               carved away from underneath - the silhouette of a heel without moving the foot. */
-            const Vec3 arc(0.0f, 0.0f, (c_inner.ball.z + c_inner.heel.z) * 0.5f);
-            const float halfZ = std::fabs(c_inner.ball.z - c_inner.heel.z) * 0.42f;
-            float voidArch = sdEllipsoid(p - Vec3(0.0f, soleDrop * 0.55f, arc.z),
-                                         Vec3(m_.footWidth * 1.2f, soleDrop * 0.55f, halfZ));
-            solid = smax(solid, -voidArch, 0.003f);
+        const bool raised = (kind == 4 && m_.heelLift > 0.0f);
+        if (raised) {
+            /*
+             * A raised heel. The shoe is pitched with the foot (footLocal), so its sole is flattened
+             * in the foot's frame, and the heel itself is a tapered block from under the heel bone
+             * straight down to the floor.
+             */
+            solid = smax(solid, (ground - 0.006f) - q.y, 0.003f);
+            const Vec3 l = footLocalRaw(p, c);
+            const float gs = ground - 0.002f;
+            const float seatY = gs * heelCos_ + c.heelL.z * heelSin_;
+            const float seatZ = -gs * heelSin_ + c.heelL.z * heelCos_;
+            const float floorY = m_.y.soleY - c.ankle.y;
+            const Vec3 a(c.heelL.x, seatY + 0.012f, seatZ + 0.006f);
+            const Vec3 b(c.heelL.x, floorY + 0.012f, seatZ - 0.002f);
+            solid = smin(solid, sdTaperedCapsule(l, a, b, 0.022f, 0.0125f), 0.006f);
         }
-        solid = smax(solid, p.y - topY, 0.006f);
+        solid = smax(solid, -p.y, 0.0025f);
+        if (kind == 4) {
+            /* Court shoe: cut low over the instep, so the top of the foot shows. */
+            const Vec3 cutC(0.0f, ground + Hf * 1.02f, -L * 0.16f);
+            const float throat = sdEllipsoid(q - cutC, Vec3(W * 0.30f, Hf * 0.62f, L * 0.20f));
+            solid = smax(solid, -throat, 0.004f);
+        }
+        /* The opening: level with the floor, or with the foot's own sole when it is pitched. */
+        solid = smax(solid, raised ? (q.y - (topY - c.ankle.y)) : (p.y - topY), (shaft > 0.0f) ? 0.004f : 0.006f);
         d = minf(d, solid);
     }
     return d;
 }
 
-float BodyField::gearShape(const Vec3& p) const {
-    /*
-     * Equipment: the parts of a kit that are not cloth. These are the pieces the second image of a
-     * two-reference generation transfers - a pauldron, a chest plate, a belt, a backpack - and they
-     * carry the GEAR material, which is metallic and much rougher than cloth.
-     */
-    if (apparel_.outfit != 5 && apparel_.outfit != 6 && apparel_.outfit != 7) return 1e9f;
-    const float H = m_.height;
-    const bool plate = (apparel_.outfit == 5);
-    const bool suit = (apparel_.outfit == 7);
-    float d = 1e9f;
+/* The pieces of a kit, so that the texture bake can tell a breastplate from a belt. */
+enum GearPiece {
+    GEAR_NONE = 0, GEAR_CUIRASS, GEAR_PAULDRON, GEAR_ARM, GEAR_COUTER, GEAR_FAULD, GEAR_TASSET,
+    GEAR_CUISSE, GEAR_POLEYN, GEAR_GREAVE, GEAR_BELT, GEAR_SKIRT, GEAR_BRACER, GEAR_NECKRING,
+    GEAR_CHESTBOX, GEAR_PACK, GEAR_GLOVE
+};
 
-    /* Pauldrons: domes over the deltoids, dropping over the upper arm. */
-    for (int side = -1; side <= 1; side += 2) {
-        const Chain& c = chain(side);
-        const Vec3 s = c.shoulder;
-        const float r = m_.deltoidR * (suit ? 1.65f : 1.35f);
-        float pad = sdEllipsoid(p - Vec3(s.x + side * r * 0.18f, s.y + r * 0.16f, s.z), Vec3(r, r * 0.72f, r * 0.92f));
-        pad = smax(pad, s.y + r * 0.10f - p.y, 0.008f);           /* open underneath */
-        d = minf(d, pad);
-    }
-    /* Chest plate: a shell over the sternum, following the ribcage. */
-    {
-        const float r = m_.chest.rx * (suit ? 1.10f : 0.92f);
-        const Vec3 cc(0.0f, m_.y.bustY + 0.02f * H, -(m_.chest.rz * 0.55f));
-        float cp = sdEllipsoid(p - cc, Vec3(r * 0.92f, r * 0.78f, r * 0.95f));
-        cp = smax(cp, -(p.y - (m_.y.underbustY - 0.02f * H)), 0.010f);      /* not below the ribs */
-        d = minf(d, cp);
-    }
-    /* Belt / harness ring at the waist. */
-    {
-        const float rr = m_.waist.rx * 1.26f;
-        const float dy = p.y - (m_.y.waistY + 0.005f);
-        const float dz = (p.z - m_.waist.centreZ);
-        const float ring = std::sqrt(dy * dy + dz * dz) - 0.016f;
-        const float radial = std::sqrt(p.x * p.x * 0.92f + dz * dz * 0.35f) - rr;
-        d = minf(d, smax(ring, std::fabs(radial) - 0.012f, 0.006f));
-    }
-    if (plate) {
-        /* Thigh tassets and a plackart ledge. */
+float BodyField::gearShape(const Vec3& p) const { return gearField(p, nullptr); }
+
+float BodyField::gearField(const Vec3& p, int* pieceOut) const {
+    /*
+     * Equipment: the parts of a kit that are not cloth. Plate armour is a harness - breastplate,
+     * fauld and tassets, pauldrons, arm and leg defences - worn over dark arming clothes. Leather
+     * armour is a jerkin with a belt and a skirt of straps, shoulder caps and bracers, over a
+     * tunic. A spacesuit's equipment is its neck ring, chest unit, life-support pack and gloves.
+     *
+     * (Each of the three used to be the same four pieces - two shoulder domes, a chest disc and a
+     * belt ring - on what was otherwise a shirt and trousers.)
+     */
+    if (pieceOut) *pieceOut = GEAR_NONE;
+    const int o = apparel_.outfit;
+    if (o != 5 && o != 6 && o != 7) return 1e9f;
+    const float H = m_.height;
+    const float layer = minLayer();
+    const bool plate = (o == 5), leather = (o == 6), suit = (o == 7);
+    float d = 1e9f;
+    int piece = GEAR_NONE;
+    const auto take = [&](float v, int id) { if (v < d) { d = v; piece = id; } };
+    const float neckTop = m_.y.neckBaseY + 0.012f * H;
+    const float plateT = maxf(plate ? 0.020f : 0.014f, layer + 0.006f);   /* over the trunk */
+    const float limbT = maxf(plate ? 0.015f : 0.011f, layer + 0.005f);    /* over arms, legs */
+
+    if (plate || leather) {
+        const float skirtHem = m_.y.crotchY - m_.thighLen * 0.34f;
+        if (p.y > (plate ? m_.y.crotchY : skirtHem) - 0.06f && p.y < neckTop + 0.08f) {
+            /* Breastplate and backplate, or the jerkin: the trunk's surface moved outwards,
+               without sleeves. */
+            const float hem = plate ? (m_.y.waistY - 0.012f * H) : (m_.y.hipY + 0.012f * H);
+            take(upperShell(p, plateT, hem, neckTop, plate ? 0.010f * H : 0.026f * H, 0.0f), GEAR_CUIRASS);
+            if (plate) {
+                /* Fauld: the hoops below the breastplate, over the hips. */
+                const float dom = maxf((m_.y.crotchY + 0.012f * H) - p.y, p.y - (m_.y.waistY - 0.004f * H));
+                take(trunkAndLegs(p) - layerOffset(dom, plateT + 0.003f, 0.020f), GEAR_FAULD);
+            } else {
+                /* A wide belt, and a skirt of straps to mid-thigh. */
+                const float dom = std::fabs(p.y - m_.y.waistY) - 0.024f;
+                take(trunkAndLegs(p) - layerOffset(dom, plateT + 0.005f, 0.012f), GEAR_BELT);
+                take(skirtShell(p, m_.y.waistY - 0.010f, skirtHem, 1.08f, plateT + 0.004f), GEAR_SKIRT);
+            }
+        }
         for (int side = -1; side <= 1; side += 2) {
-            const Vec3 hj = chain(side).hipJoint;
-            const float r = m_.thighRx * 1.22f;
-            float t = sdEllipsoid(p - Vec3(hj.x, hj.y - m_.thighLen * 0.12f, hj.z - m_.thighRz * 0.35f),
-                                  Vec3(r * 0.95f, r * 0.85f, r * 0.80f));
-            t = smax(t, (hj.y - m_.thighLen * 0.34f) - p.y, 0.010f);
-            d = minf(d, t);
+            const Chain& c = chain(side);
+            const float sx = static_cast<float>(side);
+            /* Pauldron: a shell over the deltoid, dropping over the upper arm. */
+            {
+                const float r = m_.deltoidR * (plate ? 1.36f : 1.12f) + limbT * 0.5f;
+                const Vec3 pc(c.shoulder.x + sx * r * 0.22f, c.shoulder.y - r * 0.06f, c.shoulder.z);
+                float pad = sdEllipsoid(p - pc, Vec3(r * 1.02f, r * (plate ? 1.00f : 0.82f), r * 1.00f));
+                pad = smax(pad, (c.shoulder.y - r * (plate ? 0.72f : 0.40f)) - p.y, 0.008f);
+                take(pad, GEAR_PAULDRON);
+            }
+            /* Arm defences. */
+            if (p.y < c.shoulder.y + 0.05f && p.y > c.wrist.y - 0.06f && sx * p.x > 0.0f) {
+                const float tube = armChain(p, c) - limbT;
+                const Vec3 axisU = (c.elbow - c.shoulder).normalizedOr({0.0f, -1.0f, 0.0f});
+                const Vec3 axisF = (c.wrist - c.elbow).normalizedOr({0.0f, -1.0f, 0.0f});
+                const float u = (p - c.shoulder).dot(axisU);
+                const float f = (p - c.elbow).dot(axisF);
+                const float U = m_.upperArmLen, F = m_.forearmLen;
+                if (plate) {
+                    take(smax(tube, maxf(U * 0.44f - u, u - U * 0.86f), 0.004f), GEAR_ARM);       /* rerebrace */
+                    take(smax(tube, maxf(F * 0.14f - f, f - F * 0.965f), 0.004f), GEAR_ARM);      /* vambrace  */
+                    take((p - c.elbow).length() - (m_.elbowR + limbT + 0.008f), GEAR_COUTER);
+                } else {
+                    take(smax(tube, maxf(F * 0.32f - f, f - F * 0.955f), 0.004f), GEAR_BRACER);
+                }
+            }
+            /* Leg defences. */
+            if (plate && p.y < m_.y.crotchY + 0.02f && p.y > m_.y.ankleY - 0.02f && sx * p.x > -0.02f) {
+                const float tube = legChain(p, c) - limbT;
+                take(smax(tube, maxf((m_.y.kneeY + 0.075f) - p.y, p.y - (m_.y.crotchY - 0.012f)), 0.004f), GEAR_CUISSE);
+                take(smax(tube, maxf((m_.y.ankleY + 0.030f) - p.y, p.y - (m_.y.kneeY - 0.065f)), 0.004f), GEAR_GREAVE);
+                const float kr = m_.kneeR + limbT + 0.004f;
+                take(sdEllipsoid(p - (c.knee + Vec3(0.0f, 0.004f, -m_.kneeR * 0.42f)), Vec3(kr * 0.98f, kr * 1.08f, kr * 0.84f)), GEAR_POLEYN);
+            }
+            if (plate) {
+                /* Tassets: the plates that hang from the fauld over the front of each thigh. */
+                const Vec3 hj = c.hipJoint;
+                const float r = m_.thighRx * 1.20f + limbT * 0.5f;
+                float t = sdEllipsoid(p - Vec3(hj.x, hj.y - m_.thighLen * 0.16f, hj.z - m_.thighRz * 0.40f),
+                                      Vec3(r * 0.92f, r * 0.95f, r * 0.80f));
+                t = smax(t, (hj.y - m_.thighLen * 0.40f) - p.y, 0.010f);
+                take(t, GEAR_TASSET);
+            }
         }
     }
     if (suit) {
-        /* Life support pack: a box behind the shoulders. */
-        const float ry = m_.chest.rx * 0.52f;
-        const Vec3 bc(0.0f, m_.y.bustY + 0.03f * H, m_.chest.rz * 0.62f);
-        d = minf(d, sdRoundBox(p - bc, Vec3(ry, ry * 1.15f, ry * 0.70f), 0.030f));
+        /* The neck ring the helmet locks onto. */
+        {
+            const float a = m_.neck.rx + 0.060f, b = m_.neck.rz + 0.064f;
+            const float rho = std::sqrt((p.x / a) * (p.x / a) + ((p.z - m_.neck.centreZ) / b) * ((p.z - m_.neck.centreZ) / b));
+            const float radial = (rho - 1.0f) * minf(a, b);
+            const float dy = p.y - (m_.y.neckBaseY + 0.020f * H);
+            take(std::sqrt(radial * radial + dy * dy) - 0.021f, GEAR_NECKRING);
+        }
+        /* Display and control unit on the front, life support pack on the back. */
+        take(sdRoundBox(p - Vec3(0.0f, suitBoxY_, suitFrontZ_ - 0.016f), Vec3(0.088f, 0.058f, 0.032f), 0.010f), GEAR_CHESTBOX);
+        take(sdRoundBox(p - Vec3(0.0f, m_.y.bustY + 0.004f * H, suitBackZ_ + 0.056f), Vec3(0.150f, 0.215f, 0.060f), 0.028f), GEAR_PACK);
+        /* Gloves. */
+        for (int side = -1; side <= 1; side += 2) {
+            take(hand(p, side) - maxf(0.006f, layer * 0.75f), GEAR_GLOVE);
+        }
     }
+    if (pieceOut) *pieceOut = piece;
     return d;
+}
+
+static const float kBraidLength = 0.46f;   /* from the crown to the end of a plait */
+
+void BodyField::setApparel(const ApparelOptions& a) {
+    apparel_ = a;
+    braidBeads_.clear();
+    if (apparel_.outfit == 7) {
+        /*
+         * Where the suit's front and back are, at the heights of its two boxes: found once by
+         * walking in from in front of and behind the body to the suit's surface. A box placed
+         * from the chest's nominal depth disappeared into a full bust.
+         */
+        suitBoxY_ = lerpf(m_.y.underbustY, m_.y.waistY, 0.30f);
+        const auto walk = [&](float y, float from, float dir) {
+            float z = from;
+            for (int i = 0; i < 64; ++i) {
+                const float f = minf(skinUnion(Vec3(0.0f, y, z)), clothUpper(Vec3(0.0f, y, z)));
+                if (f < 0.0005f) break;
+                z += dir * f;
+            }
+            return z;
+        };
+        suitFrontZ_ = walk(suitBoxY_, -0.60f, 1.0f);
+        suitBackZ_ = walk(m_.y.bustY, 0.60f, -1.0f);
+    }
+    if (apparel_.hair != 7) return;
+    /*
+     * The plaits are laid out once, here, because each bead has to rest ON whatever is under it -
+     * neck, collarbone, chest, a jacket - and finding that surface for every sample of the field
+     * would cost a body evaluation per bead per sample.
+     *
+     * A plait starts behind the ear lobe, comes forward over the shoulder and hangs down the front
+     * of the chest. Its beads alternate left and right of the path, which is what a three-strand
+     * plait looks like from outside.
+     */
+    const float headH = m_.y.crownY - m_.y.chinY;
+    const float crown = m_.y.crownY;
+    const float zc = m_.head.centreZ;
+    const float endY = crown - kBraidLength;
+    const auto dressed = [&](const Vec3& q) { return minf(skinUnion(q), minf(clothUpper(q), gearShape(q))); };
+    for (int side = -1; side <= 1; side += 2) {
+        const float sx = static_cast<float>(side);
+        const Vec3 start(sx * m_.head.rx * 0.86f, earCentre_[0].y - m_.earLength * 0.62f, zc + m_.head.rz * 0.18f);
+        const Vec3 over(sx * (m_.neck.rx + 0.045f), m_.y.neckBaseY + 0.010f, m_.neck.centreZ - m_.neck.rz * 0.55f);
+        const Vec3 down(sx * (m_.neck.rx + 0.050f), endY, m_.chest.centreZ - m_.chest.rz * 0.90f);
+        const float len1 = (over - start).length(), len2 = (down - over).length();
+        const float total = len1 + len2;
+        float along = 0.0f;
+        int index = 0;
+        while (along < total) {
+            const float t = along / total;
+            const float r = lerpf(0.020f, 0.0145f, t);
+            Vec3 c = (along < len1) ? start.lerp(over, along / len1) : over.lerp(down, (along - len1) / len2);
+            /* Rest the bead on the surface: move it out along the surface normal until it sits
+               nine tenths of its radius clear. */
+            for (int it = 0; it < 6; ++it) {
+                const float f = dressed(c);
+                if (f >= r * 0.85f) break;
+                const float e = 0.004f;
+                Vec3 n(dressed(c + Vec3(e, 0, 0)) - dressed(c - Vec3(e, 0, 0)),
+                       dressed(c + Vec3(0, e, 0)) - dressed(c - Vec3(0, e, 0)),
+                       dressed(c + Vec3(0, 0, e)) - dressed(c - Vec3(0, 0, e)));
+                n.y = 0.0f;                                   /* keep the bead at its height */
+                n = n.normalizedOr({0.0f, 0.0f, -1.0f});
+                c = c + n * (r * 0.85f - f + 0.001f);
+            }
+            const float zig = ((index & 1) ? 1.0f : -1.0f) * r * 0.36f;
+            BraidBead bead;
+            bead.centre = c + Vec3(zig, 0.0f, 0.0f);
+            bead.radii = Vec3(r * 0.92f, r * 0.98f, r * 0.80f);
+            braidBeads_.push_back(bead);
+            along += r * 1.05f;
+            ++index;
+        }
+        /* The end of the plait: a tie and a short brush below it. */
+        if (!braidBeads_.empty()) {
+            const Vec3 last = braidBeads_.back().centre;
+            BraidBead tuft;
+            tuft.centre = Vec3(last.x, last.y - 0.030f, last.z);
+            tuft.radii = Vec3(0.012f, 0.026f, 0.011f);
+            braidBeads_.push_back(tuft);
+        }
+    }
 }
 
 float BodyField::hairShape(const Vec3& p) const {
@@ -1596,9 +1938,9 @@ float BodyField::hairShape(const Vec3& p) const {
     float hang = 0.0f;          /* > 0: the mass falls to this height (world Y)             */
     float backFall = 0.0f;      /* > 0: a sheet continues down the back to this height      */
     float crest = 0.0f;         /* mohawk: restrict to a midline strip                      */
-    float bun = 0.0f, tail = 0.0f, braids = 0.0f;
+    float bun = 0.0f, tail = 0.0f, braids = 0.0f, afro = 0.0f;
     switch (apparel_.hair) {
-        case 1: thickness = 0.006f; break;                                        /* buzz     */
+        case 1: thickness = 0.004f; break;                                        /* buzz     */
         case 2: thickness = 0.010f; puff = 0.006f; break;                         /* short    */
         case 3: thickness = 0.012f; puff = 0.016f;                                /* medium   */
                 hang = m_.y.neckBaseY + 0.014f * m_.height; break;
@@ -1607,8 +1949,8 @@ float BodyField::hairShape(const Vec3& p) const {
                 backFall = crown - headH * 2.05f; break;
         case 5: thickness = 0.011f; puff = 0.004f; tail = 0.30f; break;           /* ponytail */
         case 6: thickness = 0.011f; puff = 0.004f; bun = 0.055f; break;           /* bun      */
-        case 7: thickness = 0.011f; puff = 0.005f; braids = 0.36f; break;         /* braids   */
-        case 8: thickness = 0.014f; puff = 0.048f; break;                         /* afro     */
+        case 7: thickness = 0.010f; braids = kBraidLength; break;                 /* braids   */
+        case 8: thickness = 0.012f; afro = 0.066f; break;                         /* afro     */
         case 9: thickness = 0.018f; puff = 0.002f; crest = 0.030f; break;         /* mohawk   */
         default: return 1e9f;
     }
@@ -1623,7 +1965,7 @@ float BodyField::hairShape(const Vec3& p) const {
         if (tail > 0.0f) lowest = minf(lowest, crown - tail - 0.05f);
         if (braids > 0.0f) lowest = minf(lowest, crown - braids - 0.05f);
         if (p.y < lowest - 0.04f) return lowest - p.y;
-        if (p.y > crown + 0.12f) return p.y - (crown + 0.08f);
+        if (p.y > crown + 0.16f) return p.y - (crown + 0.12f);
     }
 
     /*
@@ -1814,13 +2156,34 @@ float BodyField::hairShape(const Vec3& p) const {
         const Vec3 c(0.0f, crown - headH * 0.16f, zc + m_.head.rz * 0.98f);
         d = smin(d, sdEllipsoid(p - c, Vec3(bun * 0.95f, bun * 0.80f, bun * 0.70f)), 0.010f);
     }
-    /* Braids: two ropes falling in front of the shoulders. */
-    if (braids > 0.0f) {
-        for (int side = -1; side <= 1; side += 2) {
-            const Vec3 a(side * m_.head.rx * 0.85f, crown - headH * 0.35f, zc + m_.head.rz * 0.55f);
-            const Vec3 b(side * m_.head.rx * 1.15f, crown - braids, zc + m_.head.rz * 0.30f);
-            d = smin(d, sdTaperedCapsule(p, a, b, m_.head.rx * 0.20f, m_.head.rx * 0.13f), 0.008f);
+    /*
+     * Afro: one rounded mass, wider than the head all round and standing well above the crown. It
+     * grows out of the hairline: at the edge it stands no further off the skin than it is from the
+     * edge, so it rises from the forehead instead of overhanging it. (It used to be the same bell
+     * as the hanging styles with a larger offset, which came out as a lumpy bouffant.)
+     */
+    if (afro > 0.0f) {
+        const float headC = (crown + m_.y.chinY) * 0.5f;
+        const Vec3 c(0.0f, headC + headH * 0.15f, zc + m_.head.rz * 0.10f);
+        const Vec3 radii(m_.head.rx + afro, headH * 0.42f + afro, m_.head.rz + afro * 0.95f);
+        float mass = sdEllipsoid(p - c, radii);
+        /* Feathered to nothing at the hairline itself, like the layer on the scalp. */
+        const float rise = layerOffset(lineCut, thickness, 0.030f) + 1.8f * maxf(0.0f, -lineCut);
+        mass = smax(mass, skinD - rise, 0.016f);
+        d = minf(d, mass);
+    }
+    /* Braids: two plaits, each a chain of overlapping beads laid over the shoulder. */
+    if (!braidBeads_.empty()) {
+        float b = 1e9f;
+        for (const BraidBead& bead : braidBeads_) {
+            const Vec3 r = p - bead.centre;
+            if (std::fabs(r.x) > 0.06f || std::fabs(r.y) > 0.06f || std::fabs(r.z) > 0.06f) {
+                b = minf(b, maxf(maxf(std::fabs(r.x), std::fabs(r.y)), std::fabs(r.z)) - 0.03f);
+                continue;
+            }
+            b = minf(b, sdEllipsoid(r, bead.radii));
         }
+        d = smin(d, b, 0.005f);
     }
     return d;
 }
@@ -1895,7 +2258,9 @@ int BodyField::classifyRegion(const Vec3& p) const {
             if (d < nearest) { nearest = d; nearestRegion = region; }
             return d < kOnSurface;
         };
-        if (apparel_.footwear != 0 && test(shoeShape(p), REGION_SHOE)) return REGION_SHOE;
+        /* A sabaton is plate: it takes the equipment material, like the rest of the harness. */
+        const int shoeRegion = (footwearKind() == 3) ? REGION_GEAR : REGION_SHOE;
+        if (footwearKind() != 0 && test(shoeShape(p), shoeRegion)) return shoeRegion;
         if (apparel_.hair != 0 && test(hairShape(p), REGION_HAIR)) return REGION_HAIR;
         if ((apparel_.outfit == 5 || apparel_.outfit == 6 || apparel_.outfit == 7) &&
             test(gearShape(p), REGION_GEAR)) return REGION_GEAR;
@@ -1957,13 +2322,9 @@ int BodyField::classifyRegion(const Vec3& p) const {
         {
             /* Toenails: the top of the last phalanx of each toe, found with the same toe
                placement the foot field uses. */
-            const float yaw = radians(7.0f) * static_cast<float>(side);
-            const float cs = std::cos(-yaw), sn = std::sin(-yaw);
-            const Vec3 t = p - c.ankle;
-            const Vec3 q(t.x * cs - t.z * sn, t.y, t.x * sn + t.z * cs);
-            const float ground = (m_.y.soleY + 0.002f) - c.ankle.y;
-            const Vec3 bt = c.ball - c.ankle;
-            const float ballZ = bt.x * sn + bt.z * cs;
+            const Vec3 q = footLocal(p, c);
+            const float ground = footGround(c) + 0.002f;
+            const float ballZ = c.ballL.z;
             for (int i = 0; i < 5; ++i) {
                 Vec3 from, to;
                 toeSegment(c, i, ground, ballZ, &from, &to);
@@ -1974,6 +2335,257 @@ int BodyField::classifyRegion(const Vec3& p) const {
         }
     }
     return REGION_SKIN;
+}
+
+/* =======================================================================================
+ * Parts of a garment
+ * ======================================================================================= */
+/*
+ * Which part of its garment a surface point belongs to. The geometry gives each garment one
+ * region and so one material; what makes a suit a suit and a sneaker a sneaker at the size of a
+ * phone screen is the parts within it - the shirt and tie in the opening of the jacket, the white
+ * sole, the laces. The texture bake asks this function for every texel, and it is written from the
+ * same landmarks and the same local frames as the shapes above, so paint and form agree.
+ */
+int BodyField::apparelPart(const Vec3& p, int region) const {
+    if (region == REGION_SHOE || (region == REGION_GEAR && footwearKind() == 3 && shoeShape(p) < 0.004f)) {
+        const int kind = footwearKind();
+        const int side = (p.x >= 0.0f) ? 1 : -1;
+        const Chain& c = chain(side);
+        const Vec3 q = footLocal(p, c);
+        const float L = m_.footLength, W = m_.footWidth, Hf = m_.footHeight;
+        const float ground = footGround(c) + 0.002f;
+        const float ballZ = c.ballL.z;
+        const float up = q.y - ground;                       /* height above the foot's own sole */
+        switch (kind) {
+            case 1: {
+                if (up < 0.007f) return PART_OUTSOLE;
+                if (up < 0.027f) return PART_SOLE;
+                /* Rubber toe cap. */
+                if (q.z < ballZ - L * 0.085f && up < Hf * 0.95f) return PART_TOECAP;
+                /* Laces: bars across the tongue, between the toe cap and the collar. */
+                if (std::fabs(q.x) < W * 0.20f && q.z < -L * 0.05f && q.z > ballZ - L * 0.03f && up > Hf * 0.55f) {
+                    const float bar = std::fmod(std::fabs(q.z) + 100.0f, 0.016f);
+                    return (bar < 0.0065f) ? PART_LACE : PART_ACCENT;
+                }
+                /* Collar lining at the opening. */
+                if (p.y > shoeTopY() - 0.008f) return PART_ACCENT;
+                return PART_BASE;
+            }
+            case 2: {
+                if (up < 0.019f) return PART_OUTSOLE;
+                /* A welt line above the sole, and a strap across the instep. */
+                if (up < 0.024f) return PART_TRIM;
+                if (p.y > shoeTopY() - 0.012f) return PART_TRIM;
+                return PART_BASE;
+            }
+            case 3: {
+                /* The joints between the lames: dark lines across the foot. */
+                if (p.y > c.ankle.y + 0.012f) {
+                    /* The shaft: hoops round the leg. */
+                    const float band = std::fmod(p.y - c.ankle.y + 100.0f, 0.036f);
+                    if (band < 0.0035f) return PART_TRIM;
+                } else {
+                    const float lame = std::fmod(std::fabs(q.z) + 100.0f + 0.015f, 0.030f);
+                    if (up > 0.012f && q.z < -L * 0.02f && lame < 0.0035f) return PART_TRIM;
+                }
+                return PART_STEEL;
+            }
+            case 4: {
+                /* The sole, and the tip of the heel. */
+                if (up < -0.0045f && p.y > 0.012f) return PART_BASE;      /* the heel block */
+                if (up < 0.004f) return PART_OUTSOLE;
+                return PART_BASE;
+            }
+            case 5: {
+                if (up < 0.010f) return PART_OUTSOLE;
+                if (up < 0.031f) return PART_SOLE;
+                /* Two fastening bands round the shaft. */
+                const float h = p.y - c.ankle.y;
+                if ((h > 0.045f && h < 0.060f) || p.y > shoeTopY() - 0.016f) return PART_TRIM;
+                return PART_BASE;
+            }
+            default: return PART_BASE;
+        }
+    }
+    const auto sq = [](float v) { return v * v; };
+    const int o = apparel_.outfit;
+    const float H = m_.height;
+    if (region == REGION_GEAR) {
+        int piece = GEAR_NONE;
+        gearField(p, &piece);
+        if (o == 5) {
+            /* The joints between the hoops of the fauld, and the lower edge of each plate. */
+            if (piece == GEAR_FAULD) {
+                const float lame = std::fmod((m_.y.waistY - p.y) + 100.0f, 0.034f);
+                return (lame < 0.004f) ? PART_TRIM : PART_BASE;
+            }
+            if (piece == GEAR_CUIRASS && p.y < m_.y.waistY + 0.004f * H) return PART_TRIM;
+            if (piece == GEAR_PAULDRON) {
+                const Chain& c = chain((p.x >= 0.0f) ? 1 : -1);
+                const float drop = c.shoulder.y - p.y;
+                if (drop > 0.0f && std::fmod(drop + 100.0f, 0.040f) < 0.004f) return PART_TRIM;
+            }
+            return PART_BASE;
+        }
+        if (o == 6) {
+            if (piece == GEAR_BELT) {
+                const bool front = p.z < m_.waist.centreZ;
+                if (front && std::fabs(p.x) < 0.024f && std::fabs(p.y - m_.y.waistY) < 0.019f) return PART_METAL;   /* buckle */
+                return PART_ACCENT;
+            }
+            if (piece == GEAR_SKIRT) {
+                /* Straps: eighteen round the hips, with a gap between each. */
+                const float turn = std::atan2(p.x, -(p.z - m_.hip.centreZ)) / 6.2831853f + 0.5f;
+                const float strap = std::fmod(turn * 18.0f + 100.0f, 1.0f);
+                if (strap < 0.10f) return PART_TRIM;
+                /* A stud near the end of each strap. */
+                const float hem = m_.y.crotchY - m_.thighLen * 0.34f;
+                if (std::fabs(strap - 0.55f) < 0.14f && std::fabs(p.y - (hem + 0.030f)) < 0.008f) return PART_METAL;
+                return PART_BASE;
+            }
+            if (piece == GEAR_CUIRASS) {
+                /* Studs in rows, and a seam down the front. */
+                const bool front = p.z < m_.chest.centreZ;
+                if (front && std::fabs(p.x) < 0.0026f) return PART_TRIM;
+                const float gx = std::fmod(std::fabs(p.x) + 0.0225f, 0.045f) - 0.0225f;
+                const float gy = std::fmod(p.y + 100.0f, 0.050f) - 0.025f;
+                if (sq(gx) + sq(gy) < sq(0.0055f)) return PART_METAL;
+                return PART_BASE;
+            }
+            if (piece == GEAR_BRACER) {
+                const Chain& c = chain((p.x >= 0.0f) ? 1 : -1);
+                const Vec3 axisF = (c.wrist - c.elbow).normalizedOr({0.0f, -1.0f, 0.0f});
+                const float f = (p - c.elbow).dot(axisF);
+                return (std::fmod(f + 100.0f, 0.040f) < 0.005f) ? PART_ACCENT : PART_BASE;      /* straps */
+            }
+            return PART_BASE;
+        }
+        if (o == 7) {
+            if (piece == GEAR_NECKRING) return PART_METAL;
+            if (piece == GEAR_GLOVE) return PART_TRIM;
+            if (piece == GEAR_CHESTBOX) {
+                if (p.z > suitFrontZ_ - 0.040f) return PART_BASE;          /* its sides */
+                const float bx = p.x, by = p.y - suitBoxY_;
+                /* A dark panel with two knobs and an indicator. */
+                if (std::fabs(bx) < 0.074f && std::fabs(by) < 0.044f) {
+                    if (sq(bx + 0.045f) + sq(by + 0.012f) < sq(0.011f)) return PART_ACCENT;
+                    if (sq(bx - 0.045f) + sq(by + 0.012f) < sq(0.011f)) return PART_METAL;
+                    if (std::fabs(bx) < 0.030f && std::fabs(by - 0.020f) < 0.008f) return PART_BUTTON;
+                    return PART_PANEL;
+                }
+                return PART_BASE;
+            }
+            if (piece == GEAR_PACK) {
+                /* A frame line round the pack and a dark vent near its top. */
+                const float bx = std::fabs(p.x), by = p.y - (m_.y.bustY + 0.004f * H);
+                if (p.z > suitBackZ_ + 0.100f) {
+                    if (std::fabs(bx - 0.118f) < 0.003f && std::fabs(by) < 0.180f) return PART_TRIM;
+                    if (std::fabs(std::fabs(by) - 0.180f) < 0.003f && bx < 0.118f) return PART_TRIM;
+                    if (bx < 0.070f && std::fabs(by - 0.120f) < 0.020f) return PART_PANEL;
+                }
+                return PART_BASE;
+            }
+            return PART_BASE;
+        }
+        return PART_BASE;
+    }
+    if (region == REGION_CLOTH_UPPER) {
+        const float ax = std::fabs(p.x);
+        const float opening = frontOpening(p);
+        const bool front = p.z < m_.chest.centreZ - m_.chest.rz * 0.20f;
+        /* Sleeve or trunk, and how far along the arm (measured as a sleeve's reach is). */
+        const Chain& c = chain((p.x >= 0.0f) ? 1 : -1);
+        const bool onSleeve = armChain(p, c) < trunkAndLegs(p);
+        const Vec3 armAxis = (c.elbow - c.shoulder).normalizedOr({0.0f, -1.0f, 0.0f});
+        const float along = (p - c.shoulder).dot(armAxis);
+        const float wristReach = m_.upperArmLen + m_.forearmLen;
+        switch (o) {
+            case 3: {   /* suit: shirt and tie in the V, lapel edge, buttons, cuffs */
+                const float topY = m_.y.neckBaseY + 0.012f * H;
+                const float apexY = lerpf(m_.y.waistY, m_.y.underbustY, 0.55f);
+                if (opening < 0.0f) {
+                    const float t = saturate((topY - p.y) / maxf(1e-3f, topY - apexY));
+                    const float half = (t < 0.12f) ? 0.017f : lerpf(0.011f, 0.025f, (t - 0.12f) / 0.88f);
+                    return (ax < half) ? PART_TIE : PART_SHIRT;
+                }
+                if (opening < 0.0045f) return PART_TRIM;
+                if (onSleeve) return (along > wristReach * 0.955f - 0.016f) ? PART_SHIRT : PART_BASE;
+                if (front) {
+                    if (p.y < apexY && ax < 0.0022f) return PART_TRIM;
+                    for (int b = 0; b < 2; ++b) {
+                        const float by = apexY - 0.030f - 0.075f * static_cast<float>(b);
+                        if (sq(p.x - 0.014f) + sq(p.y - by) < sq(0.0085f)) return PART_BUTTON;
+                    }
+                    if (p.x > 0.050f && p.x < 0.100f && std::fabs(p.y - (m_.y.bustY + 0.022f * H)) < 0.0022f) return PART_TRIM;
+                }
+                return PART_BASE;
+            }
+            case 4: {   /* denim jacket: T-shirt between the fronts, stitching, flap pockets */
+                if (opening < 0.0f) return PART_SHIRT;
+                const float hemY = lerpf(m_.y.hipY, m_.y.waistY, 0.45f);
+                if (onSleeve) {
+                    return (std::fabs(along - (wristReach * 0.945f - 0.045f)) < 0.0022f) ? PART_TRIM : PART_BASE;
+                }
+                if (front) {
+                    if (opening > 0.012f && opening < 0.0155f) return PART_TRIM;
+                    if (p.x > 0.040f && p.x < 0.060f) {
+                        const float u = std::fmod(p.y - hemY + 100.0f, 0.070f) - 0.035f;
+                        if (sq(p.x - 0.0495f) + sq(u) < sq(0.0065f)) return PART_BUTTON;
+                    }
+                    const float flapY = m_.y.bustY + 0.030f * H;
+                    if (ax > 0.060f && ax < 0.124f) {
+                        if (std::fabs(p.y - flapY) < 0.0022f) return PART_TRIM;
+                        const float v = flapY - 0.022f - 0.012f * (1.0f - std::fabs((ax - 0.092f) / 0.032f));
+                        if (std::fabs(p.y - v) < 0.0022f) return PART_TRIM;
+                        if (sq(ax - 0.092f) + sq(p.y - (flapY - 0.019f)) < sq(0.006f)) return PART_BUTTON;
+                    }
+                }
+                if (std::fabs(p.y - (m_.y.bustY + 0.062f * H)) < 0.0022f) return PART_TRIM;     /* yoke      */
+                if (std::fabs(p.y - (hemY + 0.036f)) < 0.0022f) return PART_TRIM;              /* waistband */
+                return PART_BASE;
+            }
+            case 7: {   /* spacesuit: joint bearings, a stripe, the wrist rings */
+                if (onSleeve) {
+                    if (along > wristReach * 0.985f - 0.026f) return PART_METAL;
+                    if (std::fabs(along - m_.upperArmLen) < 0.030f) return PART_TRIM;
+                    if (along > 0.015f && along < 0.050f) return PART_TRIM;
+                    if (along > m_.upperArmLen * 0.42f && along < m_.upperArmLen * 0.42f + 0.032f) return PART_ACCENT;
+                    return PART_BASE;
+                }
+                if (std::fabs(p.y - m_.y.waistY) < 0.015f) return PART_TRIM;
+                return PART_BASE;
+            }
+            case 9: {   /* coat: a dark layer in the V, the front edge, three buttons */
+                if (opening < 0.0f) return PART_SHIRT;
+                if (opening < 0.005f) return PART_TRIM;
+                if (onSleeve) return PART_BASE;
+                if (front) {
+                    const float apexY = lerpf(m_.y.waistY, m_.y.underbustY, 0.95f);
+                    if (p.y < apexY && std::fabs(p.x + 0.006f) < 0.0024f) return PART_TRIM;
+                    for (int b = 0; b < 3; ++b) {
+                        const float by = apexY - 0.055f - 0.105f * static_cast<float>(b);
+                        if (sq(p.x - 0.024f) + sq(p.y - by) < sq(0.010f)) return PART_BUTTON;
+                    }
+                }
+                return PART_BASE;
+            }
+            default: return PART_BASE;
+        }
+    }
+    if (region == REGION_CLOTH_LOWER) {
+        if (o == 7) {
+            if (std::fabs(p.y - m_.y.kneeY) < 0.034f) return PART_TRIM;
+            if (p.y > m_.y.kneeY + 0.150f && p.y < m_.y.kneeY + 0.182f) return PART_ACCENT;
+            return PART_BASE;
+        }
+        if (o == 1 || o == 4) {
+            /* Jeans: the waistband seam. */
+            if (std::fabs(p.y - (m_.y.waistY - 0.008f)) < 0.0022f) return PART_TRIM;
+        }
+        return PART_BASE;
+    }
+    return PART_BASE;
 }
 
 /* =======================================================================================
