@@ -1,1 +1,4 @@
-# Add keep rules with the runtime components that require them.
+-keep class com.google.android.filament.** { *; }
+-keep class com.google.android.filament.utils.** { *; }
+
+-keep class com.google.android.filament.gltfio.** { *; }
