@@ -219,3 +219,74 @@ The full list of fifteen, with the release-engineering causes, is in [PROJECT_ST
 ## Older debug build
 
 [Previously published debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk). An older troubleshooting build. It is not the current candidate and not a release. GitHub still labels it "Latest" on the releases page; the current phone-test build is the pre-release linked from PR #12.
+
+---
+
+## Carried over from `integration/avatarforge-renderer-port` at `7b19ca7`
+
+The sections below were written on the integration branch (PR #9) while this branch was being
+worked on, and came in with the merge of `7b19ca7`. They are kept word for word. Read them with
+two things in mind: the CI results they quote belong to the integration head `d66eb22`, not to
+this branch; and where they say a fact is unverified, the master document linked at the top of
+this README may now have the measurement.
+
+### Latest implementation update: 2026-11-15
+
+**Animation UI change committed on the canonical branch.** Imported file-based GLBs now open directly in the existing Filament gltfio preview, which already drives the GLB `Animator` each render frame. The user no longer has to discover and manually enable the alternate preview before animation controls can appear. The AvatarForge GLES preview remains available as an explicit alternate mode; its native importer still does not apply imported skeletal animation.
+
+- Animation preview default: **IMPLEMENTED IN SOURCE** — commit `8b80b072187c1e471107fd9bb23ff8bdae9c4790`.
+- Preview-mode explanation and control wording: **IMPLEMENTED IN SOURCE** — commit `0584611d5ffcc8d7b89416d98f14299790c3450f`.
+- README and rig-reference handover: **UPDATED** — commit `3c7e356365ff55db3b915365dfcc284e7cc55aaf`.
+- PR #9 observed head at the latest monitor check: `d66eb22af0c82de12aeafccd70b283d44ddd5c52` (the subsequent README evidence commit will create a new head).
+- Exact-head CI on `d66eb22af0c82de12aeafccd70b283d44ddd5c52`: **FAILED** — production generated-GLB-to-GLES SurfaceView test failed in runs `43673389818` and `43673389819`; Android CI run `43673389854` also failed its instrumented GLES GLB render smoke. See the latest APK monitor snapshot below.
+- `mylove_rig_prepared.glb` binary inspection and clip playback: **UNVERIFIED** — the preserved Dropbox file is recorded below, but its bytes were not available in the build workspace. Do not infer clip count or playback success from its filename.
+
+### Latest APK monitor snapshot: 2026-11-15
+
+**Observed PR #9 state:** open, targeting `main`; branch `integration/avatarforge-renderer-port`; observed head before this README evidence commit: `d66eb22af0c82de12aeafccd70b283d44ddd5c52`. No merge was performed. `main` remains untouched.
+
+### Exact-head Actions evidence for `d66eb22af0c82de12aeafccd70b283d44ddd5c52`
+
+| Workflow / run | Result | Evidence |
+|---|---|---|
+| [Android CI #603](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389854) | **FAILED** | Native host regression, R8/minification, unit tests, lint and debug APK build passed. Instrumented imported-GLB GLES renderer smoke failed with `OutOfMemoryError`: attempted 134,217,744-byte allocation with about 25.1 MB free; instrumentation process crashed |
+| [AvatarForge diagnostic APK/tests #276](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389818) | **FAILED** | Build and basic generated-avatar PixelCopy diagnostic passed. Required `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` failed: only 2 presented frames in 15 seconds; 29 draws; 1,626,176 reported triangles; bounds in frustum; GL/EGL errors zero |
+| [AvatarForge generated-avatar runtime verification #347](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389819) | **FAILED** | The production generated-GLB-to-GLES SurfaceView test failed with the same 2-frame / 15-second assertion |
+| [Release preview and Android emulator smoke #416](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389800) | **PASS, not a readiness substitute** | Emulator install/launch smoke and ephemeral-key signed release preview passed. Neither proves production generated-GLB rendering |
+
+### Artifacts and verification boundary
+
+- Exact-head debug APK artifact: [3D-Mega-Hub-debug-apk, artifact 14145098709](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389854/artifacts/14145098709). Artifact ZIP SHA-256: `49fa25b29fc8e7e8ef68fa8d6c5a0ee0c962799527baf9943ea81a57ac9d793d`.
+- Exact-head diagnostic APK artifact: [3D-Mega-Hub-generated-avatar-diagnostic-debug-apk, artifact 14145536569](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43673389818/artifacts/14145536569). Artifact ZIP SHA-256: `e9a9e1bf4b95ed411eca402d6a9099fba8e83a9d6f4ae5784d02ca58e609f3f6`.
+- These digests identify the downloaded workflow artifact ZIPs, **not** the APK files inside them.
+- APK package/application ID, APK signing certificate/signature and APK-file SHA-256: **UNVERIFIED**.
+- Samsung SM-S921B installation and runtime: **UNVERIFIED**.
+
+**Readiness decision: NOT READY.** The required production render instrumentation fails, the imported-GLB GLES smoke fails, and APK-level package/signature/hash verification is incomplete. Do not distribute these artifacts as a ready test APK. The README update itself creates a new PR head; all run results above belong only to the observed parent commit and must not be reused as exact-head evidence for the new commit.
+
+### Rigged animation reference asset
+
+- **Preserved Dropbox file:** `/3d-mega-hub-diagnostics/3d-mega-hub/mylove_rig_prepared.glb`
+- **Size:** 13,221,520 bytes
+- **SHA-256:** `656cf2446eefbffc92cf569ce1a2f52b6d0ad449c282fc5a4d911abfef576d14`
+- **Status:** **REAL + VERIFIED** Dropbox upload completed and file ID returned. Binary contents have not yet been freshly inspected in this workspace; skeleton/clip counts and playback compatibility remain **UNVERIFIED**.
+- Keep this file read-only as the rigged animation test reference. Do not replace it with the older static `mylove.glb`.
+
+### Avatar assets, appearance presets and animation handover (2026-11-15)
+
+### Where the files are
+
+- The only checked-in runtime model under `app/src/main/assets/models/` is `female.glb` (418,312 bytes). It is a **static renderer fixture**, not a wardrobe or animation pack. The existing fixture inspection records one mesh, seven morph targets, zero skins, zero animations and zero embedded images.
+- There is **no separate pre-made skin/hair/clothing asset-pack directory** in this branch's repository tree. Hair, skin appearance and clothing are currently produced by AvatarForge's procedural C++ generation/material pipeline, rather than loaded from a library of interchangeable finished files.
+- The source-level hair presets are in `avatarforge-engine/src/main/java/com/davemega/hub/avatarforge/AvatarSpec.kt`: `NONE`, `BUZZ`, `SHORT`, `MEDIUM`, `LONG`, `PONYTAIL`, `BUN`, `BRAIDS`, `AFRO`, `MOHAWK`.
+- The source-level outfit presets in the same file are `NONE`, `TSHIRT`, `DRESS`, `SUIT`, `JEANS_JACKET`, `ARMOR_PLATE`, `ARMOR_LEATHER`, `SPACESUIT`, `ATHLETIC`, `COAT`. Skin melanin/tone, hair tone, cloth tone and material roughness are also represented in `AvatarSpec`.
+- These are **engine options/spec fields**, not proof that the app currently presents a complete clickable wardrobe, thumbnail catalogue or swatch picker. The current Avatar Studio UI exposes prompt-driven generation; independent skin-tone and hair-style/colour changes remain **NOT YET TESTED**.
+
+### Animation status, separated by path
+
+- The native engine source contains a built-in authored clip library in `avatarforge-engine/src/main/cpp/src/af_rig.cpp`: `idle`, `breathe`, `walk`, `jog`, `run`, `squat`, `jump`, `wave`, `punch`, `kick`, `pushup`, `t_pose`, `a_pose`, `sit`, and `turn_360` (plus the identity `rest` pose). The rig source also defines 52 facial blendshape channels.
+- Imported file-based GLBs default to the Filament gltfio preview. Source code now exposes animation-clip selection, play/pause, stop/reset, loop, 0.5x–2.0x speed and timeline seeking when the selected GLB reports clips. This is **IMPLEMENTED IN SOURCE; runtime playback on the preserved rigged reference asset remains UNVERIFIED**.
+- The native AvatarForge GLES importer is still a **static imported-GLB path**: it does not yet apply imported skeletal animation/skin data. Do not switch to that preview expecting imported clips to play.
+- Preserved animation test asset: private Dropbox `/3d-mega-hub-diagnostics/3d-mega-hub/mylove_rig_prepared.glb`, 13,221,520 bytes, SHA-256 `656cf2446eefbffc92cf569ce1a2f52b6d0ad449c282fc5a4d911abfef576d14`. Keep read-only and private. Its binary clip/joint inventory and playback have not been freshly verified in this workspace.
+
+**Evidence boundary:** source declarations prove that presets and clip definitions exist in code. They do not prove that the current APK exposes all options, that generated GLBs contain every native clip, or that animation visibly plays on the target Samsung phone. Those remain separate runtime checks.
