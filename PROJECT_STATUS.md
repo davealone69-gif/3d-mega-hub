@@ -20,10 +20,10 @@ Last updated: 2026-11-14. The README carries the current results; this file hold
 | Component | Status | Evidence |
 |---|---|---|
 | Android shell: builds and launches | **REAL + VERIFIED** on CI and emulator | Debug APK, lint, unit tests and R8 pass; debug and signed release APKs install and launch on an API 30 emulator |
-| AvatarForge engine: native generation, export, import | **REAL + VERIFIED** on host and emulator | Six native regression tests pass; an avatar is generated, validated, exported and re-imported on the emulator |
+| AvatarForge engine: native generation, export, import | **REAL + VERIFIED** on host and emulator | Seven native regression tests pass on CI; an avatar is generated, validated, exported and re-imported on the emulator |
 | GLES renderer: real geometry | **REAL + VERIFIED** on emulator | Imported and generated GLBs draw through native OpenGL ES 3.1; PixelCopy of the real SurfaceView finds the geometry |
 | Filament: native initialisation and lifecycle | **REAL + VERIFIED** on emulator, including the minified release APK | The bundled sample loads and presents a frame in both builds |
-| GLB importer | **REAL + VERIFIED**, static meshes only | Geometry, PBR materials, PNG and WebP textures. Skeletons and clips in a file are not applied; morph targets are not read |
+| GLB importer | **REAL + VERIFIED**, static meshes only | Geometry, PBR materials, PNG and WebP textures. Skeletons and clips in a file are not applied; morph targets are not read. 8,000 mutated files on CI and 90,000 under sanitizers on a host: no crash, no out-of-range index in an accepted file |
 | GLB exporter | **REAL + VERIFIED** | Khronos validator: 0 errors, 0 warnings after `fb0878e` |
 | Asset pipeline: copy, validate, hash | **REAL + VERIFIED** on emulator | Imports are copied to app storage and structurally validated; generated GLB hashes are recorded in the evidence |
 | Camera: orbit, zoom, reset | **REAL + VERIFIED** on emulator for orbit | A touch drag changes the measured yaw and the rendered pixels. Pinch and double-tap are implemented and not exercised by a test |
@@ -46,6 +46,8 @@ Last updated: 2026-11-14. The README carries the current results; this file hold
 10. **C++ exceptions at the JNI boundary.** The engine's C API caught its own exceptions; the renderer entry points did not, and an exception that unwinds into the JVM aborts the app. They now run inside one barrier that turns the exception into a Java exception.
 11. **Vulkan in an OpenGL ES app.** `libafrender.so` compiled the unused Vulkan backend and linked `libvulkan.so`. The backend is now built only with `-DAF_ENABLE_VULKAN=ON`, and the release gate reads the dependencies back.
 12. **Signing password in the job log.** The one-run preview keystore password was written to the job environment unmasked and printed by later steps. It is now masked. The key was discarded with the runner and never uploaded.
+13. **Phone-test APK not inspected.** Only the SHA-256 of the debug APK was recorded; the owner's readiness rule also asks for its application ID and signing certificate. The diagnostic workflow now reads the file back before the emulator tests and fails on a mismatch.
+14. **Unbalanced EGL display reference.** If `eglInitialize` failed, teardown still called `eglTerminate`. Android counts these calls per process, so the extra call would have released a reference held by the UI toolkit or Filament. Found in review; no failure was observed. The handle is now cleared on that path.
 
 ## Branch review
 
@@ -100,6 +102,8 @@ The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `wo
 
 ## Known defects, recorded and not changed
 
+The review's open findings, with severity and a suggested action for each, are in [docs/BRAVO_REVIEW.md](docs/BRAVO_REVIEW.md). The ones recorded before the review:
+
 - Left and right are not named consistently in the generation core. See [docs/AVATAR_GEOMETRY_EVIDENCE.md](docs/AVATAR_GEOMETRY_EVIDENCE.md).
 - Generated avatars face `−Z`; glTF's front is `+Z`. The app compensates for its own files only.
 - The debug-only PixelCopy check encodes a PNG and writes files on the UI thread once per session.
@@ -126,6 +130,16 @@ What was checked about that update:
 
 
 **2026-11-13, owner phone test.** The owner tested an installed APK on the phone: the renderer displayed the avatar, the generation button changed avatar features including male and female, and GLB import worked. Skin-tone and hair changes were not tested. Avatar quality was too poor to judge appearance changes. The APK's SHA-256 and commit were not recorded, so this is **PARTIAL** evidence for an earlier build and **UNVERIFIED** for the current code. The avatar-quality plan that followed is in [docs/AVATAR_QUALITY_PLAN.md](docs/AVATAR_QUALITY_PLAN.md).
+
+**2026-11-14, verification ledger of the previous README.** Kept for traceability. None of it is evidence for the current code.
+
+- Native host regression, Android unit tests and R8 passed on application source `1deaf264032195989257845b884a5829f06fe9cf`. Lint was cancelled in that cycle.
+- A diagnostic workflow produced a 71,377,227-byte debug APK with SHA-256 `3d833528d116fe0660a347d6a3bff0e9c6e7c8dc1d53b82125f15718917de8ee`.
+- Run `43528943730` on source `e9e7d76ef4a3f12c5c6a79951b5a1a99570c6228`: the basic generated-avatar pixel test passed on the Android 11 emulator. That was not the production test of an exported GLB through the SurfaceView.
+- Run `43534561147`, job `132260325291`, head `705165eebdaa525d75be861763c9a11205f33634`: `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` failed. LOD2 generation reduced the model to 325,491 triangles, but the production renderer presented only 2 frames in 15 seconds.
+- Run `43534561148` on the same head: unit tests, lint, R8, debug APK build and native regression passed; the instrumented GLES renderer smoke failed, and the bundled-GLB instrumentation hit `keyDispatchingTimedOut`.
+- A fresh debug APK artifact existed for that head and its ZIP digest matched GitHub's artifact digest. Package and signing-block verification of the APK was not complete, so it was not a ready APK.
+- The previous README itself is in the Git history of this branch, last at commit `3facc3d`.
 
 **2026-11-14, integration branch at `a424113`.** Nine checks passed and two failed, both in `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` (root cause 1). An earlier head, `705165e`, had failed the same way ("presented only 2 frames in 15 seconds") and had also hit `keyDispatchingTimedOut` (root cause 8).
 

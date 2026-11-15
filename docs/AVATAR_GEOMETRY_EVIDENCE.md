@@ -332,7 +332,7 @@ The photo-overlay quality backlog, including the ten-band reference envelope, th
 | "README merge preview" | Same places | **MISSING** under that name. Two README changes existed outside the working branch, and both are reconciled: the one on `test/photo-realistic-avatar-overlay` (merged without conflict in `6d0194b`) and the integration branch's update of 2026-11-14 18:22–18:32 UTC (merged in `79fb562`; its content is quoted in [PROJECT_STATUS.md](../PROJECT_STATUS.md)). Whether either is the preview that was meant is **UNVERIFIED**. |
 | Output of the earlier one-to-one mirror matcher | Same places | **MISSING**. The bound in this document was computed afresh. |
 
-Google Drive could not be searched: its connection failed authentication on every attempt. If any of these items exist there or in the earlier agent workspace, they need to be supplied before they can be reconciled.
+Google Drive was searched on 2026-11-14, after its connection had failed authentication on the earlier attempts: by file name ("D2", "merge preview", "README", "mega hub", "AvatarForge", "findings") and by full text ("D2", "D2 findings", "merge preview", "AvatarForge", "3d-mega-hub", "Mega Hub", "nCreateBuilder"). No document matched. The full-text index does not cover text inside images. If any of these items exist in the earlier agent workspace or somewhere else, they need to be supplied before they can be reconciled.
 
 ## How to reproduce
 
