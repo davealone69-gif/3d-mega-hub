@@ -56,3 +56,27 @@ This is a starting map from prior audits, not a claim that every repository or b
 - Android project compilation: **not yet verified in this repository**.
 - On-device renderer, embedded LLM, voice/lip-sync: **not yet verified in this repository**.
 - Release signing and installable artifacts: **not yet configured or verified**.
+
+
+## Non-monolithic product architecture and preserved AvatarForge baseline (2026-11-15)
+
+**The goal is one coherent product experience, not one giant app/module/process containing everything.**
+
+- **3D-Mega-Hub** is the end-user host/product. It owns the integrated workflow, navigation, avatar library and user-facing orchestration.
+- **AvatarForge** remains a separately maintained, independently buildable engine/SDK and test lab. The Hub may consume its engine through a narrow SDK/native boundary. Do not copy its standalone app UI wholesale into the Hub or create a second competing avatar engine.
+- **3DDD** and other donors remain independent source projects. Reuse selected proven components behind explicit interfaces; do not erase donor boundaries or assume copied files mean successful integration.
+- Keep engine/runtime, host UI, asset pipeline, AI/provider adapters, voice, persistence and optional heavyweight services independently testable and separately packaged/process-isolated where lifecycle, dependency, permission, licensing or resource constraints require it. A single APK/AAB may package multiple modules; that does not require a monolithic source tree or single process.
+- Choose packaging based on the actual user experience and measured Android constraints. Do not force every subsystem into the Hub merely to call it integrated. Do not split functionality into multiple user-facing apps without a concrete product reason either.
+
+### Existing user-supplied AvatarForge baseline (do not request it again)
+
+The user previously supplied:
+1. A full AvatarForge source snapshot at Dropbox path `/Update/AvatarForge-fixed-3b98600/AvatarForge/`, containing the app, engine, native code, SDK, Rust implementation, ABI, tools, docs, requirements, prebuilt libraries, artifacts and build/status handover files.
+2. A known-working pre-integration APK: `/AvatarForge/3d engine/AvatarForge-pre-integration-debug-f12a35acefd1 (1).apk` (**11,026,696 bytes**).
+
+Historical handoff evidence for that APK: **5/5 app tests and 43/43 SDK tests passed**, including JobHandle retention; the handoff reported the Samsung engine visible. Preserve this binary as an immutable recovery/comparison baseline. This historical result is not a claim about today's build or current phone compatibility.
+
+Before asking the user for a skeleton, rig, source archive or test APK, inspect the already-supplied Dropbox source snapshot and APK. Do not make the user repeat this handoff. Verify exact source and artifact identities before porting; the Dropbox snapshot is not presumed identical to current GitHub HEAD.
+
+References: [AvatarForge source checkpoint](https://www.dropbox.com/scl/fi/bwbd3qrr432poip5epnpv) · [AvatarForge source README](https://www.dropbox.com/scl/fi/lgkron1i7uco8yhiylr4r) · [AvatarForge repository](https://github.com/davealone69-gif/AvatarForge).
+
