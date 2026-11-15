@@ -263,6 +263,38 @@ int main() {
     require(hairField.hairPublic(hairCore) < -0.015f,
             "long hairstyle hanging section is not a solid 3D volume");
 
+    // Every exposed procedural hairstyle must produce finite, non-empty geometry in
+    // the same anatomical sampling envelope. This protects the generator while the
+    // hairline, braid and coil fields evolve independently.
+    for (int style = 1; style <= 9; ++style) {
+        af::BodyField styleField(qualityMetrics);
+        af::ApparelOptions styleOptions;
+        styleOptions.hair = style;
+        styleOptions.latticeCell = 0.008f;
+        styleField.setApparel(styleOptions);
+        int interiorSamples = 0;
+        for (int iy = 0; iy <= 12; ++iy) {
+            const float y = qualityMetrics.y.chinY +
+                (qualityMetrics.y.crownY - qualityMetrics.y.chinY + 0.10f) *
+                static_cast<float>(iy) / 12.0f;
+            for (int ix = 0; ix <= 10; ++ix) {
+                const float x = -qualityMetrics.head.rx * 1.45f +
+                    qualityMetrics.head.rx * 2.90f * static_cast<float>(ix) / 10.0f;
+                for (int iz = 0; iz <= 10; ++iz) {
+                    const float z = qualityMetrics.head.centreZ -
+                        qualityMetrics.head.rz * 1.55f +
+                        qualityMetrics.head.rz * 3.10f * static_cast<float>(iz) / 10.0f;
+                    const float sample = styleField.hairPublic(af::Vec3(x, y, z));
+                    require(std::isfinite(sample),
+                            "hairstyle field produced a non-finite sample");
+                    if (sample < 0.0f) ++interiorSamples;
+                }
+            }
+        }
+        require(interiorSamples > 0,
+                "a selectable hairstyle produced no interior samples in the head envelope");
+    }
+
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
     std::puts("PASS: long hairstyle has measurable volumetric depth behind the skull");
 
