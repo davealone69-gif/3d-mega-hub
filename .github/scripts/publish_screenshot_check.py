@@ -6,14 +6,21 @@ redirect. A reviewer, or an agent that cannot follow that redirect, cannot look 
 text of a check run is served by the GitHub API itself, so a picture stored there as base64 can be
 read back with nothing but the API:
 
-    gh api repos/OWNER/REPO/commits/SHA/check-runs \
-        --jq '.check_runs[] | select(.name | startswith("Emulator screenshot")) | "\\(.id) \\(.name)"'
-    gh api repos/OWNER/REPO/check-runs/ID --jq '.output.summary + .output.text' \
+    gh api "repos/OWNER/REPO/commits/SHA/check-runs?per_page=100" \
+        --jq '.check_runs[] | select(.name | startswith("Evidence only")) | "\\(.id) \\(.name)"'
+    gh api repos/OWNER/REPO/check-runs/ID --jq '.output.summary + (.output.text // "")' \
         | tr -d '\\n' | base64 -d > screenshot.jpg
 
-The check run is "neutral": it is evidence, not a verdict, and no gate reads it.
+The title of the check run carries the SHA-256 of the JPEG, to compare with the decoded file.
 
-Usage: publish_screenshot_check.py <check name> <image> [<check name> <image> ...]
+These check runs are evidence, not tests: nobody has judged the picture. Their names say so
+("Evidence only: emulator screenshot, ...") and their conclusion, "success", means no more than
+"the copy was stored". It is not "neutral" for a practical reason: GitHub files a check run made
+through the API under one of the commit's workflow runs and lists it among that run's jobs, and
+publish_phone_test_apk.py refuses a run with any job that did not end in success. The first
+version used "neutral" and made its own commit (50bbe25) unpublishable.
+
+Usage: publish_screenshot_check.py <what the picture shows> <image> [<what> <image> ...]
 Environment: GITHUB_TOKEN (needs checks: write), GITHUB_REPOSITORY, HEAD_SHA.
 Needs Pillow. A missing image is skipped; nothing here fails the job that calls it.
 """
@@ -26,6 +33,7 @@ import sys
 import urllib.request
 
 FIELD_LIMIT = 60000  # characters; the API allows 65535 for each of summary and text
+NAME_PREFIX = "Evidence only: emulator screenshot, "
 
 
 def encode(path):
@@ -44,9 +52,10 @@ def encode(path):
     raise RuntimeError("the screenshot does not fit a check run even at 270 pixels wide")
 
 
-def publish(name, path):
+def publish(what, path):
+    name = NAME_PREFIX + what
     data, text, size, quality = encode(path)
-    title = "%dx%d JPEG q%d, %d bytes, sha256 %s; base64 = summary + text" % (
+    title = "Not a test. %dx%d JPEG q%d, %d bytes, sha256 %s; base64 = summary + text" % (
         size[0], size[1], quality, len(data), hashlib.sha256(data).hexdigest())
     output = {"title": title, "summary": text[:FIELD_LIMIT]}
     if len(text) > FIELD_LIMIT:
@@ -55,7 +64,7 @@ def publish(name, path):
         "name": name,
         "head_sha": os.environ["HEAD_SHA"],
         "status": "completed",
-        "conclusion": "neutral",
+        "conclusion": "success",
         "output": output,
     }).encode("utf-8")
     request = urllib.request.Request(

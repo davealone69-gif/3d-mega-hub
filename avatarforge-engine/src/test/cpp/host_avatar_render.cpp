@@ -273,7 +273,12 @@ int main(int argc, char** argv) {
         for (int s = 0; s < subCount; ++s) {
             const af_material* m = (subs[s].material_index >= 0 && subs[s].material_index < matCount) ? &mats[subs[s].material_index] : nullptr;
             std::printf("  submesh %d region=%-12s triangles=%-8d material=%-14s factor=(%.2f,%.2f,%.2f) baseTex=%d\n", s,
-                        af_engine_region_name(subs[s].region), subs[s].index_count / 3, m ? m->name : "-",
+                        /* A foreign material has region -1 (generic PBR) or -2 (generic, drawn on
+                           both sides). af_engine_region_name answers "skin" for any value outside
+                           its table, which read as if the model were shaded as skin. */
+                        subs[s].region == -1 ? "generic" : subs[s].region == -2 ? "generic 2-sided"
+                            : af_engine_region_name(subs[s].region),
+                        subs[s].index_count / 3, m ? m->name : "-",
                         m ? m->base_color_factor[0] : 0.f, m ? m->base_color_factor[1] : 0.f, m ? m->base_color_factor[2] : 0.f,
                         m ? m->has_base_color_tex : 0);
         }

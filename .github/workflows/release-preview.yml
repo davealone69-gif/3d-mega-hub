@@ -146,7 +146,7 @@ jobs:
           emulator-options: -memory 4096 -cores 2 -no-window -no-audio -no-boot-anim -gpu swangle -no-snapshot -wipe-data
           emulator-boot-timeout: 900
           script: bash .github/scripts/emulator-smoke.sh
-      - name: Publish small screenshot copies as check runs (readable through the API)
+      - name: Store small screenshot copies as check runs (evidence only, readable through the API)
         if: always()
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -156,7 +156,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/screenshot-venv" || true
           "$RUNNER_TEMP/screenshot-venv/bin/pip" install --quiet pillow || true
           "$RUNNER_TEMP/screenshot-venv/bin/python" .github/scripts/publish_screenshot_check.py \
-            "Emulator screenshot: Avatar Studio with the bundled model (glTF viewer)" \
+            "Avatar Studio with the bundled model (glTF viewer)" \
             emulator-diagnostics/avatar-studio-screen.png || true
       - uses: actions/upload-artifact@v7
         if: always()

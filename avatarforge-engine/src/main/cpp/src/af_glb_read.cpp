@@ -1211,6 +1211,12 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         const json::Json& bc = pbr["baseColorFactor"];
         if (bc.size() == 4) {
             for (int c = 0; c < 4; ++c) mat.baseColor[c] = static_cast<float>(bc.at(static_cast<size_t>(c)).asNumber(c == 3 ? 1.0 : 1.0));
+        } else if (pbr["baseColorTexture"]["index"].asInt(-1) >= 0) {
+            /* glTF 2.0: an absent baseColorFactor is [1,1,1,1]. Most exporters leave the default
+               out (Sketchfab, glTF-Transform, Blender), and until 2026-11-15 such a material kept
+               this reader's 0.8 grey and its texture was drawn a fifth darker than authored. The
+               grey remains only for a material that gives neither a factor nor a texture. */
+            for (int c = 0; c < 4; ++c) mat.baseColor[c] = 1.0f;
         }
         mat.metallic = static_cast<float>(pbr["metallicFactor"].asNumber(1.0));
         mat.roughness = static_cast<float>(pbr["roughnessFactor"].asNumber(1.0));

@@ -131,7 +131,7 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           script: bash .github/scripts/avatarforge-render-smoke.sh
-      - name: Publish small screenshot copies as check runs (readable through the API)
+      - name: Store small screenshot copies as check runs (evidence only, readable through the API)
         if: always()
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -141,12 +141,10 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/screenshot-venv" || true
           "$RUNNER_TEMP/screenshot-venv/bin/pip" install --quiet pillow || true
           "$RUNNER_TEMP/screenshot-venv/bin/python" .github/scripts/publish_screenshot_check.py \
-            "Emulator screenshot: generated avatar (GLES renderer)" \
+            "generated avatar (GLES renderer)" \
             avatarforge-render-smoke-evidence/generated_avatar_diagnostic.png \
-            "Emulator screenshot: last imported GLB (GLES renderer)" \
-            avatarforge-render-smoke-evidence/imported_glb_diagnostic.png \
-            "Emulator screenshot: screen after the renderer tests" \
-            avatarforge-render-smoke-evidence/final-screen.png || true
+            "last imported GLB (GLES renderer)" \
+            avatarforge-render-smoke-evidence/imported_glb_diagnostic.png || true
       - name: Upload AvatarForge renderer evidence
         if: always()
         uses: actions/upload-artifact@v7

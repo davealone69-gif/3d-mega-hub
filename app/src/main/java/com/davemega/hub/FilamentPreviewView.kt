@@ -12,6 +12,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
 import com.google.android.filament.Camera
+import com.google.android.filament.ColorGrading
 import com.google.android.filament.Engine
 import com.google.android.filament.EntityManager
 import com.google.android.filament.Filament
@@ -20,6 +21,7 @@ import com.google.android.filament.LightManager
 import com.google.android.filament.Renderer
 import com.google.android.filament.Scene
 import com.google.android.filament.SwapChain
+import com.google.android.filament.ToneMapper
 import com.google.android.filament.Viewport
 import com.google.android.filament.View as FilamentView
 import com.google.android.filament.gltfio.Animator
@@ -51,6 +53,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var cameraEntity = 0
     private var lightEntity = 0
     private var indirectLight: IndirectLight? = null
+    private var colorGrading: ColorGrading? = null
     private var activeBackend: Engine.Backend? = null
 
     private var materialProvider: UbershaderProvider? = null
@@ -382,6 +385,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             activeBackend = selection.backend
 
             createSceneLight()
+            applyToneCurveAndBackground()
             initializeGltfLoaders()
             persistCheckpoint("Filament ${selection.backend.displayName()} session initialized; starting GLB viewer")
             if (!hasModelRequest) {
@@ -423,13 +427,6 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             val newView = checkNotNull(candidateEngine.createView()) { "Filament view was null" }
             candidateView = newView
             configureViewQuality(newView)
-            // Without a skybox the background is the renderer's clear colour. This is the stage
-            // colour of the creator (0xFF1C2230) in linear light, so both previews stand on the
-            // same background; until 2026-11-15 this one was black.
-            val clearOptions = Renderer.ClearOptions()
-            clearOptions.clearColor = doubleArrayOf(0.0116, 0.0159, 0.0296, 1.0)
-            clearOptions.clear = true
-            newRenderer.setClearOptions(clearOptions)
 
             candidateCameraEntity = EntityManager.get().create()
             val newCamera = checkNotNull(candidateEngine.createCamera(candidateCameraEntity)) {
@@ -467,8 +464,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
      * Picture quality of the glTF viewer. Until 2026-11-15 Filament's post-processing was switched
      * off here, which left the picture without a tone curve, without anti-aliasing and without
      * ambient occlusion: linear light clipped at white, stair-stepped edges, flat creases. This
-     * switches on Filament's own pipeline with its defaults (a filmic tone curve), 4x MSAA with
-     * FXAA on top, screen-space ambient occlusion and shadows from the key light.
+     * switches on Filament's own pipeline: 4x MSAA with FXAA on top, screen-space ambient
+     * occlusion and shadows from the key light. The tone curve is chosen in
+     * [applyToneCurveAndBackground].
      *
      * Every one of these is a switch on an existing Filament feature; if a backend rejects one,
      * the viewer falls back to the plain picture instead of failing to start.
@@ -491,6 +489,51 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         } catch (failure: LinkageError) {
             Log.w(TAG, "Viewer quality options are unavailable in this Filament build; using the plain picture", failure)
             target.setPostProcessingEnabled(false)
+        }
+    }
+
+    /**
+     * Tone curve and background of the viewer.
+     *
+     * Filament's default curve (ACES) pulls every bright colour towards white. Under this viewer's
+     * lights the bundled figure's skin tone, authored as (216, 169, 140), came out as
+     * (214, 201, 188) on the CI emulator. The Khronos PBR Neutral curve keeps hue and saturation
+     * and only rolls off the highlights, which is what a viewer for skin and for models with
+     * painted textures needs.
+     *
+     * Without a skybox the background is the renderer's clear colour, and with post-processing on
+     * it passes through the same curve. [STAGE_BEFORE_NEUTRAL_CURVE] is the creator's stage colour
+     * (0xFF1C2230) before that curve, [STAGE_LINEAR] the same colour when nothing is applied to
+     * it, so both previews stand on the same background. Until 2026-11-15 this one was black.
+     */
+    private fun applyToneCurveAndBackground() {
+        val activeEngine = engine ?: return
+        val activeView = view ?: return
+        val activeRenderer = renderer ?: return
+        var background = STAGE_LINEAR
+        if (activeView.isPostProcessingEnabled) {
+            try {
+                val grading = ColorGrading.Builder()
+                    .toneMapper(ToneMapper.PBRNeutralToneMapper())
+                    .build(activeEngine)
+                activeView.setColorGrading(grading)
+                colorGrading = grading
+                background = STAGE_BEFORE_NEUTRAL_CURVE
+            } catch (failure: Exception) {
+                Log.w(TAG, "The neutral tone curve could not be created; using Filament's default curve", failure)
+            } catch (failure: LinkageError) {
+                Log.w(TAG, "The neutral tone curve is unavailable in this Filament build; using its default curve", failure)
+            }
+        }
+        try {
+            val clearOptions = Renderer.ClearOptions()
+            clearOptions.clearColor = background
+            clearOptions.clear = true
+            activeRenderer.setClearOptions(clearOptions)
+        } catch (failure: Exception) {
+            Log.w(TAG, "The viewer background colour could not be set", failure)
+        } catch (failure: LinkageError) {
+            Log.w(TAG, "The viewer background colour is unavailable in this Filament build", failure)
         }
     }
 
@@ -840,6 +883,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             safelyDestroy("ambient light") { activeEngine.destroyIndirectLight(ambient) }
         }
         indirectLight = null
+        colorGrading?.let { grading ->
+            safelyDestroy("tone curve removal") { view?.setColorGrading(null) }
+            safelyDestroy("tone curve") { activeEngine.destroyColorGrading(grading) }
+        }
+        colorGrading = null
         destroyResources(activeEngine, swapChain, view, scene, camera, cameraEntity, renderer)
         engine = null
         renderer = null
@@ -894,6 +942,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         private const val BUNDLED_MODEL = "models/female.glb"
         private const val MAX_MODEL_BYTES = 128L * 1024L * 1024L
         private const val AMBIENT_INTENSITY = 15_000.0f
+        /** The creator's stage colour 0xFF1C2230 in linear light, alpha last. */
+        private val STAGE_LINEAR = doubleArrayOf(0.0116, 0.0160, 0.0296, 1.0)
+        /**
+         * The colour that the PBR Neutral curve, applied in Filament's Rec. 2020 grading space,
+         * turns into the stage colour. The curve subtracts a toe from dark colours, so the input
+         * is lighter than the result.
+         */
+        private val STAGE_BEFORE_NEUTRAL_CURVE = doubleArrayOf(0.0448, 0.0492, 0.0628, 1.0)
         private const val DEFAULT_PITCH_DEGREES = 2.15f
         private const val MAX_PITCH_DEGREES = 85.0f
         private const val MIN_ZOOM = 0.15f

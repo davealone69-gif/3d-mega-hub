@@ -355,6 +355,21 @@ int main(int argc, char** argv) {
     check(af_engine_texture(engine, AF_TEX_SUBSURFACE, &sub) != AF_OK,
           "unused subsurface texture slot cleared after procedural run");
 
+    // 6. glTF default: this fixture's material has a base colour texture and declares no
+    //    baseColorFactor, so its factor is 1 - not the reader's 0.8 fallback grey, which drew
+    //    every such texture a fifth darker than its author made it.
+    {
+        af::GlbAsset foreignAsset;
+        std::string foreignError;
+        const int32_t foreignRc = af::importGlb(glb.data(), glb.size(), &foreignAsset, &foreignError);
+        check(foreignRc == AF_OK && foreignAsset.materials.size() == 1 &&
+              foreignAsset.materials[0].baseColor[0] == 1.0f &&
+              foreignAsset.materials[0].baseColor[1] == 1.0f &&
+              foreignAsset.materials[0].baseColor[2] == 1.0f &&
+              foreignAsset.materials[0].baseColor[3] == 1.0f,
+              "textured material without baseColorFactor uses the glTF default factor of 1");
+    }
+
     // 5. Fallback image decoder registration hook (used on Android API 26..29)
     af::setFallbackImageDecoder(&fakeFallbackWebpDecoder);
     af::setFallbackImageDecoder(nullptr);
