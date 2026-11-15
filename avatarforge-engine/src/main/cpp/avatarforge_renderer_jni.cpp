@@ -335,7 +335,9 @@ jlong createGeneratedSession(JNIEnv* env, jobject surface, jint width, jint heig
     }
     if (resolved.seed != 1337 || resolved.sex != AF_SEX_FEMALE ||
         resolved.build != AF_BUILD_ATHLETIC || resolved.hair_style != AF_HAIR_MEDIUM ||
-        resolved.outfit != AF_OUTFIT_JEANS_JACKET ||
+        /* "black t-shirt and jeans" is the T-shirt outfit, which is built with jeans. The parser
+           used to answer "jeans and jacket" here, and this check used to require that answer. */
+        resolved.outfit != AF_OUTFIT_TSHIRT ||
         !std::isfinite(resolved.height_m) || std::fabs(resolved.height_m - 1.75f) > 0.001f) {
         throwState(env, "Prompt parser did not resolve the exact expected spec: seed=" +
             std::to_string(resolved.seed) + " sex=" + std::to_string(resolved.sex) +
