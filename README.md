@@ -2,7 +2,7 @@
 
 One Android app that generates, imports and renders 3D avatars on the phone. The AvatarForge engine generates and imports; a native OpenGL ES renderer draws; Filament shows the bundled sample.
 
-**Handover of 2026-11-14 (UTC). Not merged to `main`. The owner's phone test is the next gate.**
+**Handover of 2026-11-15 (UTC). PR #12 remains the working review path and is not merged to `main`. The owner has now installed and tested the new APK on a Samsung SM-S921B: general app operation is reported good; avatar appearance and animation capability remain unfinished.**
 
 ## Where the work is
 
@@ -37,19 +37,18 @@ Status labels: **REAL + VERIFIED**, **UNVERIFIED**, **PARTIAL**, **MISSING**, **
 | 12 | Signed AAB verified | **PARTIAL** | Same |
 | 13 | SHA-256 values recorded | **REAL + VERIFIED** | [Artifacts](#artifacts) |
 | 14 | Bravo review completed | **PARTIAL** | A separate review pass was done and recorded by the same agent that did the integration, not by an independent reviewer. [docs/BRAVO_REVIEW.md](docs/BRAVO_REVIEW.md) |
-| 15 | Physical Samsung test | **UNVERIFIED** | Only the owner can run it. [Next action](#next-action) |
+| 15 | Physical Samsung test | **REAL + VERIFIED (owner-reported)** | The owner confirmed on 2026-11-15 that the new APK was installed and tested on the Samsung SM-S921B and that general app operation is good. Exact phone-side telemetry/diagnostic JSON has not been supplied, so detailed performance, thermal, memory and lifecycle measurements remain **UNVERIFIED**. |
 | 16 | Final README handover | **REAL + VERIFIED** | This file |
 
 ## Next action
 
-For the owner, on the Samsung SM-S921B:
+The owner has completed the initial Samsung APK test and reports that the app is generally working. Do not keep treating the basic phone install/launch check as pending. The next work is avatar completion, not another broad renderer rewrite:
 
-1. Open [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). Its description names the debug APK to install, its source commit and its SHA-256, with a direct download link: no GitHub sign-in, and the file is the `.apk` itself.
-2. Uninstall any earlier build of the app, then install that APK. Each CI debug build has its own throwaway signing key, so Android will not install it over an earlier one.
-3. Follow the ten steps of the phone gate in [BUILD_AND_VERIFY.md](BUILD_AND_VERIFY.md#phone-gate-samsung-sm-s921b). Step 4 compares the SHA-256 the app shows for itself with the published one.
-4. Send back `renderer_telemetry.json` and `renderer_diagnostics.json` from `Downloads/3D Mega Hub Diagnostics`.
-
-The two files name the APK, the phone and the asset, so they settle items 9 and 15 without anything else.
+1. Diagnose and improve the generated avatar's visible appearance at the source: body construction, proportions, mesh deformation, surface/material generation and export. Compare actual generated GLBs and screenshots against agreed visual acceptance criteria; do not infer quality from successful rendering or GLB validation.
+2. Implement a complete usable animation feature, because the owner confirms there is currently no way in the app to animate an avatar. This includes a supported animation source/clip pipeline, skeleton/skin preservation through generation/export/import, runtime playback and user-facing controls (at minimum select/load, play, pause, stop, seek and loop where supported). Do not claim animation works merely because a GLB contains joints or clips.
+3. Keep the working renderer and current tested APK baseline intact. Make focused changes on the existing implementation line; do not create a competing app or parallel implementation branch.
+4. Capture phone-side `renderer_telemetry.json` and `renderer_diagnostics.json` when practical. These are still needed to verify detailed Samsung performance, thermal, memory and lifecycle behaviour, even though the owner has confirmed the APK itself works generally.
+5. Update this README with each evidence-backed milestone. A feature is not **REAL + VERIFIED** until it is built, installed and exercised on the phone.
 
 For production signing: add the keystore and its three passwords as protected repository secrets. Never commit them.
 
@@ -63,7 +62,7 @@ For production signing: add the keystore and its three passwords as protected re
 - **Crash containment.** A C++ exception in the renderer becomes a reported renderer failure instead of an app abort.
 - **Release engineering.** The signed APK and AAB are read back and checked against the Gradle configuration; two clean builds must be byte-identical. The debug APK for the phone is inspected, downloaded again on a second machine and tied to the test that ran it. It is published as a direct download only when the readiness gate holds for its commit.
 
-Not implemented: animation, posing and facial animation of the avatar on screen (it is shown as a static mesh), lip-sync, an embedded language model, photo-based identity. See [PROJECT_STATUS.md](PROJECT_STATUS.md).
+Not implemented: an end-to-end animation feature or any user-facing way to animate an avatar. The current GLB import/render path displays static meshes; the imported mesh has 0 joints in renderer telemetry even though the generated GLB carries joints and blendshapes. Animation clips, skinning, posing, facial animation and playback controls are therefore **MISSING**, not merely hidden or unverified. Avatar appearance quality is also **UNFIXED** per the owner's 2026-11-15 phone feedback. Lip-sync, an embedded language model and photo-based identity are also not implemented. See [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 ## Build and test results for `3facc3d`
 
@@ -156,10 +155,10 @@ The full list of fifteen, with the release-engineering causes, is in [PROJECT_ST
 
 | Item | Status |
 |---|---|
-| Rendering, generation, import, lifecycle, memory, heat and frame rate on the Samsung SM-S921B | **UNVERIFIED** |
+| General APK operation on Samsung SM-S921B | **REAL + VERIFIED (owner-reported)** | Owner installed and tested the new APK on 2026-11-15 and reported that everything generally works apart from the avatar issues. Detailed telemetry, sustained performance, heat, memory and lifecycle remain **UNVERIFIED**. |
 | Production signing | **BLOCKED** on the owner's keystore |
-| Animation of the avatar on screen | **MISSING**: imported and generated avatars are static meshes |
-| Avatar visual quality | **PARTIAL**: the owner judged it too poor on 2026-11-13, and nothing in this handover changes the generator's output. [docs/AVATAR_QUALITY_PLAN.md](docs/AVATAR_QUALITY_PLAN.md) |
+| End-to-end avatar animation pipeline | **MISSING**: current generated/imported avatar path renders static meshes; the owner has no way to animate an avatar in the app. Skeleton/skin/clip preservation, runtime playback and controls are not implemented end to end. |
+| Avatar visual quality | **UNFIXED**: owner explicitly confirmed on 2026-11-15 that the appearance is still not fixed. Successful generation, export or rendering does not establish acceptable visual quality. [docs/AVATAR_QUALITY_PLAN.md](docs/AVATAR_QUALITY_PLAN.md) |
 | Performance of the default avatar on the phone | **UNVERIFIED**: 1.1 to 1.6 million triangles with 4x MSAA. Measure before tuning |
 | Native libraries are not stripped | **PARTIAL**: every build prints "Unable to strip". Finding O4 of the review |
 | Independent review | **PARTIAL**. Seventeen open findings are listed in [docs/BRAVO_REVIEW.md](docs/BRAVO_REVIEW.md) |
