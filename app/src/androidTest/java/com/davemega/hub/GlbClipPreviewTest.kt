@@ -26,6 +26,7 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import java.io.File
 import java.io.FileOutputStream
+import java.io.OutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -168,7 +169,11 @@ class GlbClipPreviewTest {
             drawBitmap(armDown, 0f, 0f, null)
             drawBitmap(armRaised, armDown.width.toFloat(), 0f, null)
         }
-        val saved = runCatching { saveToDownloads(context, "gltf_viewer_clip_poses.png", sheet) }
+        val saved = runCatching {
+            saveToDownloads(context, "gltf_viewer_clip_poses.png") { output ->
+                check(sheet.compress(Bitmap.CompressFormat.PNG, 100, output)) { "Could not encode the two poses" }
+            }
+        }
         saved.exceptionOrNull()?.let { Log.w("AvatarForge", "Could not save gltf_viewer_clip_poses.png to Downloads", it) }
 
         val drawn = samplesUnlikeTheCorner(armDown)
@@ -197,6 +202,33 @@ class GlbClipPreviewTest {
             "Going back to 0 s did not give the first picture back: $evidence",
             returned * 4 <= moved
         )
+
+        /* ---- evidence only, nothing below can fail the test: the screen as a person sees it,
+           with the clip strip and the Motion section of this file ---- */
+        var motionLine = ""
+        var bowChosen = false
+        val screenSaved = runCatching {
+            device.findObject(By.text("Bow"))?.click()
+            SystemClock.sleep(1_500L)
+            bowChosen = state().selectedClip == 2
+            device.findObject(By.text("Motion"))?.click()
+            SystemClock.sleep(1_000L)
+            val x = (width * 0.84f).toInt()
+            device.swipe(x, (height * 0.55f).toInt(), x, (height * 0.25f).toInt(), 200)
+            SystemClock.sleep(1_500L)
+            motionLine = device.findObject(By.textStartsWith("Animations in this file"))?.text ?: ""
+            val screenFile = File(context.cacheDir, "gltf_viewer_clip_strip_screen.png")
+            check(device.takeScreenshot(screenFile)) { "UiDevice could not take a screenshot" }
+            saveToDownloads(context, screenFile.name) { output ->
+                screenFile.inputStream().use { input -> input.copyTo(output) }
+            }
+        }
+        screenSaved.exceptionOrNull()?.let { Log.w("AvatarForge", "Could not save the screen with the clip strip", it) }
+        val screenEvidence = JSONObject()
+            .put("tapOnBowChoseTheThirdClip", bowChosen)
+            .put("motionLine", motionLine)
+            .put("screenshotSaved", screenSaved.isSuccess)
+        Log.i("AvatarForge", "CLIP_SCREEN_EVIDENCE $screenEvidence")
     }
 
     private fun findViewer(view: View): FilamentPreviewView? {
@@ -301,7 +333,7 @@ class GlbClipPreviewTest {
     )
 
     /** Evidence only: a copy in the public Downloads folder outlives the uninstall after the run. */
-    private fun saveToDownloads(context: Context, displayName: String, image: Bitmap) {
+    private fun saveToDownloads(context: Context, displayName: String, write: (OutputStream) -> Unit) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             throw IllegalStateException("MediaStore Downloads needs Android 10")
         }
@@ -314,9 +346,7 @@ class GlbClipPreviewTest {
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
             ?: error("Android could not create a Downloads entry for $displayName")
         val stream = resolver.openOutputStream(uri) ?: error("Android could not open the Downloads entry for $displayName")
-        stream.use { output ->
-            check(image.compress(Bitmap.CompressFormat.PNG, 100, output)) { "Could not encode $displayName" }
-        }
+        stream.use(write)
     }
 
     private companion object {

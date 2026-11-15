@@ -30,6 +30,7 @@ adb pull "$DIAGNOSTICS_DIR/generated_avatar_diagnostic.png" avatarforge-render-s
 adb pull "$DIAGNOSTICS_DIR/failed_render.png" avatarforge-render-smoke-evidence/failed_render.png >/dev/null 2>&1 || true
 adb pull "$DIAGNOSTICS_DIR/renderer_telemetry.json" avatarforge-render-smoke-evidence/renderer_telemetry.json >/dev/null 2>&1 || true
 adb pull "$DIAGNOSTICS_DIR/gltf_viewer_clip_poses.png" avatarforge-render-smoke-evidence/gltf_viewer_clip_poses.png >/dev/null 2>&1 || true
+adb pull "$DIAGNOSTICS_DIR/gltf_viewer_clip_strip_screen.png" avatarforge-render-smoke-evidence/gltf_viewer_clip_strip_screen.png >/dev/null 2>&1 || true
 
 # Put the measured renderer evidence in the job log itself so it can be read without the artifact.
 echo "::group::Measured renderer evidence (logcat, tag AvatarForge)"
