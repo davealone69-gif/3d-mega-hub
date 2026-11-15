@@ -495,11 +495,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     /**
      * Tone curve and background of the viewer.
      *
-     * Filament's default curve (ACES) pulls every bright colour towards white. Under this viewer's
-     * lights the bundled figure's skin tone, authored as (216, 169, 140), came out as
-     * (214, 201, 188) on the CI emulator. The Khronos PBR Neutral curve keeps hue and saturation
-     * and only rolls off the highlights, which is what a viewer for skin and for models with
-     * painted textures needs.
+     * Filament's default curve (ACES) pulls bright colours towards white. On the CI emulator the
+     * brightest part of the bundled figure, whose base colour shows as (237, 213, 196), came out
+     * as (214, 201, 188) with that curve and as (210, 185, 168) with the Khronos PBR Neutral
+     * curve: red to blue is 1.21 in the file, 1.14 and 1.25 in the two pictures. The neutral curve
+     * keeps hue and saturation and only rolls off the highlights, which is what a viewer for skin
+     * and for models with painted textures needs.
+     * (The message of commit 96152cd gives the file's colour as (216, 169, 140). That is the
+     * linear factor times 255, not what a display shows, and it overstates the difference.)
      *
      * Without a skybox the background is the renderer's clear colour, and with post-processing on
      * it passes through the same curve. [STAGE_BEFORE_NEUTRAL_CURVE] is the creator's stage colour

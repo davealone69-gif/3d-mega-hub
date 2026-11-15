@@ -6,6 +6,8 @@ The owner shared a Dropbox folder named `3d real` with seven GLB files: three di
 
 Status words are the project's. "Host" means the engine's importer run on a Linux host; nothing here has been run on the phone.
 
+A second folder, `New folder (2)`, followed an hour later with eight more models. It is recorded in [section 6](#6-the-second-folder-new-folder-2).
+
 ## 1. What each file is
 
 Every file names its own origin: each is a Sketchfab download, and Sketchfab writes the author, the licence label and the source page into the file.
@@ -108,3 +110,58 @@ What to expect on the phone, none of it seen yet:
 What the glTF viewer still lacks: tone mapping, anti-aliasing, shadows and reflections (Filament's post-processing is switched off), and the skin, eye and hair shading of the app's own renderer.
 
 CI results for `7e4f0cb` and the APK are in the README.
+
+## 6. The second folder, `New folder (2)`
+
+The owner's next message was a link to a second Dropbox folder with eight models. Each is there twice: as a zip and as an unpacked folder with `source/` (the model) and `textures/` (a loose copy of its colour image). That layout is what a Sketchfab "source" download unpacks to. **None of these files is in this repository or in any APK either.**
+
+All eight depict adult women: in underwear, partly dressed or unclothed, most in a held pose. They were inspected by structure, by untextured shape renders and, for three of them, by one textured render on the host.
+
+### 6.1 What each file is
+
+| Folder | Model file | Size | Written by | Vertices / triangles | Textures | Skeleton, clips, morph targets |
+|---|---|---|---|---|---|---|
+| `black-lace-lingerie-woman-3d-model` | `body-raw8-23.glb` | 20.1 MB | pygltflib 1.16.5 | 318,401 / 588,234 | one JPEG, 2048 square | none |
+| `elf-woman-stockings-3d-model` | `body-raw2-03.glb` | 22.7 MB | pygltflib | 367,890 / 678,328 | one JPEG, 2048 square | none |
+| `cardigan-woman-side-pose-3d-model` | `body-raw8-13.glb` | 47.6 MB | pygltflib | 836,440 / 1,529,570 | one JPEG, 2048 square | none |
+| `pink-hair-sweater-woman-3d-model` | `body-raw-13.glb` | 63.4 MB | pygltflib | 1,094,730 / 2,071,896 | one JPEG, 2048 square | none |
+| `leather-jacket-woman-squatting-3d-model` | `body-raw2-13.glb` | 69.0 MB | pygltflib | 1,232,179 / 2,277,536 | one JPEG, 2048 square | none |
+| `blonde-female-character` | `model2.glb` | 62.6 MB | glTF-Transform 4.5.1; the material and node are named `tripo_…` | 977,467 / 1,910,658 | three at 4096 square: colour (JPEG), occlusion-roughness-metal (JPEG), normal (PNG) | none |
+| `woman-seated-v22` | `Woman Seated V22.fbx` | 32.2 MB | Blender 5.0.1 | 71,079 / 141,612 | two, embedded: colour (PNG, 25.5 MB) and normal | none |
+| `ink` | `zeee.fbx` | 72.4 MB | DAZ Studio (FBX SDK 2020.2) | 477,795 / 497,110 in 8 meshes, 59 materials | 16 | 198 bones, 6 skin deformers, one 1-second animation stack, **0 blend shapes** |
+
+- **The six GLB files are statues.** Each is one mesh with one material: body, hair and clothes are a single fused surface. There is no skeleton and no morph target, so nothing can be reshaped, undressed, posed or animated.
+- **How they were made.** `tripo_…` names are what Tripo AI's exporter writes. pygltflib is a Python library, so the other five were written by a script, not by a modelling program. Uniform dense triangles, one square texture and lighting painted into that texture are what picture-to-3D generators produce. That is the likely origin of all six; the files do not prove it.
+- **Why they look good.** The detail is in the picture, not in the shape or the material: highlights, skin tone and shading are painted into the colour texture, at 0.6 to 2.3 million triangles for one figure. Nothing about them reacts to light as skin, hair or cloth.
+- **`ink/source/zeee.fbx` is the DAZ Studio export behind the first folder's `ink.glb`**: the same 497,110 triangles and the same skeleton. It has no blend shapes, so the source has no shape controls either; they were not lost in the conversion to GLB.
+- **`Woman Seated V22.fbx`** is a hand-finished model exported from Blender: a tenth of the triangles of the generated ones, and no skeleton.
+
+Unlike the first folder, these files carry no author and no licence. The licence of each is whatever its Sketchfab page says, and that was not established. They are treated as the owner's private references.
+
+### 6.2 What the app does with them
+
+| File | In the app (`phone-test-7e4f0cb` and later) | Evidence |
+|---|---|---|
+| The five `body-raw*.glb` | "Import GLB" opens them. One colour texture and no transparency, so they stay on the app's own renderer. | The engine's importer accepts all five on the host: 0.2 to 0.8 s, 129 to 480 MB peak, before the texture is decoded. |
+| `model2.glb` | The same. The importer keeps its colour, normal and roughness-metal maps: one of each per model is what the app's own renderer holds. Its three textures decode to 256 MiB, under the 448 MiB budget, so nothing is reduced. | Host import 1.5 s, 513 MB peak. |
+| The two FBX files | **Cannot be opened.** The app reads GLB only. | |
+
+- **JPEG.** All six GLB files carry JPEG textures. The engine decodes PNG itself and hands JPEG and WebP to the Android platform decoder, which a host does not have. Since `50bbe25` an instrumented test, `jpegTextureIsDecodedAndRenderedByAvatarForge`, writes a GLB with a JPEG texture and a foreign generator name, opens it through the app on the CI emulator (Android 11) and requires the texture's colour at the centre of the picture. It passed in runs [43724124384](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43724124384) (`50bbe25`) and [43725536116](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43725536116) (`96152cd`). **REAL + VERIFIED on the emulator**, for a 4 x 4 test image; a 2048 or 4096 JPEG has not been decoded on any device here.
+- **On the host, with the JPEG re-encoded as PNG**, three of the six were rendered once with the engine's lighting: texture placement is correct and the painted lighting carries the picture.
+- **Weight.** The phone ran a generated avatar of 1.1 million triangles at 53.8 frames a second on the one measured build. Three of these files have 1.5 to 2.3 million. They are static, which is cheaper per triangle, but nothing here measured them on the phone.
+- **What they cannot do** in this app or any other as they are: sliders, outfits, poses, animation. A statue gets movement only by being rigged first (an auto-rigging service or Blender); a rigged GLB with clips then opens in the app's glTF viewer, which plays the file's own animations. That gives movement, not customisation.
+
+### 6.3 What they mean for the plan
+
+Nothing changes in [`PHOTOREAL_UPGRADE_PLAN.md`](PHOTOREAL_UPGRADE_PLAN.md). These files are the far end of "looks real in a still": a picture wrapped round a dense shape. An avatar creator needs the opposite construction: a base body with a skeleton and shape controls, separate hair and clothes, and materials that respond to light. The value of these files is as a target for skin tone, proportion and styling, and as test material for the importer and both viewers.
+
+### 6.4 What was changed (`50bbe25`, `96152cd`)
+
+| Change | Why | Evidence |
+|---|---|---|
+| A material with a colour texture and no `baseColorFactor` is drawn at factor 1 (`af_glb_read.cpp`) | The reader kept a fallback grey of 0.8, so the texture was drawn a fifth darker than authored. glTF defines the absent factor as 1 and most exporters leave it out. Every model of the first folder is written that way (both "T-pose" variants, "Heather", and 33 of the 43 materials of "Ink"), and so is `model2.glb`. It showed on the app's own renderer; the glTF viewer always followed the standard | `imported_glb_pbr_test`: fails without the change, passes with it (host, and CI run [43725536116](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43725536116)). `model2.glb` on the host: factor 0.80 before, 1.00 after |
+| JPEG texture test (above) | All six GLB files of this folder depend on it and nothing tested it | CI emulator, two runs |
+| The glTF viewer has a tone curve, anti-aliasing, ambient occlusion and shadows (`FilamentPreviewView.kt`) | "Heather" and "Ink" open there. Filament's post-processing was switched off | Screenshots from the CI emulator with the bundled figure, [README](../README.md#the-owners-3d-reference-models-and-the-imported-model-viewer-2026-11-15). None of the owner's models has been drawn by it anywhere |
+| Emulator screenshots can be read back from CI | Until now the author of these documents had not seen a frame of the app | [AGENTS.md](../AGENTS.md), section 7 |
+
+**Nothing in this section has been run on the phone.**

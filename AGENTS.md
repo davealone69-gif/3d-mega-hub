@@ -2,7 +2,7 @@
 
 Read this first. It says what the repository is, how the parts fit, how to build and test, what has been measured and where, and which mistakes have already been made.
 
-- Checked against the source at commit `2920265` (engine and creator) and `7e4f0cb` (imported-model viewer) on 2026-11-15.
+- Checked against the source at commit `2920265` (engine and creator) and `96152cd` (imported models, glTF viewer, CI screenshots) on 2026-11-15.
 - The plan for reaching photoreal avatars is a separate file: [docs/PHOTOREAL_UPGRADE_PLAN.md](docs/PHOTOREAL_UPGRADE_PLAN.md).
 - The item-by-item inventory with evidence links is [docs/AVATAR_ASSETS_ANIMATION_MASTER.html](docs/AVATAR_ASSETS_ANIMATION_MASTER.html). The current results are in [README.md](README.md).
 
@@ -74,7 +74,7 @@ Line counts are of `2920265`.
 | `app/.../MainActivity.kt` | The hub and its five pages |
 | `app/.../AvatarStudioScreen.kt` | Avatar Studio: stage, rail of sections, Randomize, Save, Create avatar, animation strip, dark and light look |
 | `app/.../AvatarCreatorPanels.kt`, `AppearanceControls.kt` | The sections (Look, Body, Hair, Face, Skin, Outfit, Shoes, Motion), picture cards, colour tiles; `AppearanceSelection` maps each choice to spec values |
-| `app/.../GlbPreviewRouting.kt`, `FilamentPreviewView.kt` | Which preview a file opens in, and the Filament preview (orbit, zoom, one directional light plus ambient; post-processing is off). A generated avatar is never sent to Filament, and neither is a file whose textures exceed the budget |
+| `app/.../GlbPreviewRouting.kt`, `FilamentPreviewView.kt` | Which preview a file opens in, and the Filament preview (orbit, zoom, one shadow-casting directional light plus ambient; 4x MSAA, FXAA, ambient occlusion, PBR Neutral tone curve). A generated avatar is never sent to Filament, and neither is a file whose textures exceed the budget |
 | `app/.../GlbTextureBudget.kt`, `AndroidGlbImageScaler.kt`, `ImportedGlbPreparation.kt` | Import step: reads every embedded image's pixel size from its header and, when the decoded textures exceed 448 MiB, writes a copy of the GLB with those images halved. Everything else is copied byte for byte |
 | `app/src/main/res/drawable-nodpi/preset_*.jpg` | 51 card pictures, each a host render of the engine's own output |
 
@@ -159,6 +159,16 @@ CI, five workflows:
 - Dispatch: `gh workflow run <file> --ref <branch>`. A new run of `android.yml` or `release-preview.yml` on the same branch cancels the one in flight.
 - **Publishing gate:** the commit must have passed all five conditions and be the branch head, or the head may differ from it only in root `*.md`, `docs/**/*.md` and the two publishing files. HTML, pictures and `tools/` count as code for this rule. So: publish the code commit first, then push documents.
 - The emulator draws in software, one frame every several seconds. It proves that the path works and what the picture contains. It says nothing about speed.
+- **Seeing what the emulator drew.** Artifacts are zip files behind a redirect. Two jobs therefore also store a small JPEG copy of their screenshots in the output of a check run on the commit (`.github/scripts/publish_screenshot_check.py`; the jobs have `checks: write` for it):
+
+  ```bash
+  gh api "repos/OWNER/REPO/commits/SHA/check-runs?per_page=100" \
+      --jq '.check_runs[] | select(.name | startswith("Evidence only")) | "\(.id) \(.name)"'
+  gh api repos/OWNER/REPO/check-runs/ID --jq '.output.summary + (.output.text // "")' \
+      | tr -d '\n' | base64 -d > screenshot.jpg
+  ```
+
+  `release-preview.yml` stores the Avatar Studio with the bundled model in the glTF viewer; `android.yml` stores the generated avatar and the last imported GLB as the app's own renderer drew them. They are evidence, not tests: nothing judges the picture.
 - Each CI debug APK is signed with a key made for that one job. Android will not install it over another build: uninstall first.
 
 ## 8. What has been measured, and where
@@ -203,8 +213,10 @@ Process:
 - **Other sessions push to this repository.** Before writing that a branch is "untouched" or "at" a commit, fetch and look.
 - Pushing while CI runs are in flight cancels some of them. A commit cannot contain its own run results: record them in the next documents commit and in the pull request.
 - `gh run view --log` and artifact downloads may be unreachable from a sandbox. The job log can be read through `GET /repos/{owner}/{repo}/actions/jobs/{job}/logs`, which redirects to a short-lived URL.
+- **Look at the app before describing it.** Since `50bbe25` two jobs store small copies of emulator screenshots as check runs on the commit, named "Evidence only: emulator screenshot, ...": the Avatar Studio with the bundled model in the glTF viewer (`release-preview.yml`), and the generated avatar and the last imported GLB as the app's own renderer draws them (`android.yml`). `.github/scripts/publish_screenshot_check.py` has the two `gh api` commands that read one back. They are evidence, not tests.
+- **A check run made through the API shows up as a job of some workflow run of that commit**, and the publishing gate refuses a run with a job that did not end in success. Evidence checks therefore end in "success" and say "Not a test" in their title. `50bbe25` used "neutral" and cannot be published.
 - The host builds neither the GLES renderer nor Kotlin. A Kotlin or GLSL change is unproved until a workflow finishes.
-- Nobody who has written the creator screen has seen it drawn. No test taps a card.
+- The creator screen has been seen only as one emulator screenshot per commit (since `50bbe25`). No test taps a card.
 
 ## 11. Known faults
 
@@ -218,5 +230,8 @@ The list with evidence, cause and fix is in [docs/PHOTOREAL_UPGRADE_PLAN.md](doc
 - The Vulkan backend in the tree is stale.
 - Each CI build needs an uninstall, which also orphans the diagnostics files.
 - The crash the owner reported is not confirmed fixed.
-- The glTF viewer has no tone mapping, anti-aliasing or shadows (Filament post-processing is switched off), no reflections, and an imported model's skeleton is only posed by the file's own clips.
-- The engine's own importer keeps one colour texture per imported model and ignores transparency.
+- The glTF viewer has no reflections of a surrounding (one light and a uniform ambient term), its picture has been seen on the CI emulator with the bundled figure only, and an imported model's skeleton is only posed by the file's own clips.
+- Filament's default tone curve (ACES) makes bright skin tones paler and greyer under the viewer's lights; the viewer uses PBR Neutral. A change to the lights or the curve must be looked at in the screenshot.
+- **A glTF colour factor is linear.** `baseColorFactor` times 255 is not the colour a display shows: convert it with the sRGB curve before comparing it with a pixel. The message of commit `96152cd` compares a linear factor with screenshot pixels and overstates the effect of the tone curve; the numbers in the README are the corrected ones.
+- The engine's own importer keeps one colour texture per imported model and ignores transparency. Until `96152cd` it also drew a texture a fifth too dark when the file left out `baseColorFactor`.
+- The generated avatar, as the production renderer draws it on the emulator, has flat plastic-looking skin and banding on the clothes. Host renders had not shown how far it is from the references.
