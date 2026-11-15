@@ -1360,7 +1360,19 @@ float BodyField::hairShape(const Vec3& p) const {
      */
     const float tilt = 0.30f + 0.20f * (m_.sex == AF_SEX_FEMALE ? 1.0f : 0.0f);
     const Vec3 hp(0.0f, browRidge_.y + headH * 0.05f, browRidge_.z + m_.head.rz * 0.10f);
-    const float front = (p - hp).x * 0.0f + (p - hp).y * std::cos(tilt) - (p - hp).z * std::sin(tilt);
+    /*
+     * A hairline is not a circle or a flat plane. Recede it gently at the temples and
+     * bring a shallow widow's point down at the centre. The normalized lateral coordinate
+     * makes the curve follow different head widths without per-avatar tuning.
+     */
+    const float temple = smoothstepf(0.34f, 0.96f,
+        std::fabs(p.x) / maxf(m_.head.rx, 1e-4f));
+    const float templeRecession = headH * 0.024f * temple;
+    const float widowPeak = headH * 0.014f *
+        maxf(0.0f, 1.0f - std::fabs(p.x) / maxf(m_.head.rx * 0.42f, 1e-4f));
+    const float front = (p - hp).y * std::cos(tilt) -
+                        (p - hp).z * std::sin(tilt) -
+                        templeRecession + widowPeak;
     /* With -Z forward, this plane is positive over the crown and negative at the face.
        Keep the crown side and clip the facial side so the eyes and forehead stay exposed. */
     d = smax(d, -front, 0.004f);
@@ -1374,6 +1386,22 @@ float BodyField::hairShape(const Vec3& p) const {
         const float v = sdEllipsoid(p - c, Vec3(m_.head.rx * 1.02f + volume, headH * 0.52f + volume,
                                                m_.head.rz * 1.02f + volume * 1.2f));
         d = smin(d, smax(v, -front, 0.004f), 0.010f);
+    }
+    /*
+     * Afro/coils: a low-amplitude, bounded three-axis clump field breaks the single-sphere
+     * outline into broad, overlapping coil-scale undulations. The amplitude stays below
+     * 2 mm and the spatial frequency is deliberately coarse enough to survive the mobile
+     * extraction lattice; this is silhouette geometry, not a high-frequency shader trick.
+     * The derivative contribution is bounded so the field remains suitable for extraction.
+     */
+    if (apparel_.hair == 8) {
+        const float fx = p.x * 92.0f + 0.37f;
+        const float fy = p.y * 88.0f - 0.21f;
+        const float fz = p.z * 92.0f + 0.63f;
+        const float coil = std::sin(fx) * std::sin(fy) * std::sin(fz);
+        const float secondary = std::sin(fx * 0.53f + fy * 0.31f) *
+                                std::sin(fz * 0.61f - fy * 0.27f);
+        d += 0.0016f * coil + 0.00045f * secondary;
     }
     /* A crest keeps only a strip along the midline; used by the mohawk. */
     if (crest > 0.0f) d = smax(d, std::fabs(p.x) - crest, 0.008f);
