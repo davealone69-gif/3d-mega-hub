@@ -10,8 +10,8 @@ One Android app that generates, imports and renders 3D avatars on the phone. The
 |---|---|
 | Working branch | [`arena/1a5b3043-3d-mega-hub`](https://github.com/davealone69-gif/3d-mega-hub/tree/arena/1a5b3043-3d-mega-hub) |
 | Review path | [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12) into `integration/avatarforge-renderer-port`, then [PR #9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) into `main` |
-| Evidence commit for this file | `3facc3d051aa31fed31e6087da69b1cb9fb40616`. Every result below comes from workflow runs of this commit |
-| Commits after it | Documents, and the workflow that publishes the phone-test APK as a direct download. No file that is compiled, packaged or tested: `git diff --stat 3facc3d..HEAD` |
+| Current implementation/test head | `797d1567ab8972a4a6930e12f51ee149c5dc877` (`797d156`). PR #12's description records the four workflow runs and exact phone-test APK artifact for this head. The detailed historical measurements below are explicitly from older commit `3facc3d`, not this head |
+| README update | This handover is updated after the owner's 2026-11-15 Samsung test. The README-only update does not change app code or the tested APK |
 | Record for the head commit | In the description of [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). A commit cannot contain the results of its own workflow runs, so the record for the head, with the APK to install, is kept there |
 | `main` | `aaee4443dbf53ef4707cce01d99f71a59e903ec7`, not modified. No force-push anywhere |
 
@@ -31,7 +31,7 @@ Status labels: **REAL + VERIFIED**, **UNVERIFIED**, **PARTIAL**, **MISSING**, **
 | 6 | Actual OpenGL ES rendering | **REAL + VERIFIED** on emulator | PixelCopy of the real surface: 560,418 geometry pixels, 0 GL errors |
 | 7 | Camera controls | **PARTIAL** | Drag orbit is verified by a test. Pinch zoom and double-tap reset are implemented and have no test |
 | 8 | Genuine runtime diagnostics | **REAL + VERIFIED** on emulator | Measured on the render thread; reports name the APK, the device and the asset by SHA-256 |
-| 9 | No unresolved start-up or native crash | **REAL + VERIFIED** on emulator, **UNVERIFIED** on the phone | No crash or ANR in any emulator job of the evidence commit |
+| 9 | Basic Samsung install/launch and general app operation | **REAL + VERIFIED (owner-reported)** | Owner confirmed the new APK was installed and tested on the Samsung SM-S921B on 2026-11-15 and reported general app operation good. Detailed crash/lifecycle stress and diagnostic-log review remain **UNVERIFIED** because the JSON reports have not been supplied |
 | 10 | Android build succeeds | **REAL + VERIFIED** | Unit tests, lint, R8, debug APK, native regression: run [43642402022](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43642402022) |
 | 11 | Signed APK verified | **PARTIAL** | Verified and reproducible with a one-run CI key. Production signing is **BLOCKED** on the owner's keystore |
 | 12 | Signed AAB verified | **PARTIAL** | Same |
