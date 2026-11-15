@@ -368,3 +368,39 @@ Do not mark avatar quality improved without matched before/after GLB and rendere
 - Preserved animation test asset: private Dropbox `/3d-mega-hub-diagnostics/3d-mega-hub/mylove_rig_prepared.glb`, 13,221,520 bytes, SHA-256 `656cf2446eefbffc92cf569ce1a2f52b6d0ad449c282fc5a4d911abfef576d14`. Keep read-only and private. Its binary clip/joint inventory and playback have not been freshly verified in this workspace.
 
 **Evidence boundary:** source declarations prove that presets and clip definitions exist in code. They do not prove that the current APK exposes all options, that generated GLBs contain every native clip, or that animation visibly plays on the target Samsung phone. Those remain separate runtime checks.
+
+## Exact-head Android test APK readiness monitor (2026-11-15)
+
+**Decision for inspected source SHA `7b19ca760ac529f2f157ae1bc516a3d0333029b6`: NOT READY.** PR #9 and the branch ref both pointed to this exact commit when checked. Six Actions runs were associated with this SHA (four completed PR runs and two push-triggered runs cancelled by concurrency).
+
+### Required production generated-GLB → GLES SurfaceView gate
+
+- **Failed:** [diagnostic workflow run 43680996825](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43680996825), job **132711632839** — “Build debug APK and verify generated avatar pixels”.
+- Required step: “Run generated GLB through production GLES SurfaceView”.
+- Instrumentation: `GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView`.
+- The JUnit report records 1 test, 1 failure. Assertion at `GeneratedAvatarRuntimeTest.kt:217`: no drawable EGL-presented model frame within 15 seconds. Captured counters: `frames=2`, `presented=2`, `draws=29`, `triangles=1626176`, `boundsInFrustum=true`, `outsideCorners=0`, `glError=0x0`, `eglError=0x0`.
+- The separate [generated-avatar runtime run 43680996884](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43680996884), job **132711372691**, also failed the same production SurfaceView test with the same visible-frame assertion. Its uploaded test report confirms the failure.
+
+### Other exact-SHA workflow results
+
+- [Android CI run 43680996926](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43680996926): Unit tests, Debug APK build, Android lint, R8/minification and Native C++ sampling regression **PASSED**. Its separate imported-GLB renderer job **132711374921 FAILED**: `AvatarForgeRendererSmokeTest#generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels` hit `OutOfMemoryError` while allocating 134,217,744 bytes, with 25,149,440 bytes free and a 201,326,592-byte process growth limit. This imported-GLB smoke is not a substitute for the required generated-GLB production SurfaceView test.
+- [Release preview run 43680996849](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43680996849): signed preview build and emulator install/launch smoke **PASSED**. Install/launch is not production renderer evidence. The preview uses a one-run ephemeral CI signing key, not a retained production signing identity.
+- Push-triggered runs **43680994601** (Android CI) and **43680994591** (release preview) were cancelled; they provide no passing evidence.
+
+### APK artifact inspection (same source SHA, not a readiness pass)
+
+- [Diagnostic debug APK artifact 14149070299](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43680996825/artifacts/14149070299) was produced by run 43680996825 for `7b19ca760ac529f2f157ae1bc516a3d0333029b6`. Downloaded and inspected the APK itself.
+  - File: `3D-Mega-Hub-generated-avatar-diagnostic-debug.apk`
+  - Package ID: `com.davemega.hub`
+  - APK SHA-256: `79cd893cc68674f50ac5c05b57f54cd493a75c669aa84f807b51cb112747b125`
+  - APK v2 signature and APK content digest both verified.
+  - Signer: `C=US,O=Android,CN=Android Debug`
+  - Signing certificate SHA-256: `bc4676bb9d180d7b5448f0728fd75624f4335585466d11313271cc6b2969aab3`
+  - This is a fresh, debug-signed APK, but its required production render test failed. It is therefore **NOT READY**.
+- [Signed preview artifact 14147893845](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43680996849/artifacts/14147893845) also belongs to this SHA. Its APK package is `com.davemega.hub`, SHA-256 `f6c92cc763c2181709e845340f552bad54bfd6e3ba1457e57e746ebdbdb0ca29`; the signer is `CN=3D Mega Hub CI Preview,O=Ephemeral Build,C=AU`, certificate SHA-256 `a133a285a42a930705a8ed7d13d55a3bb07ecd3f223f0cca71cc684d30968d35`. This one-run key is not a production signing identity and the artifact does not override the failed render gate.
+
+### Next verification rule
+
+Do not distribute or label either artifact as the first READY APK. The production generated-GLB-to-GLES SurfaceView test must pass on one exact current head, all required Android build jobs must pass, and the APK artifact from that same SHA must again be downloaded and inspected. The imported-GLB OOM is a separate failure worth fixing, but it cannot replace the production generated-GLB gate.
+
+This README evidence update creates a new branch commit. Consequently, all run and APK evidence above applies **only** to `7b19ca760ac529f2f157ae1bc516a3d0333029b6`; it must not be carried forward as proof for the new README commit. Fresh Actions runs and a fresh artifact are required for the new exact branch head. No application source was changed, `main` was not modified, and PR #9 was not merged.
