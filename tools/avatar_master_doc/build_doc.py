@@ -132,9 +132,10 @@ what has been proved to work and on what, and what is missing. Every status uses
  <li><b>Why the earlier build crashed.</b> The owner's phone report on the <code>041e31d</code> build was "animation crashes and no built in controls" ({ev("P2")}). The only way that build
   offered to see a generated avatar move was to send it to the Filament preview, whose loader reserves morph storage for every vertex of every target: several hundred megabytes for these
   avatars. That road is closed: the preview is never given such a file ({st("ok")} unit tests, {ev("C3")}). The cause was found by reading the code; no crash log was sent, so it is the likely cause, not a proved one.</li>
- <li><b>Imported GLB animation.</b> A file from elsewhere that carries its own clips opens in the Filament preview, which has playback controls ({st("src")}). They have
-  never been seen working. The prepared avatar has no clips in it, so it cannot test them; a file that can, the Khronos sample
-  <code>CesiumMan.glb</code>, sits in one of the owner's other repositories (<a href="#donors">donor projects</a>). The phone report does not say whether it was tried.</li>
+ <li><b>Imported GLB animation.</b> A file from elsewhere that carries its own clips opens in the Filament preview, which has playback controls ({st("src")}). Since
+  <code>ff9e6ba</code> a test opens a generated rigged figure in it on the CI emulator: the clips are listed by their names and the tapped one plays ({st("ok")}).
+  Pause, loop, speed and the slider have no test, and none of it has been used on a phone. The prepared avatar has no clips in it; a small public file that has,
+  the Khronos sample <code>CesiumMan.glb</code>, sits in one of the owner's other repositories (<a href="#donors">donor projects</a>).</li>
  <li><b>Prepared avatar.</b> Retrieved from Dropbox and inspected byte for byte: 144,073 triangles, one WebP-textured material,
   a 20-joint skin whose own metadata says <i>"approximate_unverified … Rig deformation and retargeting have not been tested"</i>,
   <b>0 animation clips</b>, no morph targets. It displays as a static model. See <a href="#prepared">the compatibility report</a>.</li>
@@ -492,7 +493,7 @@ rows = [
  ['Draw an imported GLB (static)', st('ok', ev('H6')), st('ok', 'imported-GLB render smoke test ' + ev('C3')), st('ok', 'prepared avatar ' + ev('P1'))],
  ['Play an animation on a generated avatar', st('part', 'computed and tested, one frame drawn ' + ev('H5') + ' ' + ev('H4')), (st('ok', 'one held pose through the production view: the picture changed ' + ev('E2')) if ANIM_OK else st('src', 'in source; no passing run')), st('unv', 'the build that can do it has not been run on the phone')],
  ['Play an imported GLB\'s own clips', st('unv'), st('unv'), st('unv')],
- ['Play, pause, stop, seek, loop, speed', '<small>n/a: no screen on the host</small>', (st('part', 'native: starting an animation is tested ' + ev('E2') + '; pause, loop, speed and stop are in source and untested. Filament: controls in source, never run') if ANIM_OK else st('unv')), st('unv')],
+ ['Play, pause, stop, seek, loop, speed', '<small>n/a: no screen on the host</small>', (st('part', 'native: starting an animation is tested ' + ev('E2') + '; pause, loop, speed and stop are in source and untested. Filament: choosing a clip and holding it at a time are tested (GlbClipPreviewTest, since ff9e6ba); pause, loop, speed and the slider are in source and untested') if ANIM_OK else st('unv')), st('unv')],
  ['Facial blendshapes move the face', st('unv'), st('miss'), st('miss')],
  ['Frame rate holds on the SM-S921B with the current generator', '<small>n/a</small>', '<small>n/a</small>', st('unv', '53.8 FPS was measured with the older generator at a similar triangle count ' + ev('P1'))],
 ]
