@@ -84,6 +84,19 @@ public:
     void setClip(int clip, float speed, bool loop) override { backend_->setClip(clip, speed, loop); }
     int currentClip() const override { return backend_->currentClip(); }
     float clipTime() const override { return backend_->clipTime(); }
+    /* Skinned playback is the backend's. This wrapper has to pass every one of these on: the
+       first build of the feature did not, so the app asked the wrapper, got the base class's
+       "not supported", and listed no animations for any avatar. */
+    bool supportsSkinnedPlayback() const override { return backend_->supportsSkinnedPlayback(); }
+    bool setAnimation(int animation, float speed, bool loop) override {
+        return backend_->setAnimation(animation, speed, loop);
+    }
+    void setAnimationPlayback(float speed, bool loop, bool paused) override {
+        backend_->setAnimationPlayback(speed, loop, paused);
+    }
+    void seekAnimation(float seconds) override { backend_->seekAnimation(seconds); }
+    int currentAnimation() const override { return backend_->currentAnimation(); }
+    float animationTime() const override { return backend_->animationTime(); }
     void waitIdle() override { backend_->waitIdle(); }
     RendererInfo info() const override { return backend_->info(); }
 

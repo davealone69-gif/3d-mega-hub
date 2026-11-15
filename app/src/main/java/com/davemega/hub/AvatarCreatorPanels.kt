@@ -331,6 +331,21 @@ fun SwatchRow(
     }
 }
 
+/** A round button drawn over the stage: turn, zoom, reset. */
+@Composable
+fun StageButton(glyph: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(38.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.86f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(glyph, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1B1B2A))
+    }
+}
+
 /** A pill that is filled when chosen: used for sex, build, speed and the animation list. */
 @Composable
 fun CreatorChip(label: String, selected: Boolean, enabled: Boolean = true, onClick: () -> Unit) {

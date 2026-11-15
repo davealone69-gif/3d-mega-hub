@@ -134,6 +134,23 @@ class AvatarForgeSurfaceView(
     private var lastTouchY = 0f
     private var activePointerId = MotionEvent.INVALID_POINTER_ID
 
+    /** Puts the camera back where it started. The same as a double tap on the view. */
+    fun resetView() {
+        synchronized(cameraLock) { pendingCameraReset = true }
+    }
+
+    /** Moves the camera closer ([factor] below 1) or further away (above 1). */
+    fun zoomBy(factor: Float) {
+        if (!factor.isFinite() || factor <= 0f) return
+        synchronized(cameraLock) { pendingZoomScale = (pendingZoomScale * factor).coerceIn(0.25f, 4.0f) }
+    }
+
+    /** Turns the camera round the model by [degrees]. */
+    fun turnBy(degrees: Float) {
+        if (!degrees.isFinite()) return
+        synchronized(cameraLock) { pendingYawDeg += degrees }
+    }
+
     private val scaleDetector = ScaleGestureDetector(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {

@@ -31,7 +31,7 @@ adb pull "$DIAGNOSTICS_DIR/renderer_telemetry.json" avatarforge-render-smoke-evi
 
 # Put the measured renderer evidence in the job log itself so it can be read without the artifact.
 echo "::group::Measured renderer evidence (logcat, tag AvatarForge)"
-grep -E "TELEMETRY |EVIDENCE|SLOW_START|STALL |SHUTDOWN_CUTOFF|PixelCopy attempt|FRAME_PRESENTED|Renderer failed|Avatar LOD" \
+grep -E "TELEMETRY |EVIDENCE|SLOW_START|STALL |SHUTDOWN_CUTOFF|PixelCopy attempt|FRAME_PRESENTED|Renderer failed|Avatar LOD|ANIMATION|GPU skinning" \
   avatarforge-render-smoke-evidence/avatarforge-logcat.txt | sed -E 's/^[0-9-]+ +[0-9:.]+ +[0-9]+ +[0-9]+ +//' | tail -n 60 || true
 echo "::endgroup::"
 bash .github/scripts/identity-check.sh avatarforge-render-smoke-evidence/renderer_telemetry.json || true

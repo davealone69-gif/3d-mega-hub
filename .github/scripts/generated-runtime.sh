@@ -53,7 +53,7 @@ echo "::endgroup::"
 # Put the measured renderer evidence in the job log itself so a result can be read without
 # downloading the artifact.
 echo "::group::Measured renderer evidence (logcat, tag AvatarForge)"
-grep -E "TELEMETRY |EVIDENCE|SLOW_START|STALL |SHUTDOWN_CUTOFF|PixelCopy attempt|FRAME_PRESENTED|Renderer failed|Avatar LOD|GPU upload" \
+grep -E "TELEMETRY |EVIDENCE|SLOW_START|STALL |SHUTDOWN_CUTOFF|PixelCopy attempt|FRAME_PRESENTED|Renderer failed|Avatar LOD|ANIMATION|GPU skinning|GPU upload" \
   "$OUT/avatarforge-logcat.txt" | sed -E 's/^[0-9-]+ +[0-9:.]+ +[0-9]+ +[0-9]+ +//' | tail -n 60 || true
 echo "::endgroup::"
 for name in renderer_diagnostics.json renderer_telemetry.json; do

@@ -279,6 +279,18 @@ fun AvatarStudioScreen(
                             )
                         }
                     }
+                    if (importedFile != null && !useFilamentAnimationPreview) {
+                        // The guide's turn and zoom buttons, over the stage.
+                        Column(
+                            modifier = Modifier.align(Alignment.CenterStart).padding(4.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            StageButton("\u21BB") { avatarView?.turnBy(45f) }
+                            StageButton("+") { avatarView?.zoomBy(0.8f) }
+                            StageButton("\u2212") { avatarView?.zoomBy(1.25f) }
+                            StageButton("\u2302") { avatarView?.resetView() }
+                        }
+                    }
                 }
                 CreatorRail(
                     selected = category,
