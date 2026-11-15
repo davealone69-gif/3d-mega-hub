@@ -2,6 +2,7 @@
 #include "af_prompt.h"
 #include "af_anatomy.h"
 #include "af_body.h"
+#include "af_texture.h"
 
 #include <algorithm>
 #include <cmath>
@@ -27,6 +28,32 @@ std::vector<float> sample(int threads, int blockSize) {
 }
 
 int main() {
+    // Hair tone must be preserved as a material tint, while the atlas contributes only
+    // the root-to-tip multiplier. All-zero tone means the documented natural default.
+    af_spec hairToneSpec{};
+    af_spec_init(&hairToneSpec);
+    const af::Vec3 naturalHair = af::hairBaseColorForSpec(hairToneSpec);
+    const af::Vec3 defaultHair = af::materialForRegion(REGION_HAIR).baseColor;
+    require(std::fabs(naturalHair.x - defaultHair.x) < 1e-6f &&
+            std::fabs(naturalHair.y - defaultHair.y) < 1e-6f &&
+            std::fabs(naturalHair.z - defaultHair.z) < 1e-6f,
+            "zero hair tone did not preserve the natural material colour");
+    hairToneSpec.hair_tone[0] = 0.18f;
+    hairToneSpec.hair_tone[1] = 0.42f;
+    hairToneSpec.hair_tone[2] = 0.73f;
+    const af::Vec3 customHair = af::hairBaseColorForSpec(hairToneSpec);
+    require(std::fabs(customHair.x - 0.18f) < 1e-6f &&
+            std::fabs(customHair.y - 0.42f) < 1e-6f &&
+            std::fabs(customHair.z - 0.73f) < 1e-6f,
+            "custom hair tone was not preserved in the material factor");
+    af::BodyMetrics hairGradientMetrics = af::Anatomy::solve(hairToneSpec);
+    const float rootTint = af::hairRootTipTint(hairGradientMetrics, hairGradientMetrics.y.crownY);
+    const float tipTint = af::hairRootTipTint(
+        hairGradientMetrics, hairGradientMetrics.y.crownY -
+            (hairGradientMetrics.y.crownY - hairGradientMetrics.y.chinY) * 2.6f);
+    require(rootTint < 1.0f && tipTint > 1.0f && tipTint > rootTint,
+            "hair root-to-tip pigment gradient is missing or reversed");
+
     // Explicit numeric measurements must win over descriptive adjectives regardless of order.
     af_spec measured{};
     af_spec_init(&measured);

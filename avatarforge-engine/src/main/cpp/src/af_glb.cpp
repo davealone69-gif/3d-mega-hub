@@ -650,14 +650,17 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
         const std::vector<std::string>& names = materialNames();
         j += "\"materials\":[";
         for (size_t mi = 0; mi < names.size(); ++mi) {
-            const MaterialDef& md = materialForRegion(representativeRegion(static_cast<int>(mi)));
+            const int materialRegion = representativeRegion(static_cast<int>(mi));
+            const MaterialDef& md = materialForRegion(materialRegion);
+            const Vec3 baseColor = materialRegion == REGION_HAIR
+                ? hairBaseColorForSpec(spec) : md.baseColor;
             if (mi) j += ',';
             j += "{\"name\":\"";
             jsonEscape(j, names[mi]);
             j += "\",\"doubleSided\":false,\"pbrMetallicRoughness\":{\"baseColorFactor\":[";
-            jsonNum(j, md.baseColor.x); j += ',';
-            jsonNum(j, md.baseColor.y); j += ',';
-            jsonNum(j, md.baseColor.z);
+            jsonNum(j, baseColor.x); j += ',';
+            jsonNum(j, baseColor.y); j += ',';
+            jsonNum(j, baseColor.z);
             j += ",1],\"metallicFactor\":";
             jsonNum(j, md.metallic);
             j += ",\"roughnessFactor\":";

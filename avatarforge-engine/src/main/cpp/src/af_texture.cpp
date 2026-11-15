@@ -35,6 +35,23 @@ const MaterialDef& materialForRegion(int region) {
     return kMaterials[region];
 }
 
+Vec3 hairBaseColorForSpec(const af_spec& spec) {
+    const float* tone = spec.hair_tone;
+    if (tone[0] > 0.0f || tone[1] > 0.0f || tone[2] > 0.0f) {
+        return Vec3(clampf(tone[0], 0.0f, 1.0f),
+                    clampf(tone[1], 0.0f, 1.0f),
+                    clampf(tone[2], 0.0f, 1.0f));
+    }
+    return materialForRegion(REGION_HAIR).baseColor;
+}
+
+float hairRootTipTint(const BodyMetrics& metrics, float worldY) {
+    const float headHeight = maxf(metrics.y.crownY - metrics.y.chinY, 0.05f);
+    const float rootToTip = saturate((metrics.y.crownY - worldY) /
+                                     maxf(headHeight * 2.6f, 0.05f));
+    return lerpf(0.78f, 1.06f, rootToTip);
+}
+
 uint64_t textureSetBytes(const TextureSet& set) {
     return static_cast<uint64_t>(set.baseColor.size()) + set.normal.size() + set.metallicRoughness.size() +
            set.occlusion.size() + set.subsurface.size();
@@ -481,7 +498,13 @@ void evaluateSurface(const MaterialContext& ctx, const SurfaceSample& s, Surface
         case REGION_CLOTH_LOWER:              evaluateCloth(ctx, s, out, false, mat); break;
         case REGION_SHOE:                     evaluateShoe(ctx, s, out); break;
         case REGION_GEAR:                     evaluateGear(ctx, s, out); break;
-        case REGION_HAIR: case REGION_LASH:   /* shells bake their own maps; the body bake writes a neutral strand colour */
+        case REGION_HAIR:
+            /* Hair colour is the material factor; this map contributes only root-to-tip pigment. */
+            out->albedo = Vec3(hairRootTipTint(*ctx.m, s.position.y));
+            out->roughness = mat.roughness;
+            out->anisotropyHint = 1.0f;
+            break;
+        case REGION_LASH:
             out->albedo = mat.baseColor;
             out->roughness = mat.roughness;
             out->anisotropyHint = 1.0f;
