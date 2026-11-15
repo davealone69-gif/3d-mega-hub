@@ -80,3 +80,21 @@ Before asking the user for a skeleton, rig, source archive or test APK, inspect 
 
 References: [AvatarForge source checkpoint](https://www.dropbox.com/scl/fi/bwbd3qrr432poip5epnpv) · [AvatarForge source README](https://www.dropbox.com/scl/fi/lgkron1i7uco8yhiylr4r) · [AvatarForge repository](https://github.com/davealone69-gif/AvatarForge).
 
+
+
+## Interim architecture and adult-mode handoff (2026-11-15)
+
+### Keep the product together for now
+
+Do not split 3D-Mega-Hub into multiple installable apps or prematurely create a distributed service system while core avatar outputs are still below target quality. Keep one coherent product experience for now, but maintain clean internal boundaries, explicit interfaces, ownership and independent test seams. Revisit extraction only when measured codebase complexity, release cadence, security, scaling or device-resource constraints make a split beneficial. This is a deliberate interim architecture, not permission to tangle every subsystem together.
+
+AvatarForge remains an independently buildable engine/SDK and test lab, and 3DDD remains a donor. Integrate proven capabilities into this product without destroying their source-project identity or standalone verification paths.
+
+### Adult-content capability inventory
+
+- **Separate source project found:** [Grok-Girls](https://github.com/davealone69-gif/Grok-Girls) contains an 18+ toggle, adult-mode settings, age-confirmation flow, adult-specific prompt/options and chat/video routing. Its README states the adult chat path is on-device and documents self-hosted Stable Diffusion/ComfyUI image/video backends. This is a donor candidate, not an already-integrated Hub feature.
+- **AvatarForge engine-side work found:** `config/customization/adult-anatomy.inputs.json`, `requirements/custom-inputs/adult-anatomy.user.json`, and `sdk/src/test/java/com/avatarforge/sdk/AdultSafetyTest.kt` exist on `work/android-engine-dev`. The config explicitly marks detailed anatomy controls `BLOCKED_ENGINE_GEOMETRY`; it is a contract, not implemented geometry. SDK tests cover explicit adult confirmation and rejection of under-18/minor prompt cases.
+- **Current status: PARTIAL.** Adult-mode UX/prompt logic exists in Grok-Girls; AvatarForge has an adult-only gate/requirements contract and safety tests; the complete adult anatomical mesh and verified end-to-end adult generation are not established. Do not claim it is already in 3D-Mega-Hub.
+- Before copying/adopting Grok-Girls code, resolve its repository licence: no top-level LICENSE/COPYING/NOTICE file was found in the inspected repository tree. Until licensing is clarified, treat it as a reference/requirements source, not code approved for reuse.
+- Integration direction: one optional adult-mode capability within the existing product, not a separate app. Disabled by default; explicit 18+ confirmation; reject minors and ambiguous-age prompts; support only fictional adult subjects; require consent/ownership for reference assets; protect adult assets and metadata; enforce each provider's actual policy/capabilities; do not silently fall back to a provider that cannot fulfil the requested mode. Provider support remains UNVERIFIED until real generation is tested.
+- Keep adult UI controls hidden when the engine capability is missing. Implement the real anatomy geometry and rendering path in AvatarForge behind its existing contract, validate it in the engine test lab, then expose it through the Hub's existing avatar workflow. Test on production GLES and the target Samsung device before calling it complete.
