@@ -358,6 +358,35 @@ int main() {
         std::printf("INFO foreign skeleton: %zu names altered, warning: %s\n", renamed, gLastWarning.c_str());
         af_engine_destroy(other);
     }
+    {
+        /* Same file again, keeping only the two most common joint names, "root" and "head". Sharing a
+           couple of names with this rig does not make a skeleton this rig: small rigged test models
+           in the owner's other repositories use exactly those names. Adopting such a file would
+           offer the library's clips in place of the file's own animation. */
+        std::vector<uint8_t> partial(bytes, bytes + size);
+        uint32_t jsonLen = 0;
+        std::memcpy(&jsonLen, partial.data() + 12, 4);
+        const char* key = "\"name\":\"";
+        size_t renamed = 0, kept = 0;
+        for (size_t i = 20; i + 14 < 20 + static_cast<size_t>(jsonLen); ++i) {
+            if (std::memcmp(partial.data() + i, key, 8) != 0) continue;
+            const char* name = reinterpret_cast<const char*>(partial.data() + i + 8);
+            if (std::memcmp(name, "root\"", 5) == 0 || std::memcmp(name, "head\"", 5) == 0) { ++kept; continue; }
+            uint8_t& c = partial[i + 8];
+            if (c >= 'a' && c <= 'z') { c = static_cast<uint8_t>(c - 'a' + 'A'); ++renamed; }
+        }
+        af_engine* other = nullptr;
+        af_engine_create(&blank, &cb, &other);
+        gWarnings = 0;
+        check(kept >= 2 && renamed >= static_cast<size_t>(J) - 2 &&
+              af_engine_import_glb_from_memory(other, partial.data(), partial.size()) == AF_OK,
+              "a file sharing only two joint names still imports");
+        check(af_engine_joint_count(other) == 0 && af_engine_animation_count(other) == 0,
+              "a skeleton that shares only some joint names is not adopted");
+        check(gWarnings > 0, "the partial match is reported as a warning");
+        std::printf("INFO partial skeleton: %zu names kept, %zu altered, warning: %s\n", kept, renamed, gLastWarning.c_str());
+        af_engine_destroy(other);
+    }
 
     af_arena_free(bytes);
     af_engine_destroy(imp);

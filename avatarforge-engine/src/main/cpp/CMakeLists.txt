@@ -158,6 +158,14 @@ if(BUILD_TESTING AND NOT ANDROID)
     target_link_libraries(af_animation_roundtrip_test PRIVATE afcore)
     add_test(NAME animation_roundtrip COMMAND af_animation_roundtrip_test)
 
+    # One prompt per hair, outfit and footwear preset must resolve to that preset.
+    add_executable(af_prompt_preset_words_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/prompt_preset_words_test.cpp)
+    target_include_directories(af_prompt_preset_words_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_prompt_preset_words_test PRIVATE afcore)
+    add_test(NAME prompt_preset_words COMMAND af_prompt_preset_words_test)
+
     # Evidence probe: generates an avatar through the same sequence as the Android JNI layer and
     # measures orientation, mirror symmetry and the export/import round trip. It takes about a
     # minute, so it is built with the host tests but deliberately not registered with CTest.

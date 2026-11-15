@@ -1649,16 +1649,28 @@ bool adoptImportedRig(af_engine* e, const GlbAsset& asset) {
     Rig rig;
     if (!rig.restore(std::move(joints), skin.inverseBindMatrices, std::move(weights))) return false;
 
-    /* Is it this engine's rig? The clip library is bound by joint name; no bound track, no rig. */
-    int bound = 0;
+    /* Is it this engine's rig? The clip library is bound by joint name, and EVERY joint the
+       library moves has to be present. One shared name is not enough: a foreign skeleton that
+       happens to call two of its joints "root" and "head" would otherwise be adopted, and the
+       library's clip of the same name would be offered in place of the file's own motion, posing
+       a skeleton it was never authored for. */
+    int bound = 0, wanted = 0;
     for (const Clip& clip : builtinClips()) {
         for (const Track& tr : clip.tracks) {
+            ++wanted;
             if (rig.jointIndex(tr.jointName.c_str()) >= 0) ++bound;
         }
     }
     if (bound == 0) {
         e->log(AF_LOG_WARN, "import: the file's skeleton is not an AvatarForge rig (no joint of the clip "
                             "library is present); the model is shown static");
+        return false;
+    }
+    if (bound != wanted) {
+        char why[200];
+        std::snprintf(why, sizeof(why), "import: the file's skeleton shares only some joint names with the "
+                      "AvatarForge rig (%d of %d clip tracks would bind); the model is shown static", bound, wanted);
+        e->log(AF_LOG_WARN, why);
         return false;
     }
 
