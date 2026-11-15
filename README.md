@@ -128,6 +128,8 @@ See [PROJECT_STATUS.md](PROJECT_STATUS.md) for the detailed branch-by-branch aud
 
 - **AvatarForge generation:** isolated `:avatarforge-engine` Android library, JNI bridge and C++ generation kernel. Avatar Studio exposes prompt generation, cancellation, resource/thermal checks, native-result validation and atomic publication of validated GLBs.
 - **3D viewer:** the bundled sample uses the separate Filament preview. Imported and generated self-contained GLBs use `AvatarForgeSurfaceView` and the integrated native AvatarForge renderer.
+- **Animated GLB preview (code added; verification pending):** imported file assets can opt into the existing Filament gltfio preview without replacing the default AvatarForge GLES path. The existing Filament `Animator` now exposes clip selection, play/pause, looping, playback speed and timeline seeking; the first clip starts automatically. This is reuse of the existing Filament animation runtime, not a new animation engine.
+- **Native AvatarForge animation limitation:** the native GLB importer still parses but discards imported skin/joint/animation data when it resets its generated rig and clip caches. Therefore the new preview is a separate working-path candidate; it does not mean the native AvatarForge GLES importer now skins or animates imported GLBs. Exact-device and clip playback verification are still pending.
 - **Graphics backend:** the imported/generated avatar path explicitly forces native GLES. Skinned GLBs apply the initial rest pose and refresh bounds before camera framing. Vulkan is not selected for this phone-first route.
 - **Debug verification:** debuggable builds run visible-pixel verification for both imported GLBs and the deterministic seed-1337 generated-avatar diagnostic. The native GLES path waits for successful EGL swaps, captures the actual SurfaceView with PixelCopy, estimates the background from the four corners, counts foreground geometry pixels, applies the 5,000-pixel minimum and saves a PNG plus machine-readable JSON. Imported captures use `imported_glb_diagnostic.png`; generated captures use `generated_avatar_diagnostic.png`; failures use `failed_render.png`. Release/non-debug builds do not automatically capture every import. A scoped AndroidX FileProvider exposes only app-private external-files captures for sharing.
 - **Avatar imports:** selected GLBs are copied into app-private storage, size-limited and structurally validated before use. External-resource `.gltf` files are rejected.
@@ -264,6 +266,14 @@ The owner has already supplied `mylove.glb` as the reference model for improving
 - **Transfer limitation:** the available Dropbox text-fetch action has a 5 MiB maximum and cannot read this 9.29 MB binary. Dropbox's download-link action exposes a temporary URL but does not return file bytes to the analysis workspace; the direct transfer attempt was rejected by the runtime URL-access gate. The linked-chat attachment itself was not surfaced as a readable file in the current conversation/library search.
 - **Next measurement required:** obtain horizontal cross-section extents (X width and Z depth at normalized Y heights), preferably for 10 equal Y slices, plus decoded image channel statistics and material-to-texture slot mapping. Compare those profiles against a generated avatar captured with the same coordinate convention. The current repository probe reports five descriptive slices and named landmarks only when node names exist; it does not identify anatomy from unnamed vertices.
 - **Use rule:** derive a versioned reference profile and regression targets from measured data. Do not blindly replace the procedural generator with the reference mesh, and do not commit or redistribute the private reference asset without explicit approval.
+
+### Rigged animation reference asset
+
+- **Preserved Dropbox file:** `/3d-mega-hub-diagnostics/3d-mega-hub/mylove_rig_prepared.glb`
+- **Size:** 13,221,520 bytes
+- **SHA-256:** `656cf2446eefbffc92cf569ce1a2f52b6d0ad449c282fc5a4d911abfef576d14`
+- **Status:** **REAL + VERIFIED** Dropbox upload completed and file ID returned. Binary contents have not yet been freshly inspected in this workspace; skeleton/clip counts and playback compatibility remain **UNVERIFIED**.
+- Keep this file read-only as the rigged animation test reference. Do not replace it with the older static `mylove.glb`.
 
 ### Stage 1: establish and improve avatar quality
 
