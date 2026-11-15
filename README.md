@@ -11,7 +11,7 @@ One Android app that generates, imports and renders 3D avatars on the phone. The
 | Working branch | [`arena/1a5b3043-3d-mega-hub`](https://github.com/davealone69-gif/3d-mega-hub/tree/arena/1a5b3043-3d-mega-hub) |
 | Review path | [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12) into `integration/avatarforge-renderer-port`, then [PR #9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) into `main` |
 | Evidence commit for this file | `3facc3d051aa31fed31e6087da69b1cb9fb40616`. Every result below comes from workflow runs of this commit |
-| Commits after it | Documents only: `git diff --stat 3facc3d..HEAD` |
+| Commits after it | Documents, and the workflow that publishes the phone-test APK as a direct download. No file that is compiled, packaged or tested: `git diff --stat 3facc3d..HEAD` |
 | Record for the head commit | In the description of [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). A commit cannot contain the results of its own workflow runs, so the record for the head, with the APK to install, is kept there |
 | `main` | `aaee4443dbf53ef4707cce01d99f71a59e903ec7`, not modified. No force-push anywhere |
 
@@ -44,7 +44,7 @@ Status labels: **REAL + VERIFIED**, **UNVERIFIED**, **PARTIAL**, **MISSING**, **
 
 For the owner, on the Samsung SM-S921B:
 
-1. Open [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). Its description names the debug APK for the head commit, with the download link and the SHA-256.
+1. Open [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). Its description names the debug APK to install, its source commit and its SHA-256, with a direct download link: no GitHub sign-in, and the file is the `.apk` itself.
 2. Uninstall any earlier build of the app, then install that APK. Each CI debug build has its own throwaway signing key, so Android will not install it over an earlier one.
 3. Follow the ten steps of the phone gate in [BUILD_AND_VERIFY.md](BUILD_AND_VERIFY.md#phone-gate-samsung-sm-s921b). Step 4 compares the SHA-256 the app shows for itself with the published one.
 4. Send back `renderer_telemetry.json` and `renderer_diagnostics.json` from `Downloads/3D Mega Hub Diagnostics`.
@@ -61,7 +61,7 @@ For production signing: add the keystore and its three passwords as protected re
 - **Camera.** Drag to orbit, pinch to zoom, double-tap to reset.
 - **Diagnostics.** Frame rate and frame-time percentiles, draw calls, triangles, import and first-frame times, requested GPU bytes, heap, GL and EGL error counts, native session counts. Saved to `Downloads/3D Mega Hub Diagnostics` with the SHA-256 of the installed APK, the device model and the SHA-256 of the asset.
 - **Crash containment.** A C++ exception in the renderer becomes a reported renderer failure instead of an app abort.
-- **Release engineering.** The signed APK and AAB are read back and checked against the Gradle configuration; two clean builds must be byte-identical. The debug APK for the phone is inspected, downloaded again on a second machine and tied to the test that ran it.
+- **Release engineering.** The signed APK and AAB are read back and checked against the Gradle configuration; two clean builds must be byte-identical. The debug APK for the phone is inspected, downloaded again on a second machine and tied to the test that ran it. It is published as a direct download only when the readiness gate holds for its commit.
 
 Not implemented: animation, posing and facial animation of the avatar on screen (it is shown as a static mesh), lip-sync, an embedded language model, photo-based identity. See [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
@@ -80,11 +80,11 @@ Earlier commits on this branch passed the same four workflows: `6b05ee4` (runs 4
 
 ## Artifacts
 
-GitHub keeps these artifacts for 14 days. Downloading needs a signed-in GitHub account.
+GitHub keeps these artifacts for 14 days. Downloading an artifact needs a signed-in GitHub account and delivers a zip. The debug APK for the phone does not depend on that: it is also published as a plain `.apk` on a pre-release, linked from PR #12.
 
 ### Debug APK of the evidence commit
 
-The APK to install on the phone is the one named in PR #12 for the head commit. This is the same record for the evidence commit; the app source is identical, the signing key and therefore the SHA-256 are not.
+The APK to install on the phone is the one named in PR #12. This is the same record for the evidence commit; the app source is identical, the signing key and therefore the SHA-256 are not.
 
 | Field | Value |
 |---|---|
@@ -150,7 +150,7 @@ Read from the job logs of the evidence commit. The emulator draws with a softwar
 3. **Invalid exported glTF.** 542 Khronos validator errors from missing or malformed accessor bounds; 0 after the fix.
 4. **Diagnostics that were not measurements.** Frame time, CPU time and texture bytes were derived or never written. All are measured or counted now.
 
-The full list of fourteen, with the release-engineering causes, is in [PROJECT_STATUS.md](PROJECT_STATUS.md).
+The full list of fifteen, with the release-engineering causes, is in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
 ## Open items
 
@@ -186,4 +186,4 @@ The full list of fourteen, with the release-engineering causes, is in [PROJECT_S
 
 ## Older debug build
 
-[Previously published debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk). An older troubleshooting build. It is not the current candidate and not a release.
+[Previously published debug APK](https://github.com/davealone69-gif/3d-mega-hub/releases/download/android-build-46/3D-Mega-Hub-debug.apk). An older troubleshooting build. It is not the current candidate and not a release. GitHub still labels it "Latest" on the releases page; the current phone-test build is the pre-release linked from PR #12.

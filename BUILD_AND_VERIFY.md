@@ -71,6 +71,7 @@ A gate proves only what it ran on. An emulator pass is not a phone pass.
 | Native exception barrier | `avatarforge-generated-runtime.yml` | Real C++ exceptions thrown inside the JNI barrier arrive as Java exceptions with the right text, and native code keeps running afterwards |
 | Debug APK inspection | `avatarforge-diagnostic-apk.yml` | The debug APK that is published for the phone test is read back before the emulator tests run: application ID, version, SDK levels, debuggable flag, ABIs, library set, library dependencies, signature and signing certificate. A mismatch fails the job. The log prints `APK_INSPECTION`, and `APK_CHAIN` shows that the inspected file and the uploaded file are the same |
 | Downloaded-APK verification | `avatarforge-diagnostic-apk.yml` | A separate job downloads the published artifact on another machine, inspects the APK again, and checks that it is the file that was built, inspected and run by the production render test of the same commit and workflow run. Any broken link fails the job |
+| Phone-test APK publication | `publish-phone-test-apk.yml`, started by hand for one commit | It builds nothing. It checks again that the latest finished run of each of the four workflows succeeded for that commit, that the diagnostic run and Android CI built the commit itself with no job skipped, and that the diagnostic run recorded `chain_complete=true` for this commit and this run. It then takes the APK from that run's artifact, compares its SHA-256 with the record, attaches it to a pre-release, downloads it again from there without credentials and compares once more. A failed check publishes nothing; a release whose download differs is deleted. The rules are exercised by a self-test in the same run |
 | Report identity | every emulator job that renders | The job log prints the identity block from the saved report and compares the APK SHA-256 the app reports for itself with the APK file that was installed. Printed as evidence, not enforced |
 | Signed release preview | `release-preview.yml` | Package name, versions, SDK levels, ABI set, required libraries and both signatures are read back from the APK and AAB and compared with the Gradle configuration. A second clean build, made without the Gradle build cache, must be byte-identical for both files; when it is not, the gate fails and names the part of the file that differs |
 | Emulator launch, debug and signed release | `release-preview.yml` | Install, launch, Filament sample loads and presents a frame, no crash or ANR. The signed, minified release APK is the same file whose hash was verified |
@@ -133,6 +134,10 @@ Two limits follow from how Git and GitHub work, and they are stated wherever a r
 
 Each CI job builds its own debug APK and signs it with a debug key created on that runner, so debug APKs from different jobs have different SHA-256 values even for the same commit. Only the one artifact named in the readiness record matches the SHA-256 published there.
 
+**How the APK reaches the phone.** The gate asks for a direct download link. A workflow artifact is not one: it downloads only for a signed-in GitHub account and arrives as a zip. `publish-phone-test-apk.yml` therefore attaches the verified file to a pre-release named `phone-test-<first seven characters of the commit>`, as `3D-Mega-Hub-debug-<commit>.apk`. The pre-release is public, like the repository and its earlier debug builds. The readiness record gives that link.
+
+The workflow publishes the APK of a commit only while that commit is the head of the branch, or while the head differs from it in documents and in the publishing files alone. Adding the publishing step is itself a commit, and under the evidence rules above a commit that changes no source, build configuration, native library or packaged asset is no reason to rebuild. Any other difference makes the workflow refuse: the four workflows then have to run on the head, and that commit is published instead.
+
 ## Local commands
 
 ```bash
@@ -166,9 +171,9 @@ A release build without all four signing values stops with a `BLOCKED` message. 
 
 ## Phone gate: Samsung SM-S921B
 
-Only the owner can run this. Use the debug APK named in the readiness record at the top of the open pull request: it is the file that passed the emulator gates for the head commit, and its SHA-256, application ID and signing certificate are recorded there. The debug build is the one that carries the on-screen diagnostics and the visible-pixel check.
+Only the owner can run this. Use the debug APK named in the readiness record at the top of the open pull request: it is the file that passed the emulator gates, and its source commit, SHA-256, application ID and signing certificate are recorded there. The record links to it as a direct download: the file is the `.apk` itself and no GitHub sign-in is needed. The debug build is the one that carries the on-screen diagnostics and the visible-pixel check.
 
-1. Install the APK. Each CI debug APK is signed with its own throwaway key, so Android refuses to install it over an earlier build: uninstall the earlier build first.
+1. Uninstall any earlier build, then download the APK and open it to install. Each CI debug APK is signed with its own throwaway key, so Android refuses to install it over an earlier build. If the phone blocks the installation, allow the browser to install unknown apps, and switch off Auto Blocker under Settings, Security and privacy.
 2. Open **Avatar**. The bundled sample should appear in the viewport.
 3. Tap **Import GLB**, choose a GLB, and wait for the viewport to show it.
 4. Check the line **Installed APK SHA-256** under the measured numbers against the SHA-256 published for the APK you downloaded. If they differ, stop: a different build is installed.

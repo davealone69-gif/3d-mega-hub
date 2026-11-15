@@ -48,6 +48,7 @@ Last updated: 2026-11-14. The README carries the current results; this file hold
 12. **Signing password in the job log.** The one-run preview keystore password was written to the job environment unmasked and printed by later steps. It is now masked. The key was discarded with the runner and never uploaded.
 13. **Phone-test APK not inspected.** Only the SHA-256 of the debug APK was recorded; the owner's readiness rule also asks for its application ID and signing certificate. The diagnostic workflow now reads the file back before the emulator tests and fails on a mismatch.
 14. **Unbalanced EGL display reference.** If `eglInitialize` failed, teardown still called `eglTerminate`. Android counts these calls per process, so the extra call would have released a reference held by the UI toolkit or Filament. Found in review; no failure was observed. The handle is now cleared on that path.
+15. **Phone-test APK link was not a direct download.** The readiness record linked to a workflow artifact. Such a link downloads only for a signed-in GitHub account and delivers a zip, and the owner reported that the APK did not download. The owner's gate asks for a direct link, and this repository once published passing debug builds as release files (`78be2f5`); that job was lost in `2a1352c` and was not restored. `publish-phone-test-apk.yml` now attaches the verified APK to a pre-release, only when the readiness gate holds for its commit, and downloads it back without credentials to compare. What exactly failed on the owner's device was not observed.
 
 ## Branch review
 
