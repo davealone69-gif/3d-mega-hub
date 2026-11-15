@@ -12,8 +12,8 @@ One Android app that generates, imports and renders 3D avatars on the phone. The
 |---|---|
 | Working branch | [`arena/1a5b3043-3d-mega-hub`](https://github.com/davealone69-gif/3d-mega-hub/tree/arena/1a5b3043-3d-mega-hub) |
 | Review path | [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12) into `integration/avatarforge-renderer-port`, then [PR #9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) into `main` |
-| Current code head | `041e31d14b57157d77cd33b2e6e6a7988f5ae49b` (`041e31d`). All five workflows passed on it and its phone-test APK is published; see [Verification results](#verification-results). The commit after it adds only the master document, three evidence images and this README. Measurements further down that name `3facc3d` or `797d156` are from those older commits |
-| README update | This handover is updated after the owner's 2026-11-15 Samsung test. The README-only update does not change app code or the tested APK |
+| Current code head | `a5e93a8d9762c836c8b6a5c23ada53afa23a9ea2` (`a5e93a8`). All five workflows passed on it and its phone-test APK is published; see [Verification results](#verification-results). The commit after it adds only documents: the master document, its generator and evidence record, and this README. Measurements further down that name `3facc3d`, `797d156` or `041e31d` are from those older commits |
+| README update | Updated after the owner's two phone tests of 2026-11-15: the measured one (`797d156`) and the report on `041e31d` ("animation crashes and no built in controls"). The documents-only commit does not change app code or the tested APK |
 | Record for the head commit | In the description of [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). A commit cannot contain the results of its own workflow runs, so the record for the head, with the APK to install, is kept there |
 | `main` | `aaee4443dbf53ef4707cce01d99f71a59e903ec7`, not modified. No force-push anywhere |
 
@@ -27,10 +27,22 @@ Status labels: **REAL + VERIFIED**, **IMPLEMENTED IN SOURCE** (written, built an
 
 | Item | Value |
 |---|---|
-| Code the document describes | `041e31d14b57157d77cd33b2e6e6a7988f5ae49b` on `arena/1a5b3043-3d-mega-hub`. Source links in the document are permanent links to that commit |
+| Code the document describes | `a5e93a8d9762c836c8b6a5c23ada53afa23a9ea2` on `arena/1a5b3043-3d-mega-hub`. Source links in the document are permanent links to that commit |
 | Commit that adds the document and this section | The one after it. A commit cannot name itself; [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12) shows the head and its checks |
 | Integration branch contained | `integration/avatarforge-renderer-port` up to `5ba0e00` (merged, no conflict). PR #9 is not merged. `main` is untouched |
 | Labels used | REAL + VERIFIED, IMPLEMENTED IN SOURCE, PARTIAL, UNVERIFIED, MISSING, BLOCKED |
+
+### What changed after the phone report (2026-11-15)
+
+The owner tested the `041e31d` build and reported: **"Major fault is animation crashes and no built in controls."** No diagnostics file or crash log came with it. Three commits answer it: `9519eae` (presets), `210ae9a` and `a5e93a8` (animation, creator).
+
+- **The crash, likely cause found by reading the code, not confirmed by a log.** The only way that build offered to see a generated avatar move was the button "Open animation-capable Filament preview". Filament's loader reserves morph storage for every vertex of every target: several hundred megabytes for these avatars. That preview is now never given such a file: the button is not offered and the preview refuses the file itself (`GlbPreviewRouting.animationPreviewRefusal`, unit-tested). If the crash was something else, it is not fixed.
+- **Built-in animation.** **REAL + VERIFIED on the CI emulator** for one thing: the production view listed 15 animations, played `t_pose`, presented 3 frames without a GL error and 81,915 pixels of the picture changed (run [43697157414](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43697157414)). **UNVERIFIED on a phone.** The GLES renderer skins on the GPU: the two vertex shaders blend each vertex by a uniform block of one skin matrix per joint, filled by `af_engine_evaluate_animation`. Playing uploads 8 KB a frame instead of the whole vertex buffer. Controls: a strip of the avatar's animations under the stage; a Motion section with play / pause, stop, loop and speed.
+- **The creator: IMPLEMENTED IN SOURCE.** Avatar Studio is laid out after the owner's "Create Your Avatar" guide images: the avatar on a stage with turn, zoom and reset buttons, a rail of sections (Hair, Body, Skin, Outfit, Shoes, Motion), a picture of every preset, colour dots, sliders, and Randomize, Save and Create avatar. The guide's Face, Eyes, Accessories and Background sections are not there: the engine has no options for them. CI compiles, lints and unit-tests it and the emulator smoke test opens the screen. Nobody has used it on a phone.
+- **Presets: REAL + VERIFIED on the host.** All 22 hair, outfit and footwear presets now look like what they are named in renders at the app's quality; 14 were rebuilt in `9519eae`. Sheets: [hair](docs/evidence/preset_matrix_hair_2026-11-15.jpg), [outfits](docs/evidence/preset_matrix_outfits_2026-11-15.jpg), [footwear](docs/evidence/preset_matrix_footwear_2026-11-15.jpg).
+- **Save: IMPLEMENTED IN SOURCE.** Save hands the avatar's GLB to the Android share sheet. Never pressed on a device.
+- **The APK with all of this:** [3D-Mega-Hub-debug-a5e93a8.apk](https://github.com/davealone69-gif/3d-mega-hub/releases/download/phone-test-a5e93a8/3D-Mega-Hub-debug-a5e93a8.apk), 57,782,572 B, SHA-256 `6c07603d08232b8c55a282aa6911d8a58429cc6c9642ddc3bcff0182699fb08f`, pre-release [`phone-test-a5e93a8`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/phone-test-a5e93a8), published by run [43698174756](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43698174756). Uninstall the earlier build first: each CI debug build has its own signing key.
+- **The owner's Dropbox folder `/avatar`** (intro art, an icon, body and style references) was looked at as the quality target. Nothing from it is in the repository or the APK: who made each picture and under what licence is not known.
 
 ### Exact source locations
 
@@ -48,17 +60,22 @@ Status labels: **REAL + VERIFIED**, **IMPLEMENTED IN SOURCE** (written, built an
 | Preset pickers and the Avatar Studio screen | `app/src/main/java/com/davemega/hub/AppearanceControls.kt`, `AvatarStudioScreen.kt` |
 | Which preview a file opens in | `app/src/main/java/com/davemega/hub/GlbPreviewRouting.kt` |
 | Filament preview with animation controls | `app/src/main/java/com/davemega/hub/FilamentPreviewView.kt` |
+| Parts painted inside a garment; armour and suit hardware; heels | `avatarforge-engine/src/main/cpp/src/af_field.cpp`: `BodyField::apparelPart`, `gearField`, `footLocal`; paint in `af_texture.cpp` |
+| GPU-skinned playback | `avatarforge-engine/src/main/cpp/src/render/af_gl.cpp`: `GlRenderer::updateSkinnedAnimation`; `af_shaders_gl.h`: `forward.vert`, `shadow.vert` (edited by hand in a generated header, as the header says); wrapper in `af_render.cpp` |
+| Animation from Kotlin | `avatarforge-engine/src/main/cpp/avatarforge_renderer_jni.cpp`; `AvatarForgeSurfaceView.kt`: `animationClips`, `playAnimation` |
+| The creator | `app/src/main/java/com/davemega/hub/AvatarStudioScreen.kt`, `AvatarCreatorPanels.kt`; pictures in `app/src/main/res/drawable-nodpi/preset_*.jpg` |
+| Which preview a file may open in | `app/src/main/java/com/davemega/hub/GlbPreviewRouting.kt` |
 | Host tools and tests | `avatarforge-engine/src/test/cpp/`: `host_avatar_render.cpp`, `animation_roundtrip_test.cpp`, `prompt_preset_words_test.cpp` |
 | The only model file | `app/src/main/assets/models/female.glb` |
 
 ### Asset findings
 
-- **There is no asset library, here or in any other repository of the account.** The complete Git history of this repository (472 commits, 18 branches) has only ever contained one model file, `female.glb`. 96 other repositories were searched: 18 GLB files in five of them, no hair, clothing, skin or texture library, no FBX or BVH.
-- **Every hair style, outfit and shoe is a procedural preset**: a branch of a shape function in the engine, not a file. 9 hair styles, 9 outfits, 4 kinds of footwear. A garment is the body's surface moved outwards, so it cannot be taken off one avatar and put on another model.
-- **Connected to the app: IMPLEMENTED IN SOURCE.** Pickers for body, build, hair style and colour, clothing and colour, footwear, skin tone and height were added in `f90f326`. CI compiles, lints and unit-tests them. Nobody has tapped them on a device.
+- **There is no asset library, here or in any other repository of the account.** The complete Git history of this repository (475 commits on 17 branches and 4 tags when counted at `474b2fe`) has only ever contained one model file, `female.glb`. 96 other repositories were searched: 18 GLB files in five of them, no hair, clothing, skin or texture library, no FBX or BVH.
+- **Every hair style, outfit and shoe is a procedural preset**: a branch of a shape function in the engine, not a file. 9 hair styles, 9 outfits, 4 kinds of footwear. A garment is the body's surface moved outwards, so it cannot be taken off one avatar and put on another model. Details inside a garment (shirt and tie, stitching, buttons, soles, laces, plate joints) are painted by the texture bake, not modelled.
+- **Connected to the app: IMPLEMENTED IN SOURCE.** Text pickers in `f90f326`; since `210ae9a` the creator described above, with a picture per preset. CI compiles, lints and unit-tests it. Nobody has tapped it on a device.
 - **Reachable from the prompt box: REAL + VERIFIED on the host.** One prompt per preset, 24 of 24 resolve to the right preset (`prompt_preset_words`).
-- **Generated and drawn: REAL + VERIFIED on the host for all 22 presets, and PARTIAL for how they look.** Each was generated at the app's quality and drawn. 8 look like what they are named: Short, Medium, Long, Ponytail, Bun, Mohawk, T-shirt, Athletic. 14 do not yet: Buzz, Braids, Afro; Suit and Jeans jacket (the same long-sleeved top); Coat; both armours and the Spacesuit (pale shapes on a shirt); Dress (recognisable, with faults); Sneaker, Boot and Sabaton (nearly one shape); Heel (flat). Sheets: `docs/evidence/preset_matrix_{hair,outfits,footwear}_2026-11-15.jpg`.
-- **Not connected at all (MISSING):** explicit skin colour, armour colour and metalness, cloth roughness, age, muscle, body fat, bust, the 13 tape measurements, seed, any face shape control, any blendshape control. No face variety: one face per sex.
+- **Generated and drawn, and looking as named: REAL + VERIFIED on the host for all 22 presets.** Each was generated at the app's quality with the generator of `9519eae`, drawn and looked at. Known limits: lapels, seams, studs and laces are paint; the spacesuit has no helmet; the plates of the plate armour are rounded and thick; in heels the leg is shortened by the 2.7 % of stature the ankle is raised, so the stature asked for is kept; no animation has been looked at on the new garments. That judgement is one person looking at renders, not a measurement.
+- **Not connected at all (MISSING):** explicit skin colour, armour colour and metalness, cloth roughness, age, muscle, body fat, bust, the 13 tape measurements, seed, any face shape control, eye colour, accessories, the stage background, any blendshape control. No face variety: one face per sex.
 - **`female.glb`:** a static sample with 7 body morph targets, from `davealone69-gif/3DDD`, CC0 by that repository's README. Commit `98dd9ec` rewrote its JSON header for Filament: 418,556 B at the source, 418,312 B here, mesh and morph data identical. `THIRD_PARTY_NOTICES.md` still called it unchanged; corrected in the commit that adds this section.
 - **Donor files that matter:** `CesiumMan.glb` (Khronos sample, CC BY 4.0, 19 joints, a 2 s walk), `test-rig.glb` and `studio_avatar.glb` (the owner's small rigged fixtures with one clip each), and `avatarforge-sample.glb` (a complete AvatarForge 0.9.0 avatar, 71 joints, 15 clips). None is in this repository. Details, hashes and links are in the document.
 
@@ -66,13 +83,13 @@ Status labels: **REAL + VERIFIED**, **IMPLEMENTED IN SOURCE** (written, built an
 
 | Question | Answer |
 |---|---|
-| Implemented in source | **REAL + VERIFIED**: 71 joints, 4 weights per vertex, 52 facial blendshapes and 15 clips, all written into every exported GLB. **IMPLEMENTED IN SOURCE**: a clip player inside the native renderer (`af_renderer_set_clip`: select, loop, speed) and playback controls on the Filament preview. **MISSING**: GPU skinning, seek and pause on the native path, blending, retargeting, blendshape animation, any controller |
-| Connected to UI | **MISSING** for generated avatars: no JNI function and no button reaches the renderer's clip player. **IMPLEMENTED IN SOURCE** for imported files with their own clips (Filament controls) |
-| Working in automated tests | **REAL + VERIFIED** on the host: export, import with skeleton and clips intact, playback of every clip compared with the generating engine to 0.2 mm (`animation_roundtrip`). No test plays anything on a screen |
-| Verified at runtime | **PARTIAL**: on the CI emulator the production renderer imports a generated avatar and reports 71 joints (it reported 0 on the phone with the earlier build). One still frame of the walk clip was drawn on the host. **Nothing has been seen moving** |
-| Verified on the Samsung phone | **MISSING**. The phone has only run the build from `797d156` |
+| Implemented in source | **REAL + VERIFIED**: 71 joints, 4 weights per vertex, 52 facial blendshapes and 15 clips, all written into every exported GLB. **IMPLEMENTED IN SOURCE**: GPU-skinned playback in the GLES renderer with select, play, pause, stop, loop, speed and seek; playback controls on the Filament preview for files from elsewhere. Still in source and unconnected on purpose: the CPU clip player `af_renderer_set_clip`, which re-uploads every vertex each frame. **MISSING**: blending between clips, retargeting, blendshape animation, any controller |
+| Connected to UI | **IMPLEMENTED IN SOURCE** for avatars made in the app: an animation strip under the stage and a Motion section (no seek slider). **IMPLEMENTED IN SOURCE** for imported files with their own clips (Filament controls) |
+| Working in automated tests | **REAL + VERIFIED** on the host: export, import with skeleton and clips intact, playback of every clip compared with the generating engine to 0.2 mm (`animation_roundtrip`). **REAL + VERIFIED** on the CI emulator: the production view plays a held pose and the picture changes (`GeneratedAvatarRuntimeTest`). Pause, loop, speed and stop have no test |
+| Verified at runtime | **PARTIAL**: on the CI emulator the production renderer imported a generated avatar, listed 15 animations, played `t_pose` and showed a different picture (81,915 pixels changed, no GL error). That is a software GPU at one frame every several seconds: it proves the path, not smooth motion. **No animation has been watched playing on a phone** |
+| Verified on the Samsung phone | **MISSING**. The phone has run `797d156` and `041e31d`. On `041e31d` the owner reported a crash and no controls; no result of any kind has come back for a newer build |
 
-Two faults were found and fixed while preparing this: the import discarded the skeleton and clips of the engine's own files (`b636f23`), and it then adopted any skeleton on which a single track of the clip library could bind (`041e31d`).
+Faults found and fixed along the way: the import discarded the skeleton and clips of the engine's own files (`b636f23`); it then adopted any skeleton on which a single track of the clip library could bind (`041e31d`); the app could send a generated avatar to a preview that cannot hold it (`210ae9a`); and the first build of the built-in player listed no animations because the renderer wrapper did not forward the new calls, which its own instrumented test caught (`a5e93a8`).
 
 ### Prepared avatar findings
 
@@ -103,31 +120,33 @@ Two faults were found and fixed while preparing this: the import discarded the s
 
 ### Verification results
 
-All five workflows passed on the code commit `041e31d`, with no job failed or skipped among the build and test jobs:
+Workflows on the code commit `a5e93a8`:
 
-| Workflow | Jobs | Run | Result |
-|---|---|---|---|
-| Android CI | unit tests, lint, native C++ regression, R8 check, debug APK, instrumented GLES GLB render smoke | [43685727727](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43685727727) | success |
-| AvatarForge diagnostic APK and tests | native host regression tests; debug APK built and generated-avatar pixels verified on the emulator; published APK downloaded again and checked | [43685731002](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43685731002) | success |
-| AvatarForge generated-avatar runtime verification | generate, render and inspect real avatar pixels | [43685731802](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43685731802) | success |
-| Release preview and Android emulator smoke | signed release preview (one-run CI key), install and launch on the emulator | [43685733726](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43685733726) | success |
-| Publish phone-test APK | publishing rules self-test | [43685731797](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43685731797) | success |
+| Workflow | Run | Result |
+|---|---|---|
+| Android CI | [43697152270](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43697152270) | success |
+| AvatarForge diagnostic APK and tests | [43697155008](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43697155008) | success, all three jobs |
+| AvatarForge generated-avatar runtime verification | [43697157414](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43697157414) | success |
+| Release preview and Android emulator smoke | [43697157775](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43697157775) | success |
+| Publish phone-test APK (rules self-test) | [43697157450](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43697157450) | success |
 
-- **Host, 2026-11-15T06:29:26Z:** `ctest` 9 of 9 passed in 87 s, among them `animation_roundtrip` and `prompt_preset_words`.
-- **Host:** 22 full generations at the app's quality (the default avatar and 21 variations, so every preset once), each with exit code 0: 1.03 to 1.62 million triangles, 46 to 97 s each on a 2-core machine.
-- **CI emulator:** the production `AvatarForgeSurfaceView` test generates an avatar with the current generator, exports it, imports it and reads the pixels back: PIXELS_VERIFIED, 329,824 geometry pixels, 71 joints (run [43683037132](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43683037132)). The integration branch records this same test failing at `7b19ca7`.
-- **Phone:** nothing newer than [docs/PHONE_TEST_2026-11-15.md](docs/PHONE_TEST_2026-11-15.md), which is the build from `797d156`.
-- **Renders:** host software renders only. They are not phone captures.
+The commit before it, `210ae9a`, failed two of them at the new animation check ("The production renderer listed no animations for a generated avatar", runs [43695827227](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43695827227) and [43695825489](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43695825489)). `9519eae` passed all five.
+
+- **Host, 2026-11-15T09:03:24Z:** `ctest` 9 of 9 passed in 43 s at `a5e93a8`, among them `animation_roundtrip` and `prompt_preset_words`. The host does not build the GLES renderer.
+- **Host:** 23 full generations at the app's quality with the generator of `9519eae` (the default avatar and 22 variations: every preset once, and the bald head), each with exit code 0: 1.03 to 1.95 million triangles, 24 to 72 s each on a 2-core machine.
+- **Host:** the two edited vertex shaders compile with glslang as GLSL ES 3.10 and in the 4.50 dialect. No device has run them except the CI emulator.
+- **CI emulator:** the production `AvatarForgeSurfaceView` test generates an avatar (gown, long hair: 1,231,652 vertices, 2,121,090 triangles, 121,811,256 B), exports it, imports it, reads the pixels back, then plays `t_pose` and reads them again: 15 animations listed, 3 frames presented while it played, 81,915 pixels changed, no GL error (run [43697157414](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43697157414)).
+- **Phone:** the owner's report on `041e31d` quoted above, with no files. Before that, [docs/PHONE_TEST_2026-11-15.md](docs/PHONE_TEST_2026-11-15.md) for `797d156`.
+- **Renders:** host software renders only. They are not phone captures. The creator's layout has not been seen on any screen by the author: there is no Android device or emulator where this work is done.
 
 ### Blockers and what comes next
 
-1. **BLOCKED on a phone test.** Nothing written today has run on the Samsung. The APK of this code is published and waiting: [3D-Mega-Hub-debug-041e31d.apk](https://github.com/davealone69-gif/3d-mega-hub/releases/download/phone-test-041e31d/3D-Mega-Hub-debug-041e31d.apk), 57,079,246 B, SHA-256 `285360bec87908b7d9d44cf2a861d4e7d095253a1a064fa8a467486a98aa97c2`, pre-release [`phone-test-041e31d`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/phone-test-041e31d), published by run [43686767877](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43686767877) after its readiness gate passed. Uninstall the earlier build first: every CI debug build is signed with its own one-job key. To check on the phone: the new pickers, how each preset looks, generation time, frame rate, and the two diagnostics files.
-2. **First visible animation, no new code:** with that APK, import [`CesiumMan.glb`](https://github.com/KhronosGroup/glTF-Sample-Assets/raw/main/Models/CesiumMan/glTF-Binary/CesiumMan.glb) (438,044 B, CC BY 4.0). It has a skeleton and a walk clip, so by the routing rule it opens in the Filament preview with the animation controls. **UNVERIFIED** until someone does it: no test covers this file.
-3. **Animation of generated avatars:** one JNI function to `af_renderer_set_clip`, a clip list with play, stop, loop and speed, and an instrumented test that the pixels change over time. Then measure the frame rate on the phone; GPU skinning if it is too slow.
-4. **Presets that do not look right:** the 14 listed above.
-5. **Export:** generated GLBs are written to app-private storage. There is no action to save or share one.
+1. **BLOCKED on a phone test.** Nothing written since the report has run on the Samsung. The APK: [3D-Mega-Hub-debug-a5e93a8.apk](https://github.com/davealone69-gif/3d-mega-hub/releases/download/phone-test-a5e93a8/3D-Mega-Hub-debug-a5e93a8.apk), 57,782,572 B, SHA-256 `6c07603d08232b8c55a282aa6911d8a58429cc6c9642ddc3bcff0182699fb08f`, pre-release [`phone-test-a5e93a8`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/phone-test-a5e93a8), published by run [43698174756](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43698174756). Uninstall the earlier build first.
+2. **What to try on the phone:** Create avatar; tap the animations in the strip under the avatar (Idle, Walk, Wave, Jump); Motion for pause, loop and speed; the Outfit, Hair and Shoes pictures; Save. Then send back `renderer_diagnostics.json` and `renderer_telemetry.json` from Downloads/3D Mega Hub Diagnostics, and say what was on screen if anything closes the app.
+3. **UNVERIFIED on the phone and worth measuring:** the frame rate with an animation playing (nothing is culled then), generation time and memory, and whether the GPU-skinned picture is right: the emulator test proves that the picture changes, not that the pose is correct.
+4. **Not done:** a seek slider; blending between clips; tests for pause, loop and speed; Face, Eyes, Accessories and Background sections; a helmet for the spacesuit; face variety.
+5. **Imported files with their own clips** still go to the Filament preview, whose controls have never been seen working. [`CesiumMan.glb`](https://github.com/KhronosGroup/glTF-Sample-Assets/raw/main/Models/CesiumMan/glTF-Binary/CesiumMan.glb) (438,044 B, CC BY 4.0) is the file to try.
 6. **Production signing** needs the owner's keystore.
-7. **Not measured on the phone:** generation time and memory with the finer lattice; frame rate with the current generator.
 
 Statements further down this file that this section corrects:
 
