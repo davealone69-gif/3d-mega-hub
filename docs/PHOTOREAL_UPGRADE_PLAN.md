@@ -2,15 +2,32 @@
 
 Written 2026-11-15 against app code `2920265`. The description of the machine itself, for agents, is [AGENTS.md](../AGENTS.md).
 
+**Revised the same day** after the owner supplied three 3D reference models ([OWNER_MODELS_2026-11-15.md](OWNER_MODELS_2026-11-15.md)). What changed here: the measured comparison under the bottom line, repairs R16 to R18, and the renderer row in section 5.2, which is now an open question instead of a decision.
+
 Status words used here are the project's: REAL + VERIFIED, IMPLEMENTED IN SOURCE, PARTIAL, UNVERIFIED, MISSING, BLOCKED. Where a figure is an estimate or a target and not a measurement, it says so. Nothing in sections 4 to 8 is built: it is a recommendation.
 
 ## Bottom line
 
 1. **The engine computes the whole human from formulas.** That gives a consistent, rigged, offline avatar from nothing. It cannot give a photograph, because there is no sculpted or scanned data anywhere in it. Tuning the formulas further will not close that gap.
-2. **Keep the machine, change what it is fed.** The specification, the creator, the renderer, the animation path, GLB export, the tests and the CI gates stay. The source of the human changes from "distance field plus procedural paint" to **an authored base body with morph targets, scan-grade textures, separate eyes and teeth, and hair cards**, packed as a kit the engine assembles in milliseconds.
+2. **Keep the machine, change what it is fed.** The specification, the creator, the animation path, GLB export, the tests and the CI gates stay. Which of the app's two renderers draws the authored body is open (section 5.2). The source of the human changes from "distance field plus procedural paint" to **an authored base body with morph targets, scan-grade textures, separate eyes and teeth, and hair cards**, packed as a kit the engine assembles in milliseconds.
 3. **Start with the MakeHuman family of assets.** They are CC0, the licence explicitly allows building a character generator from them, their sliders are the ones your creator already shows, and an agent can build the kit in CI without a PC. Design the kit so better licensed content can replace the head, skin and hair later with no engine change.
 4. **On the S24 the first performance fix is the mesh.** It is about ten times too dense. That, not the phone, is the likely reason the highest quality tier did not hold 30 FPS in your test.
 5. **How real it gets.** With scan-grade content and the lighting and skin work in section 4, a still on the phone can read as a photograph. Close up and in motion it will read as a high-end game character. That is my engineering estimate, not a measurement. Neural (Gaussian) avatars come closer to a photograph for a captured person, but they cannot be edited with sliders and need a server to create.
+
+### Measured on the owner's realistic reference model
+
+The owner's Daz Genesis 8 model is the kind of asset the references were rendered from. Its numbers against an avatar this app generates:
+
+| | The Daz model | A generated avatar (`2920265`) |
+|---|---|---|
+| Triangles in the body skin | 27,292 | 1,148,034 for the whole avatar |
+| Skin textures | four regions at 4096 x 4096 | one 2048 x 2048 atlas shared with hair and clothes |
+| Eyes, teeth, lashes | separate parts | painted on the body shell |
+| Hair | cards and strands with transparency (273,332 triangles) | a solid shape |
+
+So the realistic model spends about a fortieth of the triangles on the body and has sixteen times as many texels on its skin. That is point 2 above, measured.
+
+It is not a shortcut, though. As downloaded it has no morph targets (no sliders), no animation, a skeleton that is not the engine's, 1,152 MiB of textures once decoded, and it is Daz content that an uploader relabelled CC-BY (section 5.3).
 
 ## 1. What a photoreal human needs, and what the machine has
 
@@ -70,6 +87,9 @@ Faults of the machine as it is, most valuable first. Size: S = one working sessi
 | R13 | Generation time on the phone is unknown | Never recorded | Record the time of each stage in the diagnostics report | S |
 | R14 | The toolchain is a year behind the phone | AGP 8.7.3, Kotlin 2.1.0, Compose BOM 2024.12.01, target SDK 35, NDK 26.1; the phone runs Android 17 (SDK 37) | One dedicated update. The newer CPU and GPU headroom calls need it | M |
 | R15 | Two documents still said every model is shown static | `BUILD_AND_VERIFY.md`, `PROJECT_STATUS.md` | Corrected in the commit that adds this file | done |
+| R16 | An imported model built from several textured parts came up mostly grey, and nothing limited texture memory | The owner's reference models on the host: 2 of 14 and 4 of 45 parts textured; 1,152 MiB of textures in one file | Such a file opens in the glTF viewer (Filament); textures are reduced at import to a 448 MiB budget; the viewer got orbit, zoom and ambient light | done in `7e4f0cb`, unit-tested, not run on a phone |
+| R17 | The glTF viewer shows no tone mapping, anti-aliasing, shadows or reflections | Filament post-processing is switched off in `FilamentPreviewView.kt`; one directional light and a uniform ambient term | Switch post-processing on (filmic tone curve, MSAA or FXAA, ambient occlusion), add shadows and a prefiltered environment. Each step needs a phone test | M |
+| R18 | The engine's own importer keeps one colour texture per imported model, ignores transparency and adopts no foreign skeleton | `af_engine.cpp` (`selectedBaseTex`), host import of the reference models | Either extend it (materials with their own textures, alpha, foreign skeletons, GPU morph targets) or leave authored models to Filament: the decision in section 5.2 | L |
 
 R1 and R2 come first because every later step is judged by a phone test.
 
@@ -122,7 +142,7 @@ creator choices or prompt
 | Stays | Changes |
 |---|---|
 | `af_spec`, the prompt parser, the creator screens and their tests | Body, face, hair and clothes come from the kit, not from `af_field.cpp` |
-| The renderer, its telemetry and diagnostics | Skin, eye and hair shading, lighting, anti-aliasing (below) |
+| A renderer already in the app (which one: section 5.2), telemetry and diagnostics | Skin, eye and hair shading, lighting, anti-aliasing (below) |
 | Skeleton-driven animation on the GPU, the clip API | The skeleton and the clips come from the kit; expressions are added |
 | GLB export and import, the validator, the fuzz tests | Compressed textures and geometry are accepted |
 | The five CI workflows and the publishing gate | A kit-build job; a licence check on `kit.json` |
@@ -161,7 +181,7 @@ In order of visible effect for the cost:
 
 | Need | Part | Licence | Note |
 |---|---|---|---|
-| Renderer | **Keep the AvatarForge renderer and extend it** | yours | It already has skin, eye, hair and cloth shading, GPU skinning, measured telemetry and a pixel-checked test path. Filament (Apache-2.0, already in the APK) is a general renderer: its skin model is a simple approximation and its lighting cannot be replaced from a material. Use it as a second opinion, not as the base |
+| Renderer | **Open: decide by a test on the phone.** Two candidates, both already in the APK | AvatarForge's renderer is yours; Filament is Apache-2.0 | **AvatarForge's renderer** has skin, eye, hair and cloth shading, GPU skinning, measured telemetry and a pixel-checked test path, and its lighting can be changed freely. For an authored model it lacks materials with their own textures, transparency, foreign skeletons and GPU morph targets (R18). **Filament** draws authored glTF models completely today, including the owner's reference models, and brings tone mapping, anti-aliasing, ambient occlusion, shadows and environment lighting as switches (R17). Its built-in skin model is simple; a custom skin material is possible but its lighting model is fixed in more places. The first version of this plan chose AvatarForge's renderer outright. After importing real authored models that is no longer safe to assume: load the same kit body in both, on the phone, and compare picture and frame time before building further on either |
 | Texture compression | **astcenc** for ASTC, **KTX-Software** for KTX2 | Apache-2.0 | One device, so ship one format. The app has never asked this phone which compressed formats it supports: add that to the diagnostics report first. ETC2 is guaranteed by OpenGL ES 3 if ASTC is not there |
 | Mesh compression | **meshoptimizer** and `gltfpack`; `KHR_mesh_quantization`, `EXT_meshopt_compression` | MIT | The importer must learn both |
 | Kit build | Headless Blender with MPFB2 in a GitHub Actions job | GPL tools, not shipped | An agent can run it; no PC needed |

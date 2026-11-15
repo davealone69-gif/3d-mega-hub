@@ -2,7 +2,7 @@
 
 Read this first. It says what the repository is, how the parts fit, how to build and test, what has been measured and where, and which mistakes have already been made.
 
-- Checked against the source at commit `2920265` (app code) on 2026-11-15.
+- Checked against the source at commit `2920265` (engine and creator) and `7e4f0cb` (imported-model viewer) on 2026-11-15.
 - The plan for reaching photoreal avatars is a separate file: [docs/PHOTOREAL_UPGRADE_PLAN.md](docs/PHOTOREAL_UPGRADE_PLAN.md).
 - The item-by-item inventory with evidence links is [docs/AVATAR_ASSETS_ANIMATION_MASTER.html](docs/AVATAR_ASSETS_ANIMATION_MASTER.html). The current results are in [README.md](README.md).
 
@@ -13,7 +13,7 @@ Read this first. It says what the repository is, how the parts fit, how to build
 | Product | **3D Mega Hub**, an Android app (`com.davemega.hub`, Kotlin, Jetpack Compose). Five pages: Home, Avatar, AI (chat with an Ollama endpoint), Voice (Android text to speech), Settings. The Avatar page, "Avatar Studio", is the centre of the product |
 | Engine | **AvatarForge**, a C++17 library in the module `:avatarforge-engine`. It computes a human avatar from a specification, with no asset files: body, face, hair, clothes, textures, skeleton, skin weights, 52 face blendshapes and 15 animations. It writes and reads GLB, and it has its own OpenGL ES renderer |
 | Only target device | Samsung Galaxy S24 **SM-S921B**: Exynos 2400, Xclipse 940 GPU, 8 GB RAM, 1080 x 2340, 120 Hz. On this phone OpenGL ES is ANGLE on top of Vulkan (the app's own report reads `ANGLE ((Samsung Xclipse 940) on Vulkan 1.3.304)`) |
-| Second renderer | Google Filament 1.71.6 (`filament-android`, `gltfio-android`). Used only for the bundled sample and for imported files that carry their own animation clips |
+| Second renderer | Google Filament 1.71.6 (`filament-android`, `gltfio-android`), the "glTF viewer". Used for the bundled sample and for an imported file the engine's renderer cannot show as authored: one with animation clips, more than one colour texture or a transparent material |
 | Build | GitHub Actions only. Kotlin, the APK and the GLES renderer cannot be built or run on a plain Linux host; the engine core and its tests can |
 
 ## 2. Rules that are not negotiable
@@ -74,7 +74,8 @@ Line counts are of `2920265`.
 | `app/.../MainActivity.kt` | The hub and its five pages |
 | `app/.../AvatarStudioScreen.kt` | Avatar Studio: stage, rail of sections, Randomize, Save, Create avatar, animation strip, dark and light look |
 | `app/.../AvatarCreatorPanels.kt`, `AppearanceControls.kt` | The sections (Look, Body, Hair, Face, Skin, Outfit, Shoes, Motion), picture cards, colour tiles; `AppearanceSelection` maps each choice to spec values |
-| `app/.../GlbPreviewRouting.kt`, `FilamentPreviewView.kt` | Which preview a file opens in, and the Filament preview. A generated avatar is never sent to Filament |
+| `app/.../GlbPreviewRouting.kt`, `FilamentPreviewView.kt` | Which preview a file opens in, and the Filament preview (orbit, zoom, one directional light plus ambient; post-processing is off). A generated avatar is never sent to Filament, and neither is a file whose textures exceed the budget |
+| `app/.../GlbTextureBudget.kt`, `AndroidGlbImageScaler.kt`, `ImportedGlbPreparation.kt` | Import step: reads every embedded image's pixel size from its header and, when the decoded textures exceed 448 MiB, writes a copy of the GLB with those images halved. Everything else is copied byte for byte |
 | `app/src/main/res/drawable-nodpi/preset_*.jpg` | 51 card pictures, each a host render of the engine's own output |
 
 ### Tests and tools
@@ -103,7 +104,7 @@ Line counts are of `2920265`.
 | 8 Animation | 15 clips: idle, breathe, walk, jog, run, squat, jump, wave, punch, kick, pushup, t_pose, a_pose, sit, turn_360 | Procedural keys, sampled at export |
 | 9 Export | One GLB | 67 to 122 MB |
 
-The app then **imports the file it just exported** and draws that. The importer adopts the skeleton and clips only when the file's skin is this engine's own rig; any other file is drawn static with a joint count of zero.
+The app then **imports the file it just exported** and draws that. The importer adopts the skeleton and clips only when the file's skin is this engine's own rig; any other file is drawn static with a joint count of zero. It also keeps **one colour texture for a whole imported model** and draws every material opaque, which is why a foreign model with several textures or transparency is sent to the glTF viewer instead.
 
 Quality: `AF_QUALITY_FULL` is what the app generates (25 to 88 s for one avatar on a 2-core host; not measured on the phone). `AF_QUALITY_DRAFT` uses a 16 mm lattice: a tenth of the triangles in a few seconds, same skeleton and clips. Use draft to iterate, full to judge.
 
@@ -168,6 +169,7 @@ CI, five workflows:
 | Phone | every later build | **Nothing verified.** The owner reported "animation crashes and no built in controls" on `041e31d`; the cause is inferred (a generated avatar sent to the Filament preview), not confirmed |
 | CI emulator | `2920265` | Gown avatar, 2,125,600 triangles: 323,702 geometry pixels through the production view; 15 animations listed; `t_pose` started; 81,407 pixels changed; no crash or ANR. Native heap 734 MB |
 | Host | `2920265` | `ctest` 9 of 9. 65 full-quality generations, all exit code 0. Default avatar: 623,493 vertices, 1,148,034 triangles, GLB 66.7 MB, 42 s |
+| Host | `e4655c3` | Three reference models from the owner, imported with the engine's importer: record in [docs/OWNER_MODELS_2026-11-15.md](docs/OWNER_MODELS_2026-11-15.md). The realistic one has 27,292 triangles of body skin and four 4096 x 4096 skin textures |
 
 ## 9. How to add things
 
@@ -189,11 +191,16 @@ Field and shape:
 
 Rendering and app:
 - Filament cannot hold a generated avatar: gltfio reserves about 24 bytes per vertex per morph target, hundreds of megabytes here. That ended the process on the phone. The routing guard exists for this reason.
+- Routing imported files by "has animation clips" alone (`210ae9a` to `e4655c3`) left a model built from many textured parts on the engine's renderer, which showed it mostly grey. Route by what the renderer cannot show.
+- Nothing limited texture memory. A desktop model with twelve 4096 x 4096 textures needs 1,152 MiB decoded. Check the image headers before loading; reduce at import.
+- Reading a file through a growing stream buffer holds it twice. A 100 MB model does not fit the Java heap that way: allocate the file's length once, and catch `OutOfMemoryError`.
 - Playing clips by moving vertices on the CPU uploads about 55 MB a frame. Skin on the GPU.
 - A renderer virtual that `BudgetRenderer` does not forward does nothing, silently. The first build with animation listed no animations for this reason.
 - Draft quality misleads about looks. Black clothing hides form in a small picture.
 
 Process:
+- **Only the repository survives a workspace restore.** `/tmp` and every directory outside the repository are gone afterwards, including helper scripts kept beside it. Put a helper that will be needed again under `tools/`, or accept writing it again. After a restore: `git fetch origin '+refs/heads/*:refs/remotes/origin/*'`, then `git reset --mixed origin/<branch>`; the clone is shallow until `git fetch --unshallow`.
+- **Other sessions push to this repository.** Before writing that a branch is "untouched" or "at" a commit, fetch and look.
 - Pushing while CI runs are in flight cancels some of them. A commit cannot contain its own run results: record them in the next documents commit and in the pull request.
 - `gh run view --log` and artifact downloads may be unreachable from a sandbox. The job log can be read through `GET /repos/{owner}/{repo}/actions/jobs/{job}/logs`, which redirects to a short-lived URL.
 - The host builds neither the GLES renderer nor Kotlin. A Kotlin or GLSL change is unproved until a workflow finishes.
@@ -211,3 +218,5 @@ The list with evidence, cause and fix is in [docs/PHOTOREAL_UPGRADE_PLAN.md](doc
 - The Vulkan backend in the tree is stale.
 - Each CI build needs an uninstall, which also orphans the diagnostics files.
 - The crash the owner reported is not confirmed fixed.
+- The glTF viewer has no tone mapping, anti-aliasing or shadows (Filament post-processing is switched off), no reflections, and an imported model's skeleton is only posed by the file's own clips.
+- The engine's own importer keeps one colour texture per imported model and ignores transparency.

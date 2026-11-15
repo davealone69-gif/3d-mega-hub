@@ -57,12 +57,12 @@ The section above is the integration branch's own text, merged unchanged. This b
 |---|---|
 | Working branch | [`arena/1a5b3043-3d-mega-hub`](https://github.com/davealone69-gif/3d-mega-hub/tree/arena/1a5b3043-3d-mega-hub) |
 | Review path | [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12) into `integration/avatarforge-renderer-port`, then [PR #9](https://github.com/davealone69-gif/3d-mega-hub/pull/9) into `main` |
-| Current code head | `2920265ae822d08f6508e8eac917a9817e232e1e` (`2920265`). All five workflows passed on it and its phone-test APK is published; see [Verification results](#verification-results). It merges the integration branch at `13117dc` and adds the choices of the owner's picture reference to the creator. The commit after it adds only documents. Measurements further down that name `3facc3d`, `797d156`, `041e31d` or `a5e93a8` are from those older commits |
-| README update | Updated after the owner's third message of 2026-11-15: three screenshots of a picture creator and a folder of body references, with the words "These are very important". The documents-only commit does not change app code or the tested APK. A second documents commit answers the owner's fourth message ("describe this machine ... repairs ... how we can get to 3d photo realistic avatars") with `AGENTS.md` and `docs/PHOTOREAL_UPGRADE_PLAN.md`, and corrects two stale sentences about imported models in `BUILD_AND_VERIFY.md` and `PROJECT_STATUS.md` |
+| Current code head | `7e4f0cb740433a892d6fa264ddf5d77681f2b636` (`7e4f0cb`). All five workflows passed on it and its phone-test APK is published; see [Verification results](#verification-results). It changes how an imported model is shown ([the section below](#the-owners-3d-reference-models-and-the-imported-model-viewer-2026-11-15)); the engine, the creator and the generated avatars are those of `2920265`. The commit after it adds only documents. Measurements further down that name `3facc3d`, `797d156`, `041e31d`, `a5e93a8` or `2920265` are from those commits |
+| README update | Updated after the owner's third message of 2026-11-15: three screenshots of a picture creator and a folder of body references, with the words "These are very important". The documents-only commit does not change app code or the tested APK. A second documents commit answers the owner's fourth message ("describe this machine ... repairs ... how we can get to 3d photo realistic avatars") with `AGENTS.md` and `docs/PHOTOREAL_UPGRADE_PLAN.md`, and corrects two stale sentences about imported models in `BUILD_AND_VERIFY.md` and `PROJECT_STATUS.md`. A third documents commit follows the owner's fifth message, a link to a Dropbox folder of three 3D models: it records what they are ([`docs/OWNER_MODELS_2026-11-15.md`](docs/OWNER_MODELS_2026-11-15.md)) and the results of the code commit `7e4f0cb` |
 | Record for the head commit | In the description of [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12). A commit cannot contain the results of its own workflow runs, so the record for the head, with the APK to install, is kept there |
-| `main` | `aaee4443dbf53ef4707cce01d99f71a59e903ec7`, not modified. No force-push anywhere |
+| `main` | `6c1a94d161d8853b31222e951db7554fd6d0980e` since 2026-11-15T10:35Z. Four documents commits were pushed to it from outside this branch (an architecture and adult-mode handoff, `docs/ADULT_MODEL_RENDER_VIDEO_INTEGRATION.md`); before that it was `aaee444`. This branch has not touched `main`. No force-push anywhere |
 
-The rule is one implementation line, `integration/avatarforge-renderer-port`. This handover was prepared on the working branch above, which contains the integration branch up to `13117dc`. Once PR #12 has landed, the integration branch is the single line again. Do not open another implementation branch.
+The rule is one implementation line, `integration/avatarforge-renderer-port`. This handover was prepared on the working branch above, which contains the integration branch up to `13117dc`. The integration branch has since received two documents commits from outside this branch (a cross-project reuse audit, head `f73eec1`); they are not merged here, and PR #12 still merges without conflict. Once PR #12 has landed, the integration branch is the single line again. Do not open another implementation branch.
 
 Status labels: **REAL + VERIFIED**, **IMPLEMENTED IN SOURCE** (written, built and tested by CI, never exercised by a person on a device), **UNVERIFIED**, **PARTIAL**, **MISSING**, **BLOCKED**. "Verified on the emulator" never means verified on the phone.
 
@@ -76,6 +76,38 @@ Status labels: **REAL + VERIFIED**, **IMPLEMENTED IN SOURCE** (written, built an
 | Commit that adds the document and this section | The one after it. A commit cannot name itself; [PR #12](https://github.com/davealone69-gif/3d-mega-hub/pull/12) shows the head and its checks |
 | Integration branch contained | `integration/avatarforge-renderer-port` up to `13117dc`, merged in `2920265`; four files conflicted and were resolved by hand, see [the table near the top](#how-those-commits-were-carried-onto-arena1a5b3043-3d-mega-hub-pr-12). PR #9 is not merged. `main` is untouched |
 | Labels used | REAL + VERIFIED, IMPLEMENTED IN SOURCE, PARTIAL, UNVERIFIED, MISSING, BLOCKED |
+
+### The owner's 3D reference models and the imported-model viewer (2026-11-15)
+
+The owner's fifth message of the day was a link to a Dropbox folder, `3d real`, holding three 3D models of unclothed adult women as references. **None of them is in this repository or in any APK.** What they are, what they show about realism and where they stand on licence is recorded in [`docs/OWNER_MODELS_2026-11-15.md`](docs/OWNER_MODELS_2026-11-15.md). In short:
+
+| Model | What it is | Triangles | Textures | Skeleton, clips, morph targets |
+|---|---|---|---|---|
+| "Nude girl T-pose" (Sketchfab, milan037, CC-BY 4.0) | an AI-generated mesh | 23,230 | one, 1024 or 2048 square | none |
+| "Heather" (Sketchfab, milan037, CC-BY 4.0 label) | a posed low-polygon figure in 14 parts | 16,377 | 25, small | none |
+| "Ink" (Sketchfab, Yudianggara, CC-BY 4.0 label) | a Daz Genesis 8 Female with add-on hair, brows, boots and an anatomy add-on | 497,110, of which 27,292 are body skin | 18: twelve at 4096 square | 199 joints, no clips, no morph targets |
+
+"Ink" is the kind of asset the owner's body references were rendered from, and it is Daz content that an uploader relabelled: the label does not make it free to ship.
+
+**What the models exposed** (engine importer on a host at `e4655c3`; **REAL + VERIFIED** on the host):
+
+- The app's own renderer keeps one colour texture for a whole imported model and draws everything opaque. "Heather" came up with 2 of 14 parts textured, "Ink" with 4 of 45 and its hair cards as solid sheets.
+- Since `210ae9a` the app sent an imported file to its second renderer, the Filament glTF viewer, only when the file carried animation clips. That viewer draws such models as authored.
+- Nothing limited texture memory: "Ink" needs 1,152 MiB of textures once decoded, and the glTF viewer read a whole file into the Java heap twice over.
+
+**What `7e4f0cb` changes** (**IMPLEMENTED IN SOURCE**: built, linted and unit-tested by CI; the emulator smoke starts the changed viewer; nothing run on the phone):
+
+| Change | Test |
+|---|---|
+| An imported file with clips, more than one colour texture or a transparent material opens in the glTF viewer by itself. Single-texture models and avatars made here stay on the app's own renderer | `GlbPreviewRoutingTest`, 13 tests, 6 new |
+| At import, textures are reduced to a budget of 448 MiB decoded: the pixel sizes are read from the image headers, the largest images are halved until the sum fits, and the app keeps a copy of the GLB with only those images replaced | `GlbTextureBudgetTest`, 16 tests with synthetic files and a stand-in for the image scaler. The commit message says 17; there are 16 |
+| The Android image scaler behind it (sampled decode, straight alpha, PNG for transparency and normal maps, JPEG otherwise) | none |
+| The glTF viewer refuses a file that is still over the budget, decides before reading it, reads it with one allocation and reports running out of memory instead of ending the app | the refusal rule is unit-tested; the rest has no test |
+| The glTF viewer turns with one finger, zooms with two, resets on a double tap, and has ambient light beside its one directional light | none. The emulator smoke loads the bundled sample in this viewer and presents a frame, in the debug and in the minified release build |
+
+The same reduction, as a Python prototype, was run on the real "Ink" file on the host: twelve textures halved, 1,152 MiB decoded down to 384 MiB, file 103.6 MB down to 60.8 MB, all six geometry buffer views byte-identical, and the engine's importer reads the result in 2.0 s with a 364 MB peak (7.2 s and 962 MB before). The Kotlin code has only run against synthetic files.
+
+**Still missing in the glTF viewer:** tone mapping, anti-aliasing, shadows and reflections (Filament's post-processing is switched off), and the skin, eye and hair shading of the app's own renderer. "Ink" has no animation and no morph targets, so it stands in its A-pose and the creator's sliders do not apply to it. Which renderer should draw authored bodies in the long run is now an open question in [`docs/PHOTOREAL_UPGRADE_PLAN.md`](docs/PHOTOREAL_UPGRADE_PLAN.md), section 5.2.
 
 ### The owner's picture reference: ethnicity, body, hair (2026-11-15)
 
@@ -100,7 +132,7 @@ The owner then sent three screenshots of a dark picture creator and a Dropbox fo
 - **REAL + VERIFIED on the host:** `ctest` 9 of 9 at `2920265` (2026-11-15T10:28:01Z, 42 s), with new checks for the bust and butt ranges, the adult rule, the face offsets, the curvy build, what swimwear covers, thirteen hair styles and six more prompt words; 65 full generations at the app's quality for the card pictures and the preset sheets, every one with exit code 0.
 - **REAL + VERIFIED on the CI emulator:** the five workflows passed on `2920265`, among them the generated-avatar test through the production view and its animation check ([43704283240](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43704283240)).
 - **UNVERIFIED:** everything on a phone, and the screen itself. There is no Android device or emulator where this work is done, so the author has never seen the creator drawn, in either look.
-- **The APK with all of this:** [3D-Mega-Hub-debug-2920265.apk](https://github.com/davealone69-gif/3d-mega-hub/releases/download/phone-test-2920265/3D-Mega-Hub-debug-2920265.apk), 57,787,072 B, SHA-256 `dd180d6f4feddb61eed5b4d3e0200f49d5e3b54f73cbb0e9f7d24799bcf9a201`, pre-release [`phone-test-2920265`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/phone-test-2920265), published by run [43705538407](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43705538407). Uninstall the earlier build first.
+- **The APK with all of this:** the newest build, [3D-Mega-Hub-debug-7e4f0cb.apk](https://github.com/davealone69-gif/3d-mega-hub/releases/download/phone-test-7e4f0cb/3D-Mega-Hub-debug-7e4f0cb.apk), 57,803,456 B, SHA-256 `160635e5a8bf3b59b21c23ccff309ebf2ce10aa0a4bea411c0d2e61b41cdefc1`, pre-release [`phone-test-7e4f0cb`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/phone-test-7e4f0cb), published by run [43720447663](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43720447663). Uninstall the earlier build first. The first build that had these choices was `phone-test-2920265` (57,787,072 B, SHA-256 `dd180d6f4feddb61eed5b4d3e0200f49d5e3b54f73cbb0e9f7d24799bcf9a201`, run [43705538407](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43705538407)).
 
 ### What changed after the phone report (2026-11-15)
 
@@ -190,6 +222,21 @@ Faults found and fixed along the way: the import discarded the skeleton and clip
 
 ### Verification results
 
+Workflows on the code commit `7e4f0cb`:
+
+| Workflow | Run | Result |
+|---|---|---|
+| Android CI | [43719099722](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43719099722) | success: lint, unit tests, native C++ sampling regression, R8, debug APK build, GLES render smoke |
+| AvatarForge diagnostic APK and tests | [43719102303](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43719102303) | success, all three jobs |
+| AvatarForge generated-avatar runtime verification | [43719104445](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43719104445) | success |
+| Release preview and Android emulator smoke | [43719104559](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43719104559) | success, all three jobs: the debug and the signed, minified release APK install, start and load the bundled sample in the glTF viewer |
+| Publish phone-test APK (rules self-test) | [43719104513](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43719104513) | success |
+
+- **APK:** pre-release [`phone-test-7e4f0cb`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/phone-test-7e4f0cb), file [`3D-Mega-Hub-debug-7e4f0cb.apk`](https://github.com/davealone69-gif/3d-mega-hub/releases/download/phone-test-7e4f0cb/3D-Mega-Hub-debug-7e4f0cb.apk), 57,803,456 bytes, SHA-256 `160635e5a8bf3b59b21c23ccff309ebf2ce10aa0a4bea411c0d2e61b41cdefc1`, built by run [43719102303](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43719102303), published by run [43720447663](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43720447663) at 2026-11-15T13:43:25Z. Uninstall any earlier build first.
+- **CI unit tests:** `:app:testDebugUnitTest` in run [43719099722](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43719099722), "BUILD SUCCESSFUL" (read in the job log).
+- **CI emulator:** the generated-avatar tests are those of `2920265` and passed again (323,702 geometry pixels in the published APK's own test). No instrumented test imports a model with several textures, so the new routing, the texture reduction and the viewer's gestures have not run on any device or emulator.
+- **Host:** the engine and its `ctest` suite are unchanged since `2920265` and were not run again. The owner's three models were imported with the engine's host tools at `e4655c3`.
+
 Workflows on the code commit `2920265`:
 
 | Workflow | Run | Result |
@@ -225,7 +272,7 @@ The commit before it, `210ae9a`, failed two of them at the new animation check (
 
 ### Blockers and what comes next
 
-1. **BLOCKED on a phone test.** Nothing written since the report has run on the Samsung. The APK: [3D-Mega-Hub-debug-2920265.apk](https://github.com/davealone69-gif/3d-mega-hub/releases/download/phone-test-2920265/3D-Mega-Hub-debug-2920265.apk), 57,787,072 B, SHA-256 `dd180d6f4feddb61eed5b4d3e0200f49d5e3b54f73cbb0e9f7d24799bcf9a201`, pre-release [`phone-test-2920265`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/phone-test-2920265), published by run [43705538407](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43705538407). Uninstall the earlier build first.
+1. **BLOCKED on a phone test.** Nothing written since the report has run on the Samsung. The APK: [3D-Mega-Hub-debug-7e4f0cb.apk](https://github.com/davealone69-gif/3d-mega-hub/releases/download/phone-test-7e4f0cb/3D-Mega-Hub-debug-7e4f0cb.apk), 57,803,456 B, SHA-256 `160635e5a8bf3b59b21c23ccff309ebf2ce10aa0a4bea411c0d2e61b41cdefc1`, pre-release [`phone-test-7e4f0cb`](https://github.com/davealone69-gif/3d-mega-hub/releases/tag/phone-test-7e4f0cb), published by run [43720447663](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43720447663). Uninstall the earlier build first.
 2. **What to try on the phone:** in the creator, Look (tap an ethnicity card), Body (a body type, a breast size, a butt size), Hair (a colour tile and a style), Face (one slider), Outfit (Swimwear shows the body best), then Create avatar; tap the animations in the strip under the avatar (Idle, Walk, Wave, Jump); Motion for pause, loop and speed; Save; and "Light" in the header. Then send back `renderer_diagnostics.json` and `renderer_telemetry.json` from Downloads/3D Mega Hub Diagnostics, a screenshot of the creator, and say what was on screen if anything closes the app.
 3. **UNVERIFIED on the phone and worth measuring:** the frame rate with an animation playing (nothing is culled then), generation time and memory, and whether the GPU-skinned picture is right: the emulator test proves that the picture changes, not that the pose is correct.
 4. **Not done:** a seek slider; blending between clips; tests for pause, loop and speed; Accessories and Background sections; a helmet for the spacesuit; a step-by-step flow like the picture reference's; male pictures on the cards; a face or a body of the quality of the owner's references.
