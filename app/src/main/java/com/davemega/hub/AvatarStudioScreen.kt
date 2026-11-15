@@ -136,7 +136,7 @@ fun AvatarStudioScreen(
                 Text(if (generating) "Diagnostic running…" else "Run generated-avatar GLES diagnostic")
             }
         }
-        Text("Imported GLBs use the AvatarForge engine and its native GLES renderer. The bundled sample remains on the existing viewer until it is imported into the engine.")
+        Text("Imported GLBs open in the Filament gltfio preview so embedded skeletal animation can play. Switch to AvatarForge GLES preview for the native static-render path.")
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -201,7 +201,7 @@ fun AvatarStudioScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (useFilamentAnimationPreview) "Return to AvatarForge GLES preview" else "Open animated GLB preview")
+                        Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open animation-capable Filament preview")
                     }
                 }
                 if (useFilamentAnimationPreview) {
