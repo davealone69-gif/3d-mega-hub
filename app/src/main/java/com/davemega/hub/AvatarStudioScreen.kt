@@ -211,6 +211,9 @@ fun AvatarStudioScreen(
                             Button(onClick = { filamentPreviewView?.setAnimationPlaying(!animationPlaying) }) {
                                 Text(if (animationPlaying) "Pause" else "Play")
                             }
+                            OutlinedButton(onClick = { filamentPreviewView?.stopAnimation() }) {
+                                Text("Stop / reset")
+                            }
                             OutlinedButton(
                                 onClick = { filamentPreviewView?.selectAnimation((selectedAnimation + 1).coerceAtMost(animationCount - 1)) },
                                 enabled = selectedAnimation < animationCount - 1
