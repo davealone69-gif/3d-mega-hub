@@ -79,8 +79,10 @@ object SpeechVoices {
     fun cycle(available: List<String>, current: String?): String? {
         val options: List<String?> = listOf(null) + available.distinct()
         if (options.size <= 1) return null
-        val index = options.indexOfFirst { it == current }
-        return options[(if (index < 0) 0 else index + 1) % options.size]
+        /* An unknown saved voice behaves like "engine default": the cycle restarts at the first real
+           option rather than at `null`, which a caller has just come from. */
+        val index = options.indexOfFirst { it == current }.coerceAtLeast(0)
+        return options[(index + 1) % options.size]
     }
 
     /** Short label for the cycle button. */
