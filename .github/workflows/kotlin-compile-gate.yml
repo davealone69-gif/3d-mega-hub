@@ -1,0 +1,88 @@
+name: Kotlin compile gate
+
+# Compiles the app and its JVM tests without an emulator, and republishes Gradle's diagnostics as
+# check-run annotations. It exists because the full runtime workflow hides its log behind an
+# artifact host that is not always reachable, while annotations are readable from the API.
+
+on:
+  pull_request:
+    branches: [main, integration/avatarforge-renderer-port, "fix/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kotlin-compile-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: Compile Kotlin and run JVM unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1"
+          accept-android-sdk-licenses: true
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compile and test
+        shell: bash
+        run: |
+          set +e
+          ./gradlew --no-daemon \
+            :app:compileDebugKotlin \
+            :app:compileDebugUnitTestKotlin \
+            :app:testDebugUnitTest \
+            --console=plain --stacktrace > build.log 2>&1
+          status=$?
+          echo "gradle exit code: $status"
+
+          # Kotlin compiler diagnostics ("e: file:line:col message") are the lines worth surfacing.
+          grep -E "^e: " build.log | head -8 | while IFS= read -r line; do
+            echo "::error title=Kotlin::$line"
+          done
+          # Test failures and script errors.
+          grep -E "FAILED|What went wrong|Caused by: |^> " build.log | head -8 | while IFS= read -r line; do
+            echo "::error title=Gradle::$line"
+          done
+          if [ "$status" -ne 0 ]; then
+            grep -E "BUILD (FAILED|SUCCESSFUL)" build.log | tail -1 | while IFS= read -r line; do
+              echo "::notice::$line"
+            done
+            echo "::notice::last 12 lines follow"
+            tail -12 build.log | while IFS= read -r line; do
+              echo "::notice::$line"
+            done
+          fi
+
+          # Unit test counts are useful even on a green run.
+          grep -hE "tests? (completed|passed)" build.log | tail -5 | while IFS= read -r line; do
+            echo "::notice::$line"
+          done
+          exit $status
+
+      - name: Keep the Gradle log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-compile-log
+          path: build.log
+          if-no-files-found: warn
