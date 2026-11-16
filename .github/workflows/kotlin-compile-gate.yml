@@ -118,6 +118,13 @@ jobs:
               tail -15 install-platform.log 2>/dev/null
             fi
             echo '```'
+            if [ -f build.log ] && grep -qE "^e: " build.log; then
+              echo
+              echo "**Every Kotlin diagnostic in this run:**"
+              echo '```text'
+              grep -E "^e: " build.log | head -30
+              echo '```'
+            fi
             [ -f build.log ] && grep -E "BUILD (FAILED|SUCCESSFUL)" build.log | tail -1
           } > excerpt.md
           gh pr comment "$PR" --body-file excerpt.md

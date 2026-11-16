@@ -159,7 +159,9 @@ private fun MegaHubApp(
         val engine = TextToSpeech(context) { result ->
             ttsReady = result == TextToSpeech.SUCCESS
             voiceStatus = if (ttsReady) "Speech engine ready" else "Speech engine failed to initialise"
-            if (ttsReady) applySpeech(engine, speech)
+            /* `engine` is not in scope inside its own initialiser, and the callback is asynchronous,
+               so the state holder is already populated by the time this runs. */
+            if (ttsReady) applySpeech(tts, speech)
         }
         tts = engine
         applySpeech(engine, speech)
