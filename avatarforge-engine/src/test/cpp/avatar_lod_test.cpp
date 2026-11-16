@@ -1,4 +1,5 @@
 #include "af_avatar_lod.h"
+#include "af_mesh.h"   /* af::REGION_SKIN, af::REGION_HAIR */
 
 #include <cstdio>
 #include <vector>
@@ -64,6 +65,65 @@ int main() {
         }
     }
     check("each LOD has bounded submesh index ranges", ranges);
+
+    /*
+     * Region-aware LOD: hair must survive simplification far better than skin, because the
+     * silhouette, braid strands and clump channels are the first thing clustering destroys.
+     * Two identical 24x24 grids give a like-for-like retention ratio.
+     */
+    std::vector<af_vertex> regionVertices(vertices);
+    for (auto& vertex : regionVertices) vertex.pos[2] = 0.0f;
+    std::vector<af_vertex> hairVertices(vertices);
+    for (auto& vertex : hairVertices) {
+        vertex.pos[0] += 2.0f;   /* separate space so the two grids never share clusters */
+        vertex.pos[2] = 1.0f;
+    }
+    regionVertices.insert(regionVertices.end(), hairVertices.begin(), hairVertices.end());
+    const auto gridIndices = indices;
+    std::vector<uint32_t> regionIndices(gridIndices);
+    for (uint32_t index : gridIndices) {
+        regionIndices.push_back(index + static_cast<uint32_t>(vertices.size()));
+    }
+
+    af_submesh regions[2]{};
+    regions[0].region = af::REGION_SKIN;
+    regions[0].vertex_offset = 0;
+    regions[0].vertex_count = static_cast<int32_t>(vertices.size());
+    regions[0].index_offset = 0;
+    regions[0].index_count = static_cast<int32_t>(gridIndices.size());
+    regions[1].region = af::REGION_HAIR;
+    regions[1].vertex_offset = static_cast<int32_t>(vertices.size());
+    regions[1].vertex_count = static_cast<int32_t>(hairVertices.size());
+    regions[1].index_offset = static_cast<int32_t>(gridIndices.size());
+    regions[1].index_count = static_cast<int32_t>(gridIndices.size());
+
+    af::AvatarLodSet regionalLod;
+    check("body+hair mesh builds three levels",
+          regionalLod.build(regionVertices.data(), regionVertices.size(), regionIndices.data(),
+                            regionIndices.size(), regions, 2) &&
+              regionalLod.levelCount() == af::kAvatarLodLevels);
+    if (regionalLod.levelCount() >= 2) {
+        const auto& coarse = regionalLod.level(1);
+        const float bodyRetention = static_cast<float>(coarse.submeshes[0].indexCount) /
+                                    static_cast<float>(gridIndices.size());
+        const float hairRetention = static_cast<float>(coarse.submeshes[1].indexCount) /
+                                    static_cast<float>(gridIndices.size());
+        check("hair keeps more triangles than skin at LOD1", hairRetention > bodyRetention);
+        check("hair keeps at least a third of its triangles at LOD1", hairRetention >= 0.33f);
+        check("skin is still simplified at LOD1", bodyRetention < 0.5f);
+        bool bounded = true;
+        for (const auto& range : coarse.submeshes) {
+            bounded = bounded && range.firstIndex + range.indexCount <=
+                                      coarse.firstIndex + coarse.indexCount;
+        }
+        check("region-aware LOD ranges stay inside the level", bounded);
+    }
+    af::AvatarLodSet regionalLodAgain;
+    regionalLodAgain.build(regionVertices.data(), regionVertices.size(), regionIndices.data(),
+                          regionIndices.size(), regions, 2);
+    check("region-aware LOD is deterministic",
+          regionalLodAgain.levelCount() == regionalLod.levelCount() &&
+              regionalLodAgain.indices() == regionalLod.indices());
 
     af::AvatarLodSet rejected;
     check("malformed index count is rejected",

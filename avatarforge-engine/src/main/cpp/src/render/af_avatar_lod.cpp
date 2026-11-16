@@ -2,6 +2,7 @@
  * af_avatar_lod.cpp -- deterministic index-only clustering for the single-avatar render path.
  */
 #include "af_avatar_lod.h"
+#include "af_mesh.h"   /* af::Region — hair and lashes are decimated differently from skin */
 
 #include <algorithm>
 #include <cmath>
@@ -17,6 +18,20 @@ namespace {
    These are targets, not guarantees: topology, UV seams and skin-weight boundaries can
    limit simplification, so runtime selection must always use measured generated counts. */
 constexpr float kLodFractions[2] = {0.12f, 0.05f};
+
+/*
+ * Hair keeps far more of its triangles than skin or cloth. At distance the silhouette, the braid
+ * strands, the Afro coil field and the long-hair clump channels are exactly what identifies the
+ * character, and clustering them like skin erases those reads first. The renderer is already
+ * index-only, so a denser hair submesh costs indices, not a second vertex stream, and it stays
+ * deformation-safe because every index still addresses the live kernel vertex. Lashes/eyebrows
+ * use the same fibre policy for the same reason.
+ */
+constexpr float kFibreLodFractions[2] = {0.55f, 0.28f};
+
+constexpr bool isFibreRegion(int32_t region) {
+    return region == REGION_HAIR || region == REGION_LASH;
+}
 constexpr uint32_t kInvalidIndex = std::numeric_limits<uint32_t>::max();
 
 struct EdgeKey {
@@ -278,7 +293,10 @@ bool AvatarLodSet::build(const af_vertex* restVertices, size_t vertexCount,
         levels_.push_back(std::move(full));
         if (indexCount == 0 || vertexCount == 0) return true;
 
-        for (float fraction : kLodFractions) {
+        for (size_t levelIndex = 0; levelIndex < sizeof(kLodFractions) / sizeof(kLodFractions[0]);
+             ++levelIndex) {
+            const float baseFraction = kLodFractions[levelIndex];
+            const float fibreFraction = kFibreLodFractions[levelIndex];
             AvatarLodLevel candidate;
             candidate.firstIndex = static_cast<uint32_t>(indices_.size());
             candidate.submeshes.resize(submeshCount);
@@ -287,6 +305,7 @@ bool AvatarLodSet::build(const af_vertex* restVertices, size_t vertexCount,
             for (size_t i = 0; i < submeshCount; ++i) {
                 const size_t first = static_cast<size_t>(submeshes[i].index_offset);
                 const size_t count = static_cast<size_t>(submeshes[i].index_count);
+                const float fraction = isFibreRegion(submeshes[i].region) ? fibreFraction : baseFraction;
                 simplifiedSubmeshes[i] = simplifySubmesh(restVertices, vertexCount, sourceIndices,
                                                            first, count, fraction);
                 candidateCount += simplifiedSubmeshes[i].size();

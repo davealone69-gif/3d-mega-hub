@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -34,6 +35,7 @@ class AvatarForgeSurfaceView(
     private val pixelCopyAttempts = AtomicInteger(0)
     private val pixelCopyActiveAttempt = AtomicInteger(0)
     private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var assetLoadMs = 0
     @Volatile private var surfaceReady = false
     @Volatile private var surfaceWidth = 0
     @Volatile private var surfaceHeight = 0
@@ -214,8 +216,17 @@ class AvatarForgeSurfaceView(
                 while (running.get() && surfaceReady && (surfaceWidth <= 0 || surfaceHeight <= 0)) Thread.sleep(10)
                 if (!running.get() || !surfaceReady) return@Thread
                 check(glbFile.isFile && glbFile.length() > 0L) { "Selected GLB is not available in app storage." }
-                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight}")
+                /* The parse/upload/decode phase inside nativeCreate is unbounded and previously invisible:
+                   2026-11-16 device diagnostics showed 13.9 s there for a 98.8 MiB GLB, with no state
+                   recorded between STARTING and RENDERER_ACTIVE. Publish it as its own state and carry the
+                   measured duration into every later report for the session. */
+                recordSmokeResult("ASSET_LOADING")
+                onStatus("Loading and uploading ${glbFile.name} (${glbFile.length() / 1024L} KiB)…")
+                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} bytes=${glbFile.length()} surface=${surfaceWidth}x${surfaceHeight}")
+                val assetLoadStartedNanos = System.nanoTime()
                 nativeHandle = nativeCreate(surfaceHolder.surface, glbFile.absolutePath, max(1, surfaceWidth), max(1, surfaceHeight))
+                assetLoadMs = ((System.nanoTime() - assetLoadStartedNanos) / 1_000_000L).toInt()
+                Log.i(TAG, "nativeCreate completed in ${assetLoadMs} ms")
                 check(nativeHandle != 0L) { "AvatarForge native renderer returned a null session." }
                 val rendererInfo = nativeGetInfo(nativeHandle)
                 check(rendererInfo.startsWith("gles31|")) {
@@ -228,6 +239,8 @@ class AvatarForgeSurfaceView(
                 var lastWidth = surfaceWidth
                 var lastHeight = surfaceHeight
                 var reportedFrame = false
+                val frameWaitBudgetMs = RendererTimeBudget.frameWaitMillis(apiVersion, Build.FINGERPRINT, Build.MODEL)
+                Log.i(TAG, "frame wait budget ${frameWaitBudgetMs} ms (software=${RendererTimeBudget.isSoftwareRenderer(apiVersion, Build.FINGERPRINT, Build.MODEL)})")
                 val frameWaitStarted = System.nanoTime()
                 while (running.get() && surfaceReady) {
                     val width = surfaceWidth
@@ -278,8 +291,8 @@ class AvatarForgeSurfaceView(
                                 presentedFrames, boundsInFrustum, outsideCorners, glError, eglError)
                             Log.i(TAG, "FRAME_PRESENTED api=$apiVersion frames=$frames presented=$presentedFrames draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum")
                             onStatus("EGL frame presented · $presentedFrames successful swaps · $drawCalls draw calls · $triangles triangles")
-                        } else if (System.nanoTime() - frameWaitStarted > 15_000_000_000L) {
-                            error("No drawable EGL-presented model frame within 15 seconds " +
+                        } else if (System.nanoTime() - frameWaitStarted > frameWaitBudgetMs * 1_000_000L) {
+                            error("No drawable EGL-presented model frame within ${frameWaitBudgetMs / 1000L} seconds " +
                                 "(frames=$frames presented=$presentedFrames framePresented=$framePresented " +
                                 "draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
                                 "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)})")
@@ -344,6 +357,7 @@ class AvatarForgeSurfaceView(
     ) {
         val preferences = context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE)
         if (status == "STARTING") {
+            assetLoadMs = 0
             // A new render session must not inherit the previous asset's capture identity.
             // Device diagnostics exported on 2026-11-16 recorded a 98.8 MiB asset that reached
             // FRAME_PRESENTED without ever being pixel-verified while still advertising the
@@ -378,6 +392,7 @@ class AvatarForgeSurfaceView(
             .put("asset", glbFile.name)
             .put("assetBytes", glbFile.length())
             .put("status", status)
+            .put("assetLoadMs", assetLoadMs)
             .put("backend", "OpenGL ES")
             .put("apiVersion", apiVersion)
             .put("surfaceWidth", surfaceWidth)
