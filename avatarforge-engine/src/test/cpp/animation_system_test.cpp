@@ -453,50 +453,157 @@ using CrossFadeCommand = af::anim::CrossFadeCommand;
                    static_cast<int>(moved), static_cast<int>(posed.size()));
         }
 
-        /* The rest-frame composition, pinned behaviourally rather than trusted. Pose::computeMatrices()
-           treats a channel value as the FULL local rotation, so fromAuthoredByRole must compose the
-           authored deviation on the target's rest. Fox happens to have identity rest rotations, where
-           this is invisible; mutating one proves the composition is really there. A Blender-exported
-           import whose rest rotations are not identity is the case this protects. */
+        /* DIRECTION ALIGNMENT, pinned physically rather than algebraically.
+           Rest rotations are identity on both the generated rig and mylove_rig_prepared.glb, so nothing
+           about the rest ORIENTATION distinguishes them - the difference is in the rest SHAPE: the
+           generated rig's upper arm points down, that avatar's points out to the side. fromAuthoredByRole
+           therefore conjugates each authored rotation by the shortest arc between the two rest bone
+           directions. These checks state what that must mean in terms of where the bone ends up pointing,
+           which is the only formulation that cannot be satisfied by mirroring the implementation. */
         {
-            Skeleton mutated = foxSkel;
-            int armJoint = -1;
-            for (int j = 0; j < mutated.count(); ++j) {
-                if (mutated.roles[static_cast<size_t>(j)] == Role::LeftUpperArm) { armJoint = j; break; }
+            Skeleton outSkel = foxSkel;
+            int arm = -1;
+            for (int j2 = 0; j2 < outSkel.count(); ++j2) {
+                if (outSkel.roles[static_cast<size_t>(j2)] == Role::LeftUpperArm) { arm = j2; break; }
             }
-            check(armJoint >= 0, "Fox has a LeftUpperArm to mutate");
-            if (armJoint >= 0) {
-                const Quat rest(0.0f, 0.70710678f, 0.0f, 0.70710678f);   /* 90 deg about +Y */
-                mutated.restR[static_cast<size_t>(armJoint)] = rest;
-                const af::Clip* walkA = nullptr;
-                for (const af::Clip& c : lib) if (c.name == "walk") walkA = &c;
-                const af::Track* srcTrack = nullptr;
-                if (walkA) for (const af::Track& t : walkA->tracks)
-                    if (t.jointName == "upperarm_01_L") srcTrack = &t;
-                check(walkA != nullptr && srcTrack != nullptr && !srcTrack->keys.empty(),
-                      "walk still carries an upperarm_01_L track to compare against");
-                if (walkA && srcTrack && !srcTrack->keys.empty()) {
-                    std::vector<std::string> skipM;
-                    Clip bound;
-                    check(Clip::fromAuthoredByRole(*walkA, mutated, &bound, &skipM),
-                          "walk binds to the mutated skeleton");
-                    const Channel* ch = nullptr;
-                    for (const Channel& c : bound.channels)
-                        if (c.joint == armJoint && c.path == Path::Rotation) ch = &c;
-                    check(ch != nullptr, "and the LeftUpperArm rotation channel targets the mutated joint");
-                    if (ch && !ch->values.empty()) {
-                        const Quat want = rest * srcTrack->keys.front().rotation;
-                        const Vec4 got = ch->values.front();
-                        const float d = std::fabs(got.x - want.x) + std::fabs(got.y - want.y) +
-                                        std::fabs(got.z - want.z) + std::fabs(got.w - want.w);
-                        checkf(d < 1e-4f, "the emitted value is rest * authored, not the authored value "
-                                          "verbatim (component error %.6f)", d);
-                        const Quat verbatim = srcTrack->keys.front().rotation;
-                        const float dv = std::fabs(got.x - verbatim.x) + std::fabs(got.y - verbatim.y) +
-                                         std::fabs(got.z - verbatim.z) + std::fabs(got.w - verbatim.w);
-                        checkf(dv > 1e-3f, "and it measurably differs from the verbatim value (%.6f), so "
-                                           "this check cannot pass by accident on an identity rest", dv);
+            int armChild = -1;
+            float bestLen = 0.0f;
+            if (arm >= 0) {
+                for (int c = 0; c < outSkel.count(); ++c) {
+                    if (outSkel.parents[static_cast<size_t>(c)] != arm) continue;
+                    const float l = outSkel.restT[static_cast<size_t>(c)].lengthSq();
+                    if (l > bestLen) { bestLen = l; armChild = c; }
+                }
+            }
+            check(arm >= 0 && armChild >= 0,
+                  "Fox has a LeftUpperArm with a child bone to re-aim");
+            if (arm >= 0 && armChild >= 0) {
+                /* Make the arm point OUT to the side, the way the real avatar binds, instead of down.
+                   Every other child of that joint is zeroed first: Fox's arm carries extra children, and
+                   leaving one longer than 0.25 would mean the implementation aligned to a different axis
+                   than the (-1, 0, 0) this test then asserts against. A zero-length child is skipped by
+                   the axis search, so exactly one candidate remains. */
+                for (int c = 0; c < outSkel.count(); ++c) {
+                    if (outSkel.parents[static_cast<size_t>(c)] == arm && c != armChild) {
+                        outSkel.restT[static_cast<size_t>(c)] = Vec3(0.0f, 0.0f, 0.0f);
                     }
+                }
+                outSkel.restT[static_cast<size_t>(armChild)] = Vec3(-0.25f, 0.0f, 0.0f);
+                /* Fox's rest rotations are not identity, and a channel value is a bone's FULL local
+                   rotation, so the direction the arm points at rest is restR.rotate(dTarget) rather than
+                   dTarget. Pinning restR to identity here isolates the alignment term, which is what these
+                   checks are about; the composition with rest is pinned separately just below. */
+                outSkel.restR[static_cast<size_t>(arm)] = Quat::identity();
+                const Vec3 dTarget(-1.0f, 0.0f, 0.0f);
+                const Vec3 dAuthored = authoredRestDirectionForRole(Role::LeftUpperArm);
+                check(dAuthored.lengthSq() > 0.5f,
+                      "the alignment table has a real rest direction for LeftUpperArm");
+                checkf(dAuthored.y < -0.5f,
+                       "and it points DOWN in the generated rig (y = %.4f), unlike the target's (%.4f)",
+                       static_cast<double>(dAuthored.y), static_cast<double>(dTarget.y));
+                const Quat A = Quat::fromTo(dAuthored, dTarget);
+                auto dot = [](const Vec3& a, const Vec3& b) {
+                    return static_cast<double>(a.x * b.x + a.y * b.y + a.z * b.z);
+                };
+                checkf(dot(A.rotate(dAuthored), dTarget) > 0.9999,
+                       "the alignment arc really maps the authored rest direction onto the target's (%.6f)",
+                       dot(A.rotate(dAuthored), dTarget), 0.0);
+
+                /* A hand-made authored clip: one key that does not move the bone, one that turns it 90
+                   degrees. Deterministic, so the expectations below are exact rather than approximate. */
+                af::Clip synth;
+                synth.name = "synth";
+                synth.duration = 1.0f;
+                synth.looping = true;
+                af::Track tr;
+                tr.jointName = "upperarm_01_L";
+                af::Keyframe k0;
+                k0.time = 0.0f;
+                k0.rotation = Quat::identity();
+                af::Keyframe k1;
+                k1.time = 1.0f;
+                k1.rotation = Quat::fromAxisAngle(Vec3(0.0f, 1.0f, 0.0f), 1.5707963f);
+                tr.keys.push_back(k0);
+                tr.keys.push_back(k1);
+                synth.tracks.push_back(tr);
+
+                std::vector<std::string> skipS;
+                Clip bound;
+                check(Clip::fromAuthoredByRole(synth, outSkel, &bound, &skipS),
+                      "the synthetic clip binds to the arms-out skeleton by role");
+                const Channel* ch = nullptr;
+                for (const Channel& c2 : bound.channels) {
+                    if (c2.joint == arm && c2.path == Path::Rotation) ch = &c2;
+                }
+                check(ch != nullptr && ch->values.size() == 2,
+                      "and produced one rotation channel with both keys");
+                if (ch && ch->values.size() == 2) {
+                    const Quat q0(ch->values[0].x, ch->values[0].y, ch->values[0].z, ch->values[0].w);
+                    const Quat q1(ch->values[1].x, ch->values[1].y, ch->values[1].z, ch->values[1].w);
+
+                    /* Invariant 1: a key that does not move the bone in the source rig must not move it
+                       in the target either. The import keeps its own bind shape. */
+                    const Vec3 r0 = q0.rotate(dTarget);
+                    checkf(dot(r0, dTarget) > 0.9999,
+                           "an identity-authored key leaves the arm pointing where the import binds it "
+                           "(cos %.6f)", dot(r0, dTarget), 0.0);
+
+                    /* Invariant 1b: the composition with the target's rest rotation, checked separately so
+                       that invariant 1 above is not passing merely because restR happens to be identity.
+                       A Blender-exported import with real rest rotations is the case this protects. */
+                    {
+                        Skeleton restSkel = outSkel;
+                        const Quat restQ = Quat::fromAxisAngle(Vec3(0.0f, 0.0f, 1.0f), 0.6f);
+                        restSkel.restR[static_cast<size_t>(arm)] = restQ;
+                        std::vector<std::string> skipR;
+                        Clip boundR;
+                        check(Clip::fromAuthoredByRole(synth, restSkel, &boundR, &skipR),
+                              "the synthetic clip also binds to a skeleton with a non-identity rest");
+                        const Channel* chR = nullptr;
+                        for (const Channel& c2 : boundR.channels) {
+                            if (c2.joint == arm && c2.path == Path::Rotation) chR = &c2;
+                        }
+                        if (chR && chR->values.size() == 2) {
+                            const Quat qr(chR->values[0].x, chR->values[0].y,
+                                          chR->values[0].z, chR->values[0].w);
+                            const Vec3 rr = qr.rotate(dTarget);
+                            const Vec3 wantRest = restQ.rotate(dTarget);
+                            checkf(dot(rr, wantRest) > 0.9999,
+                                   "with a non-identity rest, an identity-authored key reproduces that "
+                                   "rest exactly (cos %.6f)", dot(rr, wantRest), 0.0);
+                        } else {
+                            check(false, "the non-identity-rest skeleton produced the expected channel");
+                        }
+                    }
+
+                    /* Invariant 2: a key that DOES move it must land at the transported direction - the
+                       authored result swung into the target's frame by the same alignment arc. */
+                    const Vec3 want = A.rotate(k1.rotation.rotate(dAuthored));
+                    const Vec3 got = q1.rotate(dTarget);
+                    checkf(dot(want, got) > 0.9999,
+                           "a 90-degree authored key lands where transporting it predicts (cos %.6f)",
+                           dot(want, got), 0.0);
+
+                    /* Invariant 3: the angle from rest is preserved, which is what makes a motion clip
+                       keep its amplitude on a differently shaped skeleton. */
+                    const double authoredAngle = std::acos(std::min(1.0, std::max(-1.0,
+                        dot(k1.rotation.rotate(dAuthored), dAuthored))));
+                    const double gotAngle = std::acos(std::min(1.0, std::max(-1.0, dot(got, dTarget))));
+                    checkf(std::fabs(authoredAngle - gotAngle) < 1e-3,
+                           "the arm turns %.2f degrees from its own rest, matching the authored %.2f",
+                           gotAngle * 57.2957795, authoredAngle * 57.2957795);
+
+                    /* Discriminator: copying the authored rotation across verbatim - what this function
+                       did before alignment - must give a distinguishably different answer, or every
+                       check above could pass on an implementation that does nothing. */
+                    const Vec3 unaligned = k1.rotation.rotate(dTarget);
+                    checkf(dot(unaligned, got) < 0.99,
+                           "the verbatim reading would point the arm somewhere else (cos %.6f apart)",
+                           dot(unaligned, got), 0.0);
+                    infof("        arms-out transport: authored-from-rest %.2f deg, transported %.2f deg, "
+                          "verbatim would be %.2f deg off",
+                          authoredAngle * 57.2957795, gotAngle * 57.2957795,
+                          std::acos(std::min(1.0, std::max(-1.0, dot(unaligned, want)))) * 57.2957795);
                 }
             }
         }
@@ -2034,6 +2141,73 @@ using CrossFadeCommand = af::anim::CrossFadeCommand;
                     checkf(rolesFound >= 14,
                            "the generated rig resolves %d of %d humanoid roles, so it can retarget",
                            rolesFound, static_cast<int>(Role::COUNT));
+
+                    /* The alignment table in af_anim_clip.cpp hard-codes this rig's rest bone directions.
+                       A stale table would retarget every imported avatar by an outdated frame while every
+                       other check stayed green, so rebuild the rig and compare.
+
+                       The lookup is BY NAME, on the joint each authored track writes to and the child
+                       named in the table, NOT via jointForRole(): on this rig LeftUpperArm resolves to
+                       clavicle_L, and comparing the table against a clavicle's axis would fail on a table
+                       that is right. Which joint a role resolves to is assignRoles()'s business; which
+                       frame the authored rotations were written in is the table's. */
+                    {
+                        static const struct { Role role; const char* joint; const char* child; } kAxes[] = {
+                            { Role::Hips,           "hips",           "spine_01"      },
+                            { Role::Spine,          "spine_02",       "spine_03"      },
+                            { Role::Chest,          "chest",          "neck_01"       },
+                            { Role::Neck,           "neck_01",        "neck_02"       },
+                            { Role::LeftUpperLeg,   "thigh_L",        "shin_L"        },
+                            { Role::LeftLowerLeg,   "shin_L",         "foot_L"        },
+                            { Role::LeftFoot,       "foot_L",         "toe_L"         },
+                            { Role::RightUpperLeg,  "thigh_R",        "shin_R"        },
+                            { Role::RightLowerLeg,  "shin_R",         "foot_R"        },
+                            { Role::RightFoot,      "foot_R",         "toe_R"         },
+                            { Role::LeftUpperArm,   "upperarm_01_L",  "upperarm_02_L" },
+                            { Role::LeftLowerArm,   "forearm_01_L",   "forearm_02_L"  },
+                            { Role::RightUpperArm,  "upperarm_01_R",  "upperarm_02_R" },
+                            { Role::RightLowerArm,  "forearm_01_R",   "forearm_02_R"  },
+                        };
+                        const Skeleton& rigSkel = rigPlayer.skeleton();
+                        int compared = 0, mismatched = 0, missing = 0;
+                        double worstDot = 1.0;
+                        for (const auto& axis : kAxes) {
+                            const int jIdx = rigSkel.find(axis.joint);
+                            const int cIdx = rigSkel.find(axis.child);
+                            if (jIdx < 0 || cIdx < 0) { ++missing; continue; }
+                            const Vec3 t = rigSkel.restT[static_cast<size_t>(cIdx)];
+                            if (t.lengthSq() <= 1e-8f) { ++missing; continue; }
+                            const Vec3 d = t.normalizedOr(Vec3(0.0f, 0.0f, 0.0f));
+                            const Vec3 tabled = authoredRestDirectionForRole(axis.role);
+                            const double dv = static_cast<double>(d.x * tabled.x + d.y * tabled.y +
+                                                                  d.z * tabled.z);
+                            if (dv < worstDot) worstDot = dv;
+                            ++compared;
+                            if (dv < 0.9999) {
+                                ++mismatched;
+                                infof("        %s: %s->%s table (%+.4f %+.4f %+.4f) vs rig (%+.4f %+.4f %+.4f)",
+                                      roleName(axis.role), axis.joint, axis.child,
+                                      tabled.x, tabled.y, tabled.z, d.x, d.y, d.z);
+                            }
+                        }
+                        checkf(missing == 0,
+                               "every one of the 14 named axis pairs was found in the rebuilt rig "
+                               "(%d missing)", missing, 14);
+                        checkf(compared == 14,
+                               "the alignment table was compared against the rebuilt rig for %d roles",
+                               compared, 14);
+                        checkf(mismatched == 0,
+                               "%d role(s) disagree with the alignment table (worst cos %.6f)",
+                               mismatched, worstDot);
+                        /* The three absent entries must stay absent: a jaw or a finger is not a limb axis. */
+                        int absent = 0;
+                        for (Role r : { Role::Head, Role::LeftHand, Role::RightHand }) {
+                            if (authoredRestDirectionForRole(r).lengthSq() < 0.5f) ++absent;
+                        }
+                        checkf(absent == 3,
+                               "Head and both Hands stay out of the table (%d of 3 absent), because their "
+                               "first child is a jaw or a finger", absent, 3);
+                    }
                 }
             }
         }

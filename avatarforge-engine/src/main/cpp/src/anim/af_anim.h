@@ -378,6 +378,13 @@ Role authoredRoleForTrackName(const std::string& name);
  *  rig's rest SHAPE, which an imported file's bind pose already provides for itself. */
 bool authoredClipIsCalibrationPose(const std::string& clipName);
 
+/** The generated rig's rest bone direction for a Role, as the unit vector from that joint to its child in
+ *  the joint's own local frame - the frame the authored library's rotations were written in. A zero vector
+ *  means "no reliable axis" (Head and both Hands, whose first child is a jaw or a finger, not a limb), and
+ *  fromAuthoredByRole then skips direction alignment for that joint. Exposed so a test can rebuild the real
+ *  rig and prove these numbers have not gone stale. */
+af::Vec3 authoredRestDirectionForRole(Role role);
+
 /** Total morph targets across every mesh in an imported asset: the width of the flat morph array a
  *  Player allocates, and the count a weights channel's offset is measured against. */
 int totalMorphTargetsForAsset(const GlbAsset& asset);

@@ -51,7 +51,7 @@ cmake --build /tmp/build --parallel 8
 ctest --test-dir /tmp/build --output-on-failure
 ```
 
-Eight ctest jobs. `animation_system_regression` (`af_animation_system_test`, 388 checks) covers the
+Eight ctest jobs. `animation_system_regression` (`af_animation_system_test`, 398 checks) covers the
 animation core; `imported_animation_regression` (`af_imported_animation_test`, 129 checks) covers the
 engine's import path end to end — it imports the real `Fox.glb`, `CesiumMan.glb`,
 `AnimatedMorphCube.glb`, `CliplessRigged.glb` and `female.glb` through `af_engine_import_glb_from_memory`

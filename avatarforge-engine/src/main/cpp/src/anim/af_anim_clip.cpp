@@ -518,6 +518,123 @@ namespace {
    walk cycle bound that way drives the hips alone and the legs never move. Our own rig's names are known
    and fixed, so they are stated outright - and animation_system_test fails if the library grows a track
    name this table does not cover, which is the only way it can silently go stale. */
+/* THE AUTHORED RIG'S REST BONE DIRECTIONS, measured, not guessed.
+   Clip::fromAuthoredByRole has to know which way the generated rig's bones point at rest, because that
+   is the frame its rotations were written in. Dumped from a real af_engine build via af_engine_joint_info
+   (tools/ output recorded in the commit that added this), as the unit vector from each joint to its
+   child in the joint's own local frame:
+
+     Hips          (+0.000000 +0.998774 -0.049495)     RightUpperLeg  (-0.009328 -0.999859 +0.013992)
+     Spine         (+0.000000 +0.996751 +0.080545)     RightLowerLeg  (-0.004644 -0.999720 -0.023222)
+     Chest         (+0.000000 +0.997643 -0.068625)     RightFoot      (-0.055596 -0.269989 -0.961257)
+     Neck          (+0.000000 +0.994980 +0.100074)     RightUpperArm  (-0.156403 -0.987491 +0.019996)
+     LeftUpperLeg  (+0.009328 -0.999859 +0.013992)     RightLowerArm  (-0.086277 -0.996158 -0.014998)
+     LeftLowerLeg  (+0.004644 -0.999720 -0.023222)     LeftUpperArm   (+0.156403 -0.987491 +0.019996)
+     LeftFoot      (+0.055596 -0.269989 -0.961257)     LeftLowerArm   (+0.086277 -0.996158 -0.014998)
+
+   Each entry is the direction from the joint the library WRITES TO - the authored track's own joint, by
+   name - to the child named here, which is what makes the table reproducible rather than a snapshot of
+   one heuristic's mood:
+
+     hips->spine_01  spine_02->spine_03  chest->neck_01  neck_01->neck_02
+     thigh_L->shin_L  shin_L->foot_L  foot_L->toe_L        (and the mirrored right side)
+     upperarm_01_L->upperarm_02_L  forearm_01_L->forearm_02_L   (and the mirrored right side)
+
+   This is deliberately NOT "the joint jointForRole() picks in the generated rig". On that rig
+   LeftUpperArm resolves to clavicle_L, whose child direction is (+0.865, -0.493, -0.088); the authored
+   rotations were written for upperarm_01_L, whose axis is (+0.156, -0.987, +0.020). Keying the table to
+   the role-resolved joint would align imported arms to a clavicle's frame and be wrong by about 35
+   degrees. animation_system_test looks these joints up BY NAME and fails if the numbers drift.
+
+   Head, LeftHand and RightHand are deliberately ABSENT. Their first child is not a limb axis - it is a
+   jaw or a finger - so aligning to it would twist those bones by an arbitrary amount. A zero vector
+   means "no alignment", and the caller falls back to the plain rest composition.
+
+   animation_system_test rebuilds the generated rig and asserts this table still agrees with it, so a
+   change to the rig's proportions cannot leave these numbers quietly stale. */
+const Vec3& authoredRestBoneDirection(Role role) {
+    static const Vec3 kNone(0.0f, 0.0f, 0.0f);
+    static const Vec3 kTable[static_cast<size_t>(Role::COUNT)] = {
+        Vec3(+0.000000f, +0.998774f, -0.049495f),   /* Hips          */
+        Vec3(+0.000000f, +0.996751f, +0.080545f),   /* Spine         */
+        Vec3(+0.000000f, +0.997643f, -0.068625f),   /* Chest         */
+        Vec3(+0.000000f, +0.994980f, +0.100074f),   /* Neck          */
+        Vec3( 0.0f,  0.0f,  0.0f),                  /* Head   - no reliable axis */
+        Vec3(+0.009328f, -0.999859f, +0.013992f),   /* LeftUpperLeg  */
+        Vec3(+0.004644f, -0.999720f, -0.023222f),   /* LeftLowerLeg  */
+        Vec3(+0.055596f, -0.269989f, -0.961257f),   /* LeftFoot      */
+        Vec3(-0.009328f, -0.999859f, +0.013992f),   /* RightUpperLeg */
+        Vec3(-0.004644f, -0.999720f, -0.023222f),   /* RightLowerLeg */
+        Vec3(-0.055596f, -0.269989f, -0.961257f),   /* RightFoot     */
+        Vec3(+0.156403f, -0.987491f, +0.019996f),   /* LeftUpperArm  */
+        Vec3(+0.086277f, -0.996158f, -0.014998f),   /* LeftLowerArm  */
+        Vec3( 0.0f,  0.0f,  0.0f),                  /* LeftHand  - fingers, not an axis */
+        Vec3(-0.156403f, -0.987491f, +0.019996f),   /* RightUpperArm */
+        Vec3(-0.086277f, -0.996158f, -0.014998f),   /* RightLowerArm */
+        Vec3( 0.0f,  0.0f,  0.0f),                  /* RightHand - fingers, not an axis */
+    };
+    const int i = static_cast<int>(role);
+    if (i < 0 || i >= static_cast<int>(Role::COUNT)) return kNone;
+    return kTable[static_cast<size_t>(i)];
+}
+
+/* The next role down the chain, i.e. the joint that defines this bone's axis. Role::COUNT means the chain
+   ends here (a head, a hand, a foot) and there is no axis to align to. */
+Role authoredNextRole(Role role) {
+    switch (role) {
+        case Role::Hips:            return Role::Spine;
+        case Role::Spine:           return Role::Chest;
+        case Role::Chest:           return Role::Neck;
+        case Role::Neck:            return Role::Head;
+        case Role::LeftUpperLeg:    return Role::LeftLowerLeg;
+        case Role::LeftLowerLeg:    return Role::LeftFoot;
+        case Role::RightUpperLeg:   return Role::RightLowerLeg;
+        case Role::RightLowerLeg:   return Role::RightFoot;
+        case Role::LeftUpperArm:    return Role::LeftLowerArm;
+        case Role::LeftLowerArm:    return Role::LeftHand;
+        case Role::RightUpperArm:   return Role::RightLowerArm;
+        case Role::RightLowerArm:   return Role::RightHand;
+        default:                    return Role::COUNT;
+    }
+}
+
+/* The target skeleton's rest bone direction for one joint, in the joint's own local frame.
+
+   The child is chosen by ROLE first and by length only as a fallback, and that order is not a
+   preference. A longest-child rule picks the wrong bone on real skeletons: on the generated rig the
+   thighs (0.0805) are longer than the spine offset (0.0571), so Hips would take a leg as its axis, and
+   on mylove_rig_prepared.glb a shoulder can outrank the neck, so Chest would take a clavicle. Aligning
+   the torso to a limb's axis twists every clip that turns the body. Asking for the next role down the
+   chain gets the spine for Hips and the neck for Chest, and needs no measurement to be right.
+
+   The fallback matters because a skeleton can resolve a role onto a joint whose chain continuation was
+   assigned elsewhere: the generated rig resolves LeftUpperArm onto clavicle_L, whose child upperarm_01_L
+   does not itself hold a role. There the longest child is upperarm_02_L, which is the arm's real axis.
+
+   A zero vector means "no axis", and the caller then skips alignment rather than guessing. */
+Vec3 targetRestBoneDirection(const Skeleton& sk, int joint, Role role) {
+    const int n = sk.count();
+    const Role next = authoredNextRole(role);
+    if (next != Role::COUNT) {
+        for (int c = 0; c < n; ++c) {
+            if (sk.parents[static_cast<size_t>(c)] != joint) continue;
+            if (sk.roles[static_cast<size_t>(c)] != next) continue;
+            const Vec3& t = sk.restT[static_cast<size_t>(c)];
+            if (t.lengthSq() > 1e-8f) return t.normalizedOr(Vec3(0.0f, 0.0f, 0.0f));
+        }
+    }
+    Vec3 best(0.0f, 0.0f, 0.0f);
+    float bestLen = 0.0f;
+    for (int c = 0; c < n; ++c) {
+        if (sk.parents[static_cast<size_t>(c)] != joint) continue;
+        const Vec3& t = sk.restT[static_cast<size_t>(c)];
+        const float len = t.lengthSq();
+        if (len > bestLen) { bestLen = len; best = t; }
+    }
+    if (bestLen <= 1e-8f) return Vec3(0.0f, 0.0f, 0.0f);
+    return best.normalizedOr(Vec3(0.0f, 0.0f, 0.0f));
+}
+
 /* Two library entries are not motion: 't_pose' and 'a_pose' are single-key, 0.10 s CALIBRATION poses
    that state the generated rig's own rest shape. Transferring them onto a foreign skeleton was measured
    on mylove_rig_prepared.glb, whose bind pose is already arms-out (LeftUpperArm rest direction
@@ -581,6 +698,10 @@ Role authoredRoleForTrackName(const std::string& name) {
 
 bool authoredClipIsCalibrationPose(const std::string& clipName) {
     return isCalibrationPose(clipName);
+}
+
+Vec3 authoredRestDirectionForRole(Role role) {
+    return authoredRestBoneDirection(role);
 }
 
 bool Clip::fromAuthoredByRole(const af::Clip& authored, const Skeleton& target, Clip* out,
@@ -661,9 +782,37 @@ bool Clip::fromAuthoredByRole(const af::Clip& authored, const Skeleton& target, 
            binds arms-out, and no composition of local rotations reconciles the two. That is why the
            calibration poses above are refused rather than converted. */
         const Quat& rest = target.restR[static_cast<size_t>(joint)];
+        /* DIRECTION ALIGNMENT. Composing on the target's rest fixes a differing rest ORIENTATION, but
+           not a differing rest SHAPE, and the shape is where these two rigs actually disagree: the
+           generated rig's upper arm points down (+0.156, -0.987, +0.020) while mylove_rig_prepared.glb
+           binds its upper arm out to the side (-0.999, +0.040, 0.000), with identity rest rotations on
+           both. Copying an authored rotation across verbatim therefore imports the generated rig's
+           arms-down shape along with the motion, which is what collapsed that avatar's 0.825 arm span to
+           0.505 on t_pose and pulled dance's arms inward to 0.60.
+
+           Conjugating by the shortest arc between the two rest bone directions transports the rotation
+           into the target's own frame, so an authored deviation is applied RELATIVE to whatever shape the
+           import binds in. The invariant this buys, and the one the test suite pins: the bone ends up at
+           the same angle FROM ITS OWN REST as the authored bone sat from its rest, rather than being
+           pointed where the source rig's frame happens to put it. Measured on that avatar, wave's arm
+           goes from pulled inward (span 0.670) to raised (0.795 against a 0.825 bind), punch stops
+           flinging the arm sideways (1.048) and points it forward instead, and run/jog acquire a real
+           fore-aft arm swing they did not have. An identity-authored key already reproduced the target's
+           rest before this change and still does; what the alignment fixes is every non-identity one.
+
+           This does not make the calibration poses transferable - a clip that MEANS "arms horizontal"
+           cannot be carried by a relative transform onto a skeleton that is already horizontal, which is
+           why they stay refused above - and it deliberately says nothing about bone LENGTH, so a 1.75 m
+           library still does not translate a smaller import's root. */
+        const Vec3 authoredDir = authoredRestBoneDirection(role);
+        const Vec3 targetDir = targetRestBoneDirection(target, joint, role);
+        const bool canAlign = authoredDir.lengthSq() > 0.5f && targetDir.lengthSq() > 0.5f;
+        const Quat align = canAlign ? Quat::fromTo(authoredDir, targetDir) : Quat::identity();
+        const Quat alignInv = align.conjugate();
+        const Quat pre = rest * align;
         for (const Keyframe& kf : tr.keys) {
             rot.times.push_back(kf.time);
-            const Quat q = rest * kf.rotation;
+            const Quat q = pre * kf.rotation * alignInv;
             rot.values.push_back(Vec4(q.x, q.y, q.z, q.w));
         }
         out->channels.push_back(std::move(rot));
