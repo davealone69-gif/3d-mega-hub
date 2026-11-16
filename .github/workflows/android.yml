@@ -58,18 +58,12 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          emit() { while IFS= read -r line; do [ -n "$line" ] && echo "::error title=$1::${line:0:900}"; done; }
-          grep -rhoE '<testcase name="[^"]*" classname="[^"]*"' \
-            app/build/test-results/testDebugUnitTest/*.xml \
-            avatarforge-engine/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -40 | emit "test-case"
-          grep -rhoE '<failure message="[^"]{0,700}"' \
-            app/build/test-results/testDebugUnitTest/*.xml \
-            avatarforge-engine/build/test-results/testDebugUnitTest/*.xml 2>/dev/null \
-            | sed 's/^<failure message="//; s/"$//' | head -25 | emit "ASSERTION"
-          grep -E '^e: |^w: .*(error|deprecat)|FAILED|BUILD FAILED|Caused by|error:' gradle-unit.log \
-            | head -40 | emit "gradle"
-          if [ ! -s gradle-unit.log ]; then echo "::error::no gradle log was produced"; fi
-          tail -30 gradle-unit.log | emit "gradle-tail"
+          # GitHub caps annotations at 10 per level per run, so the budget is spent deliberately:
+          # real failures first as errors, log context as notices. An earlier version listed every
+          # testcase and consumed the entire error budget before reporting a single failure.
+          python3 tools/ci_report_test_failures.py gradle-unit.log >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/ci_report_test_failures.py gradle-unit.log --commands
+
 
   debug-build:
     name: Debug APK build
@@ -96,12 +90,9 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          emit() { while IFS= read -r line; do [ -n "$line" ] && echo "::error title=$1::${line:0:900}"; done; }
-          grep -E 'error:|fatal error|undefined (reference|symbol)|ninja: build stopped|Error [0-9]+' gradle-apk.log \
-            | head -40 | emit "NATIVE-or-KOTLIN"
-          grep -E '^e: |FAILED|BUILD FAILED|Caused by|Execution failed|A problem occurred' gradle-apk.log \
-            | head -30 | emit "gradle"
-          tail -40 gradle-apk.log | emit "gradle-tail"
+          python3 tools/ci_report_test_failures.py gradle-apk.log >> "$GITHUB_STEP_SUMMARY"
+          python3 tools/ci_report_test_failures.py gradle-apk.log --commands
+
       - uses: actions/upload-artifact@v7
         with:
           name: 3D-Mega-Hub-debug-apk
