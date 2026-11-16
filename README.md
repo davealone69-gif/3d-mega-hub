@@ -68,6 +68,37 @@ Do not create another implementation branch. Do not split work across competing 
 
 **Readiness decision: NOT READY.** The required production render instrumentation fails, the imported-GLB GLES smoke fails, and APK-level package/signature/hash verification is incomplete. Do not distribute these artifacts as a ready test APK. The README update itself creates a new PR head; all run results above belong only to the observed parent commit and must not be reused as exact-head evidence for the new commit.
 
+## Latest APK monitor snapshot: 2026-11-16
+
+**Observed PR #9:** open, targeting `main`; canonical branch `integration/avatarforge-renderer-port`; exact observed head before this README update: `f73eec156b1baf6d105b4e891d8db45f22e66f3f`. PR #9 remains unmerged. No source files were changed by this monitoring run.
+
+### Exact-head workflow runs
+
+| Workflow / run | Result | Job-level evidence |
+|---|---|---|
+| [Android CI #638](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43706109624) | **FAILED** | Unit tests, debug APK build, Android lint and R8/minification passed. Native C++ sampling regression failed to compile in job [132787460667](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43706109624/job/132787460667): `native_sampling_test.cpp:36` refers to `REGION_HAIR` without its namespace; compiler identifies `af::REGION_HAIR`. Instrumented smoke job [132787460620](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43706109624/job/132787460620) failed. |
+| [Release preview and Android emulator smoke #447](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43706109650) | **SUCCESS, not a renderer readiness pass** | Signed release preview and emulator install/launch smoke passed. The release workflow creates a one-run ephemeral CI key; this is not the owner's reusable production signing identity. The emulator job is install/launch smoke only. |
+
+### Required production generated-GLB-to-GLES SurfaceView gate
+
+**NOT RUN on this head.** The source contains the intended production test, `GeneratedAvatarRuntimeTest.generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView()`, in `app/src/androidTest/java/com/davemega/hub/avatarforge/GeneratedAvatarRuntimeTest.kt`. It generates and validates a GLB, attaches the production `AvatarForgeSurfaceView` to the app Activity, then requires visible-pixel, draw-call, multi-frame and screenshot evidence.
+
+However, the executed Android CI script explicitly filters instrumentation to `com.davemega.hub.AvatarForgeRendererSmokeTest`; it does not select `GeneratedAvatarRuntimeTest`. The executed smoke suite therefore does not prove the required production generated-GLB-to-GLES SurfaceView path.
+
+The executed smoke job itself failed before completing its three-test suite. Its generated-avatar debug diagnostic crashed with `OutOfMemoryError` while allocating 134,217,744 bytes; the crash stack identifies `FilamentPreviewView.readBounded(FilamentPreviewView.kt:446)`. This is the debug diagnostic's Filament file-preview route, not a passing production AvatarForge SurfaceView test. The uploaded renderer evidence artifact does not convert this failed run into a pass.
+
+### APK artifacts and inspection boundary
+
+Artifacts were produced for this exact SHA:
+- [Debug APK artifact 14158508686](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43706109624/artifacts/14158508686), from Android CI #638.
+- [Signed preview artifact 14158503818](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43706109650/artifacts/14158503818), from release preview #447; signed with a one-run ephemeral key.
+
+APK package ID, APK signing certificate identity/signature and APK-file SHA-256 were **NOT INSPECTED** in this run because the mandatory production render test did not pass. The artifact ZIPs and successful install/launch smoke are not sufficient evidence.
+
+**Readiness decision: NOT READY.** The required production test was not executed; the executed generated-avatar diagnostic crashed; the native C++ regression did not compile; and APK-level identity/signature/hash inspection remains outstanding. Do not distribute either artifact as the requested ready test APK.
+
+**Next-run requirement:** first re-read PR #9 and the exact branch head. This README update creates a new commit and changes the branch head, so none of the `f73eec156b1baf6d105b4e891d8db45f22e66f3f` workflow results may be reused as exact-head evidence for the resulting commit. Require a fresh run that actually invokes `GeneratedAvatarRuntimeTest.generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView`, then inspect the same-head APK artifact itself.
+
 ## Latest handover: 2026-11-15
 
 **Overall avatar-comparison status: MEASURED_WITH_GAPS. No verdict.** This update records the complete supplied aligned cross-section report. Artifact identities, geometry measurements and classifications below are agent-reported; they have not been independently recomputed in this repository workspace. This is not a build, renderer-runtime or phone-verification claim.
