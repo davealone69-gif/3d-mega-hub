@@ -71,8 +71,8 @@ def collect_test_failures(root: str) -> list[tuple[str, str, str, str]]:
                 body = (element.text or "").strip()
                 lines = body.splitlines()
                 detail = message or (lines[0].strip() if lines else "")
-                /* The first frame in our own code says where to look; JUnit writes it as "at pkg...",
-                   so strip the leading "at" rather than printing "at at". */
+                # The first frame in our own code says where to look. JUnit writes it as "at pkg...",
+                # so strip the leading "at" rather than printing "at at".
                 ours = [line.strip() for line in lines if "com.davemega" in line]
                 if ours:
                     frame = ours[0][3:].strip() if ours[0].startswith("at ") else ours[0]
