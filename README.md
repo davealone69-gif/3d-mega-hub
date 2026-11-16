@@ -459,7 +459,9 @@ Do not distribute or label either artifact as the first READY APK. The productio
 This README evidence update creates a new branch commit. Consequently, all run and APK evidence above applies **only** to `7b19ca760ac529f2f157ae1bc516a3d0333029b6`; it must not be carried forward as proof for the new README commit. Fresh Actions runs and a fresh artifact are required for the new exact branch head. No application source was changed, `main` was not modified, and PR #9 was not merged.
 
 
-## Cross-project reuse audit — 2026-11-15\n\nSee [the branch and private-repository reuse audit](docs/PROJECT_REUSE_AUDIT_2026-11-15.md). AvatarForge's standalone engine has a real adult-only unclothed base surface in source, but this Hub UI still selects `Outfit.JEANS_JACKET` and does not expose the adult confirmation gate. The closest real 3D-video donor is 3DDD's Filament `MediaCodec`/`MediaMuxer` exporter; its camera update and per-frame animation sampling need correction before reuse. No detailed anatomical mesh donor was found. The prepared Dropbox rig remains **UNVERIFIED** until its binary is inspected.
+## Cross-project reuse audit — 2026-11-15
+
+See [the branch and private-repository reuse audit](docs/PROJECT_REUSE_AUDIT_2026-11-15.md). AvatarForge's standalone engine has a real adult-only unclothed base surface in source, but this Hub UI still selects `Outfit.JEANS_JACKET` and does not expose the adult confirmation gate. The closest real 3D-video donor is 3DDD's Filament `MediaCodec`/`MediaMuxer` exporter; its camera update and per-frame animation sampling need correction before reuse. No detailed anatomical mesh donor was found. The prepared Dropbox rig remains **UNVERIFIED** until its binary is inspected.
 
 ## Bounded GLB import allocation fix (2026-11-17)
 
