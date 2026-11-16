@@ -1,8 +1,8 @@
 name: Kotlin compile gate
 
 # Compiles the app and its JVM tests without an emulator, and republishes Gradle's diagnostics as
-# check-run annotations. It exists because the full runtime workflow hides its log behind an
-# artifact host that is not always reachable, while annotations are readable from the API.
+# check-run annotations and a pull-request comment. It exists because the full runtime workflow hides
+# its log behind hosts that are not always reachable, while annotations and comments are.
 
 on:
   pull_request:
@@ -35,8 +35,30 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-36 platforms;android-37 build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Resolve and install SDK packages
+        shell: bash
+        run: |
+          set +e
+          # Discover what this image can actually install instead of hard-coding a platform name.
+          sdkmanager --list > sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" sdk-list.txt | sort -u > avail-platforms.txt
+          grep -oE "build-tools;[0-9.]+" sdk-list.txt | sort -u | tail -10 > avail-buildtools.txt
+          echo "--- available platforms ---"
+          tail -10 avail-platforms.txt
+          sdkmanager "platform-tools" "build-tools;36.0.0" "ndk;26.1.10909125" "cmake;3.22.1" > install-base.log 2>&1
+          echo "base install exit: $?"
+          tail -3 install-base.log
+          PLATFORM=$(grep -E "platforms;android-3[7-9]" avail-platforms.txt | sort -V | tail -1)
+          echo "chosen platform: ${PLATFORM:-none}"
+          if [ -n "$PLATFORM" ]; then
+            sdkmanager "$PLATFORM" > install-platform.log 2>&1
+            echo "platform install exit: $?"
+            tail -5 install-platform.log
+          fi
+          sdkmanager "platforms;android-36" > install-36.log 2>&1
+          echo "android-36 install exit: $?"
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
@@ -56,28 +78,12 @@ jobs:
           status=$?
           echo "gradle exit code: $status"
 
-          # Kotlin compiler diagnostics ("e: file:line:col message") are the lines worth surfacing.
           grep -E "^e: " build.log | head -8 | while IFS= read -r line; do
             echo "::error title=Kotlin::$line"
           done
-          # Test failures and script errors.
-          grep -E "FAILED|What went wrong|Caused by: |^> " build.log | head -8 | while IFS= read -r line; do
+          grep -E "FAILED|What went wrong|Caused by: " build.log | head -8 | while IFS= read -r line; do
             echo "::error title=Gradle::$line"
           done
-          if [ "$status" -ne 0 ]; then
-            # The root cause is a "Caused by:" line, usually far above the tail.
-            grep -E "^Caused by: " build.log | tail -3 | while IFS= read -r line; do
-              echo "::error title=Root cause::$line"
-            done
-            grep -B2 -A8 -m1 "What went wrong" build.log | head -9 | while IFS= read -r line; do
-              echo "::error title=What went wrong::$line"
-            done
-            grep -E "was not found|requires|incompatible|not supported|Unsupported|deprecated|requires API|minimum" build.log               | head -6 | while IFS= read -r line; do
-              echo "::error title=Detail::$line"
-            done
-          fi
-
-          # Unit test counts are useful even on a green run.
           grep -hE "tests? (completed|passed)" build.log | tail -5 | while IFS= read -r line; do
             echo "::notice::$line"
           done
@@ -90,18 +96,29 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
-          # Artifact and log downloads are not always reachable, so put the part that matters where
-          # it can be read with the ordinary API.
           {
             echo "### Kotlin compile gate"
+            if [ -f avail-platforms.txt ]; then
+              echo "<details><summary>SDK platforms this image can install</summary>"
+              echo
+              echo '```text'
+              tail -12 avail-platforms.txt
+              echo '```'
+              echo "</details>"
+              echo
+            fi
             echo '```text'
-            if grep -q "What went wrong" build.log 2>/dev/null; then
+            if [ -f build.log ] && grep -q "What went wrong" build.log; then
               sed -n '/What went wrong/,/BUILD FAILED/p' build.log | head -45
-            else
+            elif [ -f build.log ]; then
               grep -E "^(e: |w: )" build.log | head -40
+            else
+              echo "No Gradle log: a setup step failed before the build ran."
+              tail -15 install-base.log 2>/dev/null
+              tail -15 install-platform.log 2>/dev/null
             fi
             echo '```'
-            grep -E "BUILD (FAILED|SUCCESSFUL)" build.log | tail -1
+            [ -f build.log ] && grep -E "BUILD (FAILED|SUCCESSFUL)" build.log | tail -1
           } > excerpt.md
           gh pr comment "$PR" --body-file excerpt.md
 
@@ -110,5 +127,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kotlin-compile-log
-          path: build.log
+          path: |
+            build.log
+            sdk-list.txt
+            install-base.log
+            install-platform.log
+            avail-platforms.txt
           if-no-files-found: warn
