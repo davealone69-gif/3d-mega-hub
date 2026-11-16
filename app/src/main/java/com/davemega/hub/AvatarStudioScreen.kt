@@ -27,6 +27,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -92,6 +93,16 @@ fun AvatarStudioScreen(
     // viewer has not published them" when no animation controls appear.
     var clipInventory by remember(avatarUri) { mutableStateOf<GlbValidator.AnimationInventory?>(null) }
     var clipInventoryError by remember(avatarUri) { mutableStateOf<String?>(null) }
+    val appearancePrefs = remember { context.getSharedPreferences("mega_hub", Context.MODE_PRIVATE) }
+    var appearance by remember {
+        mutableStateOf(AppearanceStore.decode { key -> appearancePrefs.getString(key, null) })
+    }
+    fun applyAppearance(next: AvatarAppearance) {
+        appearance = next
+        val editor = appearancePrefs.edit()
+        AppearanceStore.encode(next).forEach { (key, value) -> editor.putString(key, value) }
+        editor.apply()
+    }
     LaunchedEffect(avatarUri) {
         clipInventory = null
         clipInventoryError = null
@@ -366,6 +377,87 @@ fun AvatarStudioScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Appearance", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Applied to Generate avatar. The prompt still drives measurements and detail; these controls " +
+                        "set the attributes the prompt parser would otherwise have to guess.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                AppearanceCycler(
+                    label = "Sex",
+                    value = appearance.sex.label(),
+                    onPrevious = { applyAppearance(appearance.copy(sex = Sex.entries.cycle(appearance.sex, false))) },
+                    onNext = { applyAppearance(appearance.copy(sex = Sex.entries.cycle(appearance.sex, true))) }
+                )
+                AppearanceCycler(
+                    label = "Build",
+                    value = appearance.build.label(),
+                    onPrevious = { applyAppearance(appearance.copy(build = Build.entries.cycle(appearance.build, false))) },
+                    onNext = { applyAppearance(appearance.copy(build = Build.entries.cycle(appearance.build, true))) }
+                )
+                AppearanceCycler(
+                    label = "Hair style",
+                    value = appearance.hairStyle.label(),
+                    onPrevious = {
+                        applyAppearance(appearance.copy(hairStyle = HairStyle.entries.cycle(appearance.hairStyle, false)))
+                    },
+                    onNext = {
+                        applyAppearance(appearance.copy(hairStyle = HairStyle.entries.cycle(appearance.hairStyle, true)))
+                    }
+                )
+                AppearanceCycler(
+                    label = "Hair colour",
+                    value = appearance.hairColour.label,
+                    onPrevious = {
+                        applyAppearance(appearance.copy(hairColour = HairColour.entries.cycle(appearance.hairColour, false)))
+                    },
+                    onNext = {
+                        applyAppearance(appearance.copy(hairColour = HairColour.entries.cycle(appearance.hairColour, true)))
+                    }
+                )
+                AppearanceCycler(
+                    label = "Outfit",
+                    value = appearance.outfit.label(),
+                    onPrevious = {
+                        applyAppearance(appearance.copy(outfit = AvatarAppearance.selectableOutfits.cycle(appearance.outfit, false)))
+                    },
+                    onNext = {
+                        applyAppearance(appearance.copy(outfit = AvatarAppearance.selectableOutfits.cycle(appearance.outfit, true)))
+                    }
+                )
+                AppearanceCycler(
+                    label = "Cloth colour",
+                    value = appearance.clothColour.label,
+                    onPrevious = {
+                        applyAppearance(appearance.copy(clothColour = ClothColour.entries.cycle(appearance.clothColour, false)))
+                    },
+                    onNext = {
+                        applyAppearance(appearance.copy(clothColour = ClothColour.entries.cycle(appearance.clothColour, true)))
+                    }
+                )
+                Text("Skin tone · melanin ${"%.2f".format(appearance.normalized().skinMelanin)}")
+                Slider(
+                    value = appearance.normalized().skinMelanin,
+                    onValueChange = { applyAppearance(appearance.copy(skinMelanin = it)) },
+                    valueRange = 0f..1f
+                )
+                Text("Height · ${"%.0f".format(appearance.normalized().heightCm)} cm")
+                Slider(
+                    value = appearance.normalized().heightCm,
+                    onValueChange = { applyAppearance(appearance.copy(heightCm = it)) },
+                    valueRange = 140f..220f
+                )
+                Text(
+                    "Will generate: ${appearance.describe()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("AvatarForge engine", style = MaterialTheme.typography.titleMedium)
                 if (engineHealth.usable) {
                     Text("Native library loaded · ABI ${engineHealth.abiVersion} · ${engineHealth.engineVersion}")
@@ -389,12 +481,12 @@ fun AvatarStudioScreen(
                                 pixelDiagnosticPath = null
                                 val result = AvatarForgeEngine.generate(
                                     context = context,
-                                    spec = AvatarSpec(prompt = generationPrompt.trim()),
+                                    spec = appearance.toSpec(prompt = generationPrompt.trim()),
                                     prompt = generationPrompt.trim()
                                 )
                                 onGenerated(Uri.fromFile(result.file), result.file.name)
                                 val warning = result.promptMatchWarning?.let { " · WARNING: $it" }.orEmpty()
-                                generationStatus = "Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB · deformed mesh validated=${result.deformedMeshValidated}$warning"
+                                generationStatus = "${appearance.describe()} · Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB · deformed mesh validated=${result.deformedMeshValidated}$warning"
                             } catch (cancelled: CancellationException) {
                                 generationStatus = "Generation cancelled."
                             } catch (failure: Exception) {
@@ -421,3 +513,33 @@ fun AvatarStudioScreen(
     }
 }
 
+/** Human-facing label for an engine enum constant. */
+private fun Enum<*>.label(): String = name.lowercase().replace('_', ' ')
+
+/** Wraps around the list so the cyclers can never land outside the valid values. */
+private fun <T> List<T>.cycle(current: T, forward: Boolean): T {
+    if (isEmpty()) return current
+    val index = indexOf(current).takeIf { it >= 0 } ?: 0
+    val step = if (forward) 1 else -1
+    return this[(index + step + size) % size]
+}
+
+/** Previous / value / next row used by the appearance controls. */
+@Composable
+private fun AppearanceCycler(
+    label: String,
+    value: String,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        OutlinedButton(onClick = onPrevious) { Text("←") }
+        Text(value, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1.2f))
+        OutlinedButton(onClick = onNext) { Text("→") }
+    }
+}
