@@ -124,7 +124,7 @@ data class AvatarAppearance(
     }
 }
 
-private fun Float.finiteOr(fallback: Float): Float = if (isFinite()) this else fallback
+internal fun Float.finiteOr(fallback: Float): Float = if (isFinite()) this else fallback
 
 /**
  * Persistence encoding for [AvatarAppearance], split out of Compose so it can be unit-tested on the

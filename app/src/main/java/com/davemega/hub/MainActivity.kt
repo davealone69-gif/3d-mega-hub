@@ -126,13 +126,43 @@ private fun MegaHubApp(
     var voiceStatus by remember { mutableStateOf("Android text-to-speech is available on this device.") }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
     var ttsReady by remember { mutableStateOf(false) }
+    var speech by remember {
+        mutableStateOf(SpeechSettings.decode(prefs.getString("speech_settings", null)))
+    }
+    var availableVoices by remember { mutableStateOf(listOf<String>()) }
+    /* The engine's own starting voice, so "engine default" is still reachable after a change. */
+    var defaultVoice by remember { mutableStateOf<String?>(null) }
+
+    /* Rate, pitch and voice are pushed to the engine whenever they change, and re-applied on the
+       callback path below because a freshly constructed engine starts at its own defaults. */
+    fun applySpeech(engine: TextToSpeech?, settings: SpeechSettings) {
+        val clean = settings.normalized()
+        engine?.setSpeechRate(clean.rate)
+        engine?.setPitch(clean.pitch)
+        val voices = engine?.voices?.map { it.name }.orEmpty().sorted()
+        availableVoices = voices
+        if (defaultVoice == null) defaultVoice = engine?.voice?.name?.takeIf { it in voices }
+        val resolved = SpeechVoices.resolve(voices, clean.voiceName)
+            ?: defaultVoice?.takeIf { it in voices }
+        if (resolved != null) {
+            engine?.voices?.firstOrNull { it.name == resolved }?.let { engine.voice = it }
+        }
+    }
+
+    fun updateSpeech(updated: SpeechSettings) {
+        speech = updated.normalized()
+        applySpeech(tts, speech)
+        prefs.edit().putString("speech_settings", SpeechSettings.encode(speech)).apply()
+    }
 
     DisposableEffect(context) {
         val engine = TextToSpeech(context) { result ->
             ttsReady = result == TextToSpeech.SUCCESS
             voiceStatus = if (ttsReady) "Speech engine ready" else "Speech engine failed to initialise"
+            if (ttsReady) applySpeech(engine, speech)
         }
         tts = engine
+        applySpeech(engine, speech)
         onDispose { engine.stop(); engine.shutdown(); tts = null }
     }
 
@@ -483,11 +513,44 @@ private fun MegaHubApp(
                     Text("Voice output", style = MaterialTheme.typography.headlineSmall)
                     Text(voiceStatus)
                     OutlinedTextField(voiceText, { voiceText = it }, label = { Text("Text to speak") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                    HubCard(
+                        "Voice settings",
+                        speech.describe(),
+                        "${availableVoices.size} voice(s) reported by this device's speech engine."
+                    )
+                    Text("Speech rate ${format(speech.rate)}x", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = speech.rate.coerceIn(0.5f, 2.0f),
+                        onValueChange = { updateSpeech(speech.copy(rate = it)) },
+                        valueRange = 0.5f..2.0f,
+                        steps = 5
+                    )
+                    Text("Pitch ${format(speech.pitch)}", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = speech.pitch.coerceIn(0.5f, 2.0f),
+                        onValueChange = { updateSpeech(speech.copy(pitch = it)) },
+                        valueRange = 0.5f..2.0f
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            updateSpeech(speech.copy(voiceName = SpeechVoices.cycle(availableVoices, speech.voiceName)))
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Voice: ${SpeechVoices.label(speech.voiceName, availableVoices)}") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { updateSpeech(SpeechSettings()) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Reset") }
+                        OutlinedButton(
+                            onClick = { tts?.stop() },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Stop speech") }
+                    }
                     Button(onClick = {
                         if (ttsReady) tts?.speak(voiceText, TextToSpeech.QUEUE_FLUSH, null, "mega-hub-voice")
                         else Toast.makeText(context, "Speech engine is not ready", Toast.LENGTH_SHORT).show()
                     }, enabled = ttsReady, modifier = Modifier.fillMaxWidth()) { Text("Speak") }
-                    OutlinedButton(onClick = { tts?.stop() }, modifier = Modifier.fillMaxWidth()) { Text("Stop speech") }
                     Text("Speech uses the Android voices installed on this phone. Viseme extraction and avatar lip-sync are not connected yet.")
                 }
                 HubPage.SETTINGS -> {
