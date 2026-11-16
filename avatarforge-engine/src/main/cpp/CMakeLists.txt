@@ -9,8 +9,22 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(AF_OPT_FLAGS "-O3" CACHE STRING "AvatarForge core optimization flags")
 set(AF_KERNEL_FLAGS ${AF_OPT_FLAGS} -fno-math-errno -fno-finite-math-only -ffp-contract=off)
 
+# Animation core (src/anim): renderer-agnostic clip sampling, blending, state machine, layers,
+# morph/facial control, lip-sync and retargeting. Pure CPU, no graphics or Android headers, so it
+# builds and is tested identically on the host and in the NDK.
+set(AF_ANIM_SOURCES
+    src/anim/af_anim_skeleton.cpp
+    src/anim/af_anim_clip.cpp
+    src/anim/af_anim_pose.cpp
+    src/anim/af_anim_statemachine.cpp
+    src/anim/af_anim_retarget.cpp
+    src/anim/af_anim_face.cpp
+    src/anim/af_anim_player.cpp
+    src/anim/af_anim_library.cpp)
+
 add_library(afcore SHARED
     src/af_anatomy.cpp
+    ${AF_ANIM_SOURCES}
     src/af_body.cpp
     src/render/af_avatar_lod.cpp
     src/af_engine.cpp
@@ -61,7 +75,8 @@ set_target_properties(afcore PROPERTIES VERSION "" SOVERSION "" PREFIX "lib")
 if(ANDROID)
     add_library(mega_hub_avatarforge SHARED
         avatarforge_jni.cpp
-        avatarforge_renderer_jni.cpp)
+        avatarforge_renderer_jni.cpp
+        avatarforge_animation_jni.cpp)
     target_include_directories(mega_hub_avatarforge PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -116,6 +131,34 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(af_scene_visibility_test PRIVATE afcore)
     add_test(NAME scene_visibility_regression COMMAND af_scene_visibility_test)
+
+    # Animation system end-to-end regression. Runs against the real Khronos glTF sample assets the
+    # app bundles, so the asset directory is baked in at configure time and can be overridden by
+    # passing a directory as the executable's first argument.
+    # Not a CACHE variable: a cached default goes stale when the tree moves. Override on the command
+    # line with -DAF_ANIMATION_TEST_ASSETS=/path/to/glbs if the fixtures live elsewhere.
+    # Default to the fixtures the app actually ships, so the host test proves the very files that end
+    # up in the APK rather than a second copy that could drift from them. Override with
+    # -DAF_ANIMATION_TEST_ASSETS=/path/to/glbs when building the engine module on its own.
+    if(NOT DEFINED AF_ANIMATION_TEST_ASSETS)
+        set(AF_ANIMATION_TEST_ASSETS
+            "${CMAKE_CURRENT_SOURCE_DIR}/../../../../app/src/main/assets/models/animation")
+    endif()
+    if(NOT EXISTS "${AF_ANIMATION_TEST_ASSETS}/Fox.glb")
+        message(WARNING
+            "animation test assets not found at ${AF_ANIMATION_TEST_ASSETS}; "
+            "animation_system_regression will fail until Fox.glb, CesiumMan.glb and "
+            "AnimatedMorphCube.glb are present there (see tools/fetch_animation_assets.py)")
+    endif()
+    add_executable(af_animation_system_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/animation_system_test.cpp)
+    target_include_directories(af_animation_system_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(af_animation_system_test PRIVATE
+        AF_TEST_ASSET_DIR="${AF_ANIMATION_TEST_ASSETS}")
+    target_link_libraries(af_animation_system_test PRIVATE afcore)
+    add_test(NAME animation_system_regression COMMAND af_animation_system_test)
 
     add_executable(af_imported_glb_pbr_test
         ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/imported_glb_pbr_test.cpp)

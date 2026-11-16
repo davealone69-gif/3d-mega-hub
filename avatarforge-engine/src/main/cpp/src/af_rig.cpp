@@ -807,6 +807,61 @@ const std::vector<Clip>& library() {
             jump.tracks.push_back(std::move(root));
         }
 
+        /* --- dance: 2.4 s groove at 100 BPM (four 0.6 s beats), full body ------------------ */
+        /* Hand-authored key data in the same style as every other clip in this library -- not
+           motion capture, and not a placeholder: it has a beat structure the other clips do not.
+           The groove is a two-step weight transfer with alternating overhead arm raises.
+             beat 1 (t=0.0)  weight on the left leg, right arm already overhead, hips yawed -10
+             beat 2 (t=0.6)  weight centres, knees pulse, right arm comes down / left arm starts up
+             beat 3 (t=1.2)  weight on the right leg, left arm overhead, hips yawed +10
+             beat 4 (t=1.8)  mirror of beat 2
+           Every track is keyed to the same value at t=0 and t=2.4 so the loop is seamless, and the
+           root bounce is keyed at half-beat resolution (0.3 s) because a pulse sampled only on the
+           beat reads as a lurch. Arms follow the wave clip's sign convention: +Z abducts the left
+           arm, -Z the right. */
+        make("dance", 2.4f, true, {
+            {"hips", track("", { {0.0f, rot(0, -10.0f, 6.0f)}, {0.6f, rot(4.0f, 0, 0)}, {1.2f, rot(0, 10.0f, -6.0f)}, {1.8f, rot(4.0f, 0, 0)}, {2.4f, rot(0, -10.0f, 6.0f)} })},
+            {"spine_02", track("", { {0.0f, rot(2.0f, -4.0f, 3.0f)}, {0.6f, rot(6.0f, 0, 0)}, {1.2f, rot(2.0f, 4.0f, -3.0f)}, {1.8f, rot(6.0f, 0, 0)}, {2.4f, rot(2.0f, -4.0f, 3.0f)} })},
+            {"chest", track("", { {0.0f, rot(-4.0f, 8.0f, -5.0f)}, {0.6f, rot(-2.0f, 0, 0)}, {1.2f, rot(-4.0f, -8.0f, 5.0f)}, {1.8f, rot(-2.0f, 0, 0)}, {2.4f, rot(-4.0f, 8.0f, -5.0f)} })},
+            {"neck_01", track("", { {0.0f, rot(2.0f, 2.0f, 0)}, {1.2f, rot(2.0f, -2.0f, 0)}, {2.4f, rot(2.0f, 2.0f, 0)} })},
+            {"head", track("", { {0.0f, rot(6.0f, 4.0f, 0)}, {0.3f, rot(-2.0f, 0, 0)}, {0.6f, rot(6.0f, 0, 0)}, {0.9f, rot(-2.0f, 0, 0)}, {1.2f, rot(6.0f, -4.0f, 0)}, {1.5f, rot(-2.0f, 0, 0)}, {1.8f, rot(6.0f, 0, 0)}, {2.1f, rot(-2.0f, 0, 0)}, {2.4f, rot(6.0f, 4.0f, 0)} })},
+            /* Alternating knee pulse: the weight transfer that makes it read as dance, not a wave
+               of the arms over a static body. */
+            {"thigh_L", track("", { {0.0f, rot(12.0f, 0, 2.0f)}, {0.6f, rot(30.0f, 0, 2.0f)}, {1.2f, rot(12.0f, 0, 2.0f)}, {1.8f, rot(30.0f, 0, 2.0f)}, {2.4f, rot(12.0f, 0, 2.0f)} })},
+            {"thigh_R", track("", { {0.0f, rot(30.0f, 0, -2.0f)}, {0.6f, rot(12.0f, 0, -2.0f)}, {1.2f, rot(30.0f, 0, -2.0f)}, {1.8f, rot(12.0f, 0, -2.0f)}, {2.4f, rot(30.0f, 0, -2.0f)} })},
+            {"shin_L", track("", { {0.0f, rot(16.0f, 0, 0)}, {0.6f, rot(48.0f, 0, 0)}, {1.2f, rot(16.0f, 0, 0)}, {1.8f, rot(48.0f, 0, 0)}, {2.4f, rot(16.0f, 0, 0)} })},
+            {"shin_R", track("", { {0.0f, rot(48.0f, 0, 0)}, {0.6f, rot(16.0f, 0, 0)}, {1.2f, rot(48.0f, 0, 0)}, {1.8f, rot(16.0f, 0, 0)}, {2.4f, rot(48.0f, 0, 0)} })},
+            {"foot_L", track("", { {0.0f, rot(-8.0f, 0, 0)}, {0.6f, rot(6.0f, 0, 0)}, {1.2f, rot(-8.0f, 0, 0)}, {1.8f, rot(6.0f, 0, 0)}, {2.4f, rot(-8.0f, 0, 0)} })},
+            {"foot_R", track("", { {0.0f, rot(6.0f, 0, 0)}, {0.6f, rot(-8.0f, 0, 0)}, {1.2f, rot(6.0f, 0, 0)}, {1.8f, rot(-8.0f, 0, 0)}, {2.4f, rot(6.0f, 0, 0)} })},
+            /* Right arm is overhead on beat 1 and down by beat 3; left arm is the mirror, half a
+               cycle out of phase. That is the whole hook of the groove. */
+            {"upperarm_01_R", track("", { {0.0f, rot(-140.0f, 0, -118.0f)}, {0.6f, rot(-64.0f, 0, -74.0f)}, {1.2f, rot(-18.0f, 0, -12.0f)}, {1.8f, rot(-64.0f, 0, -74.0f)}, {2.4f, rot(-140.0f, 0, -118.0f)} })},
+            {"upperarm_01_L", track("", { {0.0f, rot(-18.0f, 0, 12.0f)}, {0.6f, rot(-64.0f, 0, 74.0f)}, {1.2f, rot(-140.0f, 0, 118.0f)}, {1.8f, rot(-64.0f, 0, 74.0f)}, {2.4f, rot(-18.0f, 0, 12.0f)} })},
+            {"forearm_01_R", track("", { {0.0f, rot(-34.0f, 0, 28.0f)}, {0.6f, rot(-58.0f, 0, 16.0f)}, {1.2f, rot(-24.0f, 0, 0)}, {1.8f, rot(-58.0f, 0, 16.0f)}, {2.4f, rot(-34.0f, 0, 28.0f)} })},
+            {"forearm_01_L", track("", { {0.0f, rot(-24.0f, 0, 0)}, {0.6f, rot(-58.0f, 0, -16.0f)}, {1.2f, rot(-34.0f, 0, -28.0f)}, {1.8f, rot(-58.0f, 0, -16.0f)}, {2.4f, rot(-24.0f, 0, 0)} })},
+            {"hand_R", track("", { {0.0f, rot(-10.0f, 0, 6.0f)}, {0.6f, rot(14.0f, 0, 24.0f)}, {1.2f, rot(0, 0, 10.0f)}, {1.8f, rot(14.0f, 0, 24.0f)}, {2.4f, rot(-10.0f, 0, 6.0f)} })},
+            {"hand_L", track("", { {0.0f, rot(0, 0, -10.0f)}, {0.6f, rot(14.0f, 0, -24.0f)}, {1.2f, rot(-10.0f, 0, -6.0f)}, {1.8f, rot(14.0f, 0, -24.0f)}, {2.4f, rot(0, 0, -10.0f)} })},
+        });
+        /* Root bounce and lateral weight shift, in metres like the jump clip's root track. Keyed at
+           half-beat resolution and identical at t=0 and t=2.4, so the loop closes without a step. */
+        {
+            Clip& dance = out.back();
+            Track root;
+            root.jointName = "root";
+            root.keys = {
+                {0.00f, Quat::identity(), Vec3(-0.030f, -0.050f, 0)},
+                {0.30f, Quat::identity(), Vec3(-0.015f,  0.020f, 0)},
+                {0.60f, Quat::identity(), Vec3( 0.000f, -0.050f, 0)},
+                {0.90f, Quat::identity(), Vec3( 0.015f,  0.020f, 0)},
+                {1.20f, Quat::identity(), Vec3( 0.030f, -0.050f, 0)},
+                {1.50f, Quat::identity(), Vec3( 0.015f,  0.020f, 0)},
+                {1.80f, Quat::identity(), Vec3( 0.000f, -0.050f, 0)},
+                {2.10f, Quat::identity(), Vec3(-0.015f,  0.020f, 0)},
+                {2.40f, Quat::identity(), Vec3(-0.030f, -0.050f, 0)}
+            };
+            dance.tracks.push_back(std::move(root));
+        }
+
         /* --- wave: right arm raised, wrist oscillation ------------------------------------ */
         make("wave", 2.2f, true, {
             {"upperarm_01_L", track("", { {0.0f, rot(-30.0f, 0, 96.0f)}, {2.2f, rot(-30.0f, 0, 96.0f)} })},
@@ -896,7 +951,7 @@ namespace {
    wrong clip without any test noticing). */
 const char* const kClipOrder[] = {
         "rest", "idle", "breathe", "walk", "run", "jog", "squat", "jump", "wave",
-    "punch", "kick", "t_pose", "a_pose", "sit", "turn_360", "pushup"
+    "punch", "kick", "t_pose", "a_pose", "sit", "turn_360", "pushup", "dance"
 };
 const int kClipOrderCount = static_cast<int>(sizeof(kClipOrder) / sizeof(kClipOrder[0]));
 } // namespace

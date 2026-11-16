@@ -20,6 +20,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # A JNI signature mismatch is not a link error: the .so builds, the APK installs, and the failure
+      # surfaces at the first call as an UnsatisfiedLinkError on a device. Checking it here costs one
+      # second and needs no NDK, so it runs before the (much slower) native build.
+      - name: Check JNI / Kotlin animation bridge parity
+        run: python3 tools/check_jni_kotlin_parity.py
       - name: Configure host native tests
         run: cmake -S avatarforge-engine/src/main/cpp -B build/native-tests -DBUILD_TESTING=ON -DAF_OPT_FLAGS=-O1
       - name: Build native regression target

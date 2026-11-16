@@ -194,6 +194,7 @@ typedef enum af_clip {
     AF_CLIP_JOG, AF_CLIP_SQUAT, AF_CLIP_JUMP, AF_CLIP_WAVE, AF_CLIP_PUNCH,
     AF_CLIP_KICK, AF_CLIP_T_POSE, AF_CLIP_A_POSE, AF_CLIP_SIT, AF_CLIP_TURN_360,
     AF_CLIP_PUSHUP,          /* appended: keeps every previously published id stable */
+    AF_CLIP_DANCE,           /* appended for the same reason; mirrors kClipOrder in af_rig.cpp */
     AF_CLIP_COUNT
 } af_clip;
 

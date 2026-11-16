@@ -536,9 +536,26 @@ int readAccessorFloats(const uint8_t* bin, size_t binSize, const json::Json& doc
     return AF_OK;
 }
 
+/* Component count declared by an accessor's "type" (VEC3 -> 3, MAT4 -> 16, ...), or 0 when the
+   accessor is absent or its type is not one glTF defines. Needed by morph-target "weights"
+   channels, whose width is the target mesh's morph count rather than a fixed 3 or 4. */
+int accessorComponentCount(const json::Json& doc, int accessorIndex) {
+    if (accessorIndex < 0) return 0;
+    const json::Json& acc = doc["accessors"].atOrNull(static_cast<size_t>(accessorIndex));
+    if (acc.isNull()) return 0;
+    const std::string type = acc["type"].stringOr("");
+    if (type == "SCALAR") return 1;
+    if (type == "VEC2") return 2;
+    if (type == "VEC3") return 3;
+    if (type == "VEC4") return 4;
+    if (type == "MAT2") return 4;
+    if (type == "MAT3") return 9;
+    if (type == "MAT4") return 16;
+    return 0;
+}
+
 /* Indices as u32, whatever their stored width. */
-int readIndices(const uint8_t* bin, size_t binSize, const json::Json& doc, int accessorIndex,
-                std::vector<uint32_t>* out, std::string* error) {
+int readIndices(const uint8_t* bin, size_t binSize, const json::Json& doc, int accessorIndex,                std::vector<uint32_t>* out, std::string* error) {
     const json::Json& accessor =
         doc["accessors"].atOrNull(static_cast<size_t>(accessorIndex < 0 ? 0 : accessorIndex));
     if (accessorIndex < 0 || accessor.isNull() || accessor["type"].stringOr("") != "SCALAR") {
@@ -1409,6 +1426,21 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
     for (size_t mi = 0; mi < meshes.size(); ++mi) {
         const json::Json& mesh = meshes.at(mi);
         const std::string meshName = mesh["name"].stringOr("");
+        /* Morph metadata is recorded before the primitives are built: the animation system needs
+           the target count and names to drive a "weights" channel, and the renderer needs the count
+           to size its morph buffer. Neither is inferred from the mesh name. */
+        ImportedMesh im;
+        im.name = meshName;
+        for (const auto& primMeta : mesh["primitives"].items()) {
+            const json::Json& targets = primMeta["targets"];
+            const int morphCount = targets.isNull() ? 0 : static_cast<int>(targets.size());
+            im.primitiveMorphCounts.push_back(morphCount);
+            if (morphCount > im.morphTargetCount) im.morphTargetCount = morphCount;
+        }
+        for (const auto& targetName : mesh["extras"]["targetNames"].items()) {
+            im.targetNames.push_back(targetName.stringOr(""));
+        }
+        out->meshes.push_back(std::move(im));
         for (const auto& prim : mesh["primitives"].items()) {
             const AttributeKey key = attributeKey(prim);
             int poolIndex = -1;
@@ -1419,6 +1451,10 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
                 }
             }
             ImportedPrimitive ip;
+            /* Set before either push path: a primitive's morph count belongs to the primitive, and
+               pool sharing (which skips its attribute reads) must not lose it. */
+            const json::Json& primTargets = prim["targets"];
+            ip.morphTargetCount = primTargets.isNull() ? 0 : static_cast<int>(primTargets.size());
             if (poolIndex >= 0) {
                 /* Reuse: this primitive reads the same vertices as an earlier one, so it only
                    contributes its index range. Its attribute reads are skipped entirely, which is
@@ -1474,7 +1510,8 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
             if (path == "translation") chan.path = 0;
             else if (path == "rotation") chan.path = 1;
             else if (path == "scale") chan.path = 2;
-            else continue;   /* "weights" is not used by this engine's rig */
+            else if (path == "weights") chan.path = 3;
+            else continue;   /* an unknown target path is dropped, and reported below */
             const json::Json& sampler = a["samplers"].atOrNull(static_cast<size_t>(ch["sampler"].asInt(-1)));
             if (sampler.isNull()) continue;
             const std::string interp = sampler["interpolation"].stringOr("LINEAR");
@@ -1483,31 +1520,100 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
             std::vector<float> times;
             size_t timeCount = 0;
             if (readAccessorFloats(binChunk, binSize, doc, sampler["input"].asInt(-1), 1, &times, &timeCount, error) != AF_OK) continue;
+
+            if (chan.path == 3) {
+                /* Morph-target weights. glTF stores this output as a SCALAR accessor whose count is
+                   keyframes * targets (times three for CUBICSPLINE, which interleaves in-tangent,
+                   value and out-tangent per key) -- NOT as a VECn. So the per-key width has to come
+                   from the data divided by the keyframe count. Two wrong guesses are worth naming
+                   because both fail silently: reading the accessor's own component count collapses
+                   a two-target mesh to one channel and shifts every later sample onto the wrong
+                   target (AnimatedMorphCube then samples a constant 0.0), and assuming vec4 drops
+                   every target past the fourth, which is most of an ARKit face. */
+                const int outputAccessor = sampler["output"].asInt(-1);
+                std::vector<float> values;
+                size_t valueCount = 0;
+                if (readAccessorFloats(binChunk, binSize, doc, outputAccessor, 1, &values, &valueCount, error) != AF_OK) continue;
+                chan.times.assign(times.begin(), times.end());
+                const size_t keys = chan.times.size();
+                const size_t setsPerKey = (chan.interpolation == 2) ? 3u : 1u;
+                if (keys == 0 || values.empty() || (values.size() % (keys * setsPerKey)) != 0) {
+                    /* Reported, not guessed: a weights channel whose length is not a whole multiple
+                       of its keyframe count cannot be addressed, and playing it anyway would smear
+                       targets across keys. */
+                    if (error && error->empty()) {
+                        *error = "glTF: animation weights channel is " + std::to_string(values.size()) +
+                                 " scalars over " + std::to_string(keys) + " keyframe(s), which does not "
+                                 "divide into a whole number of morph targets";
+                    }
+                    continue;
+                }
+                const size_t stride = values.size() / (keys * setsPerKey);
+                chan.componentCount = static_cast<int>(stride);
+                if (chan.interpolation == 2) {
+                    chan.weightInTangents.assign(values.begin(),
+                                                 values.begin() + static_cast<ptrdiff_t>(keys * stride));
+                    chan.weightValues.assign(values.begin() + static_cast<ptrdiff_t>(keys * stride),
+                                             values.begin() + static_cast<ptrdiff_t>(keys * 2 * stride));
+                    chan.weightOutTangents.assign(values.begin() + static_cast<ptrdiff_t>(keys * 2 * stride),
+                                                  values.begin() + static_cast<ptrdiff_t>(keys * 3 * stride));
+                } else {
+                    chan.weightValues.swap(values);
+                }
+                if (!chan.times.empty()) anim.duration = chan.times.back() > anim.duration ? chan.times.back() : anim.duration;
+                anim.channels.push_back(std::move(chan));
+                continue;
+            }
+
+            /* Translation and scale live in VEC3 accessors; only rotation is VEC4. Asking for four
+               components from a VEC3 accessor makes readAccessorFloats refuse it, and the channel
+               used to be dropped by the `continue` below with no report at all. That is why an
+               imported Fox walked in place: all 20 rotation channels of each cycle survived and the
+               single translation channel on b_Hip_01 -- the one that carries the animal's travel --
+               did not. Read the accessor's own declared width and widen it into the Vec4 the rest of
+               the engine speaks. */
+            const int outputAccessor = sampler["output"].asInt(-1);
+            const int declared = accessorComponentCount(doc, outputAccessor);
+            if (declared != 3 && declared != 4) {
+                if (error && error->empty()) {
+                    *error = "glTF: animation output accessor " + std::to_string(outputAccessor) +
+                             " is not VEC3 or VEC4, so this TRS channel cannot be read";
+                }
+                continue;
+            }
+            const int comps = declared;
             std::vector<float> values;
             size_t valueCount = 0;
-            const int comps = 4;   /* vec4 covers translation, rotation and scale */
-            if (readAccessorFloats(binChunk, binSize, doc, sampler["output"].asInt(-1), comps, &values, &valueCount, error) != AF_OK) continue;
+            if (readAccessorFloats(binChunk, binSize, doc, outputAccessor, comps, &values, &valueCount, error) != AF_OK) continue;
+
+            /* Widen one accessor element to Vec4. A VEC3 translation gets w=0, which no consumer
+               reads for translation or scale; a VEC4 rotation keeps its real w. */
+            auto vecAt = [&](size_t element) {
+                Vec4 v(0.0f, 0.0f, 0.0f, 0.0f);
+                const size_t base = element * static_cast<size_t>(comps);
+                if (base + static_cast<size_t>(comps) > values.size()) return v;
+                v.x = values[base];
+                if (comps > 1) v.y = values[base + 1];
+                if (comps > 2) v.z = values[base + 2];
+                if (comps > 3) v.w = values[base + 3];
+                return v;
+            };
 
             chan.times.assign(times.begin(), times.end());
             if (chan.interpolation == 2) {
-                /* CUBICSPLINE stores three vec4/vec3 values per key: in-tangent, value, out. */
+                /* CUBICSPLINE stores three values per key in glTF order: in-tangent, value, out. */
                 const size_t keys = valueCount / 3;
                 chan.values.resize(keys);
                 chan.inTangents.resize(keys);
                 chan.outTangents.resize(keys);
                 for (size_t k = 0; k < keys; ++k) {
-                    chan.inTangents[k] = Vec4(values[(k * 3 + 0) * 4], values[(k * 3 + 0) * 4 + 1],
-                                              values[(k * 3 + 0) * 4 + 2], values[(k * 3 + 0) * 4 + 3]);
-                    chan.values[k] = Vec4(values[(k * 3 + 1) * 4], values[(k * 3 + 1) * 4 + 1],
-                                          values[(k * 3 + 1) * 4 + 2], values[(k * 3 + 1) * 4 + 3]);
-                    chan.outTangents[k] = Vec4(values[(k * 3 + 2) * 4], values[(k * 3 + 2) * 4 + 1],
-                                               values[(k * 3 + 2) * 4 + 2], values[(k * 3 + 2) * 4 + 3]);
+                    chan.inTangents[k] = vecAt(k * 3 + 0);
+                    chan.values[k] = vecAt(k * 3 + 1);
+                    chan.outTangents[k] = vecAt(k * 3 + 2);
                 }
             } else {
                 chan.values.resize(valueCount);
-                for (size_t k = 0; k < valueCount; ++k) {
-                    chan.values[k] = Vec4(values[k * 4], values[k * 4 + 1], values[k * 4 + 2], values[k * 4 + 3]);
-                }
+                for (size_t k = 0; k < valueCount; ++k) chan.values[k] = vecAt(k);
             }
             if (!chan.times.empty()) anim.duration = chan.times.back() > anim.duration ? chan.times.back() : anim.duration;
             anim.channels.push_back(std::move(chan));

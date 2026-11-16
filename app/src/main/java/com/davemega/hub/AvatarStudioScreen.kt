@@ -32,7 +32,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.compose.ui.viewinterop.AndroidView
+import com.davemega.hub.avatarforge.AnimationEngine
 import com.davemega.hub.avatarforge.AvatarForgeEngine
+import com.davemega.hub.avatarforge.FacialExpression
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
 import com.davemega.hub.avatarforge.AvatarSpec
 import com.davemega.hub.avatarforge.Build
@@ -80,6 +82,22 @@ fun AvatarStudioScreen(
     var animationSpeed by remember { mutableStateOf(1.0f) }
     var animationDuration by remember { mutableStateOf(0.0f) }
     var animationPosition by remember { mutableStateOf(0.0f) }
+
+    /* Native animation core controls. These drive af::anim through NativeAnimationDriver; when the core
+       cannot attach, the view falls back to gltfio's own Animator and every control below says so rather
+       than appearing to work. */
+    var nativeAnimEnabled by remember(avatarUri) { mutableStateOf(true) }
+    var nativeAnimStatus by remember { mutableStateOf("Native animation core idle.") }
+    var nativeClipNames by remember(avatarUri) { mutableStateOf<List<String>>(emptyList()) }
+    var nativeClipPlayable by remember(avatarUri) { mutableStateOf<List<Boolean>>(emptyList()) }
+    var crossfadeSeconds by remember { mutableStateOf(0.4f) }
+    var expressionAmount by remember { mutableStateOf(0.7f) }
+    var blinkEnabled by remember { mutableStateOf(false) }
+    var lipSyncText by remember { mutableStateOf("Hello, this lip sync is approximate.") }
+    var lipSyncSeconds by remember { mutableStateOf(3.0f) }
+    var stateMachineBuilt by remember(avatarUri) { mutableStateOf(false) }
+    var activeLayerCount by remember(avatarUri) { mutableStateOf(0) }
+    var advanceMicros by remember { mutableStateOf(0f) }
     val hasImportedFile = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.isFile == true
     var generationJob by remember { mutableStateOf<Job?>(null) }
     val generating = generationJob?.isActive == true
@@ -170,13 +188,27 @@ fun AvatarStudioScreen(
                                         animationSpeed = speed
                                         animationDuration = duration
                                         animationPosition = position
+                                        /* The frame callback is the only place that knows what the core
+                                           is doing right now, so the diagnostics are refreshed from it. */
+                                        val view = filamentPreviewView
+                                        val driver = view?.nativeAnimationDriver()
+                                        if (view != null) nativeAnimStatus = view.nativeAnimationStatus
+                                        if (driver != null) {
+                                            advanceMicros = driver.advanceMicros()
+                                            activeLayerCount = driver.session()?.layerCount ?: 0
+                                        }
                                     }
+                                    setNativeAnimationEnabled(nativeAnimEnabled)
                                     setModel(avatarUri)
                                     filamentPreviewView = this
                                 }
                             },
                             update = { view ->
                                 filamentPreviewView = view
+                                /* setModel is idempotent for an unchanged URI, so recomposition does not
+                                   reload the asset; setNativeAnimationEnabled attaches or detaches in
+                                   place when the toggle changes. */
+                                view.setNativeAnimationEnabled(nativeAnimEnabled)
                                 view.setModel(avatarUri)
                             },
                             modifier = Modifier.fillMaxWidth().height(420.dp)
@@ -248,6 +280,319 @@ fun AvatarStudioScreen(
                         }
                     } else {
                         Text("Waiting for GLB animation tracks. If this reports zero animations, the file has no playable clip for Filament.")
+                    }
+
+                    /* ================= native animation core ================= */
+                    OutlinedButton(
+                        onClick = { nativeAnimEnabled = !nativeAnimEnabled },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (nativeAnimEnabled) "Native animation core: on" else "Native animation core: off")
+                    }
+                    Text(
+                        if (nativeAnimEnabled) nativeAnimStatus
+                        else "Native animation core is off. gltfio's own Animator drives playback, so crossfades, " +
+                            "layers, facial control, lip-sync and retargeting are unavailable.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    val driver = filamentPreviewView?.nativeAnimationDriver()
+                    if (nativeAnimEnabled && driver == null) {
+                        Text(
+                            "The core is not driving this asset yet. It attaches when a GLB finishes loading, and it " +
+                                "needs a file with a skeleton or morph targets. Filament's Animator keeps playing the " +
+                                "asset meanwhile, so nothing above stops working.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (nativeAnimEnabled && driver != null) {
+                        val session = driver.session()
+                        val playable = driver.playableClips()
+                        val coreHealth = AnimationEngine.health
+
+                        Text(
+                            "Core: ${playable.size} clip(s) · ${session?.jointCount ?: 0} joints · " +
+                                "${session?.rolesMatched ?: 0}/17 roles · ${session?.morphCount ?: 0} morph target(s) · " +
+                                "last advance ${"%.1f".format(advanceMicros)} µs",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (!coreHealth.usable) {
+                            Text(
+                                "Native core unavailable: ${coreHealth.problem}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        driver.limitations.forEach { limit ->
+                            Text(
+                                "· $limit",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        /* ---- clips: play, or crossfade ---- */
+                        Text("Clips", style = MaterialTheme.typography.titleSmall)
+                        playable.chunked(3).forEach { rowClips ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                rowClips.forEach { clip ->
+                                    OutlinedButton(
+                                        onClick = {
+                                            driver.play(clip.info.index)
+                                            nativeAnimStatus = driver.status
+                                        },
+                                        enabled = clip.playable,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            if (clip.playable) clip.info.name else "${clip.info.name} (n/a)",
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        val notPlayable = playable.filterNot { it.playable }
+                        if (notPlayable.isNotEmpty()) {
+                            Text(
+                                "${notPlayable.size} clip(s) the core loaded but this renderer cannot apply: " +
+                                    notPlayable.joinToString(", ") { it.info.name },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Text(
+                            "Crossfade · ${"%.2f".format(crossfadeSeconds)} s",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Slider(
+                            value = crossfadeSeconds,
+                            onValueChange = { crossfadeSeconds = it },
+                            valueRange = 0.05f..2.0f
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            playable.filter { it.playable }.take(4).forEach { clip ->
+                                OutlinedButton(
+                                    onClick = {
+                                        driver.crossfadeTo(clip.info.index, crossfadeSeconds)
+                                        nativeAnimStatus = driver.status
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Text("fade → ${clip.info.name}", style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+
+                        /* ---- state machine ---- */
+                        Text("State machine", style = MaterialTheme.typography.titleSmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    val states = session?.buildStateMachine(crossfadeSeconds, allToAll = true) ?: -1
+                                    stateMachineBuilt = states > 0
+                                    session?.setStateMachineDriven(stateMachineBuilt)
+                                    nativeAnimStatus = if (stateMachineBuilt) {
+                                        "State machine built with $states state(s) and every edge declared; " +
+                                            "the core now owns the clocks."
+                                    } else {
+                                        "The state machine was not built: ${session?.lastError() ?: "no clips"}"
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text(if (stateMachineBuilt) "Rebuild states" else "Build states") }
+                            OutlinedButton(
+                                onClick = {
+                                    session?.setStateMachineDriven(false)
+                                    stateMachineBuilt = false
+                                    nativeAnimStatus = "State machine released; direct playback owns the clocks again."
+                                },
+                                enabled = stateMachineBuilt,
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Release") }
+                        }
+                        if (stateMachineBuilt) {
+                            playable.filter { it.playable }.chunked(3).forEach { rowClips ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    rowClips.forEach { clip ->
+                                        OutlinedButton(
+                                            onClick = {
+                                                /* requestState refuses an undeclared edge instead of
+                                                   snapping, and the refusal is reported: a button that
+                                                   silently did nothing would look like a bug. */
+                                                val accepted = session?.requestState(clip.info.name) ?: false
+                                                nativeAnimStatus = if (accepted) {
+                                                    "State '${clip.info.name}' requested."
+                                                } else {
+                                                    "Refused: ${session?.lastError() ?: "unknown state"}"
+                                                }
+                                            },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("→ ${clip.info.name}", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
+                                }
+                            }
+                            Text(
+                                "Current state: ${session?.currentStateName ?: "<none>"}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+
+                        /* ---- layers ---- */
+                        Text("Layers · $activeLayerCount active", style = MaterialTheme.typography.titleSmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    val target = playable.firstOrNull { it.playable }
+                                    if (target == null || session == null) {
+                                        nativeAnimStatus = "No playable clip to put on a layer."
+                                    } else {
+                                        val layer = session.addLayer(target.info.index, 0.6f, additive = false)
+                                        val masked = if (layer >= 0) {
+                                            session.setLayerMask(
+                                                layer,
+                                                com.davemega.hub.avatarforge.BoneMaskPreset.UPPER_BODY
+                                            )
+                                        } else -1
+                                        activeLayerCount = session.layerCount
+                                        nativeAnimStatus = if (layer >= 0) {
+                                            "Layer $layer added with '${target.info.name}' at weight 0.6, masked to " +
+                                                "$masked upper-body joint(s)."
+                                        } else {
+                                            "The layer was refused: ${session.lastError()}"
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Add upper-body layer") }
+                            OutlinedButton(
+                                onClick = {
+                                    val count = session?.layerCount ?: 0
+                                    if (session != null && count > 0) {
+                                        val enabled = session.setLayerEnabled(count - 1, false)
+                                        nativeAnimStatus = if (enabled) "Layer ${count - 1} muted."
+                                        else "Layer ${count - 1} could not be muted."
+                                    } else {
+                                        nativeAnimStatus = "There is no layer to mute."
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Mute top layer") }
+                        }
+
+                        /* ---- face ---- */
+                        Text("Face", style = MaterialTheme.typography.titleSmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(
+                                onClick = {
+                                    blinkEnabled = !blinkEnabled
+                                    session?.setBlinkEnabled(blinkEnabled)
+                                    nativeAnimStatus = if (blinkEnabled) {
+                                        "Autonomous blinking on (2–5 s interval)."
+                                    } else "Autonomous blinking off."
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text(if (blinkEnabled) "Blinking: on" else "Blinking: off") }
+                            OutlinedButton(
+                                onClick = {
+                                    session?.triggerBlink()
+                                    nativeAnimStatus = "Blink triggered."
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Blink now") }
+                            OutlinedButton(
+                                onClick = {
+                                    session?.resetFace()
+                                    nativeAnimStatus = "Face reset to neutral."
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Reset face") }
+                        }
+                        Text(
+                            "Expression amount · ${"%.2f".format(expressionAmount)}",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Slider(
+                            value = expressionAmount,
+                            onValueChange = { expressionAmount = it },
+                            valueRange = 0f..1f
+                        )
+                        FacialExpression.entries.chunked(4).forEach { rowExpressions ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                rowExpressions.forEach { expression ->
+                                    OutlinedButton(
+                                        onClick = {
+                                            val written = driver.setExpression(expression, expressionAmount)
+                                            nativeAnimStatus = when {
+                                                written > 0 ->
+                                                    "${expression.name} applied to $written morph channel(s)."
+                                                written == 0 ->
+                                                    "${expression.name} wrote nothing: this asset has no ARKit-named " +
+                                                        "morph targets for it."
+                                                else -> "The expression was refused: ${session?.lastError() ?: "no session"}"
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) { Text(expression.name, style = MaterialTheme.typography.labelSmall) }
+                                }
+                            }
+                        }
+                        val unbound = session?.unboundFaceChannels() ?: emptyList()
+                        if (unbound.isNotEmpty()) {
+                            Text(
+                                "Channels requested but absent from this asset: ${unbound.joinToString(", ")}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        /* ---- lip-sync ---- */
+                        Text("Lip-sync (approximate)", style = MaterialTheme.typography.titleSmall)
+                        OutlinedTextField(
+                            value = lipSyncText,
+                            onValueChange = { lipSyncText = it },
+                            label = { Text("Utterance") },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "Duration · ${"%.1f".format(lipSyncSeconds)} s",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Slider(
+                            value = lipSyncSeconds,
+                            onValueChange = { lipSyncSeconds = it },
+                            valueRange = 0.5f..12.0f
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Button(
+                                onClick = {
+                                    val keys = driver.speak(lipSyncText, lipSyncSeconds)
+                                    nativeAnimStatus = when {
+                                        keys > 0 -> "$keys viseme key(s) scheduled over ${"%.1f".format(lipSyncSeconds)} s."
+                                        else -> "No viseme keys: ${driver.status}"
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Speak") }
+                            OutlinedButton(
+                                onClick = {
+                                    driver.stopSpeaking()
+                                    nativeAnimStatus = "Lip-sync stopped."
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Stop") }
+                        }
+                        Text(
+                            "This maps SPELLING to a 15-viseme mouth set at a speaking rate derived from the " +
+                                "utterance. It is not a phoneme recogniser and does not listen to audio, so it will " +
+                                "not match a recording. Anything presented as lip-sync from audio would be a claim " +
+                                "this build cannot support.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 Text(

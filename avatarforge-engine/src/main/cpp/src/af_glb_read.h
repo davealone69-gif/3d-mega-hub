@@ -15,7 +15,11 @@
  *               (the exporter writes sparse morph targets, so the reader must); the attribute set
  *               the renderer consumes (POSITION, NORMAL, TANGENT, TEXCOORD_0, COLOR_0, JOINTS_0,
  *               WEIGHTS_0); indices of u8/u16/u32; node hierarchies with matrix or TRS; skins with
- *               inverse bind matrices; animation samplers with LINEAR/STEP/CUBICSPLINE keyframes;
+ *               inverse bind matrices; animation samplers with LINEAR/STEP/CUBICSPLINE keyframes on
+ *               every glTF target path -- translation, rotation, scale AND morph-target "weights"
+ *               (weights channels used to be discarded, which made facial/morph animation from an
+ *               imported file impossible; they are now parsed and reported); mesh morph-target
+ *               counts and mesh.extras.targetNames;
  *               materials with the metallic-roughness parameters and base-colour/emissive factors;
  *               embedded images in PNG and WebP (decoded to RGBA8). WebP, and JPEG, go through
  *               Android's platform decoder (AImageDecoder, API 30+); PNG uses the portable decoder.
@@ -78,6 +82,21 @@ struct ImportedPrimitive {
     int mesh = -1;            /* index into the document's meshes array               */
     int node = -1;            /* the first node that references this mesh, or -1      */
     std::string meshName;     /* for diagnostics and the asset browser                */
+    /* Morph targets declared on this primitive. The count is what a "weights" animation channel
+       and RenderableManager::setMorphWeights address; the target *displacements* are not decoded
+       into the vertex pool (that is the GPU/renderer's morph path), but the count and names are
+       reported so the animation system can drive them instead of guessing. */
+    int morphTargetCount = 0;
+};
+
+/* Per-mesh morph metadata. glTF puts the human-readable target names in mesh.extras.targetNames,
+   which is an exporter convention rather than a spec requirement, so `targetNames` may be empty
+   even when `morphTargetCount` is not -- callers must handle unnamed targets by index. */
+struct ImportedMesh {
+    std::string name;
+    int morphTargetCount = 0;              /* max over the mesh's primitives */
+    std::vector<std::string> targetNames;  /* may be empty or shorter than morphTargetCount */
+    std::vector<int> primitiveMorphCounts; /* parallel to this mesh's document primitives array */
 };
 
 struct ImportedMaterial {
@@ -119,16 +138,24 @@ struct ImportedSkin {
     int skeletonRoot = -1;
 };
 
-/* One animation channel: target node + path + keyframes. Values are stored as vec4 for
-   translation/scale as well (w unused), so one sampler type covers all three paths. */
+/* One animation channel: target node + path + keyframes. Translation/rotation/scale values are
+   stored as vec4 (w unused for the 3-component paths) so one sampler type covers all three.
+   Morph-target ("weights") channels are stored separately in `weightValues` as a flat
+   keys * componentCount array, because a mesh may carry more than four morph targets and a vec4
+   would silently truncate them. */
 struct ImportedAnimationChannel {
     int node = -1;
-    int path = 0;                       /* 0 translation, 1 rotation, 2 scale */
+    int path = 0;                       /* 0 translation, 1 rotation, 2 scale, 3 weights */
     std::vector<float> times;           /* seconds, strictly increasing as written */
     std::vector<Vec4> values;
     int interpolation = 0;              /* 0 linear, 1 step, 2 cubicspline (in/out tangents kept) */
     std::vector<Vec4> inTangents;
     std::vector<Vec4> outTangents;
+    /* ---- weights path only ---- */
+    int componentCount = 0;             /* morph targets addressed by this channel */
+    std::vector<float> weightValues;    /* keys * componentCount (x3 that for cubicspline) */
+    std::vector<float> weightInTangents;
+    std::vector<float> weightOutTangents;
 };
 
 struct ImportedAnimation {
@@ -151,6 +178,7 @@ struct GlbAsset {
     /* Vertex pools, shared by primitives with an identical attribute set. */
     std::vector<std::vector<af_vertex>> pools;
     std::vector<ImportedPrimitive> primitives;
+    std::vector<ImportedMesh> meshes;      /* parallel to the document's meshes array */
     std::vector<ImportedMaterial> materials;
     std::vector<ImportedTexture> textures;
     std::vector<ImportedSkin> skins;

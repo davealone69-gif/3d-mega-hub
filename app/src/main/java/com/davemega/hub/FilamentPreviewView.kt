@@ -64,6 +64,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var animationFrameCounter = 0
     private var animationInfoListener: ((Int, Int, Boolean, Boolean, Float, Float, Float) -> Unit)? = null
 
+    /* Native animation core integration. Off by default so the existing gltfio-only playback path is
+       unchanged for callers that do not opt in; see setNativeAnimationEnabled. */
+    private var nativeAnimationEnabled = false
+    private var nativeDriver: NativeAnimationDriver? = null
+    /* Retained so the core can parse the same bytes gltfio did. Both parsers must see one file, or the
+       clip lists being matched would not describe the same asset. */
+    private var loadedModelBytes: ByteArray? = null
+
     private var running = false
     private var statusListener: ((String) -> Unit)? = null
     private var lastStatus = "Waiting for an Android surface."
@@ -92,8 +100,20 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             if (activeRenderer != null && activeSwapChain != null && activeView != null) {
                 try {
                     updatePendingAssetLoad()
+                    val driver = nativeDriver
+                    if (driver != null && driver.isAttached) {
+                        /* The core owns the clocks and the blend; gltfio still samples and skins. When the
+                           core has nothing to apply this frame (idle, or a clip with no renderer
+                           counterpart), fall through to the gltfio path rather than freezing the model. */
+                        if (driver.tick(frameTimeNanos)) {
+                            animationFrameCounter++
+                            lastAnimationTickNanos = frameTimeNanos
+                            if (animationFrameCounter % 15 == 0) publishAnimationInfo()
+                        }
+                    }
                     val activeAnimator = animator
-                    if (activeAnimator != null && animationCount > 0) {
+                    val driverHandledFrame = driver != null && driver.isAttached
+                    if (!driverHandledFrame && activeAnimator != null && animationCount > 0) {
                         val index = selectedAnimation.coerceIn(0, animationCount - 1)
                         val duration = activeAnimator.getAnimationDuration(index)
                         if (duration.isFinite() && duration > 0f) {
@@ -155,7 +175,22 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         publishAnimationInfo()
     }
 
+    /**
+     * Reports playback state to the UI. When the native core owns the clock, everything reported comes
+     * from the core: its clip count, its current clip, its position and its duration. Reporting gltfio's
+     * numbers while the core drives playback would put a progress bar on the screen that measures a clock
+     * nothing is reading.
+     */
     private fun publishAnimationInfo() {
+        val driver = nativeDriver?.takeIf { it.isAttached }
+        val session = driver?.session()
+        if (driver != null && session != null) {
+            animationInfoListener?.invoke(
+                driver.clipCount, session.currentClip, session.isPlaying, animationLoop,
+                session.speed, session.currentDuration, session.position,
+            )
+            return
+        }
         val activeAnimator = animator
         val duration = if (activeAnimator != null && animationCount > 0) {
             activeAnimator.getAnimationDuration(selectedAnimation.coerceIn(0, animationCount - 1)).takeIf { it.isFinite() } ?: 0f
@@ -166,7 +201,106 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         )
     }
 
+    /**
+     * Hands the published asset to the native animation core.
+     *
+     * Failure here is reported and the view keeps working through gltfio's own Animator -- a character
+     * that animates with only its own clips is more useful than one that shows nothing because a second
+     * parser disagreed. [nativeAnimationStatus] carries the reason either way.
+     */
+    private fun attachNativeDriverIfEnabled(published: FilamentAsset, label: String) {
+        nativeDriver?.detach()
+        if (!nativeAnimationEnabled) {
+            nativeDriver = null
+            return
+        }
+        val bytes = loadedModelBytes
+        val activeAnimator = animator
+        val activeEngine = engine
+        if (bytes == null || activeAnimator == null || activeEngine == null) {
+            nativeAnimationStatus = "the native animation core was not attached: no asset bytes, animator or engine"
+            return
+        }
+        val driver = NativeAnimationDriver(activeEngine.renderableManager)
+        val attached = runCatching {
+            driver.attach(published, activeAnimator, bytes, label)
+        }.getOrElse { failure ->
+            nativeAnimationStatus = "native animation attach failed: ${failure.message ?: failure.javaClass.simpleName}"
+            false
+        }
+        nativeDriver = if (attached) driver else null
+        nativeAnimationStatus = driver.status
+        if (attached) {
+            val limitations = driver.limitations
+            if (limitations.isNotEmpty()) {
+                reportStatus("native animation: ${limitations.joinToString(" | ")}")
+            }
+        } else {
+            reportStatus("native animation unavailable: $nativeAnimationStatus")
+        }
+    }
+
+    /**
+     * Opts this view into driving animation from the native `af::anim` core instead of gltfio's Animator
+     * alone. Takes effect on the next asset load, or immediately when an asset is already published.
+     *
+     * What opting in adds: crossfades with verified alpha semantics, a state machine with declared
+     * edges, animation layers, autonomous blinking, expression presets, approximate lip-sync, root-motion
+     * readback, retargeting onto another character, per-frame timing and clip categories. What it does
+     * not change: gltfio still samples and skins the skeleton, so the two parsers are never asked to
+     * agree about joint order.
+     */
+    fun setNativeAnimationEnabled(enabled: Boolean) {
+        if (nativeAnimationEnabled == enabled) return
+        nativeAnimationEnabled = enabled
+        val published = filamentAsset
+        if (!enabled) {
+            nativeDriver?.detach()
+            nativeDriver = null
+            nativeAnimationStatus = "native animation core disabled; gltfio Animator drives playback"
+            return
+        }
+        if (published != null) {
+            val label = modelUri?.lastPathSegment ?: BUNDLED_MODEL
+            attachNativeDriverIfEnabled(published, label)
+        } else {
+            nativeAnimationStatus = "native animation core enabled; attaches when an asset is loaded"
+        }
+    }
+
+    fun isNativeAnimationEnabled(): Boolean = nativeAnimationEnabled
+
+    /** The driver, when attached. Null means gltfio's Animator is the only thing driving playback. */
+    fun nativeAnimationDriver(): NativeAnimationDriver? = nativeDriver
+
+    /** Why the native core is or is not driving this view. Always meaningful, never empty. */
+    var nativeAnimationStatus: String = "native animation core disabled; gltfio Animator drives playback"
+        private set
+
+    /**
+     * Selects the clip to play.
+     *
+     * The index space depends on who owns the clock, and [publishAnimationInfo] reports the matching
+     * count, so a picker built from that count always passes indices this method understands:
+     *  - with the native core attached, these are CORE clip indices (the richer list, with categories);
+     *  - otherwise they are gltfio animation indices, as before.
+     */
     fun selectAnimation(index: Int) {
+        val driver = nativeDriver?.takeIf { it.isAttached }
+        if (driver != null) {
+            val coreCount = driver.clipCount
+            if (coreCount <= 0) return
+            selectedAnimation = index.coerceIn(0, coreCount - 1)
+            animationPositionSeconds = 0f
+            if (!driver.play(selectedAnimation)) {
+                reportStatus("the animation core refused clip $selectedAnimation: ${driver.status}")
+                return
+            }
+            animationPlaying = true
+            lastAnimationTickNanos = 0L
+            publishAnimationInfo()
+            return
+        }
         if (animationCount <= 0) return
         selectedAnimation = index.coerceIn(0, animationCount - 1)
         animationPositionSeconds = 0f
@@ -180,6 +314,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     }
 
     fun setAnimationPlaying(playing: Boolean) {
+        val driver = nativeDriver?.takeIf { it.isAttached }
+        if (driver != null) {
+            if (playing) driver.resume() else driver.pause()
+            animationPlaying = playing
+            lastAnimationTickNanos = 0L
+            publishAnimationInfo()
+            return
+        }
         animationPlaying = playing && animationCount > 0
         lastAnimationTickNanos = 0L
         publishAnimationInfo()
@@ -189,6 +331,11 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         animationPlaying = false
         animationPositionSeconds = 0f
         lastAnimationTickNanos = 0L
+        nativeDriver?.takeIf { it.isAttached }?.let { driver ->
+            driver.stop()
+            publishAnimationInfo()
+            return
+        }
         if (animationCount > 0) {
             animator?.applyAnimation(selectedAnimation.coerceIn(0, animationCount - 1), 0f)
             animator?.updateBoneMatrices()
@@ -198,15 +345,37 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     fun setAnimationLoop(loop: Boolean) {
         animationLoop = loop
+        nativeDriver?.takeIf { it.isAttached }?.setLoop(loop)
         publishAnimationInfo()
     }
 
+    /**
+     * Playback speed. The core clamps to [0.05, 8] and REFUSES a negative or non-finite value rather
+     * than applying it, so a refusal is reported instead of leaving the UI showing a speed the character
+     * is not running at.
+     */
     fun setAnimationSpeed(speed: Float) {
         if (speed.isFinite() && speed > 0f) animationSpeed = speed.coerceIn(0.1f, 3.0f)
+        val driver = nativeDriver?.takeIf { it.isAttached }
+        if (driver != null && !driver.setSpeed(speed)) {
+            reportStatus("the animation core refused speed $speed: ${driver.status}")
+        }
         publishAnimationInfo()
     }
 
     fun seekAnimation(positionSeconds: Float) {
+        val driver = nativeDriver?.takeIf { it.isAttached }
+        if (driver != null) {
+            driver.seek(positionSeconds)
+            val session = driver.session()
+            animationPositionSeconds = session?.position ?: positionSeconds
+            /* Seeking does not resume a paused clip: dragging the timeline must not start playback the
+               user did not ask for. The core enforces this, so the flag is read back rather than set. */
+            animationPlaying = session?.isPlaying ?: animationPlaying
+            lastAnimationTickNanos = 0L
+            publishAnimationInfo()
+            return
+        }
         val activeAnimator = animator ?: return
         if (animationCount <= 0) return
         val duration = activeAnimator.getAnimationDuration(selectedAnimation.coerceIn(0, animationCount - 1))
@@ -461,6 +630,10 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
         destroyPendingAsset()
         destroyCurrentAsset()
+        /* Retained after the destroys above, which clear the previous asset's bytes. The core parses
+           the very same array gltfio just parsed, so the two clip lists being matched describe one
+           file rather than two that happen to share a name. */
+        loadedModelBytes = bytes
         val newAsset = loader.createAsset(ByteBuffer.wrap(bytes))
             ?: error("Filament gltfio could not parse this file as glTF 2.0 / GLB")
         try {
@@ -521,6 +694,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             val label = pendingAssetUri?.lastPathSegment ?: BUNDLED_MODEL
             pendingAssetUri = null
             lastReportedLoadProgress = -1
+            attachNativeDriverIfEnabled(pending, label)
             reportStatus("GLB loaded and GPU resources submitted: $label · ${pending.entities.size} nodes · $animationCount animation(s)")
         } catch (failure: Exception) {
             Log.e(TAG, "Asynchronous GLB resource load failed", failure)
@@ -564,6 +738,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     private fun destroyCurrentAsset() {
         destroyPendingAsset()
+        nativeDriver?.detach()
+        nativeDriver = null
+        loadedModelBytes = null
         val current = filamentAsset ?: return
         scene?.removeEntities(current.entities)
         assetLoader?.let { loader -> safelyDestroy("glTF asset") { loader.destroyAsset(current) } }
