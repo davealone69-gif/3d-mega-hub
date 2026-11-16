@@ -47,6 +47,19 @@ def main():
         committed = os.path.join(HERE, '..', '..', 'app', 'src', 'androidTest', 'assets', 'rigged_test_figure.glb')
         check(os.path.isfile(committed) and open(committed, 'rb').read() == open(single, 'rb').read(),
               'app/src/androidTest/assets/rigged_test_figure.glb is what "make_test_figure.py single" writes')
+        # The retargeting tests (host and Android) open a committed copy of the humanoid pack.
+        pack = os.path.join(folder, 'pack.glb')
+        check(run(os.path.join(HERE, 'make_humanoid_pack.py'), pack).returncode == 0, 'the humanoid motion pack is written')
+        committed_pack = os.path.join(HERE, '..', '..', 'app', 'src', 'androidTest', 'assets', 'humanoid_motion_pack.glb')
+        check(os.path.isfile(committed_pack) and open(committed_pack, 'rb').read() == open(pack, 'rb').read(),
+              'app/src/androidTest/assets/humanoid_motion_pack.glb is what make_humanoid_pack.py writes')
+        humanoid = read(pack)
+        check([a['name'] for a in humanoid['animations']] == ['Arms Up', 'Knee Lift', 'Turn Left', 'Hop', 'Stride Ahead'],
+              'the pack has the clips Arms Up, Knee Lift, Turn Left, Hop and Stride Ahead')
+        check(len(humanoid['skins'][0]['joints']) == 27 and all(humanoid['nodes'][j]['name'].startswith('mixamorig:') for j in humanoid['skins'][0]['joints']),
+              'its 27 joints carry the Mixamo prefix')
+        check(all(sum(1 for c in a['channels'] if c['target']['path'] == 'translation') == 1 for a in humanoid['animations']),
+              'and every clip moves the hips with one translation channel')
         figure = read(single)
         check([a['name'] for a in figure['animations']] == ['Wave', 'March', 'Bow'], 'the single figure has the clips Wave, March and Bow')
         check([round(duration(figure, a), 3) for a in figure['animations']] == [2.0, 1.0, 2.0], 'which last 2, 1 and 2 seconds')

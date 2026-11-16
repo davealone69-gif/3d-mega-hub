@@ -26,6 +26,7 @@
 #include "af_image.h"
 #include "af_png.h"
 #include "af_prompt.h"
+#include "af_retarget.h"
 #include "af_rig.h"
 #include "af_texture.h"
 #include "af_threads.h"
@@ -161,8 +162,18 @@ struct af_engine {
     /* The animations a caller can play on the model the engine holds: every clip of the library
        for a generated avatar; for an imported one, the file's own animations that the restored
        rig can play. */
-    struct Animation { std::string name; float duration = 0.0f; bool looping = true; int32_t clip = 0; };
+    struct Animation {
+        std::string name;
+        float duration = 0.0f;
+        bool looping = true;
+        int32_t clip = 0;        /* af_clip id of a built-in clip; -1 for one that came from a file */
+        int32_t cache = -1;      /* index into clipCache / clipOffsetCache / clipFrameCount */
+        int32_t source = 0;      /* 0 built into the engine, 1 retargeted from an imported file */
+        bool travels = false;    /* the source moved away; the clip plays on the spot */
+    };
     std::vector<Animation> animations;
+    /* Which joints each af_joint_mask covers: bit m of jointMasks[j] is set when joint j is in mask m. */
+    std::vector<uint8_t> jointMasks;
     bool importedRig = false;              /* the rig was restored from a file, not built here */
     std::vector<Vec3> deformed;
     std::vector<uint8_t> glbBytes;
@@ -390,6 +401,35 @@ void rebuildSubmeshesAndMaterials(af_engine* e) {
     e->indices.reserve(m.indices.size());
     for (size_t i = 0; i < e->materials.size(); ++i) {
         e->indices.insert(e->indices.end(), groupIndices[i].begin(), groupIndices[i].end());
+    }
+}
+
+/*
+ * Which joints belong to which part of the body, for layered playback. Decided by the rig's own
+ * names and hierarchy: the upper body is the first spine joint and everything that hangs from it;
+ * an arm is a clavicle and everything below it; the head is the neck and everything above it.
+ */
+void rebuildJointMasks(af_engine* e) {
+    const std::vector<Joint>& joints = e->rig.joints();
+    const size_t J = joints.size();
+    e->jointMasks.assign(J, static_cast<uint8_t>(1u << AF_MASK_FULL_BODY));
+    auto markSubtree = [&](const char* rootName, int mask) {
+        const int root = e->rig.jointIndex(rootName);
+        if (root < 0) return;
+        for (size_t j = 0; j < J; ++j) {
+            for (int a = static_cast<int>(j); a >= 0; a = joints[static_cast<size_t>(a)].parent) {
+                if (a == root) { e->jointMasks[j] |= static_cast<uint8_t>(1u << mask); break; }
+            }
+        }
+    };
+    markSubtree("spine_01", AF_MASK_UPPER_BODY);
+    markSubtree("clavicle_L", AF_MASK_LEFT_ARM);
+    markSubtree("clavicle_R", AF_MASK_RIGHT_ARM);
+    markSubtree("clavicle_L", AF_MASK_ARMS);
+    markSubtree("clavicle_R", AF_MASK_ARMS);
+    markSubtree("neck_01", AF_MASK_HEAD);
+    for (size_t j = 0; j < J; ++j) {
+        if (!(e->jointMasks[j] & (1u << AF_MASK_UPPER_BODY))) e->jointMasks[j] |= static_cast<uint8_t>(1u << AF_MASK_LOWER_BODY);
     }
 }
 
@@ -876,6 +916,7 @@ int32_t af_engine_bake_animation(af_engine* engine) {
         if (clips.empty()) return static_cast<int32_t>(AF_ERR_INTERNAL);
         const int jointCount = engine->rig.jointCount();
         const float hz = 30.0f;
+        const float motionScale = engine->rig.motionScale();
         engine->clipCache.assign(clips.size(), {});
         engine->clipOffsetCache.assign(clips.size(), {});
         engine->clipFrameCount.assign(clips.size(), 0);
@@ -906,7 +947,7 @@ int32_t af_engine_bake_animation(af_engine* engine) {
                     /* A track may also move its joint (the jump lifts the root). The exporter has
                        always written that as a translation channel; the engine's own playback
                        ignored it, so the same clip jumped in a glTF viewer and stood still here. */
-                    const Vec3 tv = bt.second->sampleTranslation(t);
+                    const Vec3 tv = bt.second->sampleTranslation(t) * motionScale;
                     if (std::fabs(tv.x) > 1e-6f || std::fabs(tv.y) > 1e-6f || std::fabs(tv.z) > 1e-6f) {
                         std::vector<float>& off = engine->clipOffsetCache[ci];
                         if (off.empty()) off.assign(static_cast<size_t>(frames) * jointCount * 3, 0.0f);
@@ -931,8 +972,10 @@ int32_t af_engine_bake_animation(af_engine* engine) {
             a.duration = clips[static_cast<size_t>(idx)].duration;
             a.looping = clips[static_cast<size_t>(idx)].looping;
             a.clip = id;
+            a.cache = idx;
             engine->animations.push_back(a);
         }
+        rebuildJointMasks(engine);
         char buf[128];
         std::snprintf(buf, sizeof(buf), "%zu clips baked at %.0f Hz (%d bound tracks)",
                       clips.size(), hz, boundTotal);
@@ -1135,6 +1178,9 @@ int32_t applyCurrentPose(af_engine* e) {
     return static_cast<int32_t>(AF_OK);
 }
 
+int32_t sampleCacheInto(const af_engine* e, int idx, float duration, bool looping, float t, float* quats,
+                        int32_t jointCount, float* offsets);
+
 int32_t sampleClipInto(const af_engine* e, int32_t clip, float t, float* quats, int32_t jointCount,
                        float* offsets = nullptr) {
     if (jointCount != e->rig.jointCount()) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
@@ -1155,13 +1201,25 @@ int32_t sampleClipInto(const af_engine* e, int32_t clip, float t, float* quats, 
         return static_cast<int32_t>(AF_OK);
     }
     const int idx = clipIndexForId(clip);
-    if (idx < 0 || static_cast<size_t>(idx) >= e->clipCache.size()) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    const std::vector<Clip>& clips = builtinClips();
+    if (idx < 0 || static_cast<size_t>(idx) >= clips.size()) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    return sampleCacheInto(e, idx, clips[static_cast<size_t>(idx)].duration, clips[static_cast<size_t>(idx)].looping,
+                           t, quats, jointCount, offsets);
+}
+
+/* One stored clip (built in or retargeted from a file) at one time: a rotation and an offset per
+   joint, interpolated between the two stored poses either side of `t`. */
+int32_t sampleCacheInto(const af_engine* e, int idx, float duration, bool looping, float t, float* quats,
+                        int32_t jointCount, float* offsets) {
+    if (jointCount != e->rig.jointCount()) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    if (idx < 0 || static_cast<size_t>(idx) >= e->clipCache.size() ||
+        static_cast<size_t>(idx) >= e->clipFrameCount.size()) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
     const std::vector<float>& cache = e->clipCache[static_cast<size_t>(idx)];
     const int frames = e->clipFrameCount[static_cast<size_t>(idx)];
-    const std::vector<Clip>& clips = builtinClips();
-    const float duration = clips[static_cast<size_t>(idx)].duration;
+    if (frames < 2 || !(duration > 0.0f) ||
+        cache.size() != static_cast<size_t>(frames) * static_cast<size_t>(jointCount) * 4) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
     float phase = t;
-    if (clips[static_cast<size_t>(idx)].looping) {
+    if (looping) {
         phase = std::fmod(t, duration);
         if (phase < 0.0f) phase += duration;
     } else {
@@ -1197,6 +1255,21 @@ int32_t sampleClipInto(const af_engine* e, int32_t clip, float t, float* quats, 
         }
     }
     return static_cast<int32_t>(AF_OK);
+}
+
+/* An animation of the model (index as in af_engine_animation_name) at one time; -1 is the rest
+   pose. The caller owns looping and seeking: here the time only has to be inside the clip. */
+int32_t sampleAnimationInto(const af_engine* e, int32_t animation, float t, float* quats, int32_t jointCount,
+                            float* offsets) {
+    if (animation < 0) return sampleClipInto(e, AF_CLIP_REST, 0.0f, quats, jointCount, offsets);
+    if (static_cast<size_t>(animation) >= e->animations.size()) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    const af_engine::Animation& a = e->animations[static_cast<size_t>(animation)];
+    t = std::max(0.0f, std::min(a.duration, std::isfinite(t) ? t : 0.0f));
+    /* The sampler wraps looping clips, which would turn t == duration into t == 0. Keep the last
+       frame addressable: a seek to the end must show the end. */
+    if (a.looping && t >= a.duration) t = a.duration * (1.0f - 1e-6f);
+    if (offsets) std::memset(offsets, 0, static_cast<size_t>(jointCount) * 3 * sizeof(float));
+    return sampleCacheInto(e, a.cache, a.duration, a.looping, t, quats, jointCount, offsets);
 }
 
 } // namespace
@@ -1242,18 +1315,8 @@ int32_t af_engine_evaluate_animation(const af_engine* engine, int32_t animation,
         thread_local std::vector<Vec3> translations;
         quats.assign(static_cast<size_t>(J) * 4, 0.0f);
         offsets.assign(static_cast<size_t>(J) * 3, 0.0f);
-        int32_t clip = AF_CLIP_REST;
-        if (animation >= 0) {
-            if (animation >= af_engine_animation_count(engine)) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
-            const af_engine::Animation& a = engine->animations[static_cast<size_t>(animation)];
-            clip = a.clip;
-            /* The caller owns looping and seeking; here the time only has to be inside the clip. */
-            time_seconds = std::max(0.0f, std::min(a.duration, std::isfinite(time_seconds) ? time_seconds : 0.0f));
-            /* The sampler wraps looping clips, which would turn t == duration into t == 0. Keep the
-               last frame addressable: a seek to the end must show the end. */
-            if (a.looping && time_seconds >= a.duration) time_seconds = a.duration * (1.0f - 1e-6f);
-        }
-        const int32_t rc = sampleClipInto(engine, clip, time_seconds, quats.data(), J, offsets.data());
+        if (animation >= af_engine_animation_count(engine)) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+        const int32_t rc = sampleAnimationInto(engine, animation, time_seconds, quats.data(), J, offsets.data());
         if (rc != AF_OK) return rc;
         locals.resize(static_cast<size_t>(J));
         translations.resize(static_cast<size_t>(J));
@@ -1275,6 +1338,235 @@ int32_t af_engine_evaluate_animation(const af_engine* engine, int32_t animation,
     } catch (...) {
         return static_cast<int32_t>(AF_ERR_INTERNAL);
     }
+}
+
+int32_t af_engine_animation_info(const af_engine* engine, int32_t animation, af_animation_info* out) {
+    if (!engine || !out || animation < 0 || animation >= af_engine_animation_count(engine)) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    const af_engine::Animation& a = engine->animations[static_cast<size_t>(animation)];
+    std::memset(out, 0, sizeof(*out));
+    std::snprintf(out->name, sizeof(out->name), "%s", a.name.c_str());
+    out->duration = a.duration;
+    out->looping = a.looping ? 1 : 0;
+    out->source = a.source;
+    out->travels = a.travels ? 1 : 0;
+    if (a.cache >= 0 && static_cast<size_t>(a.cache) < engine->clipFrameCount.size()) {
+        out->frames = engine->clipFrameCount[static_cast<size_t>(a.cache)];
+        out->moves_root = (static_cast<size_t>(a.cache) < engine->clipOffsetCache.size() &&
+                           !engine->clipOffsetCache[static_cast<size_t>(a.cache)].empty()) ? 1 : 0;
+    }
+    return static_cast<int32_t>(AF_OK);
+}
+
+float af_engine_joint_mask_weight(const af_engine* engine, int32_t mask, int32_t joint) {
+    if (!engine || mask < 0 || mask >= AF_MASK_COUNT || joint < 0 ||
+        static_cast<size_t>(joint) >= engine->jointMasks.size()) return 0.0f;
+    return (engine->jointMasks[static_cast<size_t>(joint)] & (1u << mask)) ? 1.0f : 0.0f;
+}
+
+int32_t af_engine_evaluate_layers(const af_engine* engine, const af_animation_layer* layers, int32_t layer_count,
+                                  float* out_skin_matrices4x4, int32_t max_joints) {
+    if (!engine || !out_skin_matrices4x4 || layer_count < 0 || (layer_count > 0 && !layers)) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    const int J = engine->rig.jointCount();
+    if (J == 0) return 0;
+    if (max_joints < J) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    if (engine->rig.inverseBind().size() != static_cast<size_t>(J)) return static_cast<int32_t>(AF_ERR_NOT_READY);
+    try {
+        /* Per-thread scratch, so that a call made every frame does not allocate. */
+        thread_local std::vector<float> quats, offsets, layerQuats, layerOffsets;
+        thread_local std::vector<Quat> locals;
+        thread_local std::vector<Vec3> translations;
+        const size_t n = static_cast<size_t>(J);
+        /* The pose starts as the rest pose; every layer is then blended over what is there. */
+        quats.assign(n * 4, 0.0f);
+        for (size_t j = 0; j < n; ++j) quats[j * 4 + 3] = 1.0f;
+        offsets.assign(n * 3, 0.0f);
+        layerQuats.resize(n * 4);
+        layerOffsets.resize(n * 3);
+        const bool masksReady = engine->jointMasks.size() == n;
+        for (int32_t li = 0; li < layer_count; ++li) {
+            const af_animation_layer& layer = layers[li];
+            const float weight = std::isfinite(layer.weight) ? std::max(0.0f, std::min(1.0f, layer.weight)) : 0.0f;
+            if (weight <= 0.0f) continue;
+            if (layer.animation >= af_engine_animation_count(engine)) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+            const int32_t mask = (layer.mask >= 0 && layer.mask < AF_MASK_COUNT) ? layer.mask : AF_MASK_FULL_BODY;
+            const int32_t rc = sampleAnimationInto(engine, layer.animation, layer.time_seconds, layerQuats.data(), J, layerOffsets.data());
+            if (rc != AF_OK) return rc;
+            for (size_t j = 0; j < n; ++j) {
+                if (mask != AF_MASK_FULL_BODY && !(masksReady && (engine->jointMasks[j] & (1u << mask)))) continue;
+                float* q = &quats[j * 4];
+                const float* lq = &layerQuats[j * 4];
+                /* Shortest way round, then a normalised blend: for the small angles between two
+                   poses of one joint this is indistinguishable from a slerp and has no branches. */
+                const float sign = (q[0] * lq[0] + q[1] * lq[1] + q[2] * lq[2] + q[3] * lq[3]) < 0.0f ? -1.0f : 1.0f;
+                float b[4];
+                float len2 = 0.0f;
+                for (int k = 0; k < 4; ++k) { b[k] = q[k] + (lq[k] * sign - q[k]) * weight; len2 += b[k] * b[k]; }
+                if (len2 > 1e-12f) {
+                    const float inv = 1.0f / std::sqrt(len2);
+                    for (int k = 0; k < 4; ++k) q[k] = b[k] * inv;
+                } else {
+                    for (int k = 0; k < 4; ++k) q[k] = lq[k];
+                }
+                float* o = &offsets[j * 3];
+                const float* lo = &layerOffsets[j * 3];
+                for (int k = 0; k < 3; ++k) o[k] += (lo[k] - o[k]) * weight;
+            }
+        }
+        locals.resize(n);
+        translations.resize(n);
+        for (size_t j = 0; j < n; ++j) {
+            locals[j] = Quat(quats[j * 4 + 0], quats[j * 4 + 1], quats[j * 4 + 2], quats[j * 4 + 3]).normalized();
+            translations[j] = Vec3(offsets[j * 3 + 0], offsets[j * 3 + 1], offsets[j * 3 + 2]);
+        }
+        const std::vector<Mat4> world = engine->rig.computeWorld(locals, translations);
+        const std::vector<Mat4>& ib = engine->rig.inverseBind();
+        for (size_t j = 0; j < n; ++j) {
+            const Mat4 skin = world[j] * ib[j];
+            std::memcpy(out_skin_matrices4x4 + j * 16, skin.m, 16 * sizeof(float));
+        }
+        return J;
+    } catch (const std::bad_alloc&) {
+        return static_cast<int32_t>(AF_ERR_OUT_OF_MEMORY);
+    } catch (...) {
+        return static_cast<int32_t>(AF_ERR_INTERNAL);
+    }
+}
+
+/* ==============================================================================================
+ * Motion from another skeleton
+ * ============================================================================================ */
+int32_t af_engine_import_motions_from_memory(af_engine* engine, const uint8_t* bytes, size_t size,
+                                             af_motion_import_report* out_report) {
+    af_motion_import_report scratch;
+    af_motion_import_report& report = out_report ? *out_report : scratch;
+    std::memset(&report, 0, sizeof(report));
+    auto say = [&](const std::string& text) { std::snprintf(report.message, sizeof(report.message), "%s", text.c_str()); };
+    if (!engine || !bytes || size == 0) {
+        say("No file data.");
+        return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    }
+    return guard(engine, "import_motions", [&]() {
+        if (engine->rig.jointCount() == 0 || engine->clipCache.empty()) {
+            say("This model has no skeleton the engine can move, so it cannot take motions from a file.");
+            return static_cast<int32_t>(AF_ERR_NOT_READY);
+        }
+        GlbAsset asset;
+        std::string error;
+        const int rc = importGlbSkeleton(bytes, size, &asset, &error);
+        if (rc != AF_OK) {
+            say("The file could not be read: " + error);
+            engine->lastError = "import_motions: " + error;
+            return static_cast<int32_t>(rc);
+        }
+        std::vector<RetargetedClip> clips;
+        RetargetReport rr;
+        const bool ok = retargetAnimations(asset, engine->rig, 30.0f, &clips, &rr);
+        report.source_joints = rr.sourceJoints;
+        report.recognised_joints = rr.recognisedJoints;
+        report.mapped_joints = rr.mappedJoints;
+        report.animations_in_file = rr.animationsInFile;
+        report.compatible = rr.compatible ? 1 : 0;
+        if (!ok) {
+            say(rr.message);
+            engine->log(AF_LOG_WARN, "import_motions: " + rr.message);
+            return static_cast<int32_t>(AF_ERR_UNSUPPORTED);
+        }
+        const size_t J = static_cast<size_t>(engine->rig.jointCount());
+        int added = 0;
+        for (RetargetedClip& clip : clips) {
+            if (clip.frames < 2 || clip.quats.size() != static_cast<size_t>(clip.frames) * J * 4) continue;
+            if (engine->animations.size() >= 512) break;
+            /* A name the user can tell apart: the file's own, tidied, and numbered when taken. */
+            std::string name;
+            for (char c : clip.name) {
+                if (static_cast<unsigned char>(c) < 0x20 || c == '|') continue;
+                name.push_back(c);
+            }
+            while (!name.empty() && name.back() == ' ') name.pop_back();
+            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+            if (name.empty()) name = "motion " + std::to_string(added + 1);
+            if (name.size() > 48) name.resize(48);
+            auto taken = [&](const std::string& candidate) {
+                for (const af_engine::Animation& a : engine->animations) if (a.name == candidate) return true;
+                return false;
+            };
+            if (taken(name)) {
+                int k = 2;
+                while (taken(name + " " + std::to_string(k)) && k < 1000) ++k;
+                name += " " + std::to_string(k);
+            }
+            af_engine::Animation a;
+            a.name = name;
+            a.duration = clip.duration;
+            a.looping = clip.looping;
+            a.clip = -1;
+            a.source = 1;
+            a.travels = clip.travels;
+            a.cache = static_cast<int32_t>(engine->clipCache.size());
+            engine->clipCache.push_back(std::move(clip.quats));
+            engine->clipOffsetCache.resize(engine->clipCache.size());
+            engine->clipOffsetCache.back() = std::move(clip.offsets);
+            engine->clipFrameCount.resize(engine->clipCache.size(), 0);
+            engine->clipFrameCount.back() = clip.frames;
+            engine->animations.push_back(std::move(a));
+            ++added;
+        }
+        report.animations_added = added;
+        say(rr.message);
+        engine->log(AF_LOG_INFO, "import_motions: " + rr.message);
+        return static_cast<int32_t>(added > 0 ? AF_OK : AF_ERR_UNSUPPORTED);
+    });
+}
+
+int32_t af_engine_import_motions(af_engine* engine, const char* absolute_path, af_motion_import_report* out_report) {
+    if (out_report) std::memset(out_report, 0, sizeof(*out_report));
+    if (!engine || !absolute_path) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    std::vector<uint8_t> bytes;
+    try {
+        std::ifstream in(absolute_path, std::ios::binary | std::ios::ate);
+        if (!in) {
+            if (out_report) std::snprintf(out_report->message, sizeof(out_report->message), "The file could not be opened.");
+            return static_cast<int32_t>(AF_ERR_IO);
+        }
+        const std::streamoff length = in.tellg();
+        if (length <= 0 || length > static_cast<std::streamoff>(512) * 1024 * 1024) {
+            if (out_report) std::snprintf(out_report->message, sizeof(out_report->message), "The file is empty or larger than 512 MB.");
+            return static_cast<int32_t>(AF_ERR_IO);
+        }
+        bytes.resize(static_cast<size_t>(length));
+        in.seekg(0);
+        in.read(reinterpret_cast<char*>(bytes.data()), length);
+        if (!in) {
+            if (out_report) std::snprintf(out_report->message, sizeof(out_report->message), "The file could not be read to its end.");
+            return static_cast<int32_t>(AF_ERR_IO);
+        }
+    } catch (const std::bad_alloc&) {
+        if (out_report) std::snprintf(out_report->message, sizeof(out_report->message), "Not enough memory to read the file.");
+        return static_cast<int32_t>(AF_ERR_OUT_OF_MEMORY);
+    }
+    return af_engine_import_motions_from_memory(engine, bytes.data(), bytes.size(), out_report);
+}
+
+/* ==============================================================================================
+ * Face animation without per-vertex storage
+ * ============================================================================================ */
+int32_t af_engine_face_kernel_count(const af_engine* engine) {
+    return engine ? static_cast<int32_t>(engine->rig.faceRig().kernels.size()) : 0;
+}
+
+int32_t af_engine_pack_face(const af_engine* engine, const float* weights, int32_t count,
+                            float* out_kernels, int32_t max_kernels, float* out_box) {
+    if (!engine || !weights || !out_kernels || !out_box || count <= 0 || max_kernels <= 0) return 0;
+    return engine->rig.faceRig().packActive(weights, count, out_kernels, max_kernels, out_box);
+}
+
+void af_face_evaluate_packed(const float* kernels, int32_t kernel_count, const float* box,
+                             const float* position3, float* out_delta3) {
+    if (!out_delta3) return;
+    out_delta3[0] = out_delta3[1] = out_delta3[2] = 0.0f;
+    if (!kernels || !box || !position3 || kernel_count <= 0) return;
+    const Vec3 d = FaceRig::evaluatePacked(kernels, kernel_count, box, Vec3(position3[0], position3[1], position3[2]));
+    out_delta3[0] = d.x; out_delta3[1] = d.y; out_delta3[2] = d.z;
 }
 
 int32_t af_engine_apply_pose(af_engine* engine, const af_pose* pose) {
@@ -1674,6 +1966,15 @@ bool adoptImportedRig(af_engine* e, const GlbAsset& asset) {
         return false;
     }
 
+    /* The face rig, when the file is from a version of this engine that writes it. */
+    if (!asset.faceRig.empty()) {
+        FaceRig face;
+        if (face.unpack(asset.faceRig.data(), asset.faceRig.size())) {
+            rig.setFaceRig(std::move(face));
+        } else {
+            e->log(AF_LOG_WARN, "import: the file's face rig is malformed; the face will not be animated");
+        }
+    }
     e->rig = std::move(rig);
     e->importedRig = true;
     const int n = e->rig.jointCount();
@@ -1910,6 +2211,7 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
     e->clipFrameCount.clear();
     e->poseOffsets.clear();
     e->animations.clear();
+    e->jointMasks.clear();
     e->importedRig = false;
     e->deformed.clear();
     e->field.reset();

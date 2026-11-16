@@ -477,6 +477,7 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             const int accTime = b.addAccessor(at);
 
             int bound = 0;
+            const float motionScale = rig->motionScale();
             for (const Track& tr : clip.tracks) {
                 const int joint = rig->jointIndex(tr.jointName.c_str());
                 if (joint < 0) continue;
@@ -490,7 +491,8 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
                     quats[static_cast<size_t>(f) * 4 + 1] = q.y;
                     quats[static_cast<size_t>(f) * 4 + 2] = q.z;
                     quats[static_cast<size_t>(f) * 4 + 3] = q.w;
-                    const Vec3 tv = tr.sampleTranslation(t);
+                    /* Scaled to this figure's legs, as the engine's own playback scales it. */
+                    const Vec3 tv = tr.sampleTranslation(t) * motionScale;
                     trans[static_cast<size_t>(f) * 3 + 0] = tv.x;
                     trans[static_cast<size_t>(f) * 3 + 1] = tv.y + ((joint == 0) ? dy : 0.0f);
                     trans[static_cast<size_t>(f) * 3 + 2] = tv.z;
@@ -870,6 +872,19 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
     jsonNum(j, layout ? layout->texelsPerMeter : 0.0f);
     j += "},\"groundOffsetY\":";
     jsonNum(j, res.groundOffsetY);
+    if (rig && !rig->faceRig().empty()) {
+        /* The face rig, in the space of the file: it moves with the model when the file is
+           grounded. This is what lets the importer animate the face again (af_face.h). */
+        FaceRig face = rig->faceRig();
+        if (dy != 0.0f) face.translate(Vec3(0.0f, dy, 0.0f));
+        const std::vector<float> packed = face.pack();
+        j += ",\"faceRig\":[";
+        for (size_t i = 0; i < packed.size(); ++i) {
+            if (i) j += ',';
+            jsonNum(j, packed[i]);
+        }
+        j += ']';
+    }
     j += "}";
 
     /* extensionsUsed: only those actually emitted. */

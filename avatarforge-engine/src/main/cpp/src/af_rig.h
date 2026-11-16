@@ -5,15 +5,17 @@
  * afterwards. That is why bind-pose skinning is exact: every joint sits at the analytic centre
  * of the limb it drives, so a zero rotation reproduces the rest mesh bit-for-bit.
  *
- * Joint set (75):
- *   root, hips, spine_01..03, chest, neck_01, head, jaw, eye_L/R
+ * Joint set (71):
+ *   root, hips, spine_01..04, chest, neck_01..02, head, jaw, eye_L/R
  *   clavicle/upperarm_01-02/forearm/hand + twist bones, per side
  *   15 finger joints per hand (thumb 3, index/middle/ring/little 3 each)
  *   thigh/shin/foot/toe + thigh_twist, per side
  *
- * Skinning: distance-to-bone falloff with a region mask (fingers only bind to hand bones, hair
- * only to head, etc.), top-4 influences, normalised to sum 1 - so the weights are valid
- * linear-blend-skinning weights by construction and survive GLB round-tripping.
+ * Skinning: every vertex belongs to the bone it lies on (the capsule from a joint to its child)
+ * and shares its weight only with bones within three joints of that one, by distance in limb
+ * radii; a region mask keeps hair on the head and nails on the fingers. Top-4 influences,
+ * normalised to sum 1, so the weights are valid linear-blend-skinning weights by construction
+ * and survive GLB round-tripping.
  *
  * Facial rig: 52 ARKit-compatible blendshape channels, generated as analytic displacement
  * fields over the face vertices so the same rig drives both the .glb morph targets and the
@@ -23,6 +25,7 @@
 #define AF_RIG_H
 
 #include "af_body.h"
+#include "af_face.h"
 #include "af_mesh.h"
 #include <array>
 #include <string>
@@ -88,6 +91,15 @@ public:
 
     int jointIndex(const char* name) const;
     float radiusScale() const { return radiusScale_; }
+    /** This figure's leg length over the 0.86 m the clip library's root translations assume. */
+    float motionScale() const;
+
+    /**
+     * The face rig: the kernels the 52 blendshapes are made of (af_face.h). Built with the rig of
+     * a generated avatar; a rig restored from a file has the one the file carried, or none.
+     */
+    const FaceRig& faceRig() const { return faceRig_; }
+    void setFaceRig(FaceRig rig) { faceRig_ = std::move(rig); }
 
 private:
     void buildSkeleton(const BodyField& field);
@@ -99,6 +111,7 @@ private:
     std::vector<SkinWeights> weights_;
     std::vector<Mat4> inverseBind_;
     mutable std::vector<std::vector<Vec3>> shapeCache_;
+    FaceRig faceRig_;
     float radiusScale_ = 1.0f;
     const BodyField* field_ = nullptr;
 };

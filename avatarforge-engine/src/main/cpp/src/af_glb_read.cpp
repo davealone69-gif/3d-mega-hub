@@ -1044,7 +1044,20 @@ void GlbAsset::bounds(Vec3* outMin, Vec3* outMax) const {
     if (outMax) *outMax = hi;
 }
 
+namespace {
+int importGlbImpl(const uint8_t* data, size_t size, GlbAsset* out, std::string* error, bool skeletonOnly);
+}
+
 int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* error) {
+    return importGlbImpl(data, size, out, error, false);
+}
+
+int importGlbSkeleton(const uint8_t* data, size_t size, GlbAsset* out, std::string* error) {
+    return importGlbImpl(data, size, out, error, true);
+}
+
+namespace {
+int importGlbImpl(const uint8_t* data, size_t size, GlbAsset* out, std::string* error, bool skeletonOnly) {
     if (error) error->clear();
     if (!out) {
         if (error) *error = "importGlb: null output";
@@ -1112,6 +1125,14 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
     }
     out->version = assetVersion;
     out->generator = doc["asset"]["generator"].stringOr("");
+    {
+        /* The face rig this engine writes into its own files; any other file has none. */
+        const json::Json& face = doc["extras"]["faceRig"];
+        if (face.isArray() && face.size() >= 6 && face.size() <= 6 + 4096 * 15) {
+            out->faceRig.reserve(face.size());
+            for (const auto& v : face.items()) out->faceRig.push_back(static_cast<float>(v.asNumber(0.0)));
+        }
+    }
 
     /* Extensions: record them all. Any *required* extension is fatal, because the document's
        meaning may depend on it and this reader implements none of them. */
@@ -1202,6 +1223,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         }
     }
 
+    if (!skeletonOnly) {
     /* ---- materials ---- */
     for (const auto& m : doc["materials"].items()) {
         ImportedMaterial mat;
@@ -1379,6 +1401,8 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         resolveMaterialTexture(material.emissiveTexture);
     }
 
+    } /* !skeletonOnly: materials and textures */
+
     /* ---- skins ---- */
     for (const auto& s : doc["skins"].items()) {
         ImportedSkin skin;
@@ -1409,6 +1433,7 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         out->skins.push_back(std::move(skin));
     }
 
+    if (!skeletonOnly) {
     /* ---- meshes -> primitives, sharing vertex pools where the attributes are identical ---- */
     const json::Json& meshes = doc["meshes"];
     std::vector<AttributeKey> poolKeys;
@@ -1467,6 +1492,8 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
         }
     }
 
+    } /* !skeletonOnly: meshes */
+
     /* ---- animations ---- */
     for (const auto& a : doc["animations"].items()) {
         ImportedAnimation anim;
@@ -1488,11 +1515,23 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
 
             std::vector<float> times;
             size_t timeCount = 0;
-            if (readAccessorFloats(binChunk, binSize, doc, sampler["input"].asInt(-1), 1, &times, &timeCount, error) != AF_OK) continue;
+            /* A rotation is a VEC4, a translation or a scale a VEC3. They are kept as vec4 (w = 0
+               for the two VEC3 paths) so that one channel type serves all three. Asking a VEC3
+               accessor for four components fails, which used to drop every translation and scale
+               channel without a word: a hop or a walk read from a file then stayed on the spot.
+               A channel that cannot be read is left out and must not leave its message behind as
+               if the whole import had failed. */
+            std::string channelError;
+            if (readAccessorFloats(binChunk, binSize, doc, sampler["input"].asInt(-1), 1, &times, &timeCount, &channelError) != AF_OK) continue;
+            std::vector<float> narrow;
             std::vector<float> values;
             size_t valueCount = 0;
-            const int comps = 4;   /* vec4 covers translation, rotation and scale */
-            if (readAccessorFloats(binChunk, binSize, doc, sampler["output"].asInt(-1), comps, &values, &valueCount, error) != AF_OK) continue;
+            const int stored = chan.path == 1 ? 4 : 3;
+            if (readAccessorFloats(binChunk, binSize, doc, sampler["output"].asInt(-1), stored, &narrow, &valueCount, &channelError) != AF_OK) continue;
+            values.assign(valueCount * 4, 0.0f);
+            for (size_t k = 0; k < valueCount; ++k) {
+                for (int c = 0; c < stored; ++c) values[k * 4 + static_cast<size_t>(c)] = narrow[k * static_cast<size_t>(stored) + static_cast<size_t>(c)];
+            }
 
             chan.times.assign(times.begin(), times.end());
             if (chan.interpolation == 2) {
@@ -1525,6 +1564,8 @@ int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* erro
     if (!resolveWorldTransforms(out, error)) return AF_ERR_INVALID_ARG;
     return AF_OK;
 }
+
+} /* namespace */
 
 bool resolveWorldTransforms(GlbAsset* asset, std::string* error) {
     const size_t n = asset->nodes.size();

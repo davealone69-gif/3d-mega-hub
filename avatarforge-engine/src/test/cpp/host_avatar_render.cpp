@@ -173,6 +173,12 @@ int main(int argc, char** argv) {
     int height = 800, clip = -1;
     float aspect = 0.5f, pitch = 4.0f, clipTime = 0.0f;
     bool report = false, joints = false, generate = false, draft = false;
+    std::string blend;   /* "jawOpen=1,mouthSmileLeft=0.6": ARKit channels, generated avatars only */
+    std::string face;    /* the same channels through the face rig, as the renderer applies them */
+    std::string motions; /* a rigged GLB whose animations are retargeted onto the avatar */
+    std::string anim, overlay, fade;   /* animations by name or index, through af_engine_evaluate_layers */
+    float animTime = 0.0f, overlayTime = 0.0f, overlayWeight = 1.0f, fadeTime = 0.0f, fadeWeight = 0.5f;
+    int overlayMask = AF_MASK_UPPER_BODY;
     int genSex = AF_SEX_FEMALE, genBuild = AF_BUILD_ATHLETIC, genHair = AF_HAIR_MEDIUM, genOutfit = AF_OUTFIT_TSHIRT, genFootwear = AF_FOOTWEAR_NONE;
     float genBust = -1.0f, genGlute = 0.0f, genMuscle = -1.0f, genFat = -1.0f, genMelanin = -1.0f, genStature = 1.75f, genAge = -1.0f;
     float genFace[8] = {0, 0, 0, 0, 0, 0, 0, 0}, genHairTone[3] = {0, 0, 0}, genEyeTone[3] = {0, 0, 0}, genClothTone[3] = {0, 0, 0};
@@ -184,6 +190,13 @@ int main(int argc, char** argv) {
         else if (a == "--pitch") pitch = static_cast<float>(std::atof(next().c_str()));
         else if (a == "--clip") clip = std::atoi(next().c_str()); else if (a == "--time") clipTime = static_cast<float>(std::atof(next().c_str()));
         else if (a == "--report") report = true; else if (a == "--joints") joints = true;
+        else if (a == "--blend") blend = next();
+        else if (a == "--face") face = next();
+        else if (a == "--motions") motions = next();
+        else if (a == "--anim") anim = next();
+        else if (a == "--atime") animTime = static_cast<float>(std::atof(next().c_str()));
+        else if (a == "--overlay") { const std::string v = next(); char nm[96] = {0}; std::sscanf(v.c_str(), "%95[^,],%d,%f,%f", nm, &overlayMask, &overlayWeight, &overlayTime); overlay = nm; }
+        else if (a == "--fade") { const std::string v = next(); char nm[96] = {0}; std::sscanf(v.c_str(), "%95[^,],%f,%f", nm, &fadeTime, &fadeWeight); fade = nm; }
         else if (a == "--generate") generate = true; else if (a == "--draft") draft = true;
         else if (a == "--sex") genSex = std::atoi(next().c_str()); else if (a == "--build") genBuild = std::atoi(next().c_str());
         else if (a == "--hair") genHair = std::atoi(next().c_str()); else if (a == "--outfit") genOutfit = std::atoi(next().c_str());
@@ -244,8 +257,115 @@ int main(int argc, char** argv) {
         char name[64] = {0}; af_engine_clip_name(clip, name, sizeof(name));
         std::printf("apply_clip %d (%s) t=%.3f -> rc=%d%s\n", clip, name, clipTime, crc, crc == AF_OK ? "" : " (no usable rig: drawn in the stored pose)");
     }
+    if (!blend.empty()) {
+        char names[52][64];
+        const int n = af_engine_blendshape_names(names, 52);
+        std::vector<float> weights(52, 0.0f);
+        size_t at = 0;
+        while (at < blend.size()) {
+            size_t comma = blend.find(',', at); if (comma == std::string::npos) comma = blend.size();
+            const std::string item = blend.substr(at, comma - at);
+            const size_t eq = item.find('=');
+            const std::string key = item.substr(0, eq);
+            const float w = eq == std::string::npos ? 1.0f : static_cast<float>(std::atof(item.c_str() + eq + 1));
+            bool found = false;
+            for (int c = 0; c < n && c < 52; ++c) if (key == names[c]) { weights[static_cast<size_t>(c)] = w; found = true; }
+            if (!found) std::printf("blend: no channel named '%s'\n", key.c_str());
+            at = comma + 1;
+        }
+        const int brc = af_engine_apply_blendshapes(e, weights.data(), 52);
+        std::printf("apply_blendshapes \"%s\" -> rc=%d\n", blend.c_str(), brc);
+    }
+    if (!motions.empty()) {
+        af_motion_import_report mr{};
+        const int mrc = af_engine_import_motions(e, motions.c_str(), &mr);
+        std::printf("import_motions rc=%d compatible=%d file_joints=%d recognised=%d mapped=%d animations_in_file=%d added=%d\n  %s\n",
+                    mrc, mr.compatible, mr.source_joints, mr.recognised_joints, mr.mapped_joints, mr.animations_in_file,
+                    mr.animations_added, mr.message);
+    }
     const int vcount = af_engine_vertex_count(e), icount = af_engine_index_count(e);
     const af_vertex* verts = af_engine_vertices(e);
+    /* The pose the app's renderer would show: the face rig moves the bind-pose vertex, then the
+       skin matrices of af_engine_evaluate_layers blend it - the same data, applied on the CPU. */
+    std::vector<af_vertex> posed;
+    auto animationByName = [&](const std::string& key) {
+        if (key.empty()) return -2;
+        char* end = nullptr;
+        const long asNumber = std::strtol(key.c_str(), &end, 10);
+        if (end && *end == '\0') return static_cast<int>(asNumber);
+        for (int a = 0; a < af_engine_animation_count(e); ++a) {
+            char name[96] = {0};
+            af_engine_animation_name(e, a, name, sizeof(name));
+            if (key == name) return a;
+        }
+        std::printf("no animation named '%s'\n", key.c_str());
+        return -2;
+    };
+    const int animIndex = animationByName(anim), overlayIndex = animationByName(overlay), fadeIndex = animationByName(fade);
+    if (!face.empty() || animIndex >= -1 || overlayIndex >= 0) {
+        const af_vertex* rest = af_engine_vertices_rest(e);
+        if (rest && vcount > 0) {
+            posed.assign(rest, rest + vcount);
+            if (!face.empty()) {
+                char names[52][64];
+                const int n = af_engine_blendshape_names(names, 52);
+                std::vector<float> weights(52, 0.0f);
+                size_t at = 0;
+                while (at < face.size()) {
+                    size_t comma = face.find(',', at); if (comma == std::string::npos) comma = face.size();
+                    const std::string item = face.substr(at, comma - at);
+                    const size_t eq = item.find('=');
+                    const std::string key = item.substr(0, eq);
+                    const float w = eq == std::string::npos ? 1.0f : static_cast<float>(std::atof(item.c_str() + eq + 1));
+                    bool found = false;
+                    for (int c = 0; c < n && c < 52; ++c) if (key == names[c]) { weights[static_cast<size_t>(c)] = w; found = true; }
+                    if (!found) std::printf("face: no channel named '%s'\n", key.c_str());
+                    at = comma + 1;
+                }
+                float kernels[24 * 16], box[8];
+                const int k = af_engine_pack_face(e, weights.data(), 52, kernels, 24, box);
+                std::printf("face \"%s\": %d kernel(s) active, the model's face rig has %d\n", face.c_str(), k, af_engine_face_kernel_count(e));
+                for (af_vertex& v : posed) {
+                    float d[3];
+                    af_face_evaluate_packed(kernels, k, box, v.pos, d);
+                    v.pos[0] += d[0]; v.pos[1] += d[1]; v.pos[2] += d[2];
+                }
+            }
+            const int J = af_engine_skin_joint_count(e);
+            if ((animIndex >= -1 || overlayIndex >= 0) && J > 0) {
+                std::vector<float> skin(static_cast<size_t>(J) * 16);
+                af_animation_layer layers[3];
+                int lc = 0;
+                if (animIndex >= 0) layers[lc++] = af_animation_layer{animIndex, animTime, 1.0f, AF_MASK_FULL_BODY};
+                if (fadeIndex >= 0) layers[lc++] = af_animation_layer{fadeIndex, fadeTime, fadeWeight, AF_MASK_FULL_BODY};
+                if (overlayIndex >= 0) layers[lc++] = af_animation_layer{overlayIndex, overlayTime, overlayWeight, overlayMask};
+                const int written = af_engine_evaluate_layers(e, layers, lc, skin.data(), J);
+                std::printf("evaluate_layers: %d layer(s) -> %d joints (anim=%d t=%.3f, fade=%d, overlay=%d mask=%d w=%.2f)\n",
+                            lc, written, animIndex, animTime, fadeIndex, overlayIndex, overlayMask, overlayWeight);
+                if (written == J) {
+                    for (af_vertex& v : posed) {
+                        float p[3] = {0, 0, 0}, nr[3] = {0, 0, 0}, total = 0.0f;
+                        for (int k = 0; k < 4; ++k) {
+                            const float w = v.weights[k];
+                            if (w <= 0.0f || v.joints[k] >= J) continue;
+                            const float* m = &skin[static_cast<size_t>(v.joints[k]) * 16];
+                            p[0] += w * (m[0] * v.pos[0] + m[4] * v.pos[1] + m[8] * v.pos[2] + m[12]);
+                            p[1] += w * (m[1] * v.pos[0] + m[5] * v.pos[1] + m[9] * v.pos[2] + m[13]);
+                            p[2] += w * (m[2] * v.pos[0] + m[6] * v.pos[1] + m[10] * v.pos[2] + m[14]);
+                            nr[0] += w * (m[0] * v.normal[0] + m[4] * v.normal[1] + m[8] * v.normal[2]);
+                            nr[1] += w * (m[1] * v.normal[0] + m[5] * v.normal[1] + m[9] * v.normal[2]);
+                            nr[2] += w * (m[2] * v.normal[0] + m[6] * v.normal[1] + m[10] * v.normal[2]);
+                            total += w;
+                        }
+                        if (total > 1e-6f) {
+                            for (int c = 0; c < 3; ++c) { v.pos[c] = p[c] / total; v.normal[c] = nr[c]; }
+                        }
+                    }
+                }
+            }
+            verts = posed.data();
+        }
+    }
     const uint32_t* idx = af_engine_indices(e);
     const int subCount = af_engine_submesh_count(e), matCount = af_engine_material_count(e);
     const af_submesh* subs = af_engine_submeshes(e);
@@ -265,8 +385,11 @@ int main(int argc, char** argv) {
         std::printf("engine joints=%d  skin joints=%d  animations=%d  vertices with skin weights=%d\n",
                     af_engine_joint_count(e), af_engine_skin_joint_count(e), af_engine_animation_count(e), weighted);
         for (int a = 0; a < af_engine_animation_count(e); ++a) {
-            char name[64] = {0}; af_engine_animation_name(e, a, name, sizeof(name));
-            std::printf("  animation %2d  %-12s %.3f s\n", a, name, af_engine_animation_duration(e, a));
+            af_animation_info info{};
+            af_engine_animation_info(e, a, &info);
+            std::printf("  animation %2d  %-22s %6.3f s  %s%s%s%s\n", a, info.name, info.duration,
+                        info.source ? "from a file" : "built in", info.looping ? ", loops" : "",
+                        info.moves_root ? ", moves the root" : "", info.travels ? ", travel taken out" : "");
         }
         std::printf("base-colour texture: %s", hasBase ? "" : "none\n");
         if (hasBase) std::printf("%dx%d, %d channels\n", base.width, base.height, base.channels);

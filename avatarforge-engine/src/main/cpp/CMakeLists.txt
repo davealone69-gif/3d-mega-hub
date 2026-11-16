@@ -14,6 +14,7 @@ add_library(afcore SHARED
     src/af_body.cpp
     src/render/af_avatar_lod.cpp
     src/af_engine.cpp
+    src/af_face.cpp
     src/af_field.cpp
     src/af_glb.cpp
     src/af_glb_read.cpp
@@ -23,6 +24,7 @@ add_library(afcore SHARED
     src/af_png.cpp
     src/af_png_decode.cpp
     src/af_prompt.cpp
+    src/af_retarget.cpp
     src/af_rig.cpp
     src/af_scene.cpp
     src/af_scene_bridge.cpp
@@ -157,6 +159,18 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_animation_roundtrip_test PRIVATE afcore)
     add_test(NAME animation_roundtrip COMMAND af_animation_roundtrip_test)
+
+    # The animation system on real data: clips, skin weights, blending and layers, retargeting
+    # of a humanoid motion pack onto a generated avatar, and the face rig. The two GLB files are
+    # the ones the instrumented tests open on Android.
+    add_executable(af_animation_system_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/animation_system_test.cpp)
+    target_include_directories(af_animation_system_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_animation_system_test PRIVATE afcore)
+    add_test(NAME animation_system
+        COMMAND af_animation_system_test
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../../../app/src/androidTest/assets)
 
     # One prompt per hair, outfit and footwear preset must resolve to that preset.
     add_executable(af_prompt_preset_words_test

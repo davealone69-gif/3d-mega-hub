@@ -225,6 +225,7 @@ typedef enum af_clip {
     AF_CLIP_JOG, AF_CLIP_SQUAT, AF_CLIP_JUMP, AF_CLIP_WAVE, AF_CLIP_PUNCH,
     AF_CLIP_KICK, AF_CLIP_T_POSE, AF_CLIP_A_POSE, AF_CLIP_SIT, AF_CLIP_TURN_360,
     AF_CLIP_PUSHUP,          /* appended: keeps every previously published id stable */
+    AF_CLIP_DANCE, AF_CLIP_HOLD_HAT,
     AF_CLIP_COUNT
 } af_clip;
 
@@ -447,6 +448,101 @@ int32_t af_engine_animation_name(const af_engine* engine, int32_t animation, cha
 float   af_engine_animation_duration(const af_engine* engine, int32_t animation);
 int32_t af_engine_evaluate_animation(const af_engine* engine, int32_t animation, float time_seconds,
                                      float* out_skin_matrices4x4, int32_t max_joints);
+
+/* What the UI needs to know about one animation of the model. */
+typedef struct af_animation_info {
+    char    name[64];
+    float   duration;      /* seconds */
+    int32_t looping;       /* 1 when the last pose is the first again */
+    int32_t source;        /* 0 built into the engine, 1 retargeted from an imported file */
+    int32_t frames;        /* stored poses */
+    int32_t moves_root;    /* 1 when the clip translates a joint (a jump, a dance that bounces) */
+    int32_t travels;       /* 1 when the source walked away and the drift was taken out */
+} af_animation_info;
+int32_t af_engine_animation_info(const af_engine* engine, int32_t animation, af_animation_info* out);
+
+/* ------------------------------------------------------------------ blending and layers -- */
+/*
+ * Several animations at once. The pose starts as the rest pose and every layer is blended over
+ * what is there, in order, by `weight` on the joints its `mask` covers:
+ *
+ *   a crossfade from A to B at alpha     {A, tA, 1, FULL} {B, tB, alpha, FULL}
+ *   B fading in from rest                {B, tB, alpha, FULL}
+ *   a wave over a walk                   {walk, t, 1, FULL} {wave, t2, 1, UPPER_BODY}
+ *
+ * Rotations take the shortest way round; translations (root motion) blend linearly. `animation`
+ * indexes af_engine_animation_name, -1 is the rest pose. The output and the threading rules are
+ * those of af_engine_evaluate_animation.
+ */
+typedef enum af_joint_mask {
+    AF_MASK_FULL_BODY = 0,
+    AF_MASK_UPPER_BODY,     /* the spine above the hips, the head and both arms */
+    AF_MASK_LOWER_BODY,     /* everything else: root, hips, legs */
+    AF_MASK_LEFT_ARM,       /* the joints named _L, from the clavicle down */
+    AF_MASK_RIGHT_ARM,
+    AF_MASK_ARMS,
+    AF_MASK_HEAD,           /* neck and head */
+    AF_MASK_COUNT
+} af_joint_mask;
+
+typedef struct af_animation_layer {
+    int32_t animation;
+    float   time_seconds;
+    float   weight;         /* 0..1 */
+    int32_t mask;           /* af_joint_mask */
+} af_animation_layer;
+
+int32_t af_engine_evaluate_layers(const af_engine* engine, const af_animation_layer* layers, int32_t layer_count,
+                                  float* out_skin_matrices4x4, int32_t max_joints);
+/* 1 when `joint` (index as in af_vertex::joints) is covered by `mask`, else 0. */
+float   af_engine_joint_mask_weight(const af_engine* engine, int32_t mask, int32_t joint);
+
+/* ------------------------------------------------------------------ motion from a file --- */
+/*
+ * Adds the animations of another rigged GLB to the model the engine holds, retargeted onto its
+ * skeleton (af_retarget.h): joints recognised by name, sides and facing taken from geometry, rest
+ * poses aligned, travel scaled by the leg length. Only the file's skeleton and animations are
+ * read; its meshes and textures are not decoded. The new animations are appended to
+ * af_engine_animation_* and play like the built-in ones. They belong to this engine instance: a
+ * new import or generation starts without them.
+ *
+ * Returns AF_OK when at least one animation was added. Otherwise nothing changed and the report's
+ * message says why (AF_ERR_UNSUPPORTED: not a humanoid this rig can follow, or no animation;
+ * AF_ERR_NOT_READY: the model has no skeleton; AF_ERR_INVALID_ARG / AF_ERR_IO: unreadable file).
+ * Must be called on the thread that owns the engine, between frames.
+ */
+typedef struct af_motion_import_report {
+    int32_t source_joints;        /* joints of the file's skeleton */
+    int32_t recognised_joints;    /* of those, recognised by name */
+    int32_t mapped_joints;        /* joints of this model that follow one of the file's */
+    int32_t animations_in_file;
+    int32_t animations_added;
+    int32_t compatible;           /* 1 when the file's skeleton is a humanoid this rig can follow */
+    char    message[512];
+} af_motion_import_report;
+int32_t af_engine_import_motions(af_engine* engine, const char* absolute_path, af_motion_import_report* out_report);
+int32_t af_engine_import_motions_from_memory(af_engine* engine, const uint8_t* bytes, size_t size,
+                                             af_motion_import_report* out_report);
+
+/* ------------------------------------------------------------------ face animation ------- */
+/*
+ * The 52 ARKit channels as a handful of formulas instead of 52 arrays of per-vertex offsets
+ * (af_face.h). A renderer uploads the active ones and displaces the bind-pose vertex in its
+ * vertex shader before skinning, so a face of any size animates at no memory cost.
+ *
+ * af_engine_face_kernel_count: 0 when the model has no face rig (a file from elsewhere, or an
+ * avatar exported before the rig was written into the file).
+ * af_engine_pack_face: for `count` channel weights in af_engine_blendshape_names order, writes
+ * the kernels that have an effect, 16 floats each (four vec4), strongest channels first, and the
+ * face box as 8 floats (two vec4); returns the number of kernels written, at most max_kernels.
+ * af_face_evaluate_packed: the offset that packed form gives one point, computed exactly as the
+ * vertex shader does. For tools and tests.
+ */
+int32_t af_engine_face_kernel_count(const af_engine* engine);
+int32_t af_engine_pack_face(const af_engine* engine, const float* weights, int32_t count,
+                            float* out_kernels, int32_t max_kernels, float* out_box);
+void    af_face_evaluate_packed(const float* kernels, int32_t kernel_count, const float* box,
+                                const float* position3, float* out_delta3);
 
 /* ------------------------------------------------------------------ diagnostics ---------- */
 /* Validates the live post-skin vertex buffer. The report is always populated when capacity > 0;
