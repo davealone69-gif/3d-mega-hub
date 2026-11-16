@@ -70,4 +70,3 @@ internal object BoundedGlbReader {
             }
         }
     }
-}
