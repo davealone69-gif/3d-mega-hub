@@ -343,6 +343,17 @@ class AvatarForgeSurfaceView(
         error: String = ""
     ) {
         val preferences = context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE)
+        if (status == "STARTING") {
+            // A new render session must not inherit the previous asset's capture identity.
+            // Device diagnostics exported on 2026-11-16 recorded a 98.8 MiB asset that reached
+            // FRAME_PRESENTED without ever being pixel-verified while still advertising the
+            // screenshot URI of the 12.6 MiB asset verified before it. Clear the capture keys
+            // here so a report only ever names a screenshot this session produced.
+            preferences.edit()
+                .remove("downloads_screenshot_uri")
+                .remove("downloads_report_error")
+                .commit()
+        }
         preferences.edit()
             .putString("status", status)
             .putString("api_version", apiVersion)

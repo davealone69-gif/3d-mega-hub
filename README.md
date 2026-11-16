@@ -24,6 +24,15 @@ The implementation remains in the existing AvatarForge signed-distance-field, te
 Every README update changes the branch head. Collect all final verification against the resulting exact head, and do not reuse older workflow results as exact-head evidence.
 
 
+## Device renderer evidence supplied by the owner: 2026-11-16
+
+The owner exported the app's own renderer diagnostics from the physical phone (15 `renderer_diagnostics*.json` snapshots and 4 PNG captures, 15:13–15:20 UTC). Full analysis: [`docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md`](docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md).
+
+- **Production `AvatarForgeSurfaceView` OpenGL ES path — DEVICE VERIFIED for one imported GLB.** `imported-1794842029545-b69f92bf.glb` (13,221,520 bytes) reached `PIXELS_VERIFIED` in **three of three** runs on OpenGL ES 3.2 (driver 25.6.4), 912 × 1260: 3 presented frames, 11 draw calls, 144,073 triangles, bounds in frustum, `glError` `0x0`, `eglError` `0x0`, and 401,066 / 401,066 / 401,062 background-subtracted geometry pixels against a 5,000 minimum, with the matching `imported_glb_diagnostic.png` saved and exported. This supersedes the earlier blanket "phone visible pixels UNVERIFIED" line **for this one asset only**; the device build's APK hash and source commit are not recorded in any artifact, so nothing here may be attributed to a branch head.
+- **Large remote-URL GLB — RENDERED, NOT PIXEL-VERIFIED.** `ink-1794842238556-077e8cf1.glb` (103,566,844 bytes, 98.8 MiB) reached `FRAME_PRESENTED` (3 swaps, 59 draw calls, 872 triangles, no GL/EGL errors) but never produced `PIXELS_VERIFIED` or `FAILED`, and no capture. It also spent **13.9 s** between `STARTING` and `RENDERER_ACTIVE` — GLB parse and upload inside `nativeCreate()`, on the render thread, outside every deadline. The 15 s `FRAME_PRESENTED` clock starts after that call, so the gate itself was never at risk; what has no bound, and no diagnostic state, is the load phase.
+- **Diagnostic-integrity defect found and fixed in this change.** That incomplete report advertised `screenshotDownloadsUri content://media/external/downloads/1000202987`, the capture of the previously verified 12.6 MiB asset, because `recordSmokeResult()` read the screenshot key from preferences that are never cleared between assets. `STARTING` now clears the inherited screenshot and report-error keys, so a report can only name a capture its own session produced.
+- **Not superseded:** the exact-head CI failures. No artifact here exercises the Filament gltfio preview path, so the emulator `OutOfMemoryError` in `FilamentPreviewView.readBounded()` and the 2-frames-in-15-seconds production-gate failure both remain open. The emulator was also rendering a generated 1,626,176-triangle GLB, so device and emulator figures are not like-for-like.
+
 ## Single source of truth
 
 All implementation, fixes, tests and handover updates are to be made on one branch:

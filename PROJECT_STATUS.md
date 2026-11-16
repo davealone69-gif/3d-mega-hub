@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-11-13.
+Last updated: 2026-11-16.
 
 ## Latest engineering update — 2026-11-15
 
@@ -10,6 +10,9 @@ Last updated: 2026-11-13.
 - **Implemented:** `ae43e0e271684d56336005450765a4577aafc591` fixes GLES 3.x extension enumeration. GLES 3.0+ requires `glGetStringi(GL_EXTENSIONS, index)`; the removed legacy extension-string query could return `GL_INVALID_ENUM` and incorrectly disable ES 3.1 extension detection. Float colour-buffer and anisotropy support are now reported from actual capabilities.
 - **Verified on prior exact head `2a5485c17ec656659c4841826a1048d1577b7301`:** signed ephemeral preview APK/AAB build and signature verification (run `43626247432`, job `132542586035`); Android emulator install/launch smoke (job `132542586459`); native host regression (run `43626247376`, job `132542664347`). These results do not validate the later GLES source change.
 - **Latest source head:** `ae43e0e271684d56336005450765a4577aafc591`. Fresh exact-head CI must validate the GLES capability change. **UNVERIFIED:** real imported/generated avatar visible pixels and Samsung SM-S921B runtime. **BLOCKED:** production signing pending owner keystore in protected CI secrets.
+- **Device evidence received 2026-11-16:** the app's own exported renderer diagnostics show the production `AvatarForgeSurfaceView` OpenGL ES path reaching `PIXELS_VERIFIED` in three of three runs on the physical phone for one imported GLB (13,221,520 bytes; 3 presented frames, 11 draw calls, 144,073 triangles, 401,066/401,066/401,062 visible pixels, zero GL/EGL errors). A 98.8 MiB remote-URL GLB reached `FRAME_PRESENTED` only. The device build's APK hash and source commit are unknown, so this is not exact-head evidence. See [`docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md`](docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md).
+- **Fixed 2026-11-16:** `recordSmokeResult("STARTING")` now clears inherited screenshot/report-error preferences, so an unverified asset's report can no longer advertise the previous asset's capture.
+- **Observed 2026-11-16, unfixed:** a 98.8 MiB imported GLB spent 13.9 s inside `nativeCreate()` with no dedicated diagnostic state or budget; the load phase sits outside the 15 s `FRAME_PRESENTED` gate, which begins after that call.
 - Keep `main` unchanged; no merge until exact-head renderer evidence passes.
 
 ## Repository and active branch
@@ -76,12 +79,12 @@ The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `wo
 | GLB validator | **REAL + VERIFIED on earlier revision** | Kotlin/synthetic GLB checks and unit tests passed on `34201cb`; bundled fixture passed structural validation. |
 | Native generation and atomic GLB publication | **PARTIAL** | Earlier release preview built the engine; exact consolidated HEAD requires fresh CI/build evidence. |
 | WebP decoding/source fallback | **IMPLEMENTED, UNVERIFIED on consolidated HEAD** | Source and host regression tests are present; run exact-head CTest and Android build. |
-| PixelCopy diagnostic and GLES renderer | **IMPLEMENTED, DEVICE UNVERIFIED** | Source requires successful EGL swaps, draw/triangle counts, in-frustum bounds and more than 5,000 background-subtracted pixels. Inspect actual saved capture. |
+| PixelCopy diagnostic and GLES renderer | **IMPLEMENTED, DEVICE VERIFIED for one imported GLB (2026-11-16)** | Three of three device runs reached `PIXELS_VERIFIED` with 3 swaps, 11 draws, 144,073 triangles and 401,066/401,066/401,062 pixels plus saved captures. Not verified for generated GLBs, ~100 MiB assets or the Filament preview path; the PNG captures have not been inspected in this workspace. |
 | FileProvider capture sharing | **IMPLEMENTED, BUILD UNVERIFIED** | Provider and scoped XML plus share action are present. Must verify Android manifest merge, install, chooser and receiving app read access. |
 | Launcher icon | **IMPLEMENTED, BUILD UNVERIFIED** | Vector drawable and manifest reference are present. |
 | Android unit tests / lint / debug APK / R8 | **PARTIAL** | Passed on earlier revisions; exact consolidated HEAD needs fresh run. |
 | Emulator install/launch/GLES smoke | **UNVERIFIED** | Prior emulator attempt timed out during boot; corrected smoke workflow exists but needs a successful run and screenshot inspection. |
-| Samsung SM-S921B runtime / visible pixels | **UNVERIFIED** | Requires installing this exact consolidated APK on the phone and exercising rendering, generation, import, lifecycle, memory and thermal behaviour. |
+| Samsung SM-S921B runtime / visible pixels | **PARTIAL — device-reported 2026-11-16** | Owner-supplied app diagnostics prove imported-GLB rendering on a physical OpenGL ES 3.2 device, three times, with captures. The installed APK hash and source commit are unknown; generated-avatar rendering, lifecycle, memory and thermal behaviour remain unverified. |
 | Production APK/AAB signing | **BLOCKED** | User-owned release keystore and protected CI secrets are not configured. Never substitute debug or ephemeral preview keys. |
 | Embedded LLM | **MISSING** | Ollama remains external. |
 | Photo-to-identity reconstruction | **MISSING** | Deterministic prompt parsing is not image reconstruction. |
