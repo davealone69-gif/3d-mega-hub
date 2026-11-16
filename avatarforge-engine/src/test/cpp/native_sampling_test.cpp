@@ -33,7 +33,7 @@ int main() {
     af_spec hairToneSpec{};
     af_spec_init(&hairToneSpec);
     const af::Vec3 naturalHair = af::hairBaseColorForSpec(hairToneSpec);
-    const af::Vec3 defaultHair = af::materialForRegion(REGION_HAIR).baseColor;
+    const af::Vec3 defaultHair = af::materialForRegion(af::REGION_HAIR).baseColor;
     require(std::fabs(naturalHair.x - defaultHair.x) < 1e-6f &&
             std::fabs(naturalHair.y - defaultHair.y) < 1e-6f &&
             std::fabs(naturalHair.z - defaultHair.z) < 1e-6f,
