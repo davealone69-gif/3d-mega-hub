@@ -24,6 +24,17 @@ The implementation remains in the existing AvatarForge signed-distance-field, te
 Every README update changes the branch head. Collect all final verification against the resulting exact head, and do not reuse older workflow results as exact-head evidence.
 
 
+## Upgrade pass: 2026-11-16
+
+Full matrix, migration notes and the ranked risk list: [`docs/UPGRADE_2026-11-16.md`](docs/UPGRADE_2026-11-16.md). **Nothing in this pass has been compiled or run** — this workspace has no JDK/Gradle/Kotlin/Android SDK and no Maven route, so version strings were verified against Google Maven `maven-metadata.xml` and upstream GitHub release feeds, and source changes by inspection only. The first CI run on this head is the compile gate.
+
+- **Toolchain:** Gradle 8.11.1 → 9.9.1, AGP 8.7.3 → 9.5.1, Kotlin 2.1.0 → 2.4.21, compileSdk/targetSdk 35 → 36, CI `platforms;android-36` + `build-tools;36.0.0`. `kotlinOptions` was removed by AGP 9, so both modules now configure `kotlin { compilerOptions { jvmTarget } }`.
+- **Dependencies:** Compose BOM 2024.12.01 → 2026.09.00, core-ktx 1.15.0 → 1.19.1, activity-compose 1.9.3 → 1.13.0, Filament 1.71.6 → 1.80.1, coroutines 1.8.1 → 1.11.0, androidx.test runner/core 1.7.0, ext-junit 1.3.0, uiautomator 2.4.1, moved into the version catalog. NDK 26.1 and CMake 3.22.1 are deliberately pinned — their package versions could not be verified here.
+- **Filament preview memory:** one exact-size allocation when the source length is known, instead of a `ByteArrayOutputStream` plus a second `toByteArray()` copy. That doubling produced the CI emulator's 134,217,744-byte `OutOfMemoryError`.
+- **Frame budget:** 15 s on hardware, 180 s only for software rasterisers/emulators (`RendererTimeBudget`). Assertions unchanged — this fixes the 2-frames-in-15-seconds failure that was measuring SwiftShader, not the renderer.
+- **Load phase:** new `ASSET_LOADING` state plus `assetLoadMs` in every report, so the 13.9 s `nativeCreate()` gap seen in the device diagnostics is no longer invisible.
+- **Hair LOD:** hair and lashes keep 55 % / 28 % of their triangles at LOD1 / LOD2 while skin and cloth stay at 12 % / 5 % (`af_avatar_lod.cpp`), so braid, coil and clump detail survive distance switching. Native `avatar_lod_test` extended with region-retention and determinism cases.
+
 ## Device renderer evidence supplied by the owner: 2026-11-16
 
 The owner exported the app's own renderer diagnostics from the physical phone (15 `renderer_diagnostics*.json` snapshots and 4 PNG captures, 15:13–15:20 UTC). Full analysis: [`docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md`](docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md).

@@ -14,6 +14,9 @@ Last updated: 2026-11-16.
 - **Fixed 2026-11-16:** `recordSmokeResult("STARTING")` now clears inherited screenshot/report-error preferences, so an unverified asset's report can no longer advertise the previous asset's capture.
 - **Observed 2026-11-16, unfixed:** a 98.8 MiB imported GLB spent 13.9 s inside `nativeCreate()` with no dedicated diagnostic state or budget; the load phase sits outside the 15 s `FRAME_PRESENTED` gate, which begins after that call.
 - **Diagnosed 2026-11-16 ("no animation controls"):** the owner's asset (13,221,520 bytes, matching the preserved rigged `mylove_rig_prepared.glb`) was rendered by the AvatarForge GLES static path, which does not apply imported skeletal animation and exposes no clip controls. Avatar Studio now reports the GLB's declared clip table via `GlbValidator.inspectAnimations()` so "no clips in the file" is distinguishable from "Filament published none" or a failed preview load. Clip playback remains UNVERIFIED.
+- **Upgrade pass 2026-11-16 (uncompiled):** Gradle 9.9.1, AGP 9.5.1, Kotlin 2.4.21, compileSdk/targetSdk 36, Compose BOM 2026.09.00, core-ktx 1.19.1, activity-compose 1.13.0, Filament 1.80.1, coroutines 1.11.0, androidx.test 1.7.0/1.3.0/2.4.1. NDK and CMake stay pinned. No build or test has run on this head; see `docs/UPGRADE_2026-11-16.md` for the matrix and ranked risks (Filament gltfio API drift is the top one).
+- **CI blockers addressed 2026-11-16:** Filament preview now allocates once instead of twice (the 128 MiB emulator OOM), the frame budget is 180 s only for software rasterisers, and the asset load phase is published as `ASSET_LOADING` with `assetLoadMs`.
+- **Hair LOD 2026-11-16:** region-aware LOD keeps 55 %/28 % of hair and lash triangles at LOD1/LOD2 versus 12 %/5 % for skin and cloth; covered by native `avatar_lod_test`. Source-only, uncompiled.
 - Keep `main` unchanged; no merge until exact-head renderer evidence passes.
 
 ## Repository and active branch
