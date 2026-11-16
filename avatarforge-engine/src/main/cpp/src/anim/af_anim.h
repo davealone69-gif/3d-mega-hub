@@ -349,9 +349,34 @@ struct Clip {
     static bool fromAuthored(const af::Clip& authored, const Skeleton& sk, Clip* out,
                              std::vector<std::string>* skipped);
 
+    /** Binds an authored af::Clip to a FOREIGN skeleton by humanoid Role instead of by joint name.
+     *  This is what makes the engine's own library usable on an imported rig that was named by someone
+     *  else: the authored tracks are written against the generated rig's vocabulary ("hips", "thigh_L",
+     *  "upperarm_01_L"), which that vocabulary maps to Role explicitly, and Role then resolves against
+     *  whatever the target skeleton calls the same bone ("Hips", "LeftUpperLeg", "LeftUpperArm").
+     *  Rotation channels only: the authored translations are scaled for a 1.75 m figure and there is no
+     *  source rig here to derive a ratio from, so transferring them unscaled would visibly overshoot on a
+     *  unit-normalised import. Every track that cannot be placed is listed in `skipped` with its reason,
+     *  including the translations that were deliberately dropped. */
+    static bool fromAuthoredByRole(const af::Clip& authored, const Skeleton& target, Clip* out,
+                                   std::vector<std::string>* skipped);
+
     /** True when any channel writes a morph target. */
     bool hasMorphChannels() const { return morphChannelCount() > 0; }
 };
+
+/** Every distinct joint name the given authored library writes to, and the Role the binding table
+ *  assigns it (Role::COUNT when the table does not cover the name). Exposed so a test can prove the
+ *  table still covers the whole library instead of trusting it: a library that grows a new joint name
+ *  and a table that does not know it would otherwise silently drop that track from every imported
+ *  avatar, and the animation would still "work" - just with a limb that never moves. */
+std::vector<std::string> authoredTrackNames(const std::vector<af::Clip>& library);
+Role authoredRoleForTrackName(const std::string& name);
+
+/** True for library entries that are single-key CALIBRATION poses rather than motion ('t_pose', 'a_pose').
+ *  fromAuthoredByRole refuses them on a foreign skeleton and reports why: they describe the generated
+ *  rig's rest SHAPE, which an imported file's bind pose already provides for itself. */
+bool authoredClipIsCalibrationPose(const std::string& clipName);
 
 /** Total morph targets across every mesh in an imported asset: the width of the flat morph array a
  *  Player allocates, and the count a weights channel's offset is measured against. */
@@ -851,6 +876,12 @@ public:
     /* ---- loading ---- */
     bool loadGlb(const GlbAsset& asset, std::string* error);
     bool loadAuthored(const Rig& rig, std::string* error);
+    /* For an imported file that carries a skinnable skeleton but NO animation of its own: build the
+       skeleton from the file's skin and bind the engine's authored library to it by role. This is the
+       difference between a statue and a moving figure for the very common export that writes a rig and
+       no clips. Refuses (returns false, with the reason in `error`) when the file has no skin, no
+       inverse bind matrices, or no role the library can bind to - it never invents motion. */
+    bool loadAuthoredForGlb(const GlbAsset& asset, std::string* error);
     int addClip(Clip clip);
     void clear();
 

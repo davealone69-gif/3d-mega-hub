@@ -293,6 +293,225 @@ using CrossFadeCommand = af::anim::CrossFadeCommand;
     check(foxPlayer.clipIndex("Walk") == 1, "clip 'Walk' is present at index 1");
     check(foxPlayer.clipIndex("Run") == 2, "clip 'Run' is present at index 2");
 
+    /* ---- role-based binding of the authored library onto a FOREIGN skeleton ----
+       An imported rig that was named by someone else ("Hips", "LeftUpperLeg") shares no vocabulary with
+       the authored library ("hips", "thigh_L"), so name binding leaves most of a clip on the floor.
+       fromAuthoredByRole places tracks by Role instead. Fox resolves all 17 roles, which makes it a
+       usable stand-in here for any well-named humanoid import. */
+    {
+        Skeleton foxSkel;
+        std::string skelErr;
+        check(Skeleton::fromGlb(fox, 0, &foxSkel, &skelErr), "Fox yields a skeleton for the role binding");
+        const int foxRoles = foxSkel.assignRoles();
+        checkf(foxRoles == static_cast<int>(Role::COUNT),
+               "Fox resolves %d of 17 humanoid roles, so role binding has something to bind to",
+               foxRoles);
+
+        const std::vector<af::Clip>& lib = af::builtinClips();
+
+        /* The table must cover the whole library. A new track name the table does not know would drop
+           that joint from every imported avatar while every other check stayed green - the arm that
+           never moves is exactly the plausible fake this repo forbids. */
+        const std::vector<std::string> vocab = authoredTrackNames(lib);
+        std::vector<std::string> uncovered;
+        for (const std::string& n : vocab) {
+            if (authoredRoleForTrackName(n) == Role::COUNT) uncovered.push_back(n);
+        }
+        checkf(uncovered.empty(),
+               "the authored role table covers all %d distinct joint names in the library",
+               static_cast<int>(vocab.size()));
+        if (!uncovered.empty()) {
+            for (const std::string& n : uncovered) infof("        uncovered: %s", n.c_str());
+        }
+
+        /* Role binding must beat name binding, measured, on the same skeleton and the same clip. */
+        int nameChannels = 0, roleChannels = 0;
+        int clipsBoundByName = 0, clipsBoundByRole = 0;
+        for (const af::Clip& authored : lib) {
+            std::vector<std::string> skipA, skipB;
+            Clip byName, byRole;
+            if (Clip::fromAuthored(authored, foxSkel, &byName, &skipA)) {
+                ++clipsBoundByName; nameChannels += static_cast<int>(byName.channels.size());
+            }
+            if (Clip::fromAuthoredByRole(authored, foxSkel, &byRole, &skipB)) {
+                ++clipsBoundByRole; roleChannels += static_cast<int>(byRole.channels.size());
+            }
+        }
+        infof("  authored library on Fox: by name %d clips / %d channels; by role %d clips / %d channels",
+              clipsBoundByName, nameChannels, clipsBoundByRole, roleChannels);
+        /* 14, not 16: t_pose and a_pose are single-key calibration poses that state the generated rig's
+           rest shape. Fox's bind pose is its own calibration, so they are refused with a reason rather
+           than posing the import wrongly. Counting them as bound would be the fake this repo forbids. */
+        int expectedBound = 0;
+        for (const af::Clip& c : lib) if (!authoredClipIsCalibrationPose(c.name)) ++expectedBound;
+        checkf(expectedBound == static_cast<int>(lib.size()) - 2,
+               "exactly 2 of %d authored clips are calibration poses", static_cast<int>(lib.size()));
+        checkf(clipsBoundByRole == expectedBound,
+               "role binding places every non-calibration clip (%d of %d)",
+               clipsBoundByRole, static_cast<int>(lib.size()));
+        check(authoredClipIsCalibrationPose("t_pose") && authoredClipIsCalibrationPose("a_pose"),
+              "t_pose and a_pose are the calibration poses");
+        check(!authoredClipIsCalibrationPose("walk") && !authoredClipIsCalibrationPose("dance") &&
+              !authoredClipIsCalibrationPose("sit"),
+              "walk, dance and sit are motion, and stay bindable");
+        {
+            const af::Clip* tp = nullptr;
+            for (const af::Clip& c : lib) if (c.name == "t_pose") tp = &c;
+            check(tp != nullptr, "the library still contains t_pose to refuse");
+            if (tp) {
+                std::vector<std::string> skipT;
+                Clip refused;
+                checkf(!Clip::fromAuthoredByRole(*tp, foxSkel, &refused, &skipT) && refused.channels.empty(),
+                       "fromAuthoredByRole REFUSES t_pose on a foreign skeleton (%d channels emitted)",
+                       static_cast<int>(refused.channels.size()));
+                bool explained = false;
+                for (const std::string& m : skipT) if (m.find("calibration") != std::string::npos) explained = true;
+                checkf(explained, "and the refusal is reported, not silent (%d note(s))",
+                       static_cast<int>(skipT.size()));
+                if (!skipT.empty()) infof("        %s", skipT.front().c_str());
+            }
+        }
+        checkf(roleChannels > nameChannels,
+               "role binding yields more channels than name binding (%d vs %d)",
+               roleChannels, nameChannels);
+
+        /* walk specifically: 11 authored tracks, of which only 'hips' shares a name with Fox. */
+        {
+            const af::Clip* walkAuthored = nullptr;
+            for (const af::Clip& c : lib) if (c.name == "walk") walkAuthored = &c;
+            check(walkAuthored != nullptr, "the authored library still contains 'walk'");
+            if (walkAuthored) {
+                std::vector<std::string> skipN, skipR;
+                Clip byName, byRole;
+                const bool okN = Clip::fromAuthored(*walkAuthored, foxSkel, &byName, &skipN);
+                const bool okR = Clip::fromAuthoredByRole(*walkAuthored, foxSkel, &byRole, &skipR);
+                /* Not a coin flip: Fox shares exactly one name with the library ('hips'), and the other ten
+                   tracks have nowhere to go, so name binding refuses walk outright rather than play a
+                   hip-only walk. Role binding is what makes the clip usable at all. */
+                checkf(!okN && byName.channels.empty(),
+                       "name binding REFUSES walk on Fox (returned %d, %d channels): no vocabulary in common",
+                       (int)okN, static_cast<int>(byName.channels.size()));
+                checkf(okR, "role binding accepts walk on Fox", (int)okR);
+                checkf(byRole.channels.size() == walkAuthored->tracks.size(),
+                       "and places every one of walk's %d authored tracks",
+                       static_cast<int>(walkAuthored->tracks.size()));
+                checkf(!skipN.empty() && skipR.empty(),
+                       "name binding skipped %d tracks, role binding skipped %d",
+                       static_cast<int>(skipN.size()), static_cast<int>(skipR.size()));
+                /* Deliberate and documented: rotations only, so there is no root motion to consume. */
+                check(!byRole.hasRootTranslation,
+                      "a role-bound clip claims no root translation, because it emits none");
+                bool anyTranslation = false;
+                for (const Channel& ch : byRole.channels) {
+                    if (ch.path == Path::Translation) anyTranslation = true;
+                }
+                check(!anyTranslation, "a role-bound clip emits no translation channel at all");
+                bool rotationOnly = true;
+                for (const Channel& ch : byRole.channels) {
+                    if (ch.path != Path::Rotation) rotationOnly = false;
+                    if (ch.joint < 0 || ch.joint >= foxSkel.count()) rotationOnly = false;
+                }
+                check(rotationOnly, "every role-bound channel is a rotation on a valid Fox joint");
+            }
+        }
+
+        /* Sampling a role-bound clip must actually move the palette - binding is not the same as posing. */
+        {
+            Player rolePlayer;
+            std::string loadErr;
+            check(rolePlayer.loadAuthoredForGlb(fox, &loadErr),
+                  "loadAuthoredForGlb binds the authored library to Fox's imported skeleton");
+            if (!loadErr.empty()) infof("        %s", loadErr.c_str());
+            checkf(rolePlayer.clipCount() == static_cast<int>(lib.size()) - 2,
+                   "loadAuthoredForGlb exposes the %d motion clips and withholds the 2 calibration poses",
+                   rolePlayer.clipCount());
+            check(rolePlayer.clipIndex("t_pose") < 0 && rolePlayer.clipIndex("a_pose") < 0,
+                  "neither calibration pose is selectable on an imported skeleton");
+            check(rolePlayer.clipIndex("walk") >= 0 && rolePlayer.clipIndex("dance") >= 0,
+                  "walk and dance are selectable");
+            check(!rolePlayer.isPlaying() && rolePlayer.currentClip() == -1,
+                  "loadAuthoredForGlb lands in the bind pose with nothing selected");
+            check(rolePlayer.play("walk"), "a role-bound 'walk' can be selected by name");
+            rolePlayer.seek(rolePlayer.currentDuration() * 0.5f);
+            std::vector<Mat4> posed;
+            foxSkel.buildPalette(rolePlayer.currentPose(), &posed);
+            Pose restPose;
+            restPose.allocate(foxSkel, 0);
+            restPose.resetToRest(foxSkel);
+            restPose.computeMatrices(foxSkel);
+            std::vector<Mat4> restPal;
+            foxSkel.buildPalette(restPose, &restPal);
+            checkf(posed.size() == restPal.size() && !posed.empty(),
+                   "the role-bound palette has %d skinning matrices", static_cast<int>(posed.size()));
+            size_t moved = 0;
+            for (size_t j = 0; j < posed.size() && j < restPal.size(); ++j) {
+                float d = 0.0f;
+                for (int k = 0; k < 16; ++k) d += std::fabs(posed[j].m[k] - restPal[j].m[k]);
+                if (d > 1e-4f) ++moved;
+            }
+            checkf(moved > 0, "a role-bound walk moves %d of %d skinning matrices off the bind palette",
+                   static_cast<int>(moved), static_cast<int>(posed.size()));
+        }
+
+        /* The rest-frame composition, pinned behaviourally rather than trusted. Pose::computeMatrices()
+           treats a channel value as the FULL local rotation, so fromAuthoredByRole must compose the
+           authored deviation on the target's rest. Fox happens to have identity rest rotations, where
+           this is invisible; mutating one proves the composition is really there. A Blender-exported
+           import whose rest rotations are not identity is the case this protects. */
+        {
+            Skeleton mutated = foxSkel;
+            int armJoint = -1;
+            for (int j = 0; j < mutated.count(); ++j) {
+                if (mutated.roles[static_cast<size_t>(j)] == Role::LeftUpperArm) { armJoint = j; break; }
+            }
+            check(armJoint >= 0, "Fox has a LeftUpperArm to mutate");
+            if (armJoint >= 0) {
+                const Quat rest(0.0f, 0.70710678f, 0.0f, 0.70710678f);   /* 90 deg about +Y */
+                mutated.restR[static_cast<size_t>(armJoint)] = rest;
+                const af::Clip* walkA = nullptr;
+                for (const af::Clip& c : lib) if (c.name == "walk") walkA = &c;
+                const af::Track* srcTrack = nullptr;
+                if (walkA) for (const af::Track& t : walkA->tracks)
+                    if (t.jointName == "upperarm_01_L") srcTrack = &t;
+                check(walkA != nullptr && srcTrack != nullptr && !srcTrack->keys.empty(),
+                      "walk still carries an upperarm_01_L track to compare against");
+                if (walkA && srcTrack && !srcTrack->keys.empty()) {
+                    std::vector<std::string> skipM;
+                    Clip bound;
+                    check(Clip::fromAuthoredByRole(*walkA, mutated, &bound, &skipM),
+                          "walk binds to the mutated skeleton");
+                    const Channel* ch = nullptr;
+                    for (const Channel& c : bound.channels)
+                        if (c.joint == armJoint && c.path == Path::Rotation) ch = &c;
+                    check(ch != nullptr, "and the LeftUpperArm rotation channel targets the mutated joint");
+                    if (ch && !ch->values.empty()) {
+                        const Quat want = rest * srcTrack->keys.front().rotation;
+                        const Vec4 got = ch->values.front();
+                        const float d = std::fabs(got.x - want.x) + std::fabs(got.y - want.y) +
+                                        std::fabs(got.z - want.z) + std::fabs(got.w - want.w);
+                        checkf(d < 1e-4f, "the emitted value is rest * authored, not the authored value "
+                                          "verbatim (component error %.6f)", d);
+                        const Quat verbatim = srcTrack->keys.front().rotation;
+                        const float dv = std::fabs(got.x - verbatim.x) + std::fabs(got.y - verbatim.y) +
+                                         std::fabs(got.z - verbatim.z) + std::fabs(got.w - verbatim.w);
+                        checkf(dv > 1e-3f, "and it measurably differs from the verbatim value (%.6f), so "
+                                           "this check cannot pass by accident on an identity rest", dv);
+                    }
+                }
+            }
+        }
+
+        /* Refusals: a file with nothing to drive must not be given a fabricated skeleton. */
+        {
+            Player noSkin;
+            std::string e2;
+            check(!noSkin.loadAuthoredForGlb(morphCube, &e2),
+                  "loadAuthoredForGlb refuses a file with no skin");
+            check(!e2.empty(), "and says why");
+            infof("        AnimatedMorphCube: %s", e2.c_str());
+        }
+    }
+
     /* ---- bind pose ----
        loadGlb() auto-selects clip 0 and marks it playing, which suits a player about to be ticked but
        not a model that has merely been loaded: a renderer importing a file needs "show me the model"

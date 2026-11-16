@@ -170,6 +170,72 @@ bool Player::loadGlb(const GlbAsset& asset, std::string* error) {
     return true;
 }
 
+bool Player::loadAuthoredForGlb(const GlbAsset& asset, std::string* error) {
+    auto fail = [&](const std::string& msg) { if (error) *error = msg; return false; }
+    ;
+    clear();
+
+    if (asset.skins.empty()) {
+        return fail("the file has no skin, so there is no skeleton for the authored library to drive");
+    }
+    std::string skelError;
+    if (!Skeleton::fromGlb(asset, 0, &skeleton_, &skelError)) return fail(skelError);
+    if (!skeleton_.hasInverseBind) {
+        return fail("the file's skin carries no inverse bind matrices, so nothing can be skinned");
+    }
+    /* Roles are the whole point of this path: the authored tracks are placed by Role, so a skeleton
+       that resolves few roles binds few tracks. assignRoles() is the same detector the rest of the core
+       uses, and the coverage is reported below rather than left implicit. */
+    const int roles = skeleton_.assignRoles();
+
+    morphCount_ = totalMorphTargetsForAsset(asset);
+    for (const ImportedMesh& m : asset.meshes) {
+        for (int i = 0; i < m.morphTargetCount; ++i) {
+            morphNames_.push_back(i < static_cast<int>(m.targetNames.size())
+                                      ? m.targetNames[static_cast<size_t>(i)] : std::string());
+        }
+    }
+    face_.configure(morphCount_, morphNames_);
+    ensureBuffers();
+
+    const std::vector<af::Clip>& library = af::builtinClips();
+    std::vector<std::string> skipped;
+    int loaded = 0;
+    for (const af::Clip& authored : library) {
+        Clip clip;
+        const size_t skipsBefore = skipped.size();
+        if (!Clip::fromAuthoredByRole(authored, skeleton_, &clip, &skipped)) {
+            /* fromAuthoredByRole reports WHY it refused (a calibration pose, an absent role, an
+               uncovered track name). Only add the generic note when it stayed silent: claiming a clip
+               "bound to no joint" next to a note saying it was refused on purpose is a contradiction,
+               and the specific reason is the one a caller can act on. */
+            if (skipped.size() == skipsBefore) {
+                loadNotes_.push_back("authored clip '" + authored.name +
+                                     "' bound to no joint of this file's skeleton");
+            }
+            continue;
+        }
+        clips_.push_back(std::move(clip));
+        ++loaded;
+    }
+    for (const std::string& s2 : skipped) loadNotes_.push_back(s2);
+    if (loaded == 0) {
+        return fail("no authored clip could be bound to this file's skeleton by role");
+    }
+
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "the file carries no animation of its own; bound %d of %d engine-authored clip(s) to "
+                  "its %d-joint skeleton by humanoid role (%d of %d roles present)",
+                  loaded, static_cast<int>(library.size()), skeleton_.count(), roles,
+                  static_cast<int>(Role::COUNT));
+    loadNotes_.push_back(buf);
+    /* Land in the bind pose, exactly as the engine expects after loadGlb(): loading a file is not the
+       same request as playing its first animation. */
+    resetToBindPose();
+    return true;
+}
+
 bool Player::loadAuthored(const Rig& rig, std::string* error) {
     auto fail = [&](const std::string& msg) { if (error) *error = msg; return false; };
     clear();

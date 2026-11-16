@@ -83,3 +83,22 @@ a future replacement of any file can be checked against them.
   instead of failing, and `tools/glb_animation_probe.py --require-skin` fails on it by design.
 - glTF morph `weights` accessors are SCALAR, not VECn. This file is the fixture that caught a reader
   which assumed a width of 4 and therefore silently dropped every morph and translation channel.
+
+### CliplessRigged.glb (synthetic, generated in this repository)
+
+- File: `app/src/main/assets/models/animation/CliplessRigged.glb`
+- Size: 4,164 bytes
+- SHA-256: `3106cf34fb87d5ab13471185b101db7b4179d5db5f59c970213f4dc66c541555`
+- Source: **no third party.** Written by `tools/make_clipless_rigged_glb.py`, which is committed
+  alongside it and produces byte-identical output on every run (verified: regenerating leaves
+  `git diff` empty). There is no external licence attached because nothing external is in it.
+- Measured structure: 18 nodes, 1 mesh (8 vertices / 12 triangles), 1 skin with 17 canonically named
+  joints, depth 5, root `Hips`, `inverseBindMatrices` present, **0 animations**, 0 morph targets.
+- Why it exists: `female.glb` covers "no skin, cannot be deformed". Nothing covered the different case
+  of "fully rigged, deformable, but carries no clips" — which is what `mylove_rig_prepared.glb` (20
+  joints, 17/17 humanoid roles, 0 animations) is. That file is 13 MB and lives on another branch, so it
+  cannot be a fixture. This one is 4 KB and can.
+- Four of its eight vertices are rigidly bound to `LeftLowerArm` and four to `Hips`. That split is what
+  lets `imported_animation_test` prove the skinning is genuinely per-joint: a clip that rotates only the
+  arm must move the arm's vertices and leave the hips' vertices exactly where the bind pose put them. A
+  global transform faking motion would fail that check while passing every "vertices moved" check.

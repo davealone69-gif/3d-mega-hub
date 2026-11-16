@@ -1945,11 +1945,36 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
     e->importedAnimReady = false;
     {
         std::string animError;
-        if (!e->importedPlayer.loadGlb(asset, &animError)) {
-            /* Reported, not swallowed: a file whose channels could not be read says so, and stays
-               static, rather than silently animating with half its motion missing. */
-            e->log(AF_LOG_WARN, "import: the file's animation was not adopted - " + animError);
-        } else {
+        bool adopted = e->importedPlayer.loadGlb(asset, &animError);
+        bool authoredFallback = false;
+        if (!adopted) {
+            /* A RIGGED FILE WITH NO CLIPS IS NOT A BROKEN FILE, and treating it as one is what left
+               imports such as mylove_rig_prepared.glb permanently static: it has 1 skin, 20 joints,
+               inverse bind matrices and 17 of 17 humanoid roles, but zero animations, so loadGlb()
+               correctly refuses it. The engine already authors a 16-clip library for its own generated
+               rig; Clip::fromAuthoredByRole binds that library to a foreign skeleton by Role instead of
+               by joint name. That is reuse of the tested af::anim core, not importer-specific animation
+               logic. It is only reached when the file genuinely has nothing of its own, so a file WITH
+               clips is never silently overridden by the engine's idea of how it should move. */
+            std::string authoredError;
+            if (e->importedPlayer.loadAuthoredForGlb(asset, &authoredError)) {
+                adopted = true;
+                authoredFallback = true;
+                e->log(AF_LOG_INFO,
+                       "import: the file carries no animation of its own, so the engine's authored clip "
+                       "library was bound to its skeleton by humanoid role");
+            } else {
+                /* Reported, not swallowed: a file whose channels could not be read says so, and stays
+                   static, rather than silently animating with half its motion missing. Both refusals are
+                   logged, because "no clips" and "cannot be driven either" are different facts and the
+                   second is the one that means the model will not move. */
+                e->log(AF_LOG_WARN, "import: the file's animation was not adopted - " + animError);
+                e->log(AF_LOG_WARN,
+                       "import: the engine's authored library could not drive this file either - " +
+                       authoredError);
+            }
+        }
+        if (adopted) {
             const af::anim::Skeleton& sk = e->importedPlayer.skeleton();
             /* hasInverseBind is the honest gate for THIS backend. The animation core will happily build
                a node-only skeleton for a morph-only file, because the gltfio path can still drive its
@@ -2004,12 +2029,13 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
                 e->importedPlayer.resetToBindPose();
                 applyImportedPose(e);              /* skin at the bind pose so verts agree with vertsRest */
 
-                char msg[224];
+                char msg[256];
                 std::snprintf(msg, sizeof(msg),
                               "import: adopted the file's skeleton (%d joints, %d skin slots, %d/17 humanoid "
-                              "roles) and %d animation clip(s); no clip is playing yet, so the model "
+                              "roles) and %d %s clip(s); no clip is playing yet, so the model "
                               "is in its bind pose",
-                              sk.count(), sk.skinSlotCount(), sk.rolesMatched(), clips);
+                              sk.count(), sk.skinSlotCount(), sk.rolesMatched(), clips,
+                              authoredFallback ? "engine-authored, role-bound" : "animation");
                 e->log(AF_LOG_INFO, msg);
 
                 /* What is still NOT applied, said out loud rather than left to be discovered. */

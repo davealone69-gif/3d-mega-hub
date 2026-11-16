@@ -508,6 +508,173 @@ bool Clip::fromGlb(const GlbAsset& asset, int animationIndex, const Skeleton& sk
 
 /* ========================================================================== Clip::fromAuthored = */
 
+namespace {
+
+/* The authored library's joint vocabulary, mapped to Role explicitly.
+   This is a TABLE and not a heuristic on purpose. assignRoles()/findFuzzy() exist to guess at the
+   naming of FOREIGN files, and running them against the engine's own vocabulary was measured to resolve
+   only 7 of the 17 roles: thigh_L, shin_L, foot_L, thigh_R, shin_R, foot_R, upperarm_01_L and
+   upperarm_01_R all come back unmapped, while spine_02, chest and root collapse onto Hips together. A
+   walk cycle bound that way drives the hips alone and the legs never move. Our own rig's names are known
+   and fixed, so they are stated outright - and animation_system_test fails if the library grows a track
+   name this table does not cover, which is the only way it can silently go stale. */
+/* Two library entries are not motion: 't_pose' and 'a_pose' are single-key, 0.10 s CALIBRATION poses
+   that state the generated rig's own rest shape. Transferring them onto a foreign skeleton was measured
+   on mylove_rig_prepared.glb, whose bind pose is already arms-out (LeftUpperArm rest direction
+   (-0.999, +0.040, 0.000)): the authored t_pose is +/-90 degrees about Y, which maps (-1,0,0) to
+   (0,0,-1) and swings arms that were already out BACKWARD, collapsing a 0.825 arm span to 0.505. No
+   composition of local rotations can repair that, because the mismatch is in the rest SHAPE (the
+   generated rig binds arms-down), not in the rest orientation. An imported file's bind pose already is
+   its own calibration, so these two are refused with a reason instead of posing the avatar wrongly. */
+bool isCalibrationPose(const std::string& name) {
+    return name == "t_pose" || name == "a_pose";
+}
+
+Role authoredTrackRole(const std::string& name) {
+    static const struct { const char* name; Role role; } kTable[] = {
+        { "root",          Role::Hips },
+        { "hips",          Role::Hips },
+        { "spine_02",      Role::Spine },
+        { "chest",         Role::Chest },
+        { "neck_01",       Role::Neck },
+        { "head",          Role::Head },
+        { "thigh_L",       Role::LeftUpperLeg },
+        { "thigh_R",       Role::RightUpperLeg },
+        { "shin_L",        Role::LeftLowerLeg },
+        { "shin_R",        Role::RightLowerLeg },
+        { "foot_L",        Role::LeftFoot },
+        { "foot_R",        Role::RightFoot },
+        { "upperarm_01_L", Role::LeftUpperArm },
+        { "upperarm_01_R", Role::RightUpperArm },
+        { "forearm_01_L",  Role::LeftLowerArm },
+        { "forearm_01_R",  Role::RightLowerArm },
+        { "hand_L",        Role::LeftHand },
+        { "hand_R",        Role::RightHand },
+    };
+    for (const auto& e : kTable) if (name == e.name) return e.role;
+    return Role::COUNT;
+}
+
+/* Every joint name the built-in library writes to, so a caller (or a test) can prove the table above
+   still covers the library instead of trusting it. */
+std::vector<std::string> authoredVocabulary(const std::vector<af::Clip>& library) {
+    std::vector<std::string> names;
+    for (const af::Clip& c : library) {
+        for (const af::Track& t : c.tracks) {
+            bool seen = false;
+            for (const std::string& n : names) if (n == t.jointName) { seen = true; break; }
+            if (!seen) names.push_back(t.jointName);
+        }
+    }
+    return names;
+}
+
+} // namespace
+
+std::vector<std::string> authoredTrackNames(const std::vector<af::Clip>& library) {
+    return authoredVocabulary(library);
+}
+
+Role authoredRoleForTrackName(const std::string& name) {
+    return authoredTrackRole(name);
+}
+
+bool authoredClipIsCalibrationPose(const std::string& clipName) {
+    return isCalibrationPose(clipName);
+}
+
+bool Clip::fromAuthoredByRole(const af::Clip& authored, const Skeleton& target, Clip* out,
+                              std::vector<std::string>* skipped) {
+    if (!out) return false;
+    *out = Clip();
+    if (isCalibrationPose(authored.name)) {
+        if (skipped) skipped->push_back(authored.name +
+                                        ": refused - a single-key calibration pose describing the "
+                                        "generated rig's rest shape; this skeleton's bind pose is its "
+                                        "own calibration, and transferring it swings the arms backward");
+        return false;
+    }
+    out->name = authored.name;
+    out->duration = authored.duration;
+    out->looping = authored.looping;
+    out->authored = true;
+    out->sourceAnimation = -1;
+    out->category = categoryForClipName(authored.name);
+
+    const int jointCount = target.count();
+    if (jointCount <= 0) return false;
+    /* Two authored names ("root" and "hips") both map to Role::Hips, and a target skeleton can resolve
+       several roles onto one joint. One rotation channel per joint: the first track wins and the
+       duplicate is reported, rather than two channels fighting over the same bone each frame. */
+    std::vector<bool> rotationTaken(static_cast<size_t>(jointCount), false);
+
+    for (const Track& tr : authored.tracks) {
+        const Role role = authoredTrackRole(tr.jointName);
+        if (role == Role::COUNT) {
+            if (skipped) skipped->push_back(authored.name + ": track '" + tr.jointName +
+                                            "' is not in the authored role table");
+            continue;
+        }
+        const int joint = target.jointForRole(role);
+        if (joint < 0) {
+            if (skipped) skipped->push_back(authored.name + ": track '" + tr.jointName + "' needs role " +
+                                            roleName(role) + ", which this skeleton does not have");
+            continue;
+        }
+        if (tr.keys.empty()) continue;
+
+        bool anyTranslation = false;
+        for (const Keyframe& kf : tr.keys) {
+            if (kf.translation.lengthSq() > kEps) { anyTranslation = true; break; }
+        }
+        if (anyTranslation && skipped) {
+            skipped->push_back(authored.name + ": track '" + tr.jointName +
+                               "' carries translation that is NOT transferred - the authored library is "
+                               "scaled for a 1.75 m figure and an imported skeleton gives no source rig "
+                               "to derive a ratio from, so applying it unscaled would overshoot");
+        }
+
+        if (rotationTaken[static_cast<size_t>(joint)]) {
+            if (skipped) skipped->push_back(authored.name + ": track '" + tr.jointName +
+                                            "' resolves to the same joint as an earlier track; kept the "
+                                            "first");
+            continue;
+        }
+        rotationTaken[static_cast<size_t>(joint)] = true;
+
+        Channel rot;
+        rot.joint = joint;
+        rot.path = Path::Rotation;
+        rot.interp = Interp::Smoothstep;
+        rot.components = 4;
+        rot.times.reserve(tr.keys.size());
+        rot.values.reserve(tr.keys.size());
+        /* REST-FRAME CONVERSION. Pose::computeMatrices() uses r[j] as a bone's FULL local rotation and
+           resetToRest() fills it from sk.restR, so a clip channel replaces the rest rather than adding to
+           it. The authored library was written against the generated rig, whose restRotation is identity
+           for every one of its 71 joints (measured), which makes an authored key a pure deviation from
+           rest. Composing that deviation on the TARGET's rest is what keeps the import's own bind pose as
+           the starting point instead of overwriting it; for identity-rest skeletons such as Fox and
+           mylove_rig_prepared.glb this is a no-op, and it is the difference between working and badly
+           broken for a Blender-exported rig whose rest rotations are not identity.
+           This does NOT fix a differing rest SHAPE: the generated rig binds arms-down while that avatar
+           binds arms-out, and no composition of local rotations reconciles the two. That is why the
+           calibration poses above are refused rather than converted. */
+        const Quat& rest = target.restR[static_cast<size_t>(joint)];
+        for (const Keyframe& kf : tr.keys) {
+            rot.times.push_back(kf.time);
+            const Quat q = rest * kf.rotation;
+            rot.values.push_back(Vec4(q.x, q.y, q.z, q.w));
+        }
+        out->channels.push_back(std::move(rot));
+    }
+    if (out->channels.empty()) return false;
+    /* No translation channel is ever emitted here, so there is no root motion to extract. Claiming
+       otherwise would make consumeRootMotion() report movement the pose does not contain. */
+    out->hasRootTranslation = false;
+    return true;
+}
+
 bool Clip::fromAuthored(const af::Clip& authored, const Skeleton& sk, Clip* out,
                         std::vector<std::string>* skipped) {
     if (!out) return false;
