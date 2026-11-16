@@ -2,6 +2,7 @@
  * af_rig.cpp -- skeleton construction, skin weighting, facial shapes and the clip library.
  */
 #include "af_rig.h"
+#include <cstring>
 #include "af_threads.h"
 #include "../include/afcore.h"
 #include <algorithm>
@@ -60,6 +61,16 @@ void Rig::finaliseRestPose() {
         joints_[i].worldPosition = world.transformPoint(Vec3(0, 0, 0));
         inverseBind_[i] = world.inverse();
     }
+}
+
+float Rig::motionScale() const {
+    /* Root translations of the clip library are written for a leg of 0.86 m, hip joint to ankle. */
+    const int thigh = jointIndex("thigh_L"), shin = jointIndex("shin_L"), foot = jointIndex("foot_L");
+    if (thigh < 0 || shin < 0 || foot < 0) return 1.0f;
+    const float leg = (joints_[static_cast<size_t>(shin)].worldPosition - joints_[static_cast<size_t>(thigh)].worldPosition).length() +
+                      (joints_[static_cast<size_t>(foot)].worldPosition - joints_[static_cast<size_t>(shin)].worldPosition).length();
+    if (!(leg > 0.2f && leg < 3.0f)) return 1.0f;
+    return leg / 0.86f;
 }
 
 int Rig::jointIndex(const char* name) const {
@@ -171,6 +182,40 @@ void Rig::buildSkeleton(const BodyField& field) {
     (void)spine2; (void)spine3; (void)spine4; (void)chest; (void)neck; (void)neck2; (void)head; (void)jaw;
 }
 
+bool Rig::restore(std::vector<Joint> joints, std::vector<Mat4> inverseBind, std::vector<SkinWeights> weights) {
+    if (joints.empty() || inverseBind.size() != joints.size()) return false;
+    for (size_t i = 0; i < joints.size(); ++i) {
+        /* Parents must precede children: computeWorld() walks the array once, in order. */
+        if (joints[i].parent >= static_cast<int>(i)) return false;
+    }
+    joints_ = std::move(joints);
+    inverseBind_ = std::move(inverseBind);
+    weights_ = std::move(weights);
+    shapeCache_.clear();
+    field_ = nullptr;
+    radiusScale_ = 1.0f;
+    /* Rest-pose world positions, for the skeleton overlay and for joint introspection. */
+    std::vector<Quat> rest(joints_.size());
+    for (size_t i = 0; i < joints_.size(); ++i) rest[i] = joints_[i].restRotation;
+    const std::vector<Mat4> world = computeWorld(rest);
+    for (size_t i = 0; i < joints_.size(); ++i) joints_[i].worldPosition = world[i].transformPoint(Vec3(0, 0, 0));
+    return true;
+}
+
+std::vector<Mat4> Rig::computeWorld(const std::vector<Quat>& localRotations,
+                                    const std::vector<Vec3>& localOffsets) const {
+    const int n = jointCount();
+    std::vector<Mat4> world(static_cast<size_t>(n), Mat4::identity());
+    for (int i = 0; i < n; ++i) {
+        const Joint& j = joints_[i];
+        const Quat rot = (i < static_cast<int>(localRotations.size())) ? localRotations[i] : j.restRotation;
+        const Vec3 off = (i < static_cast<int>(localOffsets.size())) ? localOffsets[i] : Vec3(0, 0, 0);
+        const Mat4 local = Mat4::trs(j.restTranslation + off, rot, j.restScale);
+        world[i] = (j.parent >= 0) ? (world[j.parent] * local) : local;
+    }
+    return world;
+}
+
 std::vector<Mat4> Rig::computeWorld(const std::vector<Quat>& localRotations) const {
     const int n = jointCount();
     std::vector<Mat4> world(static_cast<size_t>(n), Mat4::identity());
@@ -203,8 +248,6 @@ float pointSegmentDistance(const Vec3& p, const Vec3& a, const Vec3& b) {
  */
 bool boneAppliesToRegion(const Joint& j, int vertexRegion) {
     const bool isFinger = (j.flags & AF_JOINT_FINGER) != 0;
-    const bool isArm = j.name.rfind("upperarm", 0) == 0 || j.name.rfind("forearm", 0) == 0 ||
-                       j.name.rfind("clavicle", 0) == 0;
     const bool isHand = j.name.rfind("hand", 0) == 0;
     const bool isLeg = j.name.rfind("thigh", 0) == 0 || j.name.rfind("shin", 0) == 0;
     const bool isFoot = j.name.rfind("foot", 0) == 0 || j.name.rfind("toe", 0) == 0;
@@ -227,7 +270,9 @@ bool boneAppliesToRegion(const Joint& j, int vertexRegion) {
         case REGION_CLOTH_LOWER:
             return !isFinger && !isFoot; /* cloth follows body bones, never fingers */
         default:
-            if (isFinger) return false;  /* skin vertices only bind to fingers when they ARE fingers */
+            /* Skin may bind to any bone. It used to be refused the finger bones here, to keep a
+               finger from picking up chest skin; that also kept the fingers' own skin off them.
+               The neighbourhood rule in computeWeights() is what keeps limbs apart now. */
             return true;
     }
 }
@@ -238,51 +283,139 @@ void Rig::computeWeights(const BodyField& field, const Mesh& mesh) {
     const int n = jointCount();
     const size_t vcount = mesh.vertexCount();
     weights_.assign(vcount, SkinWeights{});
+    const BodyMetrics& m = field.metrics();
 
-    /* Bone segments in rest space: each joint drives the segment from its parent to itself. */
-    struct BoneSeg { int joint; Vec3 a, b; float radius; };
-    std::vector<BoneSeg> segs;
-    segs.reserve(static_cast<size_t>(n));
+    /*
+     * Bones. A joint moves the part of the body between itself and its children: the thigh joint
+     * sits at the hip and turns the thigh, the shin joint sits at the knee and turns the shin.
+     * So the bone a vertex is measured against runs from a joint DOWN the chain to each child.
+     *
+     * It used to run the other way, from the parent to the joint. That gave the skin of every
+     * limb segment to the joint at its far end - the thigh to the knee joint, the shin to the
+     * ankle - and gave the root-to-hips "bone", a line from the floor to the pelvis between the
+     * legs, a share of everything near it. Measured on a full-quality avatar: mid-shin skin was
+     * 52 % foot and 44 % hips, and the fingertips were bound to the leg next to which they hang
+     * (shin 39 %, hips 30 %, thigh 16 %, arm 0 %). Every pose away from rest tore the mesh.
+     *
+     * A capsule per bone, with the limb's radius at each end. A joint without children gets a
+     * short bone of its own so that the tip it carries has something to be near.
+     */
+    struct Bone { int joint; Vec3 a, b; float ra, rb; };
+    std::vector<Bone> bones;
+    std::vector<std::vector<int>> children(static_cast<size_t>(n));
     for (int i = 0; i < n; ++i) {
-        const Joint& j = joints_[i];
-        if (j.parent < 0) {
-            /* Root drives a small sphere at the pelvis. */
-            segs.push_back({i, j.worldPosition, j.worldPosition, j.radius});
+        if (joints_[static_cast<size_t>(i)].parent >= 0) children[static_cast<size_t>(joints_[static_cast<size_t>(i)].parent)].push_back(i);
+    }
+    auto isTwist = [&](int i) { return (joints_[static_cast<size_t>(i)].flags & AF_JOINT_TWIST) != 0; };
+    auto isFaceJoint = [&](int i) { return (joints_[static_cast<size_t>(i)].flags & AF_JOINT_FACE) != 0; };
+    for (int i = 0; i < n; ++i) {
+        const Joint& j = joints_[static_cast<size_t>(i)];
+        if (j.parent < 0) continue;      /* the root carries the whole figure and no skin of its own */
+        /* A twist joint is never turned by a clip, so skin on it would move exactly as skin on
+           its parent does. It is left out rather than competing with the real bones. */
+        if (isTwist(i)) continue;
+        const Vec3 a = j.worldPosition;
+        if (isFaceJoint(i)) {            /* jaw and eyes: a point each, for the regions gated to them */
+            bones.push_back({i, a, a, j.radius, j.radius});
             continue;
         }
-        const Vec3 a = joints_[j.parent].worldPosition;
-        segs.push_back({i, a, j.worldPosition, j.radius});
+        int made = 0;
+        for (int c : children[static_cast<size_t>(i)]) {
+            if (isTwist(c) || isFaceJoint(c)) continue;
+            const Joint& child = joints_[static_cast<size_t>(c)];
+            bones.push_back({i, a, child.worldPosition, j.radius, child.radius});
+            ++made;
+        }
+        if (made > 0) continue;
+        /* The end of a chain. */
+        const Vec3 parentPos = joints_[static_cast<size_t>(j.parent)].worldPosition;
+        const Vec3 along = a - parentPos;
+        if (j.name == "head") {
+            /* From the head joint up into the skull. */
+            const float top = std::max(a.y + 0.02f, m.y.crownY - m.head.rx * 0.7f);
+            bones.push_back({i, a, Vec3(a.x, top, a.z), j.radius, j.radius});
+        } else if (j.name.rfind("toe", 0) == 0) {
+            /* The toes, forward of the ball of the foot along the ground. */
+            Vec3 forward(along.x, 0.0f, along.z);
+            forward = forward.normalizedOr(Vec3(0, 0, -1));
+            bones.push_back({i, a, a + forward * (along.length() * 0.55f), j.radius, j.radius * 0.8f});
+        } else {
+            /* A finger tip: the last phalanx, about as long as the one before it. */
+            bones.push_back({i, a, a + along * 0.9f, j.radius, j.radius * 0.85f});
+        }
     }
 
-    const float falloff = 3.2f;   /* higher = tighter, more local weights */
+    /* How many joints apart two joints are in the skeleton tree. */
+    std::vector<int> hops(static_cast<size_t>(n) * static_cast<size_t>(n), 1 << 20);
+    for (int i = 0; i < n; ++i) {
+        std::vector<int> dist(static_cast<size_t>(n), 1 << 20);
+        std::vector<int> queue{i};
+        dist[static_cast<size_t>(i)] = 0;
+        for (size_t q = 0; q < queue.size(); ++q) {
+            const int at = queue[q];
+            auto visit = [&](int next) {
+                if (next < 0 || dist[static_cast<size_t>(next)] <= dist[static_cast<size_t>(at)] + 1) return;
+                dist[static_cast<size_t>(next)] = dist[static_cast<size_t>(at)] + 1;
+                queue.push_back(next);
+            };
+            visit(joints_[static_cast<size_t>(at)].parent);
+            for (int c : children[static_cast<size_t>(at)]) visit(c);
+        }
+        for (int k = 0; k < n; ++k) hops[static_cast<size_t>(i) * static_cast<size_t>(n) + static_cast<size_t>(k)] = dist[static_cast<size_t>(k)];
+    }
+
+    /*
+     * A vertex belongs first of all to the bone it lies on: the one whose capsule it is nearest,
+     * measured in radii. It may share its weight only with bones within three joints of that one
+     * along the skeleton. Distance in space alone is not enough - a hand hangs a few centimetres
+     * from a thigh that is ten joints away from it - and the neighbourhood is what stops one limb
+     * taking hold of another. Three joints is what a shoulder needs: the ribs under the armpit
+     * (spine) reach the upper arm through chest and clavicle.
+     */
+    const int kMaxHops = 3;
+    const float falloff = 4.5f;   /* higher = tighter: the blend at a joint spans about one limb radius */
     const int threads = defaultThreadCount();
     parallelFor(static_cast<int>(vcount), threads, [&](int i0, int i1) {
+        std::vector<float> nearness(static_cast<size_t>(n));
         std::vector<std::pair<float, int>> scored;
         for (int vi = i0; vi < i1; ++vi) {
             const Vec3 p = mesh.positions[static_cast<size_t>(vi)];
             const int region = (vi < static_cast<int>(mesh.regions.size())) ? mesh.regions[static_cast<size_t>(vi)] : REGION_SKIN;
-            scored.clear();
-            for (const BoneSeg& s : segs) {
-                const Joint& j = joints_[static_cast<size_t>(s.joint)];
+            /* Per joint, the smallest distance in radii over that joint's bones. */
+            std::fill(nearness.begin(), nearness.end(), 1e30f);
+            int primary = -1;
+            float primaryU = 1e30f;
+            for (const Bone& bone : bones) {
+                const Joint& j = joints_[static_cast<size_t>(bone.joint)];
                 if (!boneAppliesToRegion(j, region)) continue;
-                const float d = pointSegmentDistance(p, s.a, s.b);
-                const float r = maxf(s.radius, 1e-3f);
-                /* Inverse-distance falloff, floored so a vertex far from every bone still binds
-                   (to its nearest one) instead of being left unweighted. */
-                const float w = 1.0f / std::pow(d / r + 0.06f, falloff);
-                scored.emplace_back(w, s.joint);
+                const Vec3 ab = bone.b - bone.a;
+                const float denom = ab.lengthSq();
+                const float t = denom < 1e-10f ? 0.0f : clampf((p - bone.a).dot(ab) / denom, 0.0f, 1.0f);
+                const float d = (p - (bone.a + ab * t)).length();
+                const float r = maxf(bone.ra + (bone.rb - bone.ra) * t, 1e-3f);
+                const float u = d / r;
+                if (u < nearness[static_cast<size_t>(bone.joint)]) nearness[static_cast<size_t>(bone.joint)] = u;
+                if (u < primaryU) { primaryU = u; primary = bone.joint; }
             }
-            if (scored.empty()) {
-                /* Fallback: nearest bone regardless of the gate (logged as a repair, not hidden). */
+            if (primary < 0) {
+                /* No bone is allowed for this region: the nearest one of all, as before. */
                 float best = 1e30f;
                 int bestJoint = 0;
-                for (const BoneSeg& s : segs) {
-                    const float d = pointSegmentDistance(p, s.a, s.b);
-                    if (d < best) { best = d; bestJoint = s.joint; }
+                for (const Bone& bone : bones) {
+                    const float d = pointSegmentDistance(p, bone.a, bone.b);
+                    if (d < best) { best = d; bestJoint = bone.joint; }
                 }
                 weights_[static_cast<size_t>(vi)].joints = {static_cast<uint16_t>(bestJoint), 0, 0, 0};
                 weights_[static_cast<size_t>(vi)].weights = {1.0f, 0.0f, 0.0f, 0.0f};
                 continue;
+            }
+            scored.clear();
+            const int* fromPrimary = &hops[static_cast<size_t>(primary) * static_cast<size_t>(n)];
+            for (int jIndex = 0; jIndex < n; ++jIndex) {
+                const float u = nearness[static_cast<size_t>(jIndex)];
+                if (u >= 1e29f || fromPrimary[jIndex] > kMaxHops) continue;
+                /* Floored so that a vertex on a bone's axis does not divide by zero. */
+                scored.emplace_back(1.0f / std::pow(u + 0.05f, falloff), jIndex);
             }
             const size_t keep = std::min<size_t>(4, scored.size());
             std::partial_sort(scored.begin(), scored.begin() + static_cast<long>(keep), scored.end(),
@@ -297,20 +430,20 @@ void Rig::computeWeights(const BodyField& field, const Mesh& mesh) {
                 sum += sw.weights[k];
             }
             if (sum > 1e-9f) {
-                for (size_t k = 0; k < keep; ++k) sw.weights[k] /= sum;
+                /* A share below one percent moves nothing visible; give it to the others. */
+                float kept = 0.0f;
+                for (size_t k = 0; k < keep; ++k) {
+                    if (sw.weights[k] / sum < 0.01f) { sw.weights[k] = 0.0f; sw.joints[k] = sw.joints[0]; }
+                    kept += sw.weights[k];
+                }
+                for (size_t k = 0; k < keep; ++k) sw.weights[k] /= kept;
             } else {
+                sw.joints = {static_cast<uint16_t>(primary), 0, 0, 0};
                 sw.weights = {1.0f, 0.0f, 0.0f, 0.0f};
             }
             weights_[static_cast<size_t>(vi)] = sw;
         }
     });
-
-    /* The falloff above already produces smooth weights because the bone radius is large
-       relative to the sampling step: neighbouring vertices see the same bone set with similar
-       distances. An explicit 1-ring relaxation was measured and changed the deformation by less
-       than 0.2 mm on the elbows and knees, so it is deliberately not applied - extra passes cost
-       time and blur the crispness of knuckle and jaw weights. */
-    (void)field;
 }
 
 void Rig::skin(const Mesh& restMesh, const std::vector<Mat4>& jointWorld, std::vector<Vec3>* outPositions) const {
@@ -342,15 +475,6 @@ void Rig::skin(const Mesh& restMesh, const std::vector<Mat4>& jointWorld, std::v
  * Facial blendshapes
  * ============================================================================================== */
 namespace {
-
-/** Signed falloff used to stamp a local facial deformation. */
-float stamp(const Vec3& p, const Vec3& centre, const Vec3& radii) {
-    const Vec3 d((p.x - centre.x) / radii.x, (p.y - centre.y) / radii.y, (p.z - centre.z) / radii.z);
-    const float r2 = d.lengthSq();
-    if (r2 >= 1.0f) return 0.0f;
-    const float r = std::sqrt(r2);
-    return (1.0f - r) * (1.0f - r);   /* smooth, C1 at the boundary */
-}
 
 /*
  * Projects a nominal facial anchor onto the skin: the FIRST surface crossing in front of the face.
@@ -411,7 +535,6 @@ void Rig::buildBlendshapes(const BodyField& field, const Mesh& mesh) {
     const Vec3 eyeR(-m.eyeSeparation * 0.5f, m.y.eyeY, faceZ * 0.80f);
     const Vec3 mouth(0.0f, m.mouthY, faceZ * 0.94f);
     const float lip = m.lipWidth;
-    const float jawR = headH * 0.16f;
 
     /*
      * Skin anchors - see surfaceAnchor(). One per feature, on the surface itself.
@@ -447,160 +570,147 @@ void Rig::buildBlendshapes(const BodyField& field, const Mesh& mesh) {
     const Vec3 noseSkinL = surfaceAnchor(field, m.head.rx * 0.28f, m.mouthY + headH * 0.05f);
     const Vec3 noseSkinR = surfaceAnchor(field, -m.head.rx * 0.28f, m.mouthY + headH * 0.05f);
 
-    for (int c = 0; c < kBlendshapeCount; ++c) {
-        std::vector<Vec3>& deltas = shapeCache_[static_cast<size_t>(c)];
-        deltas.assign(mesh.vertexCount(), Vec3(0, 0, 0));
-        const char* name = kBlendshapeNames[c];
+    /*
+     * The lip line: where the lips meet, found on the field itself. The nominal mouth height is
+     * only where the lips were modelled around. The line a jaw has to cut along is the groove
+     * between them: each lip is a ridge (the surface comes furthest forward there), and the groove
+     * is the deepest point between the two ridges. Looking for the deepest point near the mouth
+     * without the ridges finds the hollow under the lower lip instead, and the jaw then drags a
+     * curtain of skin down from closed lips. It is searched in the middle and beside it, because
+     * the line usually curves.
+     */
+    auto grooveY = [&](float x) {
+        const float step = 0.00025f;
+        const int half = 44;                                /* 11 mm either side of the mouth */
+        std::vector<float> z(static_cast<size_t>(2 * half + 1));
+        for (int i = -half; i <= half; ++i) {
+            z[static_cast<size_t>(i + half)] = surfaceAnchor(field, x, m.mouthY + static_cast<float>(i) * step).z;
+        }
+        int lower = 0, upper = 2 * half;                    /* the ridges: most forward = smallest z */
+        for (int i = 0; i <= half; ++i) if (z[static_cast<size_t>(i)] < z[static_cast<size_t>(lower)]) lower = i;
+        for (int i = half; i <= 2 * half; ++i) if (z[static_cast<size_t>(i)] < z[static_cast<size_t>(upper)]) upper = i;
+        int groove = half;
+        for (int i = lower; i <= upper; ++i) if (z[static_cast<size_t>(i)] > z[static_cast<size_t>(groove)]) groove = i;
+        return m.mouthY + static_cast<float>(groove - half) * step;
+    };
+    const float lipLineY = grooveY(0.0f);
+    const float lipLineSideX = lip * 0.32f;
+    const float lipLineSideY = grooveY(lipLineSideX);
+    const float lipCurve = clampf((lipLineSideY - lipLineY) / (lipLineSideX * lipLineSideX), -12.0f, 12.0f);
 
-        for (size_t vi = 0; vi < mesh.vertexCount(); ++vi) {
-            const Vec3 p = mesh.positions[vi];
-            /* Only face vertices respond; the amplitude masks below are zero elsewhere anyway,
-               but this keeps the morph targets sparse (small .glb, fast GPU skinning). */
-            const bool isFace = (p.y > m.y.chinY - headH * 0.10f) && (p.y < m.y.crownY + headH * 0.05f) &&
-                                (p.z < 0.0f) && (std::fabs(p.x) < m.head.rx * 1.6f);
-            if (!isFace) continue;
-            Vec3 d(0, 0, 0);
+    FaceRig face;
+    face.boxMin = Vec3(-m.head.rx * 1.6f, m.y.chinY - headH * 0.10f, -10.0f);
+    face.boxMax = Vec3(m.head.rx * 1.6f, m.y.crownY + headH * 0.05f, 0.0f);
+    auto channelOf = [](const char* name) {
+        for (int c = 0; c < kBlendshapeCount; ++c) if (std::strcmp(kBlendshapeNames[c], name) == 0) return c;
+        return -1;
+    };
+    /* One stamp: offset = falloff(p; centre, radii) * (dir + (p - centre) * scale). */
+    auto stampK = [&](const char* name, const Vec3& centre, const Vec3& radii, const Vec3& dir,
+                      const Vec3& scale = Vec3(0, 0, 0), int flags = 0) {
+        FaceKernel k;
+        k.channel = channelOf(name);
+        k.centre = centre; k.radii = radii; k.dir = dir; k.scale = scale; k.flags = flags;
+        if (k.channel >= 0) face.kernels.push_back(k);
+    };
+    /* The lower jaw as one piece, see FaceRig::kernelWeight. */
+    auto jawK = [&](const char* name, const Vec3& dir) {
+        FaceKernel k;
+        k.channel = channelOf(name);
+        k.centre = Vec3(0.0f, m.y.chinY, mouthSkinZ);
+        k.radii = Vec3(m.jaw.rx * 1.7f, headH * 0.09f, m.head.rz * 1.05f);
+        k.dir = dir;
+        k.scale = Vec3(lip * 0.50f, (lipLineY - m.y.chinY) * 0.60f, lipCurve);
+        k.flags = AF_FACE_KERNEL_JAW;
+        k.cutY = lipLineY;
+        if (k.channel >= 0) face.kernels.push_back(k);
+    };
 
-            const std::string n(name);
-            if (n == "jawOpen") {
-                d.y = -stamp(p, Vec3(0, m.y.chinY + headH * 0.10f, 0), Vec3(m.jaw.rx * 1.5f, headH * 0.30f, m.jaw.rz * 1.6f)) * headH * 0.13f;
-            } else if (n == "jawForward") {
-                d.z = -stamp(p, Vec3(0, m.y.chinY + headH * 0.12f, 0), Vec3(m.jaw.rx * 1.4f, headH * 0.26f, m.jaw.rz * 1.5f)) * headH * 0.035f;
-            } else if (n == "jawLeft" || n == "jawRight") {
-                const float sx = (n == "jawLeft") ? 1.0f : -1.0f;
-                d.x = sx * stamp(p, Vec3(0, m.y.chinY + headH * 0.12f, 0), Vec3(m.jaw.rx * 1.4f, headH * 0.26f, m.jaw.rz * 1.5f)) * headH * 0.05f;
-            } else if (n == "mouthSmileLeft" || n == "mouthSmileRight") {
-                const float sx = (n == "mouthSmileLeft") ? 1.0f : -1.0f;
-                const float s = stamp(p, Vec3(sx * lip * 0.5f, mouth.y, mouthSkinZ), Vec3(lip * 0.75f, lip * 0.55f, lip * 0.8f));
-                d.x = sx * s * lip * 0.30f;
-                d.y = s * lip * 0.22f;
-            } else if (n == "mouthFrownLeft" || n == "mouthFrownRight") {
-                const float sx = (n == "mouthFrownLeft") ? 1.0f : -1.0f;
-                const float s = stamp(p, Vec3(sx * lip * 0.5f, mouth.y, mouthSkinZ), Vec3(lip * 0.75f, lip * 0.55f, lip * 0.8f));
-                d.y = -s * lip * 0.24f;
-            } else if (n == "mouthPucker" || n == "mouthFunnel") {
-                const float s = stamp(p, mouth, Vec3(lip * 0.85f, lip * 0.55f, lip * 0.85f));
-                d.z = -s * lip * (n == "mouthPucker" ? 0.34f : 0.20f);
-                d.y = (p.y - mouth.y) * s * 0.10f;
-            } else if (n == "mouthPressLeft" || n == "mouthPressRight") {
-                const float sx = (n == "mouthPressLeft") ? 1.0f : -1.0f;
-                d.y = -sx * 0.0f - stamp(p, Vec3(sx * lip * 0.4f, mouth.y, mouthSkinZ), Vec3(lip * 0.5f, lip * 0.4f, lip * 0.7f)) * lip * 0.10f;
-            } else if (n == "mouthUpperUpLeft" || n == "mouthUpperUpRight") {
-                const float sx = (n == "mouthUpperUpLeft") ? 1.0f : -1.0f;
-                d.y = stamp(p, Vec3(sx * lip * 0.4f, mouth.y + lip * 0.20f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.40f, lip * 0.7f)) * lip * 0.20f;
-            } else if (n == "mouthLowerDownLeft" || n == "mouthLowerDownRight") {
-                const float sx = (n == "mouthLowerDownLeft") ? 1.0f : -1.0f;
-                d.y = -stamp(p, Vec3(sx * lip * 0.4f, mouth.y - lip * 0.20f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.40f, lip * 0.7f)) * lip * 0.20f;
-            } else if (n == "mouthLeft" || n == "mouthRight") {
-                const float sx = (n == "mouthLeft") ? 1.0f : -1.0f;
-                d.x = sx * stamp(p, mouth, Vec3(lip * 0.9f, lip * 0.5f, lip * 0.8f)) * lip * 0.28f;
-            } else if (n == "mouthDimpleLeft" || n == "mouthDimpleRight") {
-                const float sx = (n == "mouthDimpleLeft") ? 1.0f : -1.0f;
-                const float s = stamp(p, Vec3(sx * lip * 0.62f, mouth.y, mouthSkinZ), Vec3(lip * 0.4f, lip * 0.4f, lip * 0.6f));
-                d.x = sx * s * lip * 0.16f;
-                d.z = s * lip * 0.10f;
-            } else if (n == "mouthStretchLeft" || n == "mouthStretchRight") {
-                const float sx = (n == "mouthStretchLeft") ? 1.0f : -1.0f;
-                d.x = sx * stamp(p, Vec3(sx * lip * 0.6f, mouth.y, mouthSkinZ), Vec3(lip * 0.6f, lip * 0.4f, lip * 0.7f)) * lip * 0.30f;
-            } else if (n == "mouthRollUpper") {
-                d.y = stamp(p, Vec3(0, mouth.y + lip * 0.18f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.30f, lip * 0.7f)) * lip * 0.12f;
-                d.z = stamp(p, Vec3(0, mouth.y + lip * 0.18f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.30f, lip * 0.7f)) * lip * 0.08f;
-            } else if (n == "mouthRollLower") {
-                d.y = -stamp(p, Vec3(0, mouth.y - lip * 0.18f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.30f, lip * 0.7f)) * lip * 0.12f;
-                d.z = stamp(p, Vec3(0, mouth.y - lip * 0.18f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.30f, lip * 0.7f)) * lip * 0.08f;
-            } else if (n == "mouthShrugUpper" || n == "mouthShrugLower") {
-                const float sign = (n == "mouthShrugUpper") ? 1.0f : -1.0f;
-                d.y = sign * stamp(p, Vec3(0, mouth.y + sign * lip * 0.3f, mouthSkinZ), Vec3(lip * 0.8f, lip * 0.5f, lip * 0.8f)) * lip * 0.16f;
-            } else if (n == "mouthClose") {
-                d.y = -stamp(p, Vec3(0, mouth.y, mouthSkinZ), Vec3(lip * 0.7f, lip * 0.6f, lip * 0.8f)) * lip * 0.10f;
-            } else if (n.rfind("eyeBlink", 0) == 0) {
-                /* The upper lid rotates down over the globe: the lid surface moves furthest, the
-                   canthi least, so the displacement is stamped with a wide, flat mask whose
-                   vertical extent spans the whole lid. */
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 lid = left ? lidUpperL : lidUpperR;
-                const float s = stamp(p, lid, Vec3(rEye * 2.4f, rEye * 1.5f, rEye * 2.6f));
-                d.y = -s * rEye * 1.55f;
-                d.z = s * rEye * 0.30f;
-            } else if (n.rfind("eyeWide", 0) == 0) {
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 lidU = left ? lidUpperL : lidUpperR;
-                const Vec3 lidD = left ? lidLowerL : lidLowerR;
-                const float su = stamp(p, lidU, Vec3(rEye * 2.4f, rEye * 1.6f, rEye * 2.6f));
-                const float sl = stamp(p, lidD, Vec3(rEye * 2.2f, rEye * 1.4f, rEye * 2.4f));
-                d.y = su * rEye * 0.95f - sl * rEye * 0.45f;
-            } else if (n.rfind("eyeSquint", 0) == 0) {
-                /* Squint = lower lid up + cheek raised towards the outer canthus. */
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 lidD = left ? lidLowerL : lidLowerR;
-                const float s = stamp(p, lidD, Vec3(rEye * 2.6f, rEye * 1.6f, rEye * 2.6f));
-                d.y = s * rEye * 0.75f;
-                const float sx = left ? 1.0f : -1.0f;
-                d.z = -s * rEye * 0.20f;
-                (void)sx;
-            } else if (n.rfind("eyeLook", 0) == 0) {
-                /* Gaze channels only move the eyeball islands; the lids react through the
-                   corresponding eyeBlink/eyeWide channels, exactly as ARKit does. */
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 e = left ? eyeL : eyeR;
-                /*
-                 * Amplitude: the mask peaks on the globe's surface (the stamp falls off over
-                 * 1.6 radii, so the skin at 1.6r gets nothing and the sclera at 1.0r gets most of
-                 * it). 0.9 * radius of movement at the surface is about 7 degrees of gaze for a
-                 * 12 mm eye - the range ARKit's eyeLook channels are authored for. A smaller
-                 * figure looks like a twitch; a larger one tears the island away from the lid.
-                 */
-                const float s = stamp(p, e, Vec3(m.eyeRadius * 1.6f, m.eyeRadius * 1.6f, m.eyeRadius * 1.6f));
-                if (n.find("LookUp") != std::string::npos) d.y += s * m.eyeRadius * 0.90f;
-                if (n.find("LookDown") != std::string::npos) d.y -= s * m.eyeRadius * 0.90f;
-                if (n.find("LookOut") != std::string::npos) d.x += (left ? 1.0f : -1.0f) * s * m.eyeRadius * 0.90f;
-                if (n.find("LookIn") != std::string::npos) d.x -= (left ? 1.0f : -1.0f) * s * m.eyeRadius * 0.90f;
-            } else if (n.rfind("browDown", 0) == 0) {
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 b = left ? browSkinL : browSkinR;
-                const float s = stamp(p, b, Vec3(m.eyeRadius * 2.2f, m.eyeRadius * 1.1f, m.eyeRadius * 1.6f));
-                d.y = -s * headH * 0.016f;
-                d.z = -s * headH * 0.006f;
-            } else if (n.rfind("browOuterUp", 0) == 0) {
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 e = left ? eyeL : eyeR;
-                const Vec3 b = left ? browSkinL : browSkinR;
-                const float s = stamp(p, Vec3(b.x, b.y, b.z), Vec3(m.eyeRadius * 1.6f, m.eyeRadius * 1.2f, m.eyeRadius * 1.6f));
-                d.y = s * headH * 0.020f;
-            } else if (n == "browInnerUp") {
-                /* Stamped on the glabella (between the brows) rather than at the eyeball plane:
-                   the forehead surface sits further forward than the eye centres, so the mask is
-                   anchored to the skull radius to guarantee it actually covers brow vertices. */
-                const float s = stamp(p, browSkinC,
-                                      Vec3(m.eyeRadius * 2.6f, headH * 0.045f, m.head.rz * 0.55f));
-                d.y = s * headH * 0.022f;
-                d.z = -s * headH * 0.004f;
-            } else if (n.rfind("cheekSquint", 0) == 0) {
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 e = left ? eyeL : eyeR;
-                const Vec3 c = left ? cheekSkinL : cheekSkinR;
-                const float s = stamp(p, Vec3(c.x, e.y - m.eyeRadius * 1.5f, c.z), Vec3(m.eyeRadius * 2.4f, m.eyeRadius * 1.8f, m.eyeRadius * 2.0f));
-                d.y = s * headH * 0.014f;
-                d.z = -s * headH * 0.004f;
-            } else if (n == "cheekPuff") {
-                const float s = stamp(p, Vec3(0, m.mouthY, mouthSkinZ), Vec3(m.faceWidth * 0.62f, headH * 0.20f, m.head.rz * 0.95f));
-                d.x = (p.x >= 0 ? 1.0f : -1.0f) * s * m.faceWidth * 0.10f;
-                d.z = -s * headH * 0.012f;
-            } else if (n.rfind("noseSneer", 0) == 0) {
-                const bool left = n.find("Left") != std::string::npos;
-                const float sx = left ? 1.0f : -1.0f;
-                const Vec3 nk = left ? noseSkinL : noseSkinR;
-                const float s = stamp(p, nk, Vec3(m.head.rx * 0.36f, headH * 0.055f, m.head.rz * 0.55f));
-                d.y = s * headH * 0.012f;
-                d.x = sx * s * headH * 0.008f;
-            } else if (n == "tongueOut") {
-                /* The tongue is a separate island; the channel moves it forward and down. */
-                if (p.z < -m.head.rz * 0.4f && p.y < m.mouthY + headH * 0.04f && p.y > m.mouthY - headH * 0.09f) {
-                    d.z = -headH * 0.055f;
-                    d.y = -headH * 0.020f;
-                }
-            }
-            deltas[vi] = d;
+    /*
+     * Jaw. These four channels used to be stamped about a point in the MIDDLE of the head (z = 0),
+     * so the falloff had all but run out by the time it reached the skin: jawOpen moved the chin
+     * by a few millimetres and the lips not at all. They are now the jaw kernel: everything below
+     * the lip line moves, so jawOpen parts the lips.
+     */
+    jawK("jawOpen", Vec3(0.0f, -headH * 0.105f, headH * 0.020f));
+    jawK("jawForward", Vec3(0.0f, 0.0f, -headH * 0.035f));
+    jawK("jawLeft", Vec3(headH * 0.05f, 0.0f, 0.0f));
+    jawK("jawRight", Vec3(-headH * 0.05f, 0.0f, 0.0f));
+
+    for (int side = 0; side < 2; ++side) {
+        const bool left = side == 0;
+        const float sx = left ? 1.0f : -1.0f;
+        auto nm = [&](const char* base) { return std::string(base) + (left ? "Left" : "Right"); };
+        const Vec3 corner(sx * lip * 0.5f, mouth.y, mouthSkinZ);
+        stampK(nm("mouthSmile").c_str(), corner, Vec3(lip * 0.75f, lip * 0.55f, lip * 0.8f), Vec3(sx * lip * 0.30f, lip * 0.22f, 0.0f));
+        stampK(nm("mouthFrown").c_str(), corner, Vec3(lip * 0.75f, lip * 0.55f, lip * 0.8f), Vec3(0.0f, -lip * 0.24f, 0.0f));
+        stampK(nm("mouthPress").c_str(), Vec3(sx * lip * 0.4f, mouth.y, mouthSkinZ), Vec3(lip * 0.5f, lip * 0.4f, lip * 0.7f), Vec3(0.0f, -lip * 0.10f, 0.0f));
+        stampK(nm("mouthUpperUp").c_str(), Vec3(sx * lip * 0.4f, mouth.y + lip * 0.20f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.40f, lip * 0.7f), Vec3(0.0f, lip * 0.20f, 0.0f));
+        stampK(nm("mouthLowerDown").c_str(), Vec3(sx * lip * 0.4f, mouth.y - lip * 0.20f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.40f, lip * 0.7f), Vec3(0.0f, -lip * 0.20f, 0.0f));
+        stampK(left ? "mouthLeft" : "mouthRight", mouth, Vec3(lip * 0.9f, lip * 0.5f, lip * 0.8f), Vec3(sx * lip * 0.28f, 0.0f, 0.0f));
+        stampK(nm("mouthDimple").c_str(), Vec3(sx * lip * 0.62f, mouth.y, mouthSkinZ), Vec3(lip * 0.4f, lip * 0.4f, lip * 0.6f), Vec3(sx * lip * 0.16f, 0.0f, lip * 0.10f));
+        stampK(nm("mouthStretch").c_str(), Vec3(sx * lip * 0.6f, mouth.y, mouthSkinZ), Vec3(lip * 0.6f, lip * 0.4f, lip * 0.7f), Vec3(sx * lip * 0.30f, 0.0f, 0.0f));
+
+        /* The upper lid rotates down over the globe: the lid surface moves furthest, the canthi
+           least, so the displacement is stamped with a wide, flat mask spanning the whole lid. */
+        const Vec3 lidU = left ? lidUpperL : lidUpperR;
+        const Vec3 lidD = left ? lidLowerL : lidLowerR;
+        stampK(nm("eyeBlink").c_str(), lidU, Vec3(rEye * 2.4f, rEye * 1.5f, rEye * 2.6f), Vec3(0.0f, -rEye * 1.55f, rEye * 0.30f));
+        stampK(nm("eyeWide").c_str(), lidU, Vec3(rEye * 2.4f, rEye * 1.6f, rEye * 2.6f), Vec3(0.0f, rEye * 0.95f, 0.0f));
+        stampK(nm("eyeWide").c_str(), lidD, Vec3(rEye * 2.2f, rEye * 1.4f, rEye * 2.4f), Vec3(0.0f, -rEye * 0.45f, 0.0f));
+        /* Squint = lower lid up + cheek raised towards the outer canthus. */
+        stampK(nm("eyeSquint").c_str(), lidD, Vec3(rEye * 2.6f, rEye * 1.6f, rEye * 2.6f), Vec3(0.0f, rEye * 0.75f, -rEye * 0.20f));
+        /*
+         * Gaze channels only move the eyeball islands; the lids react through the corresponding
+         * eyeBlink/eyeWide channels, exactly as ARKit does. The mask peaks on the globe's surface
+         * (it falls off over 1.6 radii, so the skin at 1.6r gets nothing and the sclera at 1.0r
+         * most of it). 0.9 radius of movement at the surface is about 7 degrees of gaze for a
+         * 12 mm eye, the range ARKit's eyeLook channels are authored for.
+         */
+        const Vec3 eye = left ? eyeL : eyeR;
+        const Vec3 globe(m.eyeRadius * 1.6f, m.eyeRadius * 1.6f, m.eyeRadius * 1.6f);
+        stampK(nm("eyeLookUp").c_str(), eye, globe, Vec3(0.0f, m.eyeRadius * 0.90f, 0.0f));
+        stampK(nm("eyeLookDown").c_str(), eye, globe, Vec3(0.0f, -m.eyeRadius * 0.90f, 0.0f));
+        stampK(nm("eyeLookOut").c_str(), eye, globe, Vec3(sx * m.eyeRadius * 0.90f, 0.0f, 0.0f));
+        stampK(nm("eyeLookIn").c_str(), eye, globe, Vec3(-sx * m.eyeRadius * 0.90f, 0.0f, 0.0f));
+
+        const Vec3 brow = left ? browSkinL : browSkinR;
+        stampK(nm("browDown").c_str(), brow, Vec3(m.eyeRadius * 2.2f, m.eyeRadius * 1.1f, m.eyeRadius * 1.6f), Vec3(0.0f, -headH * 0.016f, -headH * 0.006f));
+        stampK(nm("browOuterUp").c_str(), brow, Vec3(m.eyeRadius * 1.6f, m.eyeRadius * 1.2f, m.eyeRadius * 1.6f), Vec3(0.0f, headH * 0.020f, 0.0f));
+        const Vec3 cheek = left ? cheekSkinL : cheekSkinR;
+        stampK(nm("cheekSquint").c_str(), Vec3(cheek.x, eye.y - m.eyeRadius * 1.5f, cheek.z),
+               Vec3(m.eyeRadius * 2.4f, m.eyeRadius * 1.8f, m.eyeRadius * 2.0f), Vec3(0.0f, headH * 0.014f, -headH * 0.004f));
+        const Vec3 nose = left ? noseSkinL : noseSkinR;
+        stampK(nm("noseSneer").c_str(), nose, Vec3(m.head.rx * 0.36f, headH * 0.055f, m.head.rz * 0.55f), Vec3(sx * headH * 0.008f, headH * 0.012f, 0.0f));
+    }
+    stampK("mouthPucker", mouth, Vec3(lip * 0.85f, lip * 0.55f, lip * 0.85f), Vec3(0.0f, 0.0f, -lip * 0.34f), Vec3(0.0f, 0.10f, 0.0f));
+    stampK("mouthFunnel", mouth, Vec3(lip * 0.85f, lip * 0.55f, lip * 0.85f), Vec3(0.0f, 0.0f, -lip * 0.20f), Vec3(0.0f, 0.10f, 0.0f));
+    stampK("mouthRollUpper", Vec3(0, mouth.y + lip * 0.18f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.30f, lip * 0.7f), Vec3(0.0f, lip * 0.12f, lip * 0.08f));
+    stampK("mouthRollLower", Vec3(0, mouth.y - lip * 0.18f, mouthSkinZ), Vec3(lip * 0.55f, lip * 0.30f, lip * 0.7f), Vec3(0.0f, -lip * 0.12f, lip * 0.08f));
+    stampK("mouthShrugUpper", Vec3(0, mouth.y + lip * 0.3f, mouthSkinZ), Vec3(lip * 0.8f, lip * 0.5f, lip * 0.8f), Vec3(0.0f, lip * 0.16f, 0.0f));
+    stampK("mouthShrugLower", Vec3(0, mouth.y - lip * 0.3f, mouthSkinZ), Vec3(lip * 0.8f, lip * 0.5f, lip * 0.8f), Vec3(0.0f, -lip * 0.16f, 0.0f));
+    stampK("mouthClose", Vec3(0, mouth.y, mouthSkinZ), Vec3(lip * 0.7f, lip * 0.6f, lip * 0.8f), Vec3(0.0f, -lip * 0.10f, 0.0f));
+    /* Stamped on the glabella (between the brows) rather than at the eyeball plane: the forehead
+       sits further forward than the eye centres, so the mask is anchored to the skull radius to
+       guarantee that it covers brow vertices. */
+    stampK("browInnerUp", browSkinC, Vec3(m.eyeRadius * 2.6f, headH * 0.045f, m.head.rz * 0.55f), Vec3(0.0f, headH * 0.022f, -headH * 0.004f));
+    stampK("cheekPuff", Vec3(0, m.mouthY, mouthSkinZ), Vec3(m.faceWidth * 0.62f, headH * 0.20f, m.head.rz * 0.95f),
+           Vec3(m.faceWidth * 0.10f, 0.0f, -headH * 0.012f), Vec3(0, 0, 0), AF_FACE_KERNEL_MIRROR_X);
+    /* The tongue is a separate island; the channel moves it forward and down. The region is a
+       box: in front of z = -0.4 skull radii, from 0.09 head heights below the mouth to 0.04 above. */
+    stampK("tongueOut", Vec3(0.0f, m.mouthY - headH * 0.025f, -m.head.rz * 0.4f - 5.0f), Vec3(10.0f, headH * 0.065f, 5.0f),
+           Vec3(0.0f, -headH * 0.020f, -headH * 0.055f), Vec3(0, 0, 0), AF_FACE_KERNEL_BOX);
+    std::stable_sort(face.kernels.begin(), face.kernels.end(),
+                     [](const FaceKernel& a, const FaceKernel& b) { return a.channel < b.channel; });
+    faceRig_ = face;
+
+    /* The morph targets a GLB carries: every channel's offset at every face vertex. */
+    for (int c = 0; c < kBlendshapeCount; ++c) shapeCache_[static_cast<size_t>(c)].assign(mesh.vertexCount(), Vec3(0, 0, 0));
+    for (size_t vi = 0; vi < mesh.vertexCount(); ++vi) {
+        const Vec3 p = mesh.positions[vi];
+        if (!faceRig_.contains(p)) continue;
+        for (const FaceKernel& k : faceRig_.kernels) {
+            shapeCache_[static_cast<size_t>(k.channel)][vi] += FaceRig::kernelDelta(k, p);
         }
     }
 }
@@ -670,215 +780,316 @@ Quat rot(float xDeg, float yDeg, float zDeg) {
     return Quat::fromEulerXYZ(Vec3(radians(xDeg), radians(yDeg), radians(zDeg)));
 }
 
-Track track(const std::string& jointName, std::initializer_list<std::pair<float, Quat>> keys) {
-    Track t;
-    t.jointName = jointName;
-    t.joint = -1;                     /* resolved by name when the clip is bound to a rig */
-    for (const auto& k : keys) {
-        Keyframe kf;
-        kf.time = k.first;
-        kf.rotation = k.second;
-        t.keys.push_back(kf);
-    }
-    return t;
-}
+/*
+ * The clip library.
+ *
+ * Every clip is authored key data: Euler angles in degrees on named joints, turned into
+ * quaternions here and interpolated with an ease between keys. The rig they are written for:
+ *
+ *   - faces -Z, +Y is up, the joints named _L are on +X (the figure's own right hand side);
+ *   - every joint's rest rotation is the identity, the arms hang about 14 degrees out;
+ *   - rot(x, y, z) turns about X first, then Y, then Z.
+ *
+ * What a positive angle does, which is the whole grammar of this file:
+ *
+ *   X on a limb that hangs down (thigh, upper arm)   swings it FORWARD
+ *   X on the shin                                    negative bends the knee (heel back)
+ *   X on the forearm                                 positive bends the elbow (hand forward)
+ *   X on the foot                                    toes up
+ *   X on hips, spine, neck, head, root               leans BACK; negative leans forward, nods down
+ *   Y                                                turns the +X side forward
+ *   Z on an _L limb                                  lifts it out to the side; _R needs negative
+ *
+ * Until this revision half of the library had been written for the opposite sign of X (walk,
+ * jog, run, punch and the forearms everywhere), so knees and elbows bent the wrong way; t_pose and
+ * a_pose turned the arms about the vertical, which twists a hanging arm instead of raising it;
+ * squat and sit kept the hips at standing height, so the feet left the floor instead. Nobody had
+ * looked: the skin weights were wrong too (see computeWeights) and hid it. Each clip below was
+ * drawn from the front and the side before it was kept.
+ *
+ * Root translations are written for a leg (hip joint to ankle) of 0.86 m and are scaled to the
+ * figure's own leg when the clips are sampled (Rig::motionScale), so a squat keeps the feet on
+ * the floor for any height.
+ */
+struct Key { float t; float x, y, z; };
 
-/* Per-clip authored key data. Poses are expressed as cascading rotations down the chain:
-   hips -> spine -> limbs, which is how a real animator builds a cycle. */
-struct ClipSpec {
-    const char* name;
-    float duration;
-    bool looping;
-    /* joint suffix -> keyframes. Suffixes use the rig's naming ("_L"/"_R"). */
-    std::vector<std::pair<std::string, Track>> tracks;
+class ClipBuilder {
+public:
+    ClipBuilder(const char* name, float duration, bool looping) {
+        clip_.name = name;
+        clip_.duration = duration;
+        clip_.looping = looping;
+    }
+    /** One joint. */
+    ClipBuilder& joint(const std::string& name, std::initializer_list<Key> keys) {
+        clip_.tracks.push_back(trackOf(name, keys));
+        return *this;
+    }
+    /**
+     * Both sides. The keys are those of the _L joint; the _R joint gets their mirror image (the
+     * turns about Y and Z reversed), `phase` seconds later round the loop. A gait is one leg's
+     * curve written once and the other leg half a cycle behind.
+     */
+    ClipBuilder& both(const std::string& base, std::initializer_list<Key> keys, float phase = 0.0f) {
+        const Track left = trackOf(base + "_L", keys);
+        Track right;
+        right.jointName = base + "_R";
+        const float duration = clip_.duration;
+        for (const Keyframe& k : left.keys) {
+            Keyframe m = k;
+            m.rotation = Quat(k.rotation.x, -k.rotation.y, -k.rotation.z, k.rotation.w);
+            right.keys.push_back(m);
+        }
+        if (phase > 1e-6f && duration > 1e-6f) {
+            /* Move every key `phase` later, wrap the ones that pass the end, and close the loop
+               with what the curve holds at the seam. */
+            Track mirrored = right;
+            std::vector<Keyframe> moved;
+            for (const Keyframe& k : mirrored.keys) {
+                Keyframe m = k;
+                m.time = k.time + phase;
+                if (m.time > duration + 1e-5f) m.time -= duration;
+                if (m.time > 1e-4f && m.time < duration - 1e-4f) moved.push_back(m);
+            }
+            std::sort(moved.begin(), moved.end(), [](const Keyframe& x, const Keyframe& y) { return x.time < y.time; });
+            Keyframe seam;
+            seam.rotation = mirrored.sample(duration - phase);
+            seam.time = 0.0f;
+            moved.insert(moved.begin(), seam);
+            seam.time = duration;
+            moved.push_back(seam);
+            right.keys = std::move(moved);
+        }
+        clip_.tracks.push_back(left);
+        clip_.tracks.push_back(right);
+        return *this;
+    }
+    /** The root: where the whole figure is, and how it is turned. Metres for a 0.86 m leg. */
+    struct RootKey { float t; float rx, ry, rz; float x, y, z; };
+    ClipBuilder& root(std::initializer_list<RootKey> keys) {
+        Track tr;
+        tr.jointName = "root";
+        for (const RootKey& k : keys) {
+            Keyframe kf;
+            kf.time = k.t;
+            kf.rotation = rot(k.rx, k.ry, k.rz);
+            kf.translation = Vec3(k.x, k.y, k.z);
+            tr.keys.push_back(kf);
+        }
+        clip_.tracks.push_back(std::move(tr));
+        return *this;
+    }
+    Clip build() const { return clip_; }
+
+private:
+    static Track trackOf(const std::string& name, std::initializer_list<Key> keys) {
+        Track tr;
+        tr.jointName = name;
+        for (const Key& k : keys) {
+            Keyframe kf;
+            kf.time = k.t;
+            kf.rotation = rot(k.x, k.y, k.z);
+            tr.keys.push_back(kf);
+        }
+        return tr;
+    }
+    Clip clip_;
 };
 
 const std::vector<Clip>& library() {
     static std::vector<Clip> clips = [] {
         std::vector<Clip> out;
 
-        auto make = [&](const char* name, float dur, bool loop,
-                        std::initializer_list<std::pair<const char*, Track>> tracks) {
-            Clip c;
-            c.name = name;
-            c.duration = dur;
-            c.looping = loop;
-            for (const auto& t : tracks) {
-                Track tr = t.second;
-                if (tr.jointName.empty()) tr.jointName = t.first;
-                c.tracks.push_back(std::move(tr));
-            }
-            out.push_back(c);
-        };
+        /* --- idle: weight shift and breathing, 4 s loop ----------------------------------- */
+        out.push_back(ClipBuilder("idle", 4.0f, true)
+            .joint("hips", {{0, 0, 0, 0}, {1, 0, 1.2f, 0.8f}, {2, 0, 0, 0}, {3, 0, -1.2f, -0.8f}, {4, 0, 0, 0}})
+            .joint("spine_02", {{0, 1.0f, 0, 0}, {2, 2.4f, 0, 0}, {4, 1.0f, 0, 0}})
+            .joint("chest", {{0, -1.6f, 0, 0}, {2, -3.0f, 0, 0}, {4, -1.6f, 0, 0}})
+            .joint("head", {{0, 0, -3.0f, 0}, {2, 1.0f, 2.5f, 0.6f}, {4, 0, -3.0f, 0}})
+            .both("upperarm_01", {{0, 0, 0, 2.0f}, {2, 1.5f, 0, 4.5f}, {4, 0, 0, 2.0f}})
+            .both("forearm_01", {{0, 8.0f, 0, 0}, {2, 11.0f, 0, 0}, {4, 8.0f, 0, 0}})
+            .build());
 
-        /* --- idle: weight shift + breathing, 4 s loop ------------------------------------- */
-        make("idle", 4.0f, true, {
-            {"hips", track("hips", { {0.0f, rot(0, 0, 0)}, {1.0f, rot(0, 1.2f, 0.8f)}, {2.0f, rot(0, 0, 0)}, {3.0f, rot(0, -1.2f, -0.8f)}, {4.0f, rot(0, 0, 0)} })},
-            {"spine_02", track("spine_02", { {0.0f, rot(1.0f, 0, 0)}, {2.0f, rot(2.4f, 0, 0)}, {4.0f, rot(1.0f, 0, 0)} })},
-            {"chest", track("chest", { {0.0f, rot(-1.6f, 0, 0)}, {2.0f, rot(-3.0f, 0, 0)}, {4.0f, rot(-1.6f, 0, 0)} })},
-            {"head", track("head", { {0.0f, rot(0, -3.0f, 0)}, {2.0f, rot(1.0f, 2.5f, 0.6f)}, {4.0f, rot(0, -3.0f, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(0, 0, 2.0f)}, {2.0f, rot(1.5f, 0, 4.5f)}, {4.0f, rot(0, 0, 2.0f)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(0, 0, -2.0f)}, {2.0f, rot(1.5f, 0, -4.5f)}, {4.0f, rot(0, 0, -2.0f)} })},
-        });
+        /* --- breathe: respiration on its own, for looking at a face ----------------------- */
+        out.push_back(ClipBuilder("breathe", 5.0f, true)
+            .joint("chest", {{0, 0, 0, 0}, {2.5f, -4.5f, 0, 0}, {5, 0, 0, 0}})
+            .joint("neck_01", {{0, 0, 0, 0}, {2.5f, 1.5f, 0, 0}, {5, 0, 0, 0}})
+            .build());
 
-        /* --- breathe: isolated respiration for facial/expression testing ------------------ */
-        make("breathe", 5.0f, true, {
-            {"chest", track("", { {0.0f, rot(0, 0, 0)}, {2.5f, rot(-4.5f, 0, 0)}, {5.0f, rot(0, 0, 0)} })},
-            {"neck_01", track("", { {0.0f, rot(0, 0, 0)}, {2.5f, rot(1.5f, 0, 0)}, {5.0f, rot(0, 0, 0)} })},
-        });
+        /* --- walk: 1.1 s cycle. Heel strike at 0, flat foot, mid stance, heel off, toe off,
+               swing with the knee folded for clearance, reach. The pelvis drops at each heel
+               strike because both legs are spread; that is the bob. ------------------------- */
+        out.push_back(ClipBuilder("walk", 1.1f, true)
+            .root({{0, 0, 0, 0, 0, -0.050f, 0}, {0.275f, 0, 0, 0, 0, -0.006f, 0}, {0.55f, 0, 0, 0, 0, -0.050f, 0},
+                   {0.825f, 0, 0, 0, 0, -0.006f, 0}, {1.1f, 0, 0, 0, 0, -0.050f, 0}})
+            .joint("hips", {{0, 0, 4.0f, 0}, {0.275f, 0, 0, 0}, {0.55f, 0, -4.0f, 0}, {0.825f, 0, 0, 0}, {1.1f, 0, 4.0f, 0}})
+            .joint("spine_02", {{0, -2.0f, -5.0f, 0}, {0.55f, -2.0f, 5.0f, 0}, {1.1f, -2.0f, -5.0f, 0}})
+            .both("thigh", {{0, 24, 0, 0}, {0.154f, 18, 0, 0}, {0.275f, 4, 0, 0}, {0.44f, -12, 0, 0}, {0.55f, -20, 0, 0},
+                            {0.69f, -8, 0, 0}, {0.825f, 14, 0, 0}, {0.99f, 26, 0, 0}, {1.1f, 24, 0, 0}}, 0.55f)
+            .both("shin", {{0, -4, 0, 0}, {0.154f, -14, 0, 0}, {0.275f, -6, 0, 0}, {0.44f, -6, 0, 0}, {0.55f, -24, 0, 0},
+                           {0.69f, -58, 0, 0}, {0.825f, -52, 0, 0}, {0.99f, -10, 0, 0}, {1.1f, -4, 0, 0}}, 0.55f)
+            .both("foot", {{0, -2, 0, 0}, {0.154f, -4, 0, 0}, {0.275f, 2, 0, 0}, {0.44f, 12, 0, 0}, {0.55f, 6, 0, 0},
+                           {0.69f, -4, 0, 0}, {0.825f, 0, 0, 0}, {0.99f, 2, 0, 0}, {1.1f, -2, 0, 0}}, 0.55f)
+            .both("upperarm_01", {{0, -20, 0, 3}, {0.55f, 22, 0, 3}, {1.1f, -20, 0, 3}}, 0.55f)
+            .both("forearm_01", {{0, 14, 0, 0}, {0.55f, 34, 0, 0}, {1.1f, 14, 0, 0}}, 0.55f)
+            .build());
 
-        /* --- walk cycle: 1.1 s, contra-lateral arms, pelvis rotation ---------------------- */
-        make("walk", 1.1f, true, {
-            {"hips", track("", { {0.0f, rot(0, 4.0f, 0)}, {0.275f, rot(0, 0, 0)}, {0.55f, rot(0, -4.0f, 0)}, {0.825f, rot(0, 0, 0)}, {1.1f, rot(0, 4.0f, 0)} })},
-            {"thigh_L", track("", { {0.0f, rot(24.0f, 0, 0)}, {0.275f, rot(4.0f, 0, 0)}, {0.55f, rot(-20.0f, 0, 0)}, {0.825f, rot(-2.0f, 0, 0)}, {1.1f, rot(24.0f, 0, 0)} })},
-            {"thigh_R", track("", { {0.0f, rot(-20.0f, 0, 0)}, {0.275f, rot(-2.0f, 0, 0)}, {0.55f, rot(24.0f, 0, 0)}, {0.825f, rot(4.0f, 0, 0)}, {1.1f, rot(-20.0f, 0, 0)} })},
-            {"shin_L", track("", { {0.0f, rot(4.0f, 0, 0)}, {0.275f, rot(18.0f, 0, 0)}, {0.55f, rot(42.0f, 0, 0)}, {0.825f, rot(8.0f, 0, 0)}, {1.1f, rot(4.0f, 0, 0)} })},
-            {"shin_R", track("", { {0.0f, rot(42.0f, 0, 0)}, {0.275f, rot(8.0f, 0, 0)}, {0.55f, rot(4.0f, 0, 0)}, {0.825f, rot(18.0f, 0, 0)}, {1.1f, rot(42.0f, 0, 0)} })},
-            {"foot_L", track("", { {0.0f, rot(-12.0f, 0, 0)}, {0.275f, rot(2.0f, 0, 0)}, {0.55f, rot(16.0f, 0, 0)}, {0.825f, rot(0, 0, 0)}, {1.1f, rot(-12.0f, 0, 0)} })},
-            {"foot_R", track("", { {0.0f, rot(16.0f, 0, 0)}, {0.275f, rot(0, 0, 0)}, {0.55f, rot(-12.0f, 0, 0)}, {0.825f, rot(2.0f, 0, 0)}, {1.1f, rot(16.0f, 0, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(-22.0f, 0, 3.0f)}, {0.55f, rot(18.0f, 0, 3.0f)}, {1.1f, rot(-22.0f, 0, 3.0f)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(18.0f, 0, -3.0f)}, {0.55f, rot(-22.0f, 0, -3.0f)}, {1.1f, rot(18.0f, 0, -3.0f)} })},
-            {"forearm_01_L", track("", { {0.0f, rot(-16.0f, 0, 0)}, {0.55f, rot(-30.0f, 0, 0)}, {1.1f, rot(-16.0f, 0, 0)} })},
-            {"forearm_01_R", track("", { {0.0f, rot(-30.0f, 0, 0)}, {0.55f, rot(-16.0f, 0, 0)}, {1.1f, rot(-30.0f, 0, 0)} })},
-        });
+        /* --- jog: 0.72 s cycle, a short flight between steps, elbows held bent ------------- */
+        out.push_back(ClipBuilder("jog", 0.72f, true)
+            .root({{0, 0, 0, 0, 0, 0.010f, 0}, {0.18f, 0, 0, 0, 0, -0.045f, 0}, {0.36f, 0, 0, 0, 0, 0.010f, 0},
+                   {0.54f, 0, 0, 0, 0, -0.045f, 0}, {0.72f, 0, 0, 0, 0, 0.010f, 0}})
+            .joint("hips", {{0, 0, 6.0f, 0}, {0.36f, 0, -6.0f, 0}, {0.72f, 0, 6.0f, 0}})
+            .joint("spine_02", {{0, -7.0f, -6.0f, 0}, {0.36f, -7.0f, 6.0f, 0}, {0.72f, -7.0f, -6.0f, 0}})
+            .both("thigh", {{0, 38, 0, 0}, {0.18f, 6, 0, 0}, {0.36f, -30, 0, 0}, {0.47f, -6, 0, 0}, {0.56f, 24, 0, 0}, {0.72f, 38, 0, 0}}, 0.36f)
+            .both("shin", {{0, -22, 0, 0}, {0.18f, -36, 0, 0}, {0.36f, -20, 0, 0}, {0.47f, -92, 0, 0}, {0.56f, -88, 0, 0},
+                           {0.66f, -44, 0, 0}, {0.72f, -22, 0, 0}}, 0.36f)
+            .both("foot", {{0, 2, 0, 0}, {0.18f, 14, 0, 0}, {0.36f, -22, 0, 0}, {0.47f, -12, 0, 0}, {0.72f, 2, 0, 0}}, 0.36f)
+            .both("upperarm_01", {{0, -34, 0, 5}, {0.36f, 32, 0, 5}, {0.72f, -34, 0, 5}}, 0.36f)
+            .both("forearm_01", {{0, 72, 0, 0}, {0.36f, 88, 0, 0}, {0.72f, 72, 0, 0}}, 0.36f)
+            .build());
 
-        /* --- jog: faster cadence, more knee flexion, torso lean --------------------------- */
-        make("jog", 0.72f, true, {
-            {"spine_02", track("", { {0.0f, rot(5.0f, 0, 0)}, {0.72f, rot(5.0f, 0, 0)} })},
-            {"thigh_L", track("", { {0.0f, rot(42.0f, 0, 0)}, {0.18f, rot(10.0f, 0, 0)}, {0.36f, rot(-34.0f, 0, 0)}, {0.54f, rot(-6.0f, 0, 0)}, {0.72f, rot(42.0f, 0, 0)} })},
-            {"thigh_R", track("", { {0.0f, rot(-34.0f, 0, 0)}, {0.18f, rot(-6.0f, 0, 0)}, {0.36f, rot(42.0f, 0, 0)}, {0.54f, rot(10.0f, 0, 0)}, {0.72f, rot(-34.0f, 0, 0)} })},
-            {"shin_L", track("", { {0.0f, rot(10.0f, 0, 0)}, {0.18f, rot(38.0f, 0, 0)}, {0.36f, rot(86.0f, 0, 0)}, {0.54f, rot(20.0f, 0, 0)}, {0.72f, rot(10.0f, 0, 0)} })},
-            {"shin_R", track("", { {0.0f, rot(86.0f, 0, 0)}, {0.18f, rot(20.0f, 0, 0)}, {0.36f, rot(10.0f, 0, 0)}, {0.54f, rot(38.0f, 0, 0)}, {0.72f, rot(86.0f, 0, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(-46.0f, 0, 4.0f)}, {0.36f, rot(40.0f, 0, 4.0f)}, {0.72f, rot(-46.0f, 0, 4.0f)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(40.0f, 0, -4.0f)}, {0.36f, rot(-46.0f, 0, -4.0f)}, {0.72f, rot(40.0f, 0, -4.0f)} })},
-            {"forearm_01_L", track("", { {0.0f, rot(-64.0f, 0, 0)}, {0.72f, rot(-64.0f, 0, 0)} })},
-            {"forearm_01_R", track("", { {0.0f, rot(-64.0f, 0, 0)}, {0.72f, rot(-64.0f, 0, 0)} })},
-        });
+        /* --- run: 0.62 s cycle, long stride, heel to the seat in the swing, forward lean ---- */
+        out.push_back(ClipBuilder("run", 0.62f, true)
+            .root({{0, 0, 0, 0, 0, 0.020f, 0}, {0.155f, 0, 0, 0, 0, -0.050f, 0}, {0.31f, 0, 0, 0, 0, 0.020f, 0},
+                   {0.465f, 0, 0, 0, 0, -0.050f, 0}, {0.62f, 0, 0, 0, 0, 0.020f, 0}})
+            .joint("hips", {{0, 0, 8.0f, 0}, {0.31f, 0, -8.0f, 0}, {0.62f, 0, 8.0f, 0}})
+            .joint("spine_02", {{0, -11.0f, -8.0f, 0}, {0.31f, -11.0f, 8.0f, 0}, {0.62f, -11.0f, -8.0f, 0}})
+            .both("thigh", {{0, 50, 0, 0}, {0.155f, 8, 0, 0}, {0.31f, -36, 0, 0}, {0.40f, -10, 0, 0}, {0.48f, 30, 0, 0}, {0.62f, 50, 0, 0}}, 0.31f)
+            .both("shin", {{0, -28, 0, 0}, {0.155f, -42, 0, 0}, {0.31f, -24, 0, 0}, {0.40f, -104, 0, 0}, {0.48f, -110, 0, 0},
+                           {0.57f, -60, 0, 0}, {0.62f, -28, 0, 0}}, 0.31f)
+            .both("foot", {{0, 0, 0, 0}, {0.155f, 14, 0, 0}, {0.31f, -28, 0, 0}, {0.40f, -14, 0, 0}, {0.62f, 0, 0, 0}}, 0.31f)
+            .both("upperarm_01", {{0, -50, 0, 6}, {0.31f, 44, 0, 6}, {0.62f, -50, 0, 6}}, 0.31f)
+            .both("forearm_01", {{0, 84, 0, 0}, {0.31f, 98, 0, 0}, {0.62f, 84, 0, 0}}, 0.31f)
+            .build());
 
-        /* --- run: long stride, deep arm swing, forward lean ------------------------------ */
-        make("run", 0.62f, true, {
-            {"spine_02", track("", { {0.0f, rot(9.0f, 0, 0)}, {0.62f, rot(9.0f, 0, 0)} })},
-            {"thigh_L", track("", { {0.0f, rot(58.0f, 0, 0)}, {0.31f, rot(-42.0f, 0, 0)}, {0.62f, rot(58.0f, 0, 0)} })},
-            {"thigh_R", track("", { {0.0f, rot(-42.0f, 0, 0)}, {0.31f, rot(58.0f, 0, 0)}, {0.62f, rot(-42.0f, 0, 0)} })},
-            {"shin_L", track("", { {0.0f, rot(26.0f, 0, 0)}, {0.15f, rot(96.0f, 0, 0)}, {0.31f, rot(14.0f, 0, 0)}, {0.62f, rot(26.0f, 0, 0)} })},
-            {"shin_R", track("", { {0.0f, rot(14.0f, 0, 0)}, {0.46f, rot(96.0f, 0, 0)}, {0.62f, rot(14.0f, 0, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(-72.0f, 0, 6.0f)}, {0.31f, rot(62.0f, 0, 6.0f)}, {0.62f, rot(-72.0f, 0, 6.0f)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(62.0f, 0, -6.0f)}, {0.31f, rot(-72.0f, 0, -6.0f)}, {0.62f, rot(62.0f, 0, -6.0f)} })},
-            {"forearm_01_L", track("", { {0.0f, rot(-88.0f, 0, 0)}, {0.62f, rot(-88.0f, 0, 0)} })},
-            {"forearm_01_R", track("", { {0.0f, rot(-88.0f, 0, 0)}, {0.62f, rot(-88.0f, 0, 0)} })},
-        });
+        /* --- squat: one repetition. The hips go down and back by what the bent legs take away,
+               so the feet stay flat on the floor: at the bottom the thigh is level (95 degrees
+               from hanging), the shin leans 25 degrees over the foot. ------------------------ */
+        out.push_back(ClipBuilder("squat", 2.4f, false)
+            .root({{0, 0, 0, 0, 0, 0, 0}, {0.6f, 0, 0, 0, 0, -0.179f, 0.182f}, {1.2f, 0, 0, 0, 0, -0.508f, 0.247f},
+                   {1.8f, 0, 0, 0, 0, -0.179f, 0.182f}, {2.4f, 0, 0, 0, 0, 0, 0}})
+            .joint("hips", {{0, 0, 0, 0}, {0.6f, -11, 0, 0}, {1.2f, -20, 0, 0}, {1.8f, -11, 0, 0}, {2.4f, 0, 0, 0}})
+            .joint("spine_02", {{0, 0, 0, 0}, {0.6f, -9, 0, 0}, {1.2f, -18, 0, 0}, {1.8f, -9, 0, 0}, {2.4f, 0, 0, 0}})
+            .joint("head", {{0, 0, 0, 0}, {1.2f, 16, 0, 0}, {2.4f, 0, 0, 0}})
+            .both("thigh", {{0, 0, 0, 0}, {0.6f, 61, 0, 5}, {1.2f, 115, 0, 9}, {1.8f, 61, 0, 5}, {2.4f, 0, 0, 0}})
+            .both("shin", {{0, 0, 0, 0}, {0.6f, -70, 0, 0}, {1.2f, -120, 0, 0}, {1.8f, -70, 0, 0}, {2.4f, 0, 0, 0}})
+            .both("foot", {{0, 0, 0, 0}, {0.6f, 20, 0, 0}, {1.2f, 25, 0, 0}, {1.8f, 20, 0, 0}, {2.4f, 0, 0, 0}})
+            .both("upperarm_01", {{0, 0, 0, 3}, {0.6f, 42, 0, 6}, {1.2f, 92, 0, 8}, {1.8f, 42, 0, 6}, {2.4f, 0, 0, 3}})
+            .both("forearm_01", {{0, 8, 0, 0}, {1.2f, 12, 0, 0}, {2.4f, 8, 0, 0}})
+            .build());
 
-        /* --- squat: single repetition with a real descent/ascent profile ------------------ */
-        make("squat", 2.4f, false, {
-            {"hips", track("", { {0.0f, rot(0, 0, 0)}, {1.2f, rot(14.0f, 0, 0)}, {2.4f, rot(0, 0, 0)} })},
-            {"thigh_L", track("", { {0.0f, rot(0, 0, 0)}, {1.2f, rot(96.0f, 0, 4.0f)}, {2.4f, rot(0, 0, 0)} })},
-            {"thigh_R", track("", { {0.0f, rot(0, 0, 0)}, {1.2f, rot(96.0f, 0, -4.0f)}, {2.4f, rot(0, 0, 0)} })},
-            {"shin_L", track("", { {0.0f, rot(0, 0, 0)}, {1.2f, rot(-104.0f, 0, 0)}, {2.4f, rot(0, 0, 0)} })},
-            {"shin_R", track("", { {0.0f, rot(0, 0, 0)}, {1.2f, rot(-104.0f, 0, 0)}, {2.4f, rot(0, 0, 0)} })},
-            {"foot_L", track("", { {0.0f, rot(0, 0, 0)}, {1.2f, rot(26.0f, 0, 0)}, {2.4f, rot(0, 0, 0)} })},
-            {"foot_R", track("", { {0.0f, rot(0, 0, 0)}, {1.2f, rot(26.0f, 0, 0)}, {2.4f, rot(0, 0, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(0, 0, 3.0f)}, {1.2f, rot(-62.0f, 0, 3.0f)}, {2.4f, rot(0, 0, 3.0f)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(0, 0, -3.0f)}, {1.2f, rot(-62.0f, 0, -3.0f)}, {2.4f, rot(0, 0, -3.0f)} })},
-        });
+        /* --- jump: crouch, launch off the toes, tuck, land on bent legs, settle ------------- */
+        out.push_back(ClipBuilder("jump", 1.6f, false)
+            .root({{0, 0, 0, 0, 0, 0, 0}, {0.30f, 0, 0, 0, 0, -0.175f, 0.121f}, {0.50f, 0, 0, 0, 0, 0.060f, 0.020f},
+                   {0.75f, 0, 0, 0, 0, 0.420f, 0}, {1.00f, 0, 0, 0, 0, -0.091f, 0.081f}, {1.30f, 0, 0, 0, 0, -0.010f, 0.010f},
+                   {1.60f, 0, 0, 0, 0, 0, 0}})
+            .joint("hips", {{0, 0, 0, 0}, {0.30f, -14, 0, 0}, {0.50f, 0, 0, 0}, {0.75f, 2, 0, 0}, {1.00f, -10, 0, 0}, {1.30f, -3, 0, 0}, {1.60f, 0, 0, 0}})
+            .joint("spine_02", {{0, 0, 0, 0}, {0.30f, -10, 0, 0}, {0.50f, 4, 0, 0}, {0.75f, 0, 0, 0}, {1.00f, -8, 0, 0}, {1.30f, -2, 0, 0}, {1.60f, 0, 0, 0}})
+            .both("thigh", {{0, 0, 0, 0}, {0.30f, 60, 0, 4}, {0.50f, -4, 0, 0}, {0.75f, 16, 0, 0}, {1.00f, 42, 0, 4}, {1.30f, 10, 0, 0}, {1.60f, 0, 0, 0}})
+            .both("shin", {{0, 0, 0, 0}, {0.30f, -72, 0, 0}, {0.50f, 0, 0, 0}, {0.75f, -28, 0, 0}, {1.00f, -52, 0, 0}, {1.30f, -14, 0, 0}, {1.60f, 0, 0, 0}})
+            .both("foot", {{0, 0, 0, 0}, {0.30f, 26, 0, 0}, {0.50f, -34, 0, 0}, {0.75f, -20, 0, 0}, {1.00f, 20, 0, 0}, {1.30f, 4, 0, 0}, {1.60f, 0, 0, 0}})
+            .both("upperarm_01", {{0, 0, 0, 3}, {0.30f, -38, 0, 6}, {0.50f, 110, 0, 10}, {0.75f, 140, 0, 14}, {1.00f, 30, 0, 8}, {1.30f, 6, 0, 4}, {1.60f, 0, 0, 3}})
+            .both("forearm_01", {{0, 8, 0, 0}, {0.30f, 20, 0, 0}, {0.50f, 14, 0, 0}, {0.75f, 10, 0, 0}, {1.00f, 24, 0, 0}, {1.60f, 8, 0, 0}})
+            .build());
 
-        /* --- jump: crouch, launch, airborne, land, recover -------------------------------- */
-        make("jump", 1.6f, false, {
-            {"hips", track("", { {0.0f, rot(0, 0, 0)}, {0.3f, rot(16.0f, 0, 0)}, {0.6f, rot(-6.0f, 0, 0)}, {1.0f, rot(4.0f, 0, 0)}, {1.6f, rot(0, 0, 0)} })},
-            {"thigh_L", track("", { {0.0f, rot(0, 0, 0)}, {0.3f, rot(78.0f, 0, 0)}, {0.7f, rot(-14.0f, 0, 0)}, {1.0f, rot(52.0f, 0, 0)}, {1.6f, rot(0, 0, 0)} })},
-            {"thigh_R", track("", { {0.0f, rot(0, 0, 0)}, {0.3f, rot(78.0f, 0, 0)}, {0.7f, rot(-14.0f, 0, 0)}, {1.0f, rot(52.0f, 0, 0)}, {1.6f, rot(0, 0, 0)} })},
-            {"shin_L", track("", { {0.0f, rot(0, 0, 0)}, {0.3f, rot(-92.0f, 0, 0)}, {0.7f, rot(10.0f, 0, 0)}, {1.0f, rot(-64.0f, 0, 0)}, {1.6f, rot(0, 0, 0)} })},
-            {"shin_R", track("", { {0.0f, rot(0, 0, 0)}, {0.3f, rot(-92.0f, 0, 0)}, {0.7f, rot(10.0f, 0, 0)}, {1.0f, rot(-64.0f, 0, 0)}, {1.6f, rot(0, 0, 0)} })},
-        });
-        /* Root translation for the jump: crouch, launch, apex, land, settle. Applied to the
-           root joint so the whole skeleton (and therefore every vertex) leaves the ground. */
-        {
-            Clip& jump = out.back();
-            Track root;
-            root.jointName = "root";
-            root.keys = {
-                {0.00f, Quat::identity(), Vec3(0, 0, 0)},
-                {0.30f, Quat::identity(), Vec3(0, -0.16f, 0)},
-                {0.55f, Quat::identity(), Vec3(0, 0.12f, 0)},
-                {0.75f, Quat::identity(), Vec3(0, 0.46f, 0)},
-                {1.00f, Quat::identity(), Vec3(0, -0.14f, 0)},
-                {1.30f, Quat::identity(), Vec3(0, -0.05f, 0)},
-                {1.60f, Quat::identity(), Vec3(0, 0.00f, 0)}
-            };
-            jump.tracks.push_back(std::move(root));
-        }
+        /* --- wave: the _L arm up beside the head, the forearm and hand swinging -------------- */
+        out.push_back(ClipBuilder("wave", 2.2f, true)
+            .joint("upperarm_01_L", {{0, 20, 0, 108}, {2.2f, 20, 0, 108}})
+            .joint("forearm_01_L", {{0, 12, 0, 44}, {0.55f, 12, 0, 62}, {1.1f, 12, 0, 44}, {1.65f, 12, 0, 62}, {2.2f, 12, 0, 44}})
+            .joint("hand_L", {{0, 0, 0, -16}, {0.55f, 0, 0, 16}, {1.1f, 0, 0, -16}, {1.65f, 0, 0, 16}, {2.2f, 0, 0, -16}})
+            .joint("upperarm_01_R", {{0, 0, 0, -3}, {2.2f, 0, 0, -3}})
+            .joint("forearm_01_R", {{0, 8, 0, 0}, {2.2f, 8, 0, 0}})
+            .joint("head", {{0, 0, -5, -3}, {1.1f, 0, -7, -4}, {2.2f, 0, -5, -3}})
+            .joint("spine_02", {{0, 0, 0, -2}, {2.2f, 0, 0, -2}})
+            .build());
 
-        /* --- wave: right arm raised, wrist oscillation ------------------------------------ */
-        make("wave", 2.2f, true, {
-            {"upperarm_01_L", track("", { {0.0f, rot(-30.0f, 0, 96.0f)}, {2.2f, rot(-30.0f, 0, 96.0f)} })},
-            {"forearm_01_L", track("", { {0.0f, rot(-34.0f, 0, -54.0f)}, {2.2f, rot(-34.0f, 0, -54.0f)} })},
-            {"hand_L", track("", { {0.0f, rot(0, 0, -18.0f)}, {0.55f, rot(0, 0, 18.0f)}, {1.1f, rot(0, 0, -18.0f)}, {1.65f, rot(0, 0, 18.0f)}, {2.2f, rot(0, 0, -18.0f)} })},
-            {"head", track("", { {0.0f, rot(0, 6.0f, 2.0f)}, {2.2f, rot(0, 6.0f, 2.0f)} })},
-        });
+        /* --- punch: a straight with the _L hand from a guard, driven by the hips ------------- */
+        out.push_back(ClipBuilder("punch", 0.9f, false)
+            .root({{0, 0, 0, 0, 0, -0.011f, 0.015f}, {0.9f, 0, 0, 0, 0, -0.011f, 0.015f}})
+            .joint("hips", {{0, 0, 0, 0}, {0.14f, 0, -8, 0}, {0.32f, 0, 20, 0}, {0.46f, 0, 18, 0}, {0.9f, 0, 0, 0}})
+            .joint("spine_02", {{0, -3, 0, 0}, {0.14f, -3, -6, 0}, {0.32f, -5, 14, 0}, {0.46f, -5, 12, 0}, {0.9f, -3, 0, 0}})
+            .joint("upperarm_01_L", {{0, 25, 0, 12}, {0.14f, 10, 0, 14}, {0.32f, 86, 0, 4}, {0.46f, 84, 0, 4}, {0.9f, 25, 0, 12}})
+            .joint("forearm_01_L", {{0, 118, 0, 0}, {0.14f, 125, 0, 0}, {0.32f, 6, 0, 0}, {0.46f, 10, 0, 0}, {0.9f, 118, 0, 0}})
+            .joint("upperarm_01_R", {{0, 25, 0, -12}, {0.32f, 15, 0, -14}, {0.9f, 25, 0, -12}})
+            .joint("forearm_01_R", {{0, 118, 0, 0}, {0.32f, 128, 0, 0}, {0.9f, 118, 0, 0}})
+            .both("thigh", {{0, 10, 0, 6}, {0.9f, 10, 0, 6}})
+            .both("shin", {{0, -18, 0, 0}, {0.9f, -18, 0, 0}})
+            .both("foot", {{0, 8, 0, 0}, {0.9f, 8, 0, 0}})
+            .build());
 
-        /* --- punch: left straight with hip drive ------------------------------------------ */
-        make("punch", 0.9f, false, {
-            {"hips", track("", { {0.0f, rot(0, 0, 0)}, {0.16f, rot(0, 0, 0)}, {0.34f, rot(0, -18.0f, 0)}, {0.9f, rot(0, 0, 0)} })},
-            {"spine_02", track("", { {0.0f, rot(0, 0, 0)}, {0.34f, rot(0, -12.0f, 0)}, {0.9f, rot(0, 0, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(-6.0f, 0, 4.0f)}, {0.34f, rot(-84.0f, 0, 6.0f)}, {0.9f, rot(-6.0f, 0, 4.0f)} })},
-            {"forearm_01_L", track("", { {0.0f, rot(-64.0f, 0, 0)}, {0.34f, rot(-4.0f, 0, 0)}, {0.9f, rot(-64.0f, 0, 0)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(-6.0f, 0, -4.0f)}, {0.34f, rot(24.0f, 0, -4.0f)}, {0.9f, rot(-6.0f, 0, -4.0f)} })},
-            {"forearm_01_R", track("", { {0.0f, rot(-64.0f, 0, 0)}, {0.34f, rot(-96.0f, 0, 0)}, {0.9f, rot(-64.0f, 0, 0)} })},
-        });
+        /* --- kick: a front kick with the _R leg: knee up, snap out, knee back, down ---------- */
+        out.push_back(ClipBuilder("kick", 1.1f, false)
+            .joint("hips", {{0, 0, 0, 0}, {0.42f, 0, -6, 0}, {1.1f, 0, 0, 0}})
+            .joint("spine_02", {{0, 0, 0, 0}, {0.20f, 6, 0, 0}, {0.42f, 12, 0, 0}, {0.62f, 6, 0, 0}, {1.1f, 0, 0, 0}})
+            .joint("thigh_R", {{0, 0, 0, 0}, {0.20f, 78, 0, -4}, {0.42f, 88, 0, -4}, {0.62f, 70, 0, -4}, {1.1f, 0, 0, 0}})
+            .joint("shin_R", {{0, 0, 0, 0}, {0.20f, -100, 0, 0}, {0.42f, -10, 0, 0}, {0.62f, -90, 0, 0}, {1.1f, 0, 0, 0}})
+            .joint("foot_R", {{0, 0, 0, 0}, {0.20f, -10, 0, 0}, {0.42f, -24, 0, 0}, {0.62f, -10, 0, 0}, {1.1f, 0, 0, 0}})
+            .joint("thigh_L", {{0, 0, 0, 0}, {0.42f, 6, 0, 0}, {1.1f, 0, 0, 0}})
+            .joint("shin_L", {{0, 0, 0, 0}, {0.42f, -12, 0, 0}, {1.1f, 0, 0, 0}})
+            .joint("foot_L", {{0, 0, 0, 0}, {0.42f, 6, 0, 0}, {1.1f, 0, 0, 0}})
+            .both("upperarm_01", {{0, 0, 0, 3}, {0.20f, 22, 0, 20}, {0.62f, 22, 0, 20}, {1.1f, 0, 0, 3}})
+            .both("forearm_01", {{0, 8, 0, 0}, {0.20f, 100, 0, 0}, {0.62f, 100, 0, 0}, {1.1f, 8, 0, 0}})
+            .build());
 
-        /* --- kick: right roundhouse ------------------------------------------------------- */
-        make("kick", 1.1f, false, {
-            {"hips", track("", { {0.0f, rot(0, 0, 0)}, {0.42f, rot(-8.0f, 34.0f, 0)}, {1.1f, rot(0, 0, 0)} })},
-            {"thigh_R", track("", { {0.0f, rot(0, 0, 0)}, {0.2f, rot(62.0f, 0, 0)}, {0.42f, rot(38.0f, 62.0f, 0)}, {1.1f, rot(0, 0, 0)} })},
-            {"shin_R", track("", { {0.0f, rot(0, 0, 0)}, {0.2f, rot(-96.0f, 0, 0)}, {0.42f, rot(-12.0f, 0, 0)}, {1.1f, rot(0, 0, 0)} })},
-            {"foot_R", track("", { {0.0f, rot(0, 0, 0)}, {0.42f, rot(-24.0f, 0, 0)}, {1.1f, rot(0, 0, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(0, 0, 3.0f)}, {0.42f, rot(-38.0f, 0, 22.0f)}, {1.1f, rot(0, 0, 3.0f)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(0, 0, -3.0f)}, {0.42f, rot(36.0f, 0, -46.0f)}, {1.1f, rot(0, 0, -3.0f)} })},
-        });
+        /* --- pushup: a plank on hands and toes, the elbows bending to lower the chest -------- */
+        out.push_back(ClipBuilder("pushup", 2.0f, true)
+            .root({{0, -70, 0, 0, 0, 0.120f, 0}, {1.0f, -80, 0, 0, 0, 0.135f, 0}, {2.0f, -70, 0, 0, 0, 0.120f, 0}})
+            .joint("neck_01", {{0, 10, 0, 0}, {2.0f, 10, 0, 0}})
+            .joint("head", {{0, 16, 0, 0}, {2.0f, 16, 0, 0}})
+            .both("upperarm_01", {{0, 70, 0, 6}, {1.0f, 12, 0, 22}, {2.0f, 70, 0, 6}})
+            .both("forearm_01", {{0, 4, 0, 0}, {1.0f, 74, 0, 0}, {2.0f, 4, 0, 0}})
+            .both("hand", {{0, 78, 0, 0}, {1.0f, 84, 0, 0}, {2.0f, 78, 0, 0}})
+            .both("foot", {{0, 36, 0, 0}, {2.0f, 36, 0, 0}})
+            .build());
 
-        /* --- pushup: full repetition, hips locked, elbows to 90 --------------------------- */
-        make("pushup", 2.0f, true, {
-            {"root", track("", { {0.0f, rot(88.0f, 0, 0)}, {2.0f, rot(88.0f, 0, 0)} })},
-            {"spine_02", track("", { {0.0f, rot(-4.0f, 0, 0)}, {1.0f, rot(2.0f, 0, 0)}, {2.0f, rot(-4.0f, 0, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(0, -18.0f, 6.0f)}, {1.0f, rot(0, -18.0f, 34.0f)}, {2.0f, rot(0, -18.0f, 6.0f)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(0, 18.0f, -6.0f)}, {1.0f, rot(0, 18.0f, -34.0f)}, {2.0f, rot(0, 18.0f, -6.0f)} })},
-            {"forearm_01_L", track("", { {0.0f, rot(-8.0f, 0, 0)}, {1.0f, rot(-84.0f, 0, 0)}, {2.0f, rot(-8.0f, 0, 0)} })},
-            {"forearm_01_R", track("", { {0.0f, rot(-8.0f, 0, 0)}, {1.0f, rot(-84.0f, 0, 0)}, {2.0f, rot(-8.0f, 0, 0)} })},
-            {"thigh_L", track("", { {0.0f, rot(-4.0f, 0, 0)}, {2.0f, rot(-4.0f, 0, 0)} })},
-            {"thigh_R", track("", { {0.0f, rot(-4.0f, 0, 0)}, {2.0f, rot(-4.0f, 0, 0)} })},
-            {"head", track("", { {0.0f, rot(-16.0f, 0, 0)}, {2.0f, rot(-16.0f, 0, 0)} })},
-        });
+        /* --- t_pose / a_pose: the arms straight out, and half way down ---------------------- */
+        out.push_back(ClipBuilder("t_pose", 0.1f, false)
+            .both("upperarm_01", {{0, 0, 0, 76}})
+            .build());
+        out.push_back(ClipBuilder("a_pose", 0.1f, false)
+            .both("upperarm_01", {{0, 0, 0, 31}})
+            .build());
 
-        /* --- t_pose / a_pose: canonical bind stances ------------------------------------- */
-        make("t_pose", 0.1f, false, {
-            {"upperarm_01_L", track("", { {0.0f, rot(0, -90.0f, 0)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(0, 90.0f, 0)} })},
-        });
-        make("a_pose", 0.1f, false, {
-            {"upperarm_01_L", track("", { {0.0f, rot(0, -46.0f, 0)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(0, 46.0f, 0)} })},
-        });
+        /* --- sit: on a seat at knee height, feet where they stood, hands on the thighs ------- */
+        out.push_back(ClipBuilder("sit", 0.1f, false)
+            .root({{0, 0, 0, 0, 0, -0.400f, 0.414f}})
+            .joint("hips", {{0, -4, 0, 0}})
+            .both("thigh", {{0, 90, 0, 4}})
+            .both("shin", {{0, -88, 0, 0}})
+            .both("foot", {{0, 2, 0, 0}})
+            .both("upperarm_01", {{0, 24, 0, 5}})
+            .both("forearm_01", {{0, 62, 0, 0}})
+            .build());
 
-        /* --- sit: hips flexed, knees at 90, feet planted ---------------------------------- */
-        make("sit", 0.1f, false, {
-            {"hips", track("", { {0.0f, rot(6.0f, 0, 0)} })},
-            {"thigh_L", track("", { {0.0f, rot(88.0f, 0, 5.0f)} })},
-            {"thigh_R", track("", { {0.0f, rot(88.0f, 0, -5.0f)} })},
-            {"shin_L", track("", { {0.0f, rot(-88.0f, 0, 0)} })},
-            {"shin_R", track("", { {0.0f, rot(-88.0f, 0, 0)} })},
-            {"foot_L", track("", { {0.0f, rot(6.0f, 0, 0)} })},
-            {"foot_R", track("", { {0.0f, rot(6.0f, 0, 0)} })},
-            {"upperarm_01_L", track("", { {0.0f, rot(-22.0f, 0, 8.0f)} })},
-            {"upperarm_01_R", track("", { {0.0f, rot(-22.0f, 0, -8.0f)} })},
-            {"forearm_01_L", track("", { {0.0f, rot(-72.0f, 0, 0)} })},
-            {"forearm_01_R", track("", { {0.0f, rot(-72.0f, 0, 0)} })},
-        });
+        /* --- turn_360: the hips make a full turn, shoulders and head a beat behind ---------- */
+        out.push_back(ClipBuilder("turn_360", 2.0f, true)
+            .joint("hips", {{0, 0, 0, 0}, {0.5f, 0, 90, 0}, {1.0f, 0, 180, 0}, {1.5f, 0, 270, 0}, {2.0f, 0, 360, 0}})
+            .joint("spine_02", {{0, 0, -10, 0}, {1.0f, 0, 10, 0}, {2.0f, 0, -10, 0}})
+            .joint("head", {{0, 0, 24, 0}, {1.0f, 0, -24, 0}, {2.0f, 0, 24, 0}})
+            .build());
 
-        /* --- turn_360: hips rotate a full turn with counter-rotating shoulders ------------ */
-        make("turn_360", 2.0f, true, {
-            {"hips", track("", { {0.0f, rot(0, 0, 0)}, {0.5f, rot(0, 90.0f, 0)}, {1.0f, rot(0, 180.0f, 0)}, {1.5f, rot(0, 270.0f, 0)}, {2.0f, rot(0, 360.0f, 0)} })},
-            {"spine_02", track("", { {0.0f, rot(0, -10.0f, 0)}, {1.0f, rot(0, 10.0f, 0)}, {2.0f, rot(0, -10.0f, 0)} })},
-            {"head", track("", { {0.0f, rot(0, 24.0f, 0)}, {1.0f, rot(0, -24.0f, 0)}, {2.0f, rot(0, 24.0f, 0)} })},
-        });
+        /* --- dance: a two-step groove. Weight from one leg to the other, the free knee soft,
+               elbows bent and the hands trading places, down on the beat. --------------------- */
+        out.push_back(ClipBuilder("dance", 2.4f, true)
+            .root({{0, 0, 0, 0, 0.040f, -0.030f, 0}, {0.6f, 0, 0, 0, 0, -0.006f, 0}, {1.2f, 0, 0, 0, -0.040f, -0.030f, 0},
+                   {1.8f, 0, 0, 0, 0, -0.006f, 0}, {2.4f, 0, 0, 0, 0.040f, -0.030f, 0}})
+            .joint("hips", {{0, 0, -8, -5}, {0.6f, 0, 0, 0}, {1.2f, 0, 8, 5}, {1.8f, 0, 0, 0}, {2.4f, 0, -8, -5}})
+            .joint("spine_02", {{0, -3, 6, 4}, {0.6f, -3, 0, 0}, {1.2f, -3, -6, -4}, {1.8f, -3, 0, 0}, {2.4f, -3, 6, 4}})
+            .joint("head", {{0, -4, 5, 3}, {0.6f, 0, 0, 0}, {1.2f, -4, -5, -3}, {1.8f, 0, 0, 0}, {2.4f, -4, 5, 3}})
+            .both("thigh", {{0, 12, 0, 7}, {0.6f, 5, 0, 3}, {1.2f, 3, 0, -3}, {1.8f, 5, 0, 3}, {2.4f, 12, 0, 7}}, 1.2f)
+            .both("shin", {{0, -28, 0, 0}, {0.6f, -12, 0, 0}, {1.2f, -8, 0, 0}, {1.8f, -12, 0, 0}, {2.4f, -28, 0, 0}}, 1.2f)
+            .both("foot", {{0, 16, 0, 0}, {0.6f, 7, 0, 0}, {1.2f, 5, 0, 0}, {1.8f, 7, 0, 0}, {2.4f, 16, 0, 0}}, 1.2f)
+            .both("upperarm_01", {{0, 34, 0, 30}, {0.6f, 12, 0, 22}, {1.2f, -4, 0, 18}, {1.8f, 12, 0, 22}, {2.4f, 34, 0, 30}}, 1.2f)
+            .both("forearm_01", {{0, 98, 0, 0}, {0.6f, 82, 0, 0}, {1.2f, 70, 0, 0}, {1.8f, 82, 0, 0}, {2.4f, 98, 0, 0}}, 1.2f)
+            .build());
+
+        /* --- hold_hat: the _L hand up to the brim of a hat, the elbow out. Made to be laid
+               over a walk on that arm alone. ------------------------------------------------- */
+        out.push_back(ClipBuilder("hold_hat", 3.0f, true)
+            .joint("upperarm_01_L", {{0, 15, 0, 101}, {1.5f, 17, 0, 104}, {3.0f, 15, 0, 101}})
+            .joint("forearm_01_L", {{0, 8, 0, 118}, {1.5f, 8, 0, 121}, {3.0f, 8, 0, 118}})
+            .joint("hand_L", {{0, 0, 0, 10}, {3.0f, 0, 0, 10}})
+            .build());
 
         return out;
     }();
@@ -896,7 +1107,7 @@ namespace {
    wrong clip without any test noticing). */
 const char* const kClipOrder[] = {
         "rest", "idle", "breathe", "walk", "run", "jog", "squat", "jump", "wave",
-    "punch", "kick", "t_pose", "a_pose", "sit", "turn_360", "pushup"
+    "punch", "kick", "t_pose", "a_pose", "sit", "turn_360", "pushup", "dance", "hold_hat"
 };
 const int kClipOrderCount = static_cast<int>(sizeof(kClipOrder) / sizeof(kClipOrder[0]));
 } // namespace

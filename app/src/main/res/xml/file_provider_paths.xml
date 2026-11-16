@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Only app-private external files are exposed; no shared storage roots. -->
+    <!-- Only app-private files are exposed; no shared storage roots. -->
     <external-files-path name="renderer_diagnostics" path="." />
+    <!-- Avatars made or imported in the app, so "Save" can hand one to the share sheet. -->
+    <files-path name="avatars" path="avatars/" />
 </paths>

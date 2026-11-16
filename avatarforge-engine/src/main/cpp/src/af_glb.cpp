@@ -354,6 +354,7 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
                 empty.componentType = 5126;
                 empty.type = "VEC3";
                 empty.view = -1;
+                empty.hasBounds = true;      /* all-zero deltas: min = max = (0,0,0) */
                 morphAcc.push_back(b.addAccessor(empty));
                 morphNames.push_back(kBlendshapeNames[c]);
                 ++res.emptyMorphs;
@@ -363,6 +364,22 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             a.count = vcount;
             a.componentType = 5126;
             a.type = "VEC3";
+            /* glTF 2.0 requires min/max on every POSITION accessor, and a morph target's POSITION
+               is one. The bounds describe the accessor AFTER sparse substitution, so the implicit
+               zero of every vertex the channel does not move takes part whenever at least one
+               vertex is untouched. */
+            a.hasBounds = true;
+            const bool hasImplicitZeros = idx.size() < vcount;
+            for (int axis = 0; axis < 3; ++axis) {
+                float lo = hasImplicitZeros ? 0.0f : vals[static_cast<size_t>(axis)];
+                float hi = lo;
+                for (size_t k = static_cast<size_t>(axis); k < vals.size(); k += 3) {
+                    lo = std::min(lo, vals[k]);
+                    hi = std::max(hi, vals[k]);
+                }
+                a.mn[axis] = lo;
+                a.mx[axis] = hi;
+            }
             a.sparse = true;
             a.sparseCount = idx.size();
             a.sparseIndexView = b.addView(idx.data(), idx.size() * sizeof(uint32_t), 0);
@@ -460,6 +477,7 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             const int accTime = b.addAccessor(at);
 
             int bound = 0;
+            const float motionScale = rig->motionScale();
             for (const Track& tr : clip.tracks) {
                 const int joint = rig->jointIndex(tr.jointName.c_str());
                 if (joint < 0) continue;
@@ -473,7 +491,8 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
                     quats[static_cast<size_t>(f) * 4 + 1] = q.y;
                     quats[static_cast<size_t>(f) * 4 + 2] = q.z;
                     quats[static_cast<size_t>(f) * 4 + 3] = q.w;
-                    const Vec3 tv = tr.sampleTranslation(t);
+                    /* Scaled to this figure's legs, as the engine's own playback scales it. */
+                    const Vec3 tv = tr.sampleTranslation(t) * motionScale;
                     trans[static_cast<size_t>(f) * 3 + 0] = tv.x;
                     trans[static_cast<size_t>(f) * 3 + 1] = tv.y + ((joint == 0) ? dy : 0.0f);
                     trans[static_cast<size_t>(f) * 3 + 2] = tv.z;
@@ -657,10 +676,13 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             if (mi) j += ',';
             j += "{\"name\":\"";
             jsonEscape(j, names[mi]);
+            /* White: the colour is in the base colour texture, once. (When the file has no
+               texture the colour is written here instead, so the model is not blank: for hair
+               that is the colour the user chose, as on the integration branch.) */
             j += "\",\"doubleSided\":false,\"pbrMetallicRoughness\":{\"baseColorFactor\":[";
-            jsonNum(j, baseColor.x); j += ',';
-            jsonNum(j, baseColor.y); j += ',';
-            jsonNum(j, baseColor.z);
+            jsonNum(j, texBaseColor >= 0 ? 1.0f : baseColor.x); j += ',';
+            jsonNum(j, texBaseColor >= 0 ? 1.0f : baseColor.y); j += ',';
+            jsonNum(j, texBaseColor >= 0 ? 1.0f : baseColor.z);
             j += ",1],\"metallicFactor\":";
             jsonNum(j, md.metallic);
             j += ",\"roughnessFactor\":";
@@ -850,6 +872,19 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
     jsonNum(j, layout ? layout->texelsPerMeter : 0.0f);
     j += "},\"groundOffsetY\":";
     jsonNum(j, res.groundOffsetY);
+    if (rig && !rig->faceRig().empty()) {
+        /* The face rig, in the space of the file: it moves with the model when the file is
+           grounded. This is what lets the importer animate the face again (af_face.h). */
+        FaceRig face = rig->faceRig();
+        if (dy != 0.0f) face.translate(Vec3(0.0f, dy, 0.0f));
+        const std::vector<float> packed = face.pack();
+        j += ",\"faceRig\":[";
+        for (size_t i = 0; i < packed.size(); ++i) {
+            if (i) j += ',';
+            jsonNum(j, packed[i]);
+        }
+        j += ']';
+    }
     j += "}";
 
     /* extensionsUsed: only those actually emitted. */
@@ -891,14 +926,22 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             tail += std::to_string(a.view);
         }
         if (a.hasBounds) {
+            /* min/max must have exactly as many elements as the accessor type has components.
+               Writing three numbers for a SCALAR (the animation time inputs) is rejected by the
+               Khronos validator (ARRAY_LENGTH_NOT_IN_LIST) and leaves the sampler input without
+               usable bounds. Only SCALAR, VEC2 and VEC3 accessors carry bounds in this writer. */
+            const int components = std::strcmp(a.type, "SCALAR") == 0 ? 1
+                                 : std::strcmp(a.type, "VEC2") == 0 ? 2 : 3;
             tail += ",\"min\":[";
-            jsonNum(tail, a.mn[0]); tail += ',';
-            jsonNum(tail, a.mn[1]); tail += ',';
-            jsonNum(tail, a.mn[2]);
+            for (int c = 0; c < components; ++c) {
+                if (c) tail += ',';
+                jsonNum(tail, a.mn[c]);
+            }
             tail += "],\"max\":[";
-            jsonNum(tail, a.mx[0]); tail += ',';
-            jsonNum(tail, a.mx[1]); tail += ',';
-            jsonNum(tail, a.mx[2]);
+            for (int c = 0; c < components; ++c) {
+                if (c) tail += ',';
+                jsonNum(tail, a.mx[c]);
+            }
             tail += ']';
         }
         if (a.sparse) {

@@ -146,7 +146,7 @@ bool decodeViaAndroidBitmapFactory(const uint8_t* data, std::size_t size,
     return ok;
 }
 constexpr jsize kSpecIntCount = 7;
-constexpr jsize kSpecFloatCount = 33;
+constexpr jsize kSpecFloatCount = 45;
 
 void throwJava(JNIEnv* env, const char* className, const std::string& message) {
     jclass type = env->FindClass(className);
@@ -328,6 +328,10 @@ bool readSpec(JNIEnv* env, jintArray ints, jfloatArray floats, jstring prompt, a
     for (int c = 0; c < 3; ++c) out->gear_tone[c] = fv[i++];
     out->cloth_roughness = fv[i++];
     out->gear_metalness = fv[i++];
+    out->glute = fv[i++];
+    for (int c = 0; c < 3; ++c) out->eye_tone[c] = fv[i++];
+    for (int c = 0; c < AF_FACE_PARAM_COUNT; ++c) out->face[c] = fv[i++];
+    static_assert(33 + 1 + 3 + AF_FACE_PARAM_COUNT == kSpecFloatCount, "spec packing drifted");
 
     UtfChars promptChars(env, prompt);
     if (promptChars.get() == nullptr) return false;

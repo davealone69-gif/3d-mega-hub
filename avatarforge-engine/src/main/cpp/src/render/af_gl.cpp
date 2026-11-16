@@ -39,6 +39,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -61,8 +62,9 @@ namespace {
 #define AF_GL_LOGE(...) do { std::fprintf(stderr, "[AvatarForge ERROR] " __VA_ARGS__); std::fprintf(stderr, "\n"); } while (0)
 #endif
 
-/* GLES 3.x removed the legacy space-separated GL_EXTENSIONS string. Enumerate extensions
-   with glGetStringi so ES 3.1 devices correctly expose optional framebuffer/texture features. */
+/* Extension lookup by exact name. OpenGL ES 3.x keeps glGetString(GL_EXTENSIONS) and adds the
+   indexed glGetStringi form; the indexed form is used because it compares whole names instead of
+   searching one long string for a substring. */
 bool hasGlExtension(const char* requested) {
     if (!requested || !*requested) return false;
     GLint count = 0;
@@ -154,6 +156,20 @@ public:
     void setClip(int clip, float speed, bool loop) override;
     int currentClip() const override { return clip_; }
     float clipTime() const override { return clipTime_; }
+    bool supportsSkinnedPlayback() const override { return skinBlockReady_ && skinUbo_ != 0; }
+    bool setAnimation(int animation, float speed, bool loop) override;
+    void setAnimationPlayback(float speed, bool loop, bool paused) override;
+    void seekAnimation(float seconds) override;
+    int currentAnimation() const override { return player_.state().animation; }
+    float animationTime() const override { return player_.state().time; }
+    bool crossFadeToAnimation(int animation, float fadeSeconds, float speed, bool loop) override;
+    bool setAnimationOverlay(int animation, int mask, float weight, float speed, bool loop, float fadeSeconds) override;
+    AnimationPlaybackState animationState() const override { return player_.state(); }
+    bool supportsFaceAnimation() const override {
+        return faceBlockReady_ && faceUbo_ != 0 && engine_ && af_engine_face_kernel_count(engine_) > 0;
+    }
+    bool setFaceWeights(const float* weights, int count) override;
+    int faceKernelsActive() const override { return faceKernels_; }
     void waitIdle() override { glFinish(); }
     RendererStats stats() const override { return stats_; }
     std::vector<uint8_t> readbackPixels() const override { return verificationPixels_; }
@@ -171,6 +187,11 @@ private:
     void updateScene(float deltaSeconds);
     void updateSceneGraph();
     void updateAnimation(float deltaSeconds);
+    void updateSkinnedAnimation(float deltaSeconds);
+    void uploadSkinBlock(bool active);
+    bool canPlaySkinned(int animation) const;
+    void leaveCpuClip();
+    void updateFace();
     void drawShadowPass();
     void drawForwardPass();
     void drawBloom();
@@ -252,6 +273,28 @@ private:
     float clipSpeed_ = 1.0f;
     bool clipLoop_ = true;
     float clipTime_ = 0.0f;
+    /* GPU skinning: one std140 block { mat4 joints[kMaxSkinJoints]; vec4 params; } at binding 3. */
+    static constexpr int kMaxSkinJoints = 128;
+    static constexpr GLuint kSkinBinding = 3;
+    GLuint skinUbo_ = 0;
+    bool skinBlockReady_ = false;      /* both avatar programs declare the block                 */
+    bool skinActive_ = false;          /* the block currently holds a pose, params.x == 1        */
+    bool cpuPosed_ = false;            /* setClip() left the CPU vertex stream away from bind    */
+    /* What plays when: the blend stack, the overlay and their clocks (af_anim_player.h). */
+    AnimationPlayer player_;
+    std::vector<float> skinBlock_;
+    /* Face animation: one std140 block { vec4 boxMin, boxMax, params; vec4 kernels[4 * 64]; } at
+       binding 4, filled by af_engine_pack_face. params.x is the number of kernels. The rig has
+       54 kernels, so every channel can be on at once and none is left out. */
+    static constexpr int kMaxFaceKernels = 64;
+    static constexpr int kFaceChannels = 52;
+    static constexpr GLuint kFaceBinding = 4;
+    GLuint faceUbo_ = 0;
+    bool faceBlockReady_ = false;      /* both avatar programs declare the block                 */
+    bool faceDirty_ = false;           /* the weights changed since the block was uploaded       */
+    int faceKernels_ = 0;
+    float faceWeights_[kFaceChannels] = {};
+    std::vector<float> faceBlock_;
     int32_t vertexCount_ = 0;
     int32_t indexCount_ = 0;
     uint32_t materialStride_ = 256;
@@ -268,6 +311,13 @@ private:
     bool drawDumpLogged_ = false;
     float cameraLogAccumulatorSeconds_ = 0.0f;
     GLenum lastDrawError_ = GL_NO_ERROR;
+
+    /* ---- measured diagnostics (see RendererStats) ---- */
+    void noteFrameGlError(GLenum error) { if (error != GL_NO_ERROR && frameGlError_ == GL_NO_ERROR) frameGlError_ = error; }
+    GLenum frameGlError_ = GL_NO_ERROR;      /* first GL error seen during the current frame   */
+    uint64_t lodIndexBytes_ = 0;             /* bytes requested for the LOD index buffer       */
+    std::chrono::steady_clock::time_point lastPresentTime_{};
+    bool havePresentTime_ = false;
 };
 
 /* ============================================================================================
@@ -288,7 +338,14 @@ bool GlRenderer::createContext(ANativeWindow* window, std::string* error) {
     }
 #endif
     if (display_ == EGL_NO_DISPLAY) { *error = "eglGetDisplay failed"; return false; }
-    if (!eglInitialize(display_, nullptr, nullptr)) { *error = "eglInitialize failed"; return false; }
+    if (!eglInitialize(display_, nullptr, nullptr)) {
+        /* Android counts eglInitialize/eglTerminate per process. Forget the display so that teardown
+         * does not call eglTerminate for an initialisation that never succeeded: that would release
+         * a reference owned by another user of the display (the UI toolkit or Filament). */
+        display_ = EGL_NO_DISPLAY;
+        *error = "eglInitialize failed";
+        return false;
+    }
 
     /* Require ES 3.1: ES3_BIT_KHR with a 3.x context, plus a depth buffer for the shadow pass and
        a window surface that EGL itself considers RGB-capable. Multisampling is done with
@@ -488,6 +545,31 @@ bool GlRenderer::createPrograms(std::string* error) {
         const GLuint postIndex = glGetUniformBlockIndex(p, "PostBlock");
         if (postIndex != GL_INVALID_INDEX) glUniformBlockBinding(p, postIndex, 2);
     }
+    /* The skin block belongs to the two programs that draw the avatar's vertices. Skinned
+       playback is offered only when both have it: a figure that moves while its shadow stays in
+       the bind pose would be wrong on screen. */
+    {
+        const GLuint forwardSkin = glGetUniformBlockIndex(forwardProgram_, "AfSkinBlock");
+        const GLuint shadowSkin = glGetUniformBlockIndex(shadowProgram_, "AfSkinBlock");
+        if (forwardSkin != GL_INVALID_INDEX) glUniformBlockBinding(forwardProgram_, forwardSkin, kSkinBinding);
+        if (shadowSkin != GL_INVALID_INDEX) glUniformBlockBinding(shadowProgram_, shadowSkin, kSkinBinding);
+        skinBlockReady_ = forwardSkin != GL_INVALID_INDEX && shadowSkin != GL_INVALID_INDEX;
+        AF_GL_LOGI("GPU skinning block: forward=%d shadow=%d ready=%d",
+                   forwardSkin != GL_INVALID_INDEX ? 1 : 0, shadowSkin != GL_INVALID_INDEX ? 1 : 0,
+                   skinBlockReady_ ? 1 : 0);
+    }
+    /* The face block, in the same two programs and for the same reason: a mouth that opens while
+       its shadow stays shut would put the moved lip in the shadow of where it was. */
+    {
+        const GLuint forwardFace = glGetUniformBlockIndex(forwardProgram_, "AfFaceBlock");
+        const GLuint shadowFace = glGetUniformBlockIndex(shadowProgram_, "AfFaceBlock");
+        if (forwardFace != GL_INVALID_INDEX) glUniformBlockBinding(forwardProgram_, forwardFace, kFaceBinding);
+        if (shadowFace != GL_INVALID_INDEX) glUniformBlockBinding(shadowProgram_, shadowFace, kFaceBinding);
+        faceBlockReady_ = forwardFace != GL_INVALID_INDEX && shadowFace != GL_INVALID_INDEX;
+        AF_GL_LOGI("Face animation block: forward=%d shadow=%d ready=%d",
+                   forwardFace != GL_INVALID_INDEX ? 1 : 0, shadowFace != GL_INVALID_INDEX ? 1 : 0,
+                   faceBlockReady_ ? 1 : 0);
+    }
     if (!hasCameraBlock) {
         *error = "no program declared the CameraBlock uniform block (shader/ABI mismatch)";
         return false;
@@ -650,6 +732,20 @@ bool GlRenderer::createTargets(std::string* error) {
     stats_.bloomLevels = bloomLevels_;
     stats_.msaaSamples = options_.msaaSamples;
     stats_.shadowMapSize = options_.enableShadows ? options_.shadowMapSize : 0;
+
+    /* Requested byte sizes of everything allocated above (see RendererStats::renderTargetBytes).
+       options_.msaaSamples is the sample count that actually produced a complete framebuffer. */
+    const uint64_t colourBpp = hdrInternalFormat_ == GL_RGBA16F ? 8u : 4u;
+    const uint64_t pixels = static_cast<uint64_t>(w) * static_cast<uint64_t>(h);
+    const uint64_t effectiveSamples = static_cast<uint64_t>(std::max(1, options_.msaaSamples));
+    uint64_t targetBytes = pixels * colourBpp;                          /* resolved HDR texture   */
+    targetBytes += pixels * colourBpp * effectiveSamples;               /* MSAA colour            */
+    targetBytes += pixels * 4u * effectiveSamples;                      /* MSAA depth (D24 in 32) */
+    targetBytes += static_cast<uint64_t>(shadowSize) * static_cast<uint64_t>(shadowSize) * 4u;
+    for (int i = 0; i < bloomLevels_; ++i) {
+        targetBytes += static_cast<uint64_t>(bloomWidth_[i]) * static_cast<uint64_t>(bloomHeight_[i]) * colourBpp;
+    }
+    stats_.renderTargetBytes = targetBytes;
     return true;
 }
 
@@ -675,8 +771,8 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     glGenVertexArrays(1, &emptyVao_);
     glGenVertexArrays(1, &lineVao_);
 
-    /* Avatar VAO: exact canonical af_vertex layout. The forward shader consumes locations 0..4.
-       JOINTS/WEIGHTS at byte offsets 64/72 are CPU-side data today; no shader inputs 5/6 exist. */
+    /* Avatar VAO: exact canonical af_vertex layout. The forward shader consumes locations 0..6:
+       JOINTS/WEIGHTS at byte offsets 64/72 feed the skin block when an animation plays. */
     static_assert(sizeof(af_vertex) == 88, "GLES vertex stride must remain 88 bytes");
     static_assert(offsetof(af_vertex, pos) == 0 && offsetof(af_vertex, normal) == 12 &&
                   offsetof(af_vertex, tangent) == 24 && offsetof(af_vertex, uv) == 40 &&
@@ -704,13 +800,22 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
                           reinterpret_cast<const void*>(offsetof(af_vertex, color)));
     logVertexAttribute(4, 4, offsetof(af_vertex, color));
+    /* Locations 5 and 6: the four joints and weights of each vertex, for GPU skinning. Joints
+       are integers and must be bound with the I-pointer call, or the shader reads them as
+       normalised floats. */
+    glEnableVertexAttribArray(5);
+    glVertexAttribIPointer(5, 4, GL_UNSIGNED_SHORT, sizeof(af_vertex),
+                           reinterpret_cast<const void*>(offsetof(af_vertex, joints)));
+    glEnableVertexAttribArray(6);
+    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(af_vertex),
+                          reinterpret_cast<const void*>(offsetof(af_vertex, weights)));
     const char* attributeNames[5] = {"aPos", "aNormal", "aTangent", "aUv", "aColor"};
     for (GLint i = 0; i < 5; ++i) {
         const GLint shaderLocation = glGetAttribLocation(forwardProgram_, attributeNames[i]);
         AF_GL_LOGI("Shader input %s -> location %d (expected %d)", attributeNames[i], shaderLocation, i);
         if (shaderLocation != i) AF_GL_LOGE("Shader input location mismatch for %s", attributeNames[i]);
     }
-    AF_GL_LOGI("af_vertex layout: size=%zu pos=0 normal=12 tangent=24 uv=40 color=48 joints=64 weights=72; locations 5/6 intentionally unused (CPU skinning path)",
+    AF_GL_LOGI("af_vertex layout: size=%zu pos=0 normal=12 tangent=24 uv=40 color=48 joints=64 weights=72; locations 5/6 = joints/weights (GPU skinning)",
                sizeof(af_vertex));
     const GLenum vaoSetupError = glGetError();
     if (vaoSetupError != GL_NO_ERROR) AF_GL_LOGE("VAO setup GL error=0x%x", vaoSetupError);
@@ -754,6 +859,29 @@ bool GlRenderer::init(ANativeWindow* window, const RendererOptions& options, std
     glBufferData(GL_UNIFORM_BUFFER, GLsizeiptr(materialStride_) * 32, nullptr, GL_DYNAMIC_DRAW);
     materialCapacity_ = GLint64(materialStride_) * 32;
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+    /* The skin block always has a buffer behind it: a draw with a declared uniform block and no
+       buffer bound is an error, whether or not the shader reads the block. params.x == 0 means
+       "do not skin", which is the state of every model that is not playing an animation. */
+    skinBlock_.assign(static_cast<size_t>(kMaxSkinJoints) * 16 + 4, 0.0f);
+    for (int j = 0; j < kMaxSkinJoints; ++j) {
+        float* m = &skinBlock_[static_cast<size_t>(j) * 16];
+        m[0] = m[5] = m[10] = m[15] = 1.0f;
+    }
+    glGenBuffers(1, &skinUbo_);
+    glBindBuffer(GL_UNIFORM_BUFFER, skinUbo_);
+    glBufferData(GL_UNIFORM_BUFFER, GLsizeiptr(skinBlock_.size() * sizeof(float)), skinBlock_.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase(GL_UNIFORM_BUFFER, kSkinBinding, skinUbo_);
+
+    /* The face block, likewise always backed by a buffer. All zeros means "no kernels": the
+       vertex shader then leaves every vertex where it is. */
+    faceBlock_.assign(static_cast<size_t>(12 + kMaxFaceKernels * 16), 0.0f);
+    glGenBuffers(1, &faceUbo_);
+    glBindBuffer(GL_UNIFORM_BUFFER, faceUbo_);
+    glBufferData(GL_UNIFORM_BUFFER, GLsizeiptr(faceBlock_.size() * sizeof(float)), faceBlock_.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase(GL_UNIFORM_BUFFER, kFaceBinding, faceUbo_);
 
     /* Atlas placeholders: 1x1 white, so the sampler bindings are always valid (the shaders gate
        every lookup on the material's has_*_tex flags). */
@@ -958,6 +1086,7 @@ void GlRenderer::ensureGeometryBuffers() {
         lodReady_ = false;
         avatarLods_.clear();
         if (lodIndexIbo_) { glDeleteBuffers(1, &lodIndexIbo_); lodIndexIbo_ = 0; }
+        lodIndexBytes_ = 0;
         lodEngine_ = engine_; lodVertices_ = verts; lodSourceIndices_ = indices;
         lodSubmeshes_ = submeshes; lodVertexCount_ = vcount;
         lodIndexCount_ = icount; lodSubmeshCount_ = submeshCount;
@@ -976,6 +1105,7 @@ void GlRenderer::ensureGeometryBuffers() {
                     glBufferData(GL_ELEMENT_ARRAY_BUFFER, GLsizeiptr(lodBytes), lodIndices.data(), GL_STATIC_DRAW);
                     if (glGetError() == GL_NO_ERROR) {
                         lodReady_ = true;
+                        lodIndexBytes_ = static_cast<uint64_t>(lodBytes);
                         AF_GL_LOGI("Avatar LOD ready: levels=%d sourceTriangles=%d lod1Triangles=%d lod2Triangles=%d",
                                    avatarLods_.levelCount(), icount / 3, avatarLods_.triangleCount(1),
                                    avatarLods_.levelCount() > 2 ? avatarLods_.triangleCount(2) : 0);
@@ -987,11 +1117,13 @@ void GlRenderer::ensureGeometryBuffers() {
     }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     meshDirty_ = false;
+    stats_.geometryBytes = static_cast<uint64_t>(vertexCapacity_) + static_cast<uint64_t>(indexCapacity_) + lodIndexBytes_;
 }
 
 void GlRenderer::uploadAtlas(std::string* error) {
     if (!engine_) return;
     const GLubyte white[4] = {255, 255, 255, 255};
+    uint64_t atlasBytes = 0;   /* requested texel bytes including the generated mip chain */
     GLfloat maxAniso = 1.0f;
     if (info_.supportsAnisotropy) {
         glGetFloatv(0x84FF /* GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT */, &maxAniso);
@@ -1001,6 +1133,7 @@ void GlRenderer::uploadAtlas(std::string* error) {
         af_texture tex{};
         if (af_engine_texture(engine_, slot, &tex) != AF_OK ||
             !tex.data || tex.width <= 0 || tex.height <= 0) {
+            atlasBytes += 4u;  /* 1x1 RGBA8 placeholder */
             glBindTexture(GL_TEXTURE_2D, atlasTexture_[slot]);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1024,12 +1157,23 @@ void GlRenderer::uploadAtlas(std::string* error) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
         /* The generated chain must not collapse to magenta when a driver limits mip depth. */
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 12);
+        {
+            const uint64_t texelBytes = (tex.channels == 1) ? 1u : 4u;
+            int mipW = tex.width, mipH = tex.height;
+            for (int level = 0; level <= 12; ++level) {
+                atlasBytes += static_cast<uint64_t>(mipW) * static_cast<uint64_t>(mipH) * texelBytes;
+                if (mipW == 1 && mipH == 1) break;
+                mipW = std::max(1, mipW / 2);
+                mipH = std::max(1, mipH / 2);
+            }
+        }
 
         if (info_.supportsAnisotropy) {
             glTexParameterf(GL_TEXTURE_2D, 0x84FE /* GL_TEXTURE_MAX_ANISOTROPY_EXT */, maxAniso);
         }
     }
     atlasUploaded_ = true;
+    stats_.textureBytes = atlasBytes;
     (void)error;
 }
 
@@ -1138,6 +1282,10 @@ void GlRenderer::updateSceneGraph() {
     visibilityReady_ = false;
     visibility_.clear();
     if (!engine_) return;
+    /* Visibility is decided from each submesh's bind-pose bounds. While the vertex shader is
+       moving the vertices those bounds are not where the geometry is, so nothing is culled and
+       every submesh is drawn in full. */
+    if (skinActive_) return;
     if (!sceneGraph_) sceneGraph_ = af_scene_bridge_create();
     if (!sceneGraph_) {
         AF_GL_LOGE("Could not allocate the imported scene visibility bridge");
@@ -1176,6 +1324,14 @@ void GlRenderer::updateScene(float deltaSeconds) {
     projectToSh(env_, &sh_, 1024);
 
     modelBounds(engine_, scene_.modelMin, scene_.modelMax, &scene_.hasModel);
+    if (skinActive_ && scene_.hasModel) {
+        /* The bounds are those of the bind pose; a figure that is waving, kicking or jumping
+           reaches outside them. Widen what the clip planes and the shadow map are fitted to. The
+           floor stays where the bind pose stands. */
+        scene_.modelMin[0] -= 0.60f; scene_.modelMax[0] += 0.60f;
+        scene_.modelMin[2] -= 0.60f; scene_.modelMax[2] += 0.60f;
+        scene_.modelMax[1] += 0.45f;
+    }
     /* depthZeroToOne = false: GL clip space, which is also why the ES dialect of the shaders has
        AF_CLIP_Y = +1 and rescales the shadow lookup's z. */
     buildCameraUbo(&scene_, camera_, options_, env_, sh_, surfaceWidth_, surfaceHeight_, false);
@@ -1282,8 +1438,143 @@ void GlRenderer::updateScene(float deltaSeconds) {
     buildSkeletonLines();
 }
 
+void GlRenderer::uploadSkinBlock(bool active) {
+    if (!skinUbo_) return;
+    skinBlock_[static_cast<size_t>(kMaxSkinJoints) * 16] = active ? 1.0f : 0.0f;
+    glBindBuffer(GL_UNIFORM_BUFFER, skinUbo_);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, GLsizeiptr(skinBlock_.size() * sizeof(float)), skinBlock_.data());
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase(GL_UNIFORM_BUFFER, kSkinBinding, skinUbo_);
+    skinActive_ = active;
+}
+
+void GlRenderer::updateSkinnedAnimation(float deltaSeconds) {
+    const int joints = af_engine_skin_joint_count(engine_);
+    auto bindPose = [&]() {
+        for (int j = 0; j < kMaxSkinJoints; ++j) {
+            float* m = &skinBlock_[static_cast<size_t>(j) * 16];
+            for (int k = 0; k < 16; ++k) m[k] = (k % 5 == 0) ? 1.0f : 0.0f;
+        }
+        uploadSkinBlock(false);
+    };
+    if (joints <= 0 || joints > kMaxSkinJoints || !supportsSkinnedPlayback()) {
+        /* The model changed under the renderer, or it has more joints than the block holds. */
+        player_.reset();
+        if (skinActive_) bindPose();
+        return;
+    }
+    af_animation_layer layers[AnimationPlayer::kMaxLayers];
+    const int count = player_.advance(deltaSeconds, layers, AnimationPlayer::kMaxLayers);
+    if (count == 0) {
+        /* A fade to the rest pose has arrived: stop skinning, the vertex shader passes through. */
+        if (skinActive_) bindPose();
+        return;
+    }
+    /* One clip at full weight goes the way it always went; anything more is blended. */
+    const bool single = count == 1 && layers[0].weight >= 1.0f && layers[0].mask == AF_MASK_FULL_BODY;
+    const int written = single
+        ? af_engine_evaluate_animation(engine_, layers[0].animation, layers[0].time_seconds, skinBlock_.data(), kMaxSkinJoints)
+        : af_engine_evaluate_layers(engine_, layers, count, skinBlock_.data(), kMaxSkinJoints);
+    if (written != joints) {
+        AF_GL_LOGE("Animation %d (%d layer(s)) could not be evaluated (rc=%d, joints=%d); returning to the bind pose",
+                   layers[0].animation, count, written, joints);
+        player_.reset();
+        bindPose();
+        return;
+    }
+    uploadSkinBlock(true);
+}
+
+bool GlRenderer::canPlaySkinned(int animation) const {
+    if (!engine_ || !supportsSkinnedPlayback()) return false;
+    if (animation >= af_engine_animation_count(engine_)) return false;
+    const int joints = af_engine_skin_joint_count(engine_);
+    return animation < 0 || (joints > 0 && joints <= kMaxSkinJoints);
+}
+
+/* The vertex shader skins the BIND pose. If setClip() deformed the CPU vertex stream, put it back
+   first; that is one full upload, after which playback uploads only the skin block. */
+void GlRenderer::leaveCpuClip() {
+    if (clip_ < 0 && !cpuPosed_) return;
+    clip_ = -1;
+    clipTime_ = 0.0f;
+    if (af_engine_apply_clip(engine_, AF_CLIP_REST, 0.0f) == AF_OK) meshDirty_ = true;
+    cpuPosed_ = false;
+}
+
+bool GlRenderer::setAnimation(int animation, float speed, bool loop) {
+    if (!canPlaySkinned(animation)) return false;
+    leaveCpuClip();
+    if (animation < 0) {
+        /* Back to the bind pose at once: nothing is left playing, the overlay included. */
+        player_.stop();
+        return true;
+    }
+    player_.play(animation, af_engine_animation_duration(engine_, animation), speed, loop);
+    return true;
+}
+
+bool GlRenderer::crossFadeToAnimation(int animation, float fadeSeconds, float speed, bool loop) {
+    if (!canPlaySkinned(animation)) return false;
+    leaveCpuClip();
+    player_.crossFade(animation, animation >= 0 ? af_engine_animation_duration(engine_, animation) : 0.0f,
+                      fadeSeconds, speed, loop);
+    return true;
+}
+
+bool GlRenderer::setAnimationOverlay(int animation, int mask, float weight, float speed, bool loop, float fadeSeconds) {
+    if (!canPlaySkinned(animation)) return false;
+    if (animation >= 0 && (mask < 0 || mask >= AF_MASK_COUNT)) return false;
+    leaveCpuClip();
+    player_.setOverlay(animation, animation >= 0 ? af_engine_animation_duration(engine_, animation) : 0.0f,
+                       mask, weight, speed, loop, fadeSeconds);
+    return true;
+}
+
+void GlRenderer::setAnimationPlayback(float speed, bool loop, bool paused) {
+    player_.setPlayback(speed, loop, paused);
+}
+
+void GlRenderer::seekAnimation(float seconds) {
+    player_.seek(seconds);
+}
+
+bool GlRenderer::setFaceWeights(const float* weights, int count) {
+    if (!supportsFaceAnimation()) return false;
+    bool changed = false;
+    for (int i = 0; i < kFaceChannels; ++i) {
+        const float w = (weights && i < count && std::isfinite(weights[i])) ? weights[i] : 0.0f;
+        if (w != faceWeights_[i]) { faceWeights_[i] = w; changed = true; }
+    }
+    if (changed) faceDirty_ = true;
+    return true;
+}
+
+/* Packs the kernels the present weights need and uploads them: at most 4 kB, and only when a
+   weight has changed. */
+void GlRenderer::updateFace() {
+    if (!faceDirty_ || !faceUbo_) return;
+    faceDirty_ = false;
+    /* The engine lays the block out (box, count, kernels); a host test runs the shader's own
+       afFaceDelta() on exactly these floats. With no engine or no face rig it is all zeros. */
+    const int kernels = std::max(0, af_engine_pack_face_block(engine_, faceWeights_, kFaceChannels, faceBlock_.data(), kMaxFaceKernels));
+    glBindBuffer(GL_UNIFORM_BUFFER, faceUbo_);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, GLsizeiptr(static_cast<size_t>(12 + kernels * 16) * sizeof(float)), faceBlock_.data());
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    glBindBufferBase(GL_UNIFORM_BUFFER, kFaceBinding, faceUbo_);
+    faceKernels_ = kernels;
+}
+
 void GlRenderer::updateAnimation(float deltaSeconds) {
-    if (!engine_ || clip_ < 0) return;
+    if (!engine_) return;
+    updateFace();
+    if (player_.active()) {
+        updateSkinnedAnimation(deltaSeconds);
+        return;
+    }
+    if (skinActive_) uploadSkinBlock(false);     /* the player was reset: pass the vertices through */
+    if (clip_ < 0) return;
+    cpuPosed_ = true;
     const float duration = af_engine_clip_duration(engine_, clip_);
     if (duration <= 0.0f) return;
     clipTime_ += deltaSeconds * clipSpeed_;
@@ -1297,6 +1588,12 @@ void GlRenderer::updateAnimation(float deltaSeconds) {
 }
 
 void GlRenderer::setClip(int clip, float speed, bool loop) {
+    /* The CPU path and the skinned path must not both move the figure. */
+    if (player_.active()) {
+        player_.stop();
+        uploadSkinBlock(false);
+    }
+    if (clip >= 0) cpuPosed_ = true;
     clip_ = clip;
     clipSpeed_ = speed;
     clipLoop_ = loop;
@@ -1487,6 +1784,8 @@ void GlRenderer::drawForwardPass() {
                                static_cast<unsigned long long>(stats_.frames));
                 }
                 lastDrawError_ = preDrawError;
+                noteFrameGlError(preDrawError);
+                ++stats_.failedDrawCalls;
                 continue;
             }
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndexCount), GL_UNSIGNED_INT,
@@ -1499,6 +1798,8 @@ void GlRenderer::drawForwardPass() {
                                static_cast<int>(avatarVao_));
                 }
                 lastDrawError_ = drawError;
+                noteFrameGlError(drawError);
+                ++stats_.failedDrawCalls;
                 continue;
             }
             lastDrawError_ = GL_NO_ERROR;
@@ -1587,6 +1888,8 @@ void GlRenderer::drawComposite() {
 }
 
 void GlRenderer::renderFrame(float deltaSeconds) {
+    const std::chrono::steady_clock::time_point frameStart = std::chrono::steady_clock::now();
+    frameGlError_ = GL_NO_ERROR;
     stats_.framePresented = false;
     stats_.readbackValid = false;
     stats_.readbackNonBlackPixels = 0;
@@ -1619,11 +1922,9 @@ void GlRenderer::renderFrame(float deltaSeconds) {
     }
 
     stats_.frames++;
-    if (deltaSeconds > 0.0f && deltaSeconds < 1.0f) {
-        const float alpha = 0.06f;
-        stats_.frameMs = stats_.frameMs * (1.0f - alpha) + deltaSeconds * 1000.0f * alpha;
-        stats_.fps = stats_.frameMs > 0.01f ? 1000.0f / stats_.frameMs : 0.0f;
-    }
+    /* frameMs/fps are measured from successful presents at the end of this function. They used to
+       be an exponential average of the caller's deltaSeconds seeded from zero, which reported
+       thousands of FPS on the first frames and could never exceed the caller's clamp. */
     drawCalls_ = 0;
     triangles_ = 0;
 
@@ -1711,6 +2012,7 @@ void GlRenderer::renderFrame(float deltaSeconds) {
             if (drawError == GL_NO_ERROR) drawError = err;
         }
         stats_.glError = static_cast<int>(drawError);
+        noteFrameGlError(drawError);
         if (drawError == GL_NO_ERROR && surfaceWidth_ > 0 && surfaceHeight_ > 0) {
             const size_t pixelCount = static_cast<size_t>(surfaceWidth_) * static_cast<size_t>(surfaceHeight_);
             verificationPixels_.resize(pixelCount * 4u);
@@ -1755,18 +2057,54 @@ void GlRenderer::renderFrame(float deltaSeconds) {
                 stats_.readbackHeight = surfaceHeight_;
             } else {
                 stats_.glError = static_cast<int>(readError);
+                noteFrameGlError(readError);
                 verificationPixels_.clear();
             }
         }
+    } else {
+        /* Production path: one drain per frame so errors raised by the shadow, bloom and composite
+           passes are counted too. The per-draw checks above only cover the avatar submeshes. The
+           presentation contract is unchanged: this records errors, it does not veto the swap. */
+        for (int drain = 0; drain < 16; ++drain) {
+            const GLenum pending = glGetError();
+            if (pending == GL_NO_ERROR) break;
+            noteFrameGlError(pending);
+        }
+    }
+    if (frameGlError_ != GL_NO_ERROR) {
+        ++stats_.glErrorFrames;
+        stats_.lastGlError = static_cast<int>(frameGlError_);
     }
 
+    const std::chrono::steady_clock::time_point swapStart = std::chrono::steady_clock::now();
     const EGLBoolean swapped = eglSwapBuffers(display_, surface_);
+    const std::chrono::steady_clock::time_point swapEnd = std::chrono::steady_clock::now();
     if (swapped != EGL_TRUE) {
         stats_.eglError = static_cast<int>(eglGetError());
+        ++stats_.eglErrorFrames;
         if (stats_.eglError == EGL_CONTEXT_LOST || stats_.eglError == EGL_BAD_SURFACE) contextLost_ = true;
     } else {
         stats_.framePresented = stats_.glError == 0;
         if (stats_.framePresented) ++stats_.presentedFrames;
+    }
+
+    /* Measured timings. steady_clock only; see RendererStats. */
+    const auto toMs = [](std::chrono::steady_clock::duration d) {
+        return std::chrono::duration<float, std::milli>(d).count();
+    };
+    stats_.lastCpuMs = toMs(swapStart - frameStart);
+    stats_.lastSwapMs = toMs(swapEnd - swapStart);
+    stats_.lastFrameMs = stats_.lastCpuMs + stats_.lastSwapMs;
+    stats_.cpuMs = stats_.cpuMs <= 0.0f ? stats_.lastCpuMs : stats_.cpuMs * 0.9f + stats_.lastCpuMs * 0.1f;
+    if (stats_.framePresented) {
+        if (havePresentTime_) {
+            stats_.presentIntervalMs = toMs(swapEnd - lastPresentTime_);
+            stats_.frameMs = stats_.frameMs <= 0.0f ? stats_.presentIntervalMs
+                                                    : stats_.frameMs * 0.9f + stats_.presentIntervalMs * 0.1f;
+            stats_.fps = stats_.frameMs > 0.001f ? 1000.0f / stats_.frameMs : 0.0f;
+        }
+        lastPresentTime_ = swapEnd;
+        havePresentTime_ = true;
     }
 
     stats_.drawCalls = drawCalls_;
@@ -1805,6 +2143,11 @@ void GlRenderer::attachEngine(af_engine* engine) {
     vertexDumpLogged_ = false;
     cameraDumpLogged_ = false;
     drawDumpLogged_ = false;
+    /* Another model: nothing of the last one's motion or expression carries over. The blocks on
+       the GPU are brought in line by the next frame (updateAnimation). */
+    player_.reset();
+    std::memset(faceWeights_, 0, sizeof(faceWeights_));
+    faceDirty_ = true;
     if (engine_ && context_ != EGL_NO_CONTEXT) {
         std::string error;
         uploadAtlas(&error);
@@ -1849,6 +2192,7 @@ void GlRenderer::destroyTargets() {
     if (msaaFbo_) { glDeleteFramebuffers(1, &msaaFbo_); msaaFbo_ = 0; }
     if (msaaColorRb_) { glDeleteRenderbuffers(1, &msaaColorRb_); msaaColorRb_ = 0; }
     if (msaaDepthRb_) { glDeleteRenderbuffers(1, &msaaDepthRb_); msaaDepthRb_ = 0; }
+    stats_.renderTargetBytes = 0;
 }
 
 void GlRenderer::destroyAll() {
@@ -1860,8 +2204,10 @@ void GlRenderer::destroyAll() {
                                         bloomDownProgram_, bloomUpProgram_, compositeProgram_,
                                         debugMagentaProgram_};
             for (GLuint p : programs) if (p) glDeleteProgram(p);
-            const GLuint buffers[7] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, lodIndexIbo_, groundVbo_};
+            const GLuint buffers[9] = {cameraUbo_, postUbo_, materialUbo_, vertexVbo_, indexIbo_, lodIndexIbo_, groundVbo_, skinUbo_, faceUbo_};
             for (GLuint b : buffers) if (b) glDeleteBuffers(1, &b);
+            skinUbo_ = 0;
+            faceUbo_ = 0;
             lodIndexIbo_ = 0;
             avatarLods_.clear();
             lodReady_ = false;

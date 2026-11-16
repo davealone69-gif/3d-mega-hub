@@ -84,6 +84,30 @@ public:
     void setClip(int clip, float speed, bool loop) override { backend_->setClip(clip, speed, loop); }
     int currentClip() const override { return backend_->currentClip(); }
     float clipTime() const override { return backend_->clipTime(); }
+    /* Skinned playback is the backend's. This wrapper has to pass every one of these on: the
+       first build of the feature did not, so the app asked the wrapper, got the base class's
+       "not supported", and listed no animations for any avatar. */
+    bool supportsSkinnedPlayback() const override { return backend_->supportsSkinnedPlayback(); }
+    bool setAnimation(int animation, float speed, bool loop) override {
+        return backend_->setAnimation(animation, speed, loop);
+    }
+    void setAnimationPlayback(float speed, bool loop, bool paused) override {
+        backend_->setAnimationPlayback(speed, loop, paused);
+    }
+    void seekAnimation(float seconds) override { backend_->seekAnimation(seconds); }
+    int currentAnimation() const override { return backend_->currentAnimation(); }
+    float animationTime() const override { return backend_->animationTime(); }
+    /* Every virtual of Renderer has to be forwarded here: one that is not does nothing, silently. */
+    bool crossFadeToAnimation(int animation, float fadeSeconds, float speed, bool loop) override {
+        return backend_->crossFadeToAnimation(animation, fadeSeconds, speed, loop);
+    }
+    bool setAnimationOverlay(int animation, int mask, float weight, float speed, bool loop, float fadeSeconds) override {
+        return backend_->setAnimationOverlay(animation, mask, weight, speed, loop, fadeSeconds);
+    }
+    AnimationPlaybackState animationState() const override { return backend_->animationState(); }
+    bool supportsFaceAnimation() const override { return backend_->supportsFaceAnimation(); }
+    bool setFaceWeights(const float* weights, int count) override { return backend_->setFaceWeights(weights, count); }
+    int faceKernelsActive() const override { return backend_->faceKernelsActive(); }
     void waitIdle() override { backend_->waitIdle(); }
     RendererInfo info() const override { return backend_->info(); }
 
@@ -162,6 +186,14 @@ private:
 #ifndef __ANDROID__
 Renderer* createVulkanRenderer(ANativeWindow*, const RendererOptions&, std::string* error) {
     if (error) *error = "Vulkan backend disabled in non-Android headless build";
+    return nullptr;
+}
+#elif !defined(AF_ENABLE_VULKAN)
+/* af_vk.cpp is not part of this library (CMake option AF_ENABLE_VULKAN is off), so the library
+   has no Vulkan code and no libvulkan.so dependency. A caller that asks for Vulkan is told so and
+   Renderer::create() continues with OpenGL ES. */
+Renderer* createVulkanRenderer(ANativeWindow*, const RendererOptions&, std::string* error) {
+    if (error) *error = "the Vulkan backend is not built into this library";
     return nullptr;
 }
 #endif

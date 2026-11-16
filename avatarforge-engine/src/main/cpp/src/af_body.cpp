@@ -85,31 +85,66 @@ DenseGrid makeGrid(const Vec3& loRaw, const Vec3& hiRaw, float cell, float snapY
 
 /* --------------------------------------------------------- projection onto the isosurface -- */
 /**
- * Moves a point onto the zero level set with Newton iterations on the distance field:
- *     p <- p - d(p) * grad(d) / |grad(d)|^2
- * The movement is clamped so a bad gradient near a smooth-min junction can never fling a vertex
- * across the model.
+ * Moves a point onto the zero level set of the field.
+ *
+ *     p <- p - d(p) * n(p),   n = grad(d) / |grad(d)|
+ *
+ * Three things make it dependable where two surfaces meet (a lid margin, a lip line, hair lying
+ * against a cheek), which is where an earlier version left vertices standing off the surface as
+ * spikes:
+ *
+ *   - The gradient is measured over a fraction of a millimetre. It used to be measured over
+ *     0.35 of the BASE lattice cell whatever the size of the triangle being refined - 2.8 mm for
+ *     an 8 mm lattice, wider than an eyelid is thick - so next to a crease it described neither
+ *     surface, and the step went somewhere in between.
+ *   - The step is the distance itself, with the slope floored. A smooth union has |grad| < 1 in
+ *     its blend zone; dividing by it, as plain Newton does, overshoots there and the iteration
+ *     hops from one surface to the other.
+ *   - The answer is checked. The point returned is the one with the smallest |d| seen, the
+ *     starting point included, so a projection that fails leaves the vertex where it was - on the
+ *     chord, which is a flat facet - rather than somewhere worse.
+ *
+ * `maxMove` bounds each step and, times two, the total distance from the starting point.
  */
 Vec3 projectToSurface(const std::function<float(const Vec3&)>& field, const Vec3& p, float h,
                       float maxMove, int iterations = 3) {
+    const float hh = minf(h, 0.0004f);
+    const float reach = maxMove * 2.0f;
     Vec3 q = p;
-    for (int i = 0; i < iterations; ++i) {
+    Vec3 best = p;
+    float bestAbs = 1e30f;
+    const int steps = iterations + 3;
+    for (int i = 0; i <= steps; ++i) {
         const float d = field(q);
-        if (std::fabs(d) < 1e-6f) break;
-        const Vec3 g(field(Vec3(q.x + h, q.y, q.z)) - field(Vec3(q.x - h, q.y, q.z)),
-                     field(Vec3(q.x, q.y + h, q.z)) - field(Vec3(q.x, q.y - h, q.z)),
-                     field(Vec3(q.x, q.y, q.z + h)) - field(Vec3(q.x, q.y, q.z - h)));
-        /* g is a *centred difference* over 2h, so grad = g / (2h) and the Newton step is
-           d * grad / |grad|^2 = d * g * (2h) / |g|^2. Getting this factor wrong makes the
-           projection converge slowly (or, in the other direction, overshoot badly). */
-        const float g2 = g.lengthSq();
-        if (g2 < 1e-12f) break;
-        const Vec3 step = g * (d * (2.0f * h) / g2);
-        if (!step.isFinite()) break;
-        const float len = step.length();
-        q = q - ((len > maxMove) ? step * (maxMove / len) : step);
+        if (!(std::fabs(d) < bestAbs)) {
+            /* No improvement: the last step crossed a crease. Go back and take half of it. */
+            if (i == 0 || !std::isfinite(d)) break;
+            q = (q + best) * 0.5f;
+            const float dh = field(q);
+            if (std::fabs(dh) < bestAbs) { bestAbs = std::fabs(dh); best = q; }
+            else break;
+            if (bestAbs < 2e-5f) break;
+            continue;
+        }
+        bestAbs = std::fabs(d);
+        best = q;
+        if (bestAbs < 2e-5f || i == steps) break;
+        const Vec3 g(field(Vec3(q.x + hh, q.y, q.z)) - field(Vec3(q.x - hh, q.y, q.z)),
+                     field(Vec3(q.x, q.y + hh, q.z)) - field(Vec3(q.x, q.y - hh, q.z)),
+                     field(Vec3(q.x, q.y, q.z + hh)) - field(Vec3(q.x, q.y, q.z - hh)));
+        const float gl = g.length();
+        if (!(gl > 1e-9f) || !std::isfinite(gl)) break;
+        const float slope = gl / (2.0f * hh);
+        float stepLen = d / maxf(slope, 0.6f);
+        if (stepLen > maxMove) stepLen = maxMove;
+        if (stepLen < -maxMove) stepLen = -maxMove;
+        Vec3 next = q - g * (stepLen / gl);
+        const Vec3 off = next - p;
+        const float offLen = off.length();
+        if (offLen > reach) next = p + off * (reach / offLen);
+        q = next;
     }
-    return q;
+    return best;
 }
 
 /* ------------------------------------------------------------ red-green subdivision --------- */
@@ -127,7 +162,8 @@ Vec3 projectToSurface(const std::function<float(const Vec3&)>& field, const Vec3
  * version of the coarse shape.
  */
 size_t refineAdaptive(Mesh* mesh, const std::vector<uint8_t>& wanted,
-                      const std::function<Vec3(const Vec3&)>& project, float cell) {
+                      const std::function<Vec3(const Vec3&, float)>& project,
+                      const std::function<int(const Vec3&)>& regionAt, float cell) {
     const size_t triCount = mesh->triangleCount();
     auto ekey = [](uint32_t a, uint32_t b) {
         if (a > b) std::swap(a, b);
@@ -166,10 +202,17 @@ size_t refineAdaptive(Mesh* mesh, const std::vector<uint8_t>& wanted,
         const auto it = midOf.find(k);
         if (it != midOf.end()) return it->second;
         const Vec3 mid = (mesh->positions[a] + mesh->positions[b]) * 0.5f;
-        const Vec3 projected = project(mid);
+        /* The reach of the projection follows the edge being split: the surface cannot be further
+           from the midpoint of a 1 mm edge than a 1 mm edge allows. */
+        const Vec3 projected = project(mid, (mesh->positions[a] - mesh->positions[b]).length());
         const uint32_t id = static_cast<uint32_t>(mesh->positions.size());
         mesh->positions.push_back(projected);
-        mesh->regions.push_back(mesh->regions[a]);
+        /* Where the two ends agree the new vertex takes their material. Where they differ a
+           material boundary crosses this edge, and which side the midpoint lies on is a question
+           for the field - copying one end (as this did) moves the boundary by half an edge in a
+           direction that depends on vertex order, which is what made hems and hairlines jagged. */
+        const int32_t ra = mesh->regions[a], rb = mesh->regions[b];
+        mesh->regions.push_back((ra == rb || !regionAt) ? ra : static_cast<int32_t>(regionAt(projected)));
         mesh->curvature.push_back(mesh->curvature.size() > b
                                       ? (mesh->curvature[a] + mesh->curvature[b]) * 0.5f
                                       : 1.0f);
@@ -608,8 +651,8 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
         return false;
     };
 
-    auto project = [&](const Vec3& p) {
-        return projectToSurface(unionField, p, cell * 0.35f, cell * 0.45f);
+    auto project = [&](const Vec3& p, float edge) {
+        return projectToSurface(unionField, p, cell * 0.35f, minf(cell * 0.45f, maxf(edge, 0.0005f) * 0.45f));
     };
 
     for (int round = 0; round < options.detailRounds; ++round) {
@@ -630,7 +673,7 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
                        refining, a nostril, finger or ear refines at once. */
                 /* First pass: refine every surface triangle in the trunk/limb bounds.
                    Later passes remain selective and are reserved for the head, hands and feet. */
-                bool want = alwaysFine(r) || (round == 0 && inBodyCore(c));
+                bool want = alwaysFine(r) || (options.refineBody && round == 0 && inBodyCore(c));
                 if (!want && inDetailRegion(c)) {
                     const Vec3 projected = projectToSurface(unionField, c, cell * 0.35f, cell * 0.5f, 2);
                     const float deviation = (projected - c).length();
@@ -640,7 +683,7 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
                 wanted[static_cast<size_t>(t)] = want ? 1 : 0;
             }
         });
-        refineAdaptive(&mesh, wanted, project, cell);
+        refineAdaptive(&mesh, wanted, project, regionFn, cell);
 #ifdef AF_ISO_DEBUG
         {
             const Mesh::ManifoldReport rr = mesh.audit();
@@ -672,8 +715,40 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
                 wanted[static_cast<size_t>(t)] = inMicroRegion(c) ? 1 : 0;
             }
         });
-        refineAdaptive(&mesh, wanted, project, cell);
+        refineAdaptive(&mesh, wanted, project, regionFn, cell);
         if (options.progress) options.progress(1, 0.62f);
+        if (options.cancelled && options.cancelled()) return false;
+
+        /*
+         * The lid margins and what shows between them get one round more. The opening is about
+         * 26 mm by 10 mm and its edge is a step a millimetre and a half high; at 1 mm spacing that
+         * step is one triangle, which is not enough to draw a clean line round an eye. This costs
+         * a few thousand triangles per eye.
+         */
+        const size_t eyeTriCount = mesh.triangleCount();
+        std::vector<uint8_t> eyeWanted(eyeTriCount, 0);
+        Vec3 eyeC[2];
+        for (int side = 0; side < 2; ++side) eyeC[side] = field.eyeCentre(side);
+        const float er = m.eyeRadius;
+        const Vec3 noseBase = (field.noseTip() + field.mouthCentre()) * 0.5f;
+        parallelFor(static_cast<int>(eyeTriCount), nthreads, [&](int t0i, int t1i) {
+            for (int t = t0i; t < t1i; ++t) {
+                const Vec3 c = (mesh.positions[mesh.indices[t * 3]] + mesh.positions[mesh.indices[t * 3 + 1]] +
+                                mesh.positions[mesh.indices[t * 3 + 2]]) / 3.0f;
+                for (int side = 0; side < 2; ++side) {
+                    const Vec3 q((c.x - eyeC[side].x) / (er * 1.45f), (c.y - eyeC[side].y) / (er * 0.85f),
+                                 (c.z - (eyeC[side].z - er * 0.9f)) / (er * 0.9f));
+                    if (q.lengthSq() <= 1.0f) { eyeWanted[static_cast<size_t>(t)] = 1; break; }
+                }
+                /* The base of the nose and the mouth: nostrils three millimetres across and the
+                   line between the lips need the same extra round. */
+                {
+                    const Vec3 q((c.x - noseBase.x) / 0.030f, (c.y - noseBase.y) / 0.030f, (c.z - noseBase.z) / 0.028f);
+                    if (q.lengthSq() <= 1.0f) eyeWanted[static_cast<size_t>(t)] = 1;
+                }
+            }
+        });
+        refineAdaptive(&mesh, eyeWanted, project, regionFn, cell);
         if (options.cancelled && options.cancelled()) return false;
     }
 
@@ -744,6 +819,32 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
     report.openEdgesMidRepair = report.openEdgesBeforeRepair;
     report.stitches = 0;
 
+    /*
+     * The length scale of the mesh at each vertex: the mean length of the edges that meet there.
+     * The mesh runs from 4 mm on a thigh to half a millimetre at a lid margin, and everything
+     * below that measures the surface at a vertex - the re-projection after smoothing, the normal -
+     * has to measure it over a distance that fits the triangles there. One fixed distance derived
+     * from the base lattice is too coarse for the face and was the source of the wrong normals
+     * that showed as light and dark ticks along the lips, the brows and the lids.
+     */
+    std::vector<float> localScale(mesh.vertexCount(), 0.0f);
+    {
+        std::vector<uint32_t> incident(mesh.vertexCount(), 0);
+        for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+            for (int e = 0; e < 3; ++e) {
+                const uint32_t a = mesh.indices[t + static_cast<size_t>(e)];
+                const uint32_t b = mesh.indices[t + static_cast<size_t>((e + 1) % 3)];
+                const float len = (mesh.positions[a] - mesh.positions[b]).length();
+                localScale[a] += len; localScale[b] += len;
+                incident[a] += 1; incident[b] += 1;
+            }
+        }
+        for (size_t i = 0; i < localScale.size(); ++i) {
+            localScale[i] = (incident[i] > 0) ? localScale[i] / static_cast<float>(incident[i]) : cell;
+            localScale[i] = clampf(localScale[i], 0.0003f, cell * 1.5f);
+        }
+    }
+
     /* A single Taubin pass removes the last of the lattice terracing without shrinking the
        volume (lambda/mu pair); two passes start to soften real anatomy. */
     if (options.smoothPasses > 0) {
@@ -752,10 +853,53 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
         const size_t vcount = mesh.vertexCount();
         parallelFor(static_cast<int>(vcount), maxi(1, threads), [&](int v0, int v1) {
             for (int i = v0; i < v1; ++i) {
+                const float scale = localScale[static_cast<size_t>(i)];
                 mesh.positions[static_cast<size_t>(i)] =
-                    projectToSurface(unionField, mesh.positions[static_cast<size_t>(i)], cell * 0.3f, cell * 0.25f, 2);
+                    projectToSurface(unionField, mesh.positions[static_cast<size_t>(i)], scale * 0.3f, scale * 0.25f, 2);
             }
         });
+    }
+
+    /*
+     * Materials, asked again at the final positions - but only along the boundaries. A vertex was
+     * labelled where the extractor first put it; refinement, hole filling and smoothing have moved
+     * it since, by a fraction of an edge. Away from a boundary that changes nothing. On one, it is
+     * the difference between a hem that follows the garment and one that wanders either side of it.
+     */
+    {
+        /* Repeated until the boundaries stop moving: the first labels were taken up to a millimetre
+           off the surface, and a layer that thins towards its edge lies within that of the skin
+           over a band several triangles wide. One pass moved a boundary by one triangle and left
+           every hem as a row of teeth. */
+        const size_t vcount = mesh.vertexCount();
+        std::vector<uint8_t> asked(vcount, 0);
+        for (int pass = 0; pass < 32; ++pass) {
+            std::vector<uint8_t> onBoundary(vcount, 0);
+            for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+                const uint32_t a = mesh.indices[t], b = mesh.indices[t + 1], c = mesh.indices[t + 2];
+                if (mesh.regions[a] != mesh.regions[b] || mesh.regions[b] != mesh.regions[c]) {
+                    onBoundary[a] = onBoundary[b] = onBoundary[c] = 1;
+                }
+            }
+            /* One ring further, so a boundary that should move by a triangle can. */
+            std::vector<uint8_t> grown = onBoundary;
+            for (size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+                const uint32_t a = mesh.indices[t], b = mesh.indices[t + 1], c = mesh.indices[t + 2];
+                if (onBoundary[a] || onBoundary[b] || onBoundary[c]) grown[a] = grown[b] = grown[c] = 1;
+            }
+            std::vector<int> todo;
+            for (size_t i = 0; i < vcount; ++i) {
+                if (grown[i] && !asked[i]) todo.push_back(static_cast<int>(i));
+            }
+            if (todo.empty()) break;
+            parallelFor(static_cast<int>(todo.size()), maxi(1, threads), [&](int k0, int k1) {
+                for (int k = k0; k < k1; ++k) {
+                    const size_t i = static_cast<size_t>(todo[static_cast<size_t>(k)]);
+                    mesh.regions[i] = regionFn(mesh.positions[i]);
+                    asked[i] = 1;
+                }
+            });
+        }
     }
 
     if (options.dropToFloor) {
@@ -771,16 +915,16 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
      * Analytic normals, computed LAST: they are the gradient of the field at the final vertex
      * positions. Running this before Taubin smoothing and the floor drop would leave every normal
      * describing a position the vertex no longer occupies, and the error lands exactly where it
-     * shows most - the specular highlight on a cheek. Central difference at 0.3 * cell: tighter
-     * than the facet size so the normal follows the true surface, wide enough that float noise in
-     * the field does not leak into the shading.
+     * shows most - the specular highlight on a cheek. Central difference at 0.3 of the local edge
+     * length: tighter than the facet so the normal follows the true surface there, wide enough
+     * that float noise in the field does not leak into the shading.
      */
     {
         const size_t vcount = mesh.vertexCount();
         parallelFor(static_cast<int>(vcount), maxi(1, threads), [&](int v0, int v1) {
             for (int i = v0; i < v1; ++i) {
                 const Vec3 p = mesh.positions[static_cast<size_t>(i)];
-                const float h = cell * 0.30f;
+                const float h = clampf(localScale[static_cast<size_t>(i)] * 0.30f, 0.00025f, cell * 0.30f);
                 mesh.normals[static_cast<size_t>(i)] = Vec3(
                     unionField(Vec3(p.x + h, p.y, p.z)) - unionField(Vec3(p.x - h, p.y, p.z)),
                     unionField(Vec3(p.x, p.y + h, p.z)) - unionField(Vec3(p.x, p.y - h, p.z)),
@@ -831,18 +975,23 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
  * Shared union field
  * ----------------------------------------------------------------------------------------- */
 float bodyUnionField(const BodyField& field, const Vec3& p) {
-    const float dBody = field.body(p);
-    const float dLeft = smin(smin(dBody, field.hand(p, 1), 0.006f), field.foot(p, 1), 0.006f);
-    const float dRight = smin(smin(dBody, field.hand(p, -1), 0.006f), field.foot(p, -1), 0.006f);
-    const float d = minf(dLeft, dRight);
-    float u = smin(d, field.head(p), 0.012f);   /* neck blend */
+    float u = field.skinUnion(p);
     /*
-     * Apparel joins with a HARD minimum: a garment is not fused to the skin, it is a separate
-     * solid that happens to surround it. A smooth union here would melt the collar into the neck
-     * and the cuff into the wrist, and would also let the blend subtract up to k/4 from the
-     * garment's surface, pulling hems inside the body they are meant to cover.
+     * Apparel joins with a very small fillet (3 mm). A garment is a separate solid, so the blend
+     * must not be large enough to melt a collar into the neck - but a perfectly hard minimum leaves
+     * a knife-edge crease where cloth or hair meets skin, and the extractor cannot follow a
+     * knife-edge: its vertices jump from one surface to the other and the hem comes out as a row of
+     * teeth. A fillet of about one detail cell gives it a surface to follow, and moves the garment
+     * by less than a millimetre.
      */
-    u = minf(u, field.apparelField(p));
+    {
+        /* Blend only where the two are within the fillet's reach; elsewhere the result is the plain
+           minimum, computed as one. Without apparel the apparel distance is the 1e9 "nothing here"
+           value, and blending THAT with the skin cancels in single precision to exactly zero at
+           every point - an avatar with no clothes and no hair then had no surface at all. */
+        const float apparel = field.apparelField(p);
+        u = (std::fabs(apparel - u) < 0.003f) ? smin(u, apparel, 0.003f) : minf(u, apparel);
+    }
     /* The mouth is cut last, through everything: skull, jaw, neck - or a helmet ring. */
     field.applyOralShapes(u, p);
     return u;

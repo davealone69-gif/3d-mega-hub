@@ -1,0 +1,84 @@
+name: Publish phone-test APK
+
+# The debug APK for the phone test is kept as a workflow artifact by "AvatarForge diagnostic APK
+# and tests". An artifact downloads only for a signed-in GitHub account and arrives as a zip.
+# This workflow attaches the same file to a pre-release, where it is a plain .apk that downloads
+# without signing in. It builds nothing and publishes nothing unless the readiness gate in
+# BUILD_AND_VERIFY.md holds for the commit: see .github/scripts/publish_phone_test_apk.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Commit whose verified debug APK is published as a direct download"
+        required: true
+        type: string
+      expected_apk_sha256:
+        description: "APK SHA-256 from the readiness record (optional). The job stops if the artifact differs"
+        required: false
+        type: string
+        default: ""
+      diagnostic_run:
+        description: "Run id of the diagnostic workflow to take the APK from (optional; default: its latest run on the commit)"
+        required: false
+        type: string
+        default: ""
+  pull_request:
+    branches:
+      - main
+      - integration/avatarforge-renderer-port
+    paths:
+      - ".github/workflows/publish-phone-test-apk.yml"
+      - ".github/scripts/publish_phone_test_apk.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-phone-test-apk-${{ github.event.pull_request.number || inputs.commit || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  rules:
+    name: Publishing rules self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Exercise every publishing rule against a stand-in for GitHub
+        run: python3 .github/scripts/publish_phone_test_apk.py --self-test
+
+  publish:
+    name: Check the readiness gate and publish the APK
+    if: github.event_name == 'workflow_dispatch'
+    needs: rules
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Check the gate for the commit, publish its APK and download it back without signing in
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ inputs.commit }}
+          EXPECTED_APK_SHA256: ${{ inputs.expected_apk_sha256 }}
+          DIAGNOSTIC_RUN: ${{ inputs.diagnostic_run }}
+        run: |
+          python3 .github/scripts/publish_phone_test_apk.py \
+            --commit "$COMMIT" \
+            --expected-sha256 "$EXPECTED_APK_SHA256" \
+            --run "$DIAGNOSTIC_RUN" \
+            --output phone-test-publication
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: phone-test-apk-publication-record
+          path: |
+            phone-test-publication/PUBLICATION.txt
+            phone-test-publication/RELEASE_NOTES.md
+          if-no-files-found: ignore
+          retention-days: 14

@@ -40,6 +40,7 @@ private:
 struct Chain {
     Vec3 shoulder, elbow, wrist, palmCentre, middleTip;
     Vec3 hipJoint, knee, ankle, heel, ball, toeTip;
+    Vec3 heelL, ballL;       /* heel and ball in the flat foot's own frame (see footLocal) */
     Vec3 fingerTip[5];       /* thumb..little, world space, rest pose                    */
     Vec3 fingerKnuckle[5];
     Vec3 fingerJoints[5][3]; /* proximal, middle, distal joint positions                  */
@@ -50,6 +51,23 @@ struct Chain {
  * Apparel selection. Mirrors the af_spec enums but lives here so the geometry kernel can evaluate a
  * dressed body without dragging the whole ABI struct into it.
  */
+/* Parts within one garment's region. See BodyField::apparelPart(). */
+enum ApparelPart {
+    PART_BASE = 0,     /* the garment's own material                                    */
+    PART_SHIRT,        /* the layer under an open garment: shirt, T-shirt               */
+    PART_TIE,
+    PART_TRIM,         /* seams, edges, plackets, the joints between plates: a dark line */
+    PART_BUTTON,
+    PART_ACCENT,       /* a contrasting panel: collar, cuff, lining, stripe             */
+    PART_METAL,        /* buckles, rings, studs                                         */
+    PART_SOLE,         /* the side of a shoe's sole                                     */
+    PART_OUTSOLE,      /* the tread                                                     */
+    PART_LACE,
+    PART_TOECAP,
+    PART_STEEL,        /* plate, whatever the outfit's own equipment is made of         */
+    PART_PANEL         /* a dark inset: visor, control panel, pack                      */
+};
+
 struct ApparelOptions {
     int outfit = 0;      /* af_outfit      */
     int footwear = 0;    /* af_footwear    */
@@ -62,6 +80,11 @@ struct ApparelOptions {
      * lattice cell: the caller states the lattice and gets clothing that can actually be meshed.
      */
     float latticeCell = 0.008f;
+    /*
+     * Build the mouth open, with an aperture, an oral cavity, teeth and a tongue. Off by default:
+     * see BodyField::applyOralShapes for why the rest pose is a closed mouth.
+     */
+    bool openMouth = false;
 };
 
 class BodyField {
@@ -80,8 +103,14 @@ public:
     float armChainPublic(const Vec3& p, int side) const { return armChain(p, chain(side)); }
     float legChainPublic(const Vec3& p, int side) const { return legChain(p, chain(side)); }
 
+    /** The unclothed body's field: trunk, limbs, hands, feet and head, without apparel. */
+    float skinUnion(const Vec3& p) const;
     /** Dominant primitive region at a point; REGION_SKIN when nothing more specific matches. */
     int classifyRegion(const Vec3& p) const;
+    /** af_footwear, or 5 for the boots that come with a spacesuit. */
+    int footwearKind() const;
+    /** Which ApparelPart of its garment the surface point p belongs to; region is its label. */
+    int apparelPart(const Vec3& p, int region) const;
 
     const BodyMetrics& metrics() const { return m_; }
     const Chain& chain(int side) const { return side > 0 ? left_ : right_; }
@@ -107,12 +136,14 @@ public:
 
 private:
     float torso(const Vec3& p) const;
+    float trunkAndLegs(const Vec3& p) const;
     float torsoProfileRx(float y) const;
     float torsoProfileRz(float y) const;
     float torsoProfileCz(float y) const;
     float armChain(const Vec3& p, const Chain& c) const;
     float legChain(const Vec3& p, const Chain& c) const;
     float footShape(const Vec3& p, const Chain& c) const;
+    void  toeSegment(const Chain& c, int i, float ground, float ballZ, Vec3* from, Vec3* to) const;
     float handShape(const Vec3& p, const Chain& c) const;
     float skull(const Vec3& p) const;
     float faceFeatures(const Vec3& p) const;
@@ -132,7 +163,12 @@ private:
     float oralCavity(const Vec3& p) const;            /* carved void behind the lips          */
     float teethShape(const Vec3& p) const;            /* upper + lower dental arches, crowns  */
     float tongueShape(const Vec3& p) const;           /* tongue body + tip, on the floor      */
+    float lipsOutline(const Vec3& p) const;           /* the vermilion, as a front-view outline */
     float eyeballShape(const Vec3& p, int side) const;/* sclera sphere + corneal bulge        */
+    float eyeOpening(const Vec3& p, int side) const;  /* the almond between the lids          */
+    /** eyeOpening(), also telling whether p is above the line between the corners of the eye. */
+    float eyeOpening(const Vec3& p, int side, bool* upperLid) const;
+    float armFillet(const Vec3& p, const Chain& c) const;  /* arm-to-trunk blend radius      */
     float browShape(const Vec3& p) const;             /* eyebrow band (fibre material)        */
 
     /*
@@ -150,21 +186,33 @@ private:
      * is what makes a hem a crisp edge rather than a rounded lip.
      */
     float clothUpper(const Vec3& p) const;
+    float frontOpening(const Vec3& p) const;          /* < 0 in the opening of a jacket       */
+    float upperShell(const Vec3& p, float thickness, float hemY, float topY, float neckDrop,
+                     float sleeveReach) const;        /* a layer on trunk and arms            */
+    float skirtShell(const Vec3& p, float topY, float hemY, float flare, float clearance) const;
     float clothLower(const Vec3& p) const;
     float shoeShape(const Vec3& p) const;
+    Vec3  footLocal(const Vec3& p, const Chain& c) const;   /* p in the foot's own frame */
+    Vec3  footLocalRaw(const Vec3& p, const Chain& c) const;   /* the same, without undoing a heel's pitch */
+    Vec3  footPosed(const Vec3& flatLocal, const Chain& c) const; /* flat frame -> world, pitched for a heel */
+    float footGround(const Chain& c) const { return (m_.y.soleY + m_.heelLift) - c.ankle.y; }
+    float shoeTopY() const;
     float gearShape(const Vec3& p) const;
+    float gearField(const Vec3& p, int* piece) const;  /* gearShape, and which piece is nearest */
     float hairShape(const Vec3& p) const;
     float sleeveSolid(const Vec3& p, float thickness, float reach) const;
     float armsCut(const Vec3& p, float thickness) const;
 
 public:
     /** Selects the garment set. Must be called before the mesh is built. */
-    void setApparel(const ApparelOptions& a) { apparel_ = a; }
+    void setApparel(const ApparelOptions& a);
     /** The thinnest layer the extraction lattice can resolve. */
     float minLayer() const { return apparel_.latticeCell; }
     const ApparelOptions& apparel() const { return apparel_; }
     /** Union of all active apparel solids (a huge positive value when nothing is worn). */
     float apparelField(const Vec3& p) const;
+    /** As apparelField(), and also returns the hair's own distance (1e9 without hair). */
+    float apparelField(const Vec3& p, float* hairOut) const;
     /** Bounds of the apparel, for the extraction grid. Returns false when nothing is worn. */
     bool boundsApparel(Vec3* lo, Vec3* hi) const;
     /** True when the apparel changes the body's silhouette at all. */
@@ -187,6 +235,8 @@ public:
     /* Eye centres in world space. Public because the mesh builder needs to point its finest
        refinement at them; they are anatomical anchors, not internal state. */
     Vec3 eyeCentre(int side) const { return eyeCentre_[static_cast<size_t>((side > 0) ? 0 : 1)]; }
+    Vec3 noseTip() const { return noseTip_; }
+    Vec3 mouthCentre() const { return mouthCentre_; }
     /* Diagnostic access to the mouth shapes, so probes can verify that what was built is what the
        classifier claims. Not used by the engine path. */
     Vec3  archCentrePublic() const { return archCentre(); }
@@ -203,6 +253,14 @@ public:
     Vec3 noseTip_, noseBridge_, chin_, jawCorner_[2], cheek_[2], browRidge_;
     Vec3 eyeCentre_[2], mouthCentre_, earCentre_[2];
     ApparelOptions apparel_;
+    struct BraidBead { Vec3 centre, radii; };
+    /* The pitch of a foot in heels (all zero on a flat foot). */
+    float heelSin_ = 0.0f, heelCos_ = 1.0f;
+    float heelPivotY_ = 0.0f, heelPivotZ_ = 0.0f;       /* where the foot bends: under the ball, pitched */
+    float heelShiftY_ = 0.0f, heelShiftZ_ = 0.0f;       /* how far the toes are carried                  */
+    float heelBisY_ = 0.0f, heelBisZ_ = -1.0f;          /* normal of the plane the bend is made across   */
+    float suitBoxY_ = 0.0f, suitFrontZ_ = 0.0f, suitBackZ_ = 0.0f;   /* spacesuit: where its boxes sit */
+    std::vector<BraidBead> braidBeads_;     /* the plaits of the braided style, laid out by setApparel() */
 };
 
 } // namespace af

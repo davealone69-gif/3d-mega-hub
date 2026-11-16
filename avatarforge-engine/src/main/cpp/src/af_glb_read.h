@@ -157,6 +157,8 @@ struct GlbAsset {
     std::vector<ImportedAnimation> animations;
     std::vector<ImportWarning> warnings;
     std::vector<std::string> extensionsUsed;   /* recorded so the caller can say why it refused */
+    /* extras.faceRig of a file this engine wrote: the face rig in FaceRig::pack() form, or empty. */
+    std::vector<float> faceRig;
 
     /** Vertices actually stored (each pool once) - what the importer's memory cost is. */
     size_t uniqueVertexCount() const {
@@ -185,6 +187,10 @@ struct GlbAsset {
  * survives, errors are things it does not.
  */
 int importGlb(const uint8_t* data, size_t size, GlbAsset* out, std::string* error);
+/* As importGlb, but reads only what a skeleton and its animations need: nodes, skins and
+   animations. Materials, images and meshes are skipped, so a large textured model costs no more
+   than its JSON and its animation data. */
+int importGlbSkeleton(const uint8_t* data, size_t size, GlbAsset* out, std::string* error);
 
 /** Reads a GLB from disk. Same contract. */
 int importGlbFile(const char* path, GlbAsset* out, std::string* error);
