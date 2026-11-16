@@ -118,6 +118,13 @@ jobs:
               tail -15 install-platform.log 2>/dev/null
             fi
             echo '```'
+            if [ -f build.log ] && grep -qE " > .* FAILED" build.log; then
+              echo
+              echo "**Failing tests:**"
+              echo '```text'
+              grep -A4 -E " > .* FAILED" build.log | head -50
+              echo '```'
+            fi
             if [ -f build.log ] && grep -qE "^e: " build.log; then
               echo
               echo "**Every Kotlin diagnostic in this run:**"
