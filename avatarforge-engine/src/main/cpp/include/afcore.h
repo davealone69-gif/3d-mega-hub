@@ -535,12 +535,18 @@ int32_t af_engine_import_motions_from_memory(af_engine* engine, const uint8_t* b
  * af_engine_pack_face: for `count` channel weights in af_engine_blendshape_names order, writes
  * the kernels that have an effect, 16 floats each (four vec4), strongest channels first, and the
  * face box as 8 floats (two vec4); returns the number of kernels written, at most max_kernels.
+ * af_engine_pack_face_block: the same, laid out as the renderer's std140 uniform block
+ * { vec4 boxMin; vec4 boxMax; vec4 params; vec4 kernels[4 * max_kernels]; } with params.x the
+ * number of kernels. `out_block` holds 12 + 16 * max_kernels floats and is written whole (unused
+ * kernels are zero). Returns the number of kernels; 0 when there is no face rig.
  * af_face_evaluate_packed: the offset that packed form gives one point, computed exactly as the
  * vertex shader does. For tools and tests.
  */
 int32_t af_engine_face_kernel_count(const af_engine* engine);
 int32_t af_engine_pack_face(const af_engine* engine, const float* weights, int32_t count,
                             float* out_kernels, int32_t max_kernels, float* out_box);
+int32_t af_engine_pack_face_block(const af_engine* engine, const float* weights, int32_t count,
+                                  float* out_block, int32_t max_kernels);
 void    af_face_evaluate_packed(const float* kernels, int32_t kernel_count, const float* box,
                                 const float* position3, float* out_delta3);
 

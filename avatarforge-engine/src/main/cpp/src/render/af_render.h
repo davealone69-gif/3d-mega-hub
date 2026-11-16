@@ -48,6 +48,7 @@
 #include <vector>
 
 #include "../../include/afcore.h"
+#include "../af_anim_player.h"
 
 /* ANativeWindow is opaque to us; forward declaration keeps this header usable in host builds. */
 struct ANativeWindow;
@@ -227,6 +228,35 @@ public:
     virtual void  seekAnimation(float seconds) { (void)seconds; }
     virtual int   currentAnimation() const { return -1; }
     virtual float animationTime() const { return 0.0f; }
+
+    /* Blending, on the same skinned path (af_anim_player.h holds the clocks and the rules).
+       crossFadeToAnimation: `animation` starts and fades in over `fadeSeconds` on top of whatever
+       plays, the rest pose included; -1 fades back to the rest pose.
+       setAnimationOverlay: a second animation on the joints of `mask` (an af_joint_mask), over
+       the base one - a wave over a walk. One that does not loop leaves by itself at its end;
+       -1 fades the present overlay out.
+       Both return false when the backend cannot skin or the index is not an animation. */
+    virtual bool  crossFadeToAnimation(int animation, float fadeSeconds, float speed, bool loop) {
+        (void)animation; (void)fadeSeconds; (void)speed; (void)loop;
+        return false;
+    }
+    virtual bool  setAnimationOverlay(int animation, int mask, float weight, float speed, bool loop, float fadeSeconds) {
+        (void)animation; (void)mask; (void)weight; (void)speed; (void)loop; (void)fadeSeconds;
+        return false;
+    }
+    virtual AnimationPlaybackState animationState() const { return AnimationPlaybackState{}; }
+
+    /* Face animation: weights for the 52 ARKit channels, in af_engine_blendshape_names order.
+       The renderer keeps them until they are set again, packs the kernels that have an effect
+       (af_engine_pack_face) and its vertex shader displaces the face before skinning; nothing is
+       uploaded per vertex. False when the model has no face rig or the backend has no support.
+       faceKernelsActive: how many kernels the last frame evaluated. */
+    virtual bool  supportsFaceAnimation() const { return false; }
+    virtual bool  setFaceWeights(const float* weights, int count) {
+        (void)weights; (void)count;
+        return false;
+    }
+    virtual int   faceKernelsActive() const { return 0; }
 
     /* Waits for the GPU to idle. Needed before the engine frees or rebuilds buffers that the
        renderer may still be reading (e.g. before af_engine_destroy or a geometry rebuild). */

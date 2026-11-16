@@ -1560,6 +1560,16 @@ int32_t af_engine_pack_face(const af_engine* engine, const float* weights, int32
     return engine->rig.faceRig().packActive(weights, count, out_kernels, max_kernels, out_box);
 }
 
+int32_t af_engine_pack_face_block(const af_engine* engine, const float* weights, int32_t count,
+                                  float* out_block, int32_t max_kernels) {
+    if (!out_block || max_kernels <= 0) return 0;
+    std::memset(out_block, 0, (12 + 16 * static_cast<size_t>(max_kernels)) * sizeof(float));
+    if (!engine || !weights || count <= 0) return 0;
+    const int kernels = engine->rig.faceRig().packActive(weights, count, out_block + 12, max_kernels, out_block);
+    out_block[8] = static_cast<float>(kernels);
+    return kernels;
+}
+
 void af_face_evaluate_packed(const float* kernels, int32_t kernel_count, const float* box,
                              const float* position3, float* out_delta3) {
     if (!out_delta3) return;

@@ -97,6 +97,17 @@ public:
     void seekAnimation(float seconds) override { backend_->seekAnimation(seconds); }
     int currentAnimation() const override { return backend_->currentAnimation(); }
     float animationTime() const override { return backend_->animationTime(); }
+    /* Every virtual of Renderer has to be forwarded here: one that is not does nothing, silently. */
+    bool crossFadeToAnimation(int animation, float fadeSeconds, float speed, bool loop) override {
+        return backend_->crossFadeToAnimation(animation, fadeSeconds, speed, loop);
+    }
+    bool setAnimationOverlay(int animation, int mask, float weight, float speed, bool loop, float fadeSeconds) override {
+        return backend_->setAnimationOverlay(animation, mask, weight, speed, loop, fadeSeconds);
+    }
+    AnimationPlaybackState animationState() const override { return backend_->animationState(); }
+    bool supportsFaceAnimation() const override { return backend_->supportsFaceAnimation(); }
+    bool setFaceWeights(const float* weights, int count) override { return backend_->setFaceWeights(weights, count); }
+    int faceKernelsActive() const override { return backend_->faceKernelsActive(); }
     void waitIdle() override { backend_->waitIdle(); }
     RendererInfo info() const override { return backend_->info(); }
 

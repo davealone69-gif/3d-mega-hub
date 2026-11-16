@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <memory>
 #include <limits>
@@ -732,6 +733,45 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResetCamera(
 }
 
 /*
+ * Frames the face (focus 1) or the whole model again (focus 0). The face is where the face rig
+ * says it is, so this answers false for a model without one. The view direction is set to the
+ * front; the user can orbit and zoom from there as before.
+ */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeFocusCamera(
+    JNIEnv*, jobject, jlong handle, jint focus) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return JNI_FALSE;
+    if (focus != 1) {
+        session->camera = session->initialCamera;
+        session->renderer->setCamera(session->camera);
+        return JNI_TRUE;
+    }
+    if (!session->engine || af_engine_face_kernel_count(session->engine) <= 0) return JNI_FALSE;
+    const float none[1] = {0.0f};
+    float block[12 + 16] = {0};
+    af_engine_pack_face_block(session->engine, none, 1, block, 1);
+    /* The box spans the head from side to side and from under the chin to over the crown. In
+       depth it is the whole half-space in front of the head, so depth says nothing: the orbit
+       target keeps the depth of the model's centre. */
+    const float width = block[4] - block[0], height = block[5] - block[1];
+    if (!(width > 0.0f && height > 0.0f) || session->width <= 0 || session->height <= 0) return JNI_FALSE;
+    af::CameraState camera = session->initialCamera;
+    camera.targetX = 0.5f * (block[0] + block[4]);
+    camera.targetY = 0.5f * (block[1] + block[5]);
+    camera.pitchDeg = 2.0f;
+    const float aspect = static_cast<float>(session->width) / static_cast<float>(session->height);
+    const float tanHalfV = std::max(0.01f, std::tan(camera.fovDeg * 3.14159265358979323846f / 360.0f));
+    const float tanHalfH = std::max(0.01f, tanHalfV * aspect);
+    /* Head and shoulders: the face box takes a little over half of the smaller screen dimension. */
+    const float fit = std::max(0.5f * height / tanHalfV, 0.5f * width / tanHalfH) * 1.7f;
+    camera.distance = std::max(session->minDistance, std::min(session->maxDistance, fit));
+    session->camera = camera;
+    session->renderer->setCamera(session->camera);
+    return JNI_TRUE;
+}
+
+/*
  * Built-in animation of the model in this session. The list is what the engine can play on the
  * skeleton it holds (af_engine_animation_*): every clip of an avatar this engine generated or
  * exported, nothing for a file whose skeleton it did not adopt. It is empty too when the backend
@@ -800,6 +840,183 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetAnimationTime(
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return 0.0f;
     return session->renderer->animationTime();
+}
+
+/*
+ * What the list of nativeGetAnimations cannot say, five ints per animation in the same order:
+ * looping (the last pose is the first again), source (0 built in, 1 retargeted from a file),
+ * moves_root, travels (the source walked away and the drift was taken out), frames.
+ */
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetAnimationInfo(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    int count = 0;
+    if (session && session->engine && session->renderer &&
+        session->renderer->supportsSkinnedPlayback() &&
+        af_engine_skin_joint_count(session->engine) > 0) {
+        count = std::max(0, af_engine_animation_count(session->engine));
+    }
+    std::vector<jint> values(static_cast<size_t>(count) * 5, 0);
+    for (int i = 0; i < count; ++i) {
+        af_animation_info info;
+        if (af_engine_animation_info(session->engine, i, &info) != AF_OK) continue;
+        jint* out = &values[static_cast<size_t>(i) * 5];
+        out[0] = info.looping;
+        out[1] = info.source;
+        out[2] = info.moves_root;
+        out[3] = info.travels;
+        out[4] = info.frames;
+    }
+    jintArray result = env->NewIntArray(static_cast<jsize>(values.size()));
+    if (result && !values.empty()) env->SetIntArrayRegion(result, 0, static_cast<jsize>(values.size()), values.data());
+    return result;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCrossFadeAnimation(
+    JNIEnv* env, jobject, jlong handle, jint animation, jfloat fadeSeconds, jfloat speed, jboolean loop) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return JNI_FALSE;
+    return jniBarrier<jboolean>(env, "AvatarForge animation crossfade", JNI_FALSE, [&]() -> jboolean {
+        return session->renderer->crossFadeToAnimation(static_cast<int>(animation), fadeSeconds, speed, loop == JNI_TRUE)
+            ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetAnimationOverlay(
+    JNIEnv* env, jobject, jlong handle, jint animation, jint mask, jfloat weight, jfloat speed, jboolean loop,
+    jfloat fadeSeconds) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return JNI_FALSE;
+    return jniBarrier<jboolean>(env, "AvatarForge animation overlay", JNI_FALSE, [&]() -> jboolean {
+        return session->renderer->setAnimationOverlay(static_cast<int>(animation), static_cast<int>(mask), weight, speed,
+                                                      loop == JNI_TRUE, fadeSeconds)
+            ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+/*
+ * Playback as the renderer has it, 18 floats: animation, time, duration, speed, loop, paused,
+ * finished, loops, fading, fadingFrom, fadeProgress, transitions, overlayAnimation, overlayMask,
+ * overlayWeight, overlayTime, layers of the last frame, face kernels of the last frame.
+ */
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetAnimationState(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    jfloat values[18] = {-1.0f, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, -1.0f, 1.0f, 0, -1.0f, 0, 0, 0, 0, 0};
+    if (session && session->renderer) {
+        const af::AnimationPlaybackState state = session->renderer->animationState();
+        values[0] = static_cast<jfloat>(state.animation);
+        values[1] = state.time;
+        values[2] = state.duration;
+        values[3] = state.speed;
+        values[4] = state.loop ? 1.0f : 0.0f;
+        values[5] = state.paused ? 1.0f : 0.0f;
+        values[6] = state.finished ? 1.0f : 0.0f;
+        values[7] = static_cast<jfloat>(state.loops);
+        values[8] = state.fading ? 1.0f : 0.0f;
+        values[9] = static_cast<jfloat>(state.fadingFrom);
+        values[10] = state.fadeProgress;
+        values[11] = static_cast<jfloat>(state.transitions);
+        values[12] = static_cast<jfloat>(state.overlayAnimation);
+        values[13] = static_cast<jfloat>(state.overlayMask);
+        values[14] = state.overlayWeight;
+        values[15] = state.overlayTime;
+        values[16] = static_cast<jfloat>(state.layers);
+        values[17] = static_cast<jfloat>(session->renderer->faceKernelsActive());
+    }
+    jfloatArray result = env->NewFloatArray(18);
+    if (result) env->SetFloatArrayRegion(result, 0, 18, values);
+    return result;
+}
+
+/*
+ * The face. nativeGetFaceChannels: the names of the 52 channels, or nothing when this model's
+ * face cannot be animated (a file from elsewhere, an avatar exported before the face rig was
+ * written into the file, or a backend without the face block).
+ */
+extern "C" JNIEXPORT jobjectArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetFaceChannels(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (!stringClass) return nullptr;
+    char names[64][64];
+    int count = 0;
+    if (session && session->engine && session->renderer && session->renderer->supportsFaceAnimation()) {
+        count = std::max(0, std::min(64, af_engine_blendshape_names(names, 64)));
+    }
+    jobjectArray result = env->NewObjectArray(count, stringClass, nullptr);
+    if (!result) return nullptr;
+    for (int i = 0; i < count; ++i) {
+        names[i][63] = 0;
+        jstring text = env->NewStringUTF(names[i]);
+        if (!text) return result;
+        env->SetObjectArrayElement(result, i, text);
+        env->DeleteLocalRef(text);
+    }
+    return result;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetFaceWeights(
+    JNIEnv* env, jobject, jlong handle, jfloatArray weights) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer || !weights) return JNI_FALSE;
+    jfloat values[64] = {0};
+    const jsize count = std::min<jsize>(64, env->GetArrayLength(weights));
+    if (count > 0) env->GetFloatArrayRegion(weights, 0, count, values);
+    if (env->ExceptionCheck()) return JNI_FALSE;
+    return jniBarrier<jboolean>(env, "AvatarForge face weights", JNI_FALSE, [&]() -> jboolean {
+        return session->renderer->setFaceWeights(values, static_cast<int>(count)) ? JNI_TRUE : JNI_FALSE;
+    });
+}
+
+/*
+ * Adds the animations of another humanoid GLB to the model of this session, retargeted onto its
+ * skeleton (af_engine_import_motions). Runs on the render thread, between frames: the engine
+ * belongs to it. The answer is one line,
+ *   rc|source joints|recognised|mapped|animations in the file|added|compatible|message
+ * and the caller reads the animation list again when rc is 0.
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeImportMotions(
+    JNIEnv* env, jobject, jlong handle, jstring path) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    af_motion_import_report report;
+    std::memset(&report, 0, sizeof(report));
+    int32_t rc = AF_ERR_INVALID_ARG;
+    if (!session || !session->engine || !session->renderer || !path) {
+        std::snprintf(report.message, sizeof(report.message), "The renderer is not running.");
+    } else if (!session->renderer->supportsSkinnedPlayback()) {
+        std::snprintf(report.message, sizeof(report.message), "This device's renderer cannot play skeletal animation.");
+        rc = AF_ERR_UNSUPPORTED;
+    } else {
+        const char* chars = env->GetStringUTFChars(path, nullptr);
+        if (chars) {
+            rc = jniBarrier<int32_t>(env, "AvatarForge motion import", static_cast<int32_t>(AF_ERR_INTERNAL), [&]() -> int32_t {
+                return af_engine_import_motions(session->engine, chars, &report);
+            });
+            env->ReleaseStringUTFChars(path, chars);
+        } else {
+            std::snprintf(report.message, sizeof(report.message), "The file path could not be read.");
+        }
+    }
+    if (env->ExceptionCheck()) return nullptr;
+    report.message[sizeof(report.message) - 1] = 0;
+    /* The separator must not occur in the message, and NewStringUTF wants plain ASCII or valid
+       modified UTF-8: file names from elsewhere are not to be trusted with either. */
+    for (char* c = report.message; *c; ++c) {
+        if (*c == '|' || static_cast<unsigned char>(*c) < 0x20 || static_cast<unsigned char>(*c) >= 0x7f) *c = '?';
+    }
+    const std::string line = std::to_string(rc) + "|" + std::to_string(report.source_joints) + "|" +
+        std::to_string(report.recognised_joints) + "|" + std::to_string(report.mapped_joints) + "|" +
+        std::to_string(report.animations_in_file) + "|" + std::to_string(report.animations_added) + "|" +
+        std::to_string(report.compatible) + "|" + report.message;
+    return env->NewStringUTF(line.c_str());
 }
 
 extern "C" JNIEXPORT void JNICALL

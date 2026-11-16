@@ -20,9 +20,17 @@
  *                        rigged_test_figure.glb (seven joints) is refused with the reason.
  *   FACE                 the face rig survives the file; its packed form (what the vertex shader
  *                        evaluates) equals the engine's own morph offsets; jawOpen parts the lips;
- *                        channels add up; a file from elsewhere has no face rig.
+ *                        channels add up; a file from elsewhere has no face rig. The GLSL of the
+ *                        two vertex shaders, run here as C++ on the block the renderer uploads,
+ *                        gives those offsets too.
+ *   PLAYBACK             the player the renderer runs (af_anim_player.h): play, pause and resume,
+ *                        speed, looping and its counter, a clip that ends, seeking, a crossfade
+ *                        and one that is interrupted, an overlay and a one-shot gesture - and the
+ *                        layers it hands to the engine give the poses they should.
  */
 #include "afcore.h"
+#include "af_anim_player.h"
+#include "af_glsl_face_generated.h"   /* afFaceDelta() of the vertex shaders, as C++ (see CMakeLists) */
 
 #include <algorithm>
 #include <cmath>
@@ -569,9 +577,27 @@ int main(int argc, char** argv) {
 
         const int V = af_engine_vertex_count(gen);
         std::vector<af_vertex> restVerts(af_engine_vertices_rest(gen), af_engine_vertices_rest(gen) + V);
-        constexpr int kMax = 32;
+        /* kMax is the size of the renderer's uniform block (GlRenderer::kMaxFaceKernels and the
+           shader's uFaceKernels[4 * 64]). */
+        constexpr int kMax = 64;
         std::vector<float> packed(static_cast<size_t>(kMax) * 16, 0.0f);
         float box[8] = {0};
+        check(glsl_face::kKernelVectors == 4 * kMax && sizeof(glsl_face::AfFaceBlock) == (12 + 16 * static_cast<size_t>(kMax)) * sizeof(float),
+              "the shader's face block holds 64 kernels and is laid out as the floats the renderer uploads");
+        /* The shader's afFaceDelta() on the very block the renderer would upload. */
+        std::vector<float> block(12 + 16 * static_cast<size_t>(kMax), 0.0f);
+        auto shader_delta = [&](const float* weightsIn, const float* p, float* out) {
+            (void)weightsIn;
+            const glsl_face::vec3 d = glsl_face::afFaceDelta(glsl_face::vec3(p[0], p[1], p[2]));
+            out[0] = d.x; out[1] = d.y; out[2] = d.z;
+        };
+        auto load_shader_block = [&](const float* weightsIn) {
+            const int n = af_engine_pack_face_block(gen, weightsIn, channels, block.data(), kMax);
+            std::memcpy(static_cast<void*>(&glsl_face::afFace), block.data(), block.size() * sizeof(float));
+            return n;
+        };
+        float worstShader = 0.0f;
+        int blockCountMismatch = 0;
 
         /* The packed form against the engine's own morph offsets, every channel, every vertex. */
         float worst = 0.0f, largest = 0.0f;
@@ -582,15 +608,18 @@ int main(int argc, char** argv) {
             weights[static_cast<size_t>(c)] = 1.0f;
             const int count = af_engine_pack_face(gen, weights.data(), channels, packed.data(), kMax, box);
             if (count >= kMax) ++tooMany;
+            if (load_shader_block(weights.data()) != count) ++blockCountMismatch;
             if (af_engine_apply_blendshapes(gen, weights.data(), channels) != AF_OK) { ++gFailures; break; }
             const af_vertex* posed = af_engine_vertices(gen);
             float channelLargest = 0.0f;
             for (int i = 0; i < V; ++i) {
-                float d[3] = {0, 0, 0};
+                float d[3] = {0, 0, 0}, g[3] = {0, 0, 0};
                 af_face_evaluate_packed(packed.data(), count, box, restVerts[static_cast<size_t>(i)].pos, d);
+                shader_delta(weights.data(), restVerts[static_cast<size_t>(i)].pos, g);
                 for (int k = 0; k < 3; ++k) {
                     const float engineDelta = posed[i].pos[k] - restVerts[static_cast<size_t>(i)].pos[k];
                     worst = std::max(worst, std::fabs(engineDelta - d[k]));
+                    worstShader = std::max(worstShader, std::fabs(engineDelta - g[k]));
                     channelLargest = std::max(channelLargest, std::fabs(d[k]));
                 }
             }
@@ -603,6 +632,10 @@ int main(int argc, char** argv) {
                     movedChannels, channels, largest * 1000.0f, worst * 1000.0f);
         check(tooMany == 0, "no single channel needs more kernels than the renderer uploads");
         check(worst < 2e-6f, "the packed form gives the engine's own offsets for every channel and vertex (2 micrometres)");
+        std::printf("INFO shader: afFaceDelta() of forward.vert and shadow.vert, run as C++ on the renderer's block, differs from the engine's offsets by at most %.4f mm\n",
+                    worstShader * 1000.0f);
+        check(blockCountMismatch == 0, "the uniform block reports the same number of kernels as the packed form");
+        check(worstShader < 2e-6f, "the vertex shaders' face function gives the engine's own offsets for every channel and vertex (2 micrometres)");
         check(movedChannels >= 48, "at least 48 of the 52 channels visibly move the face");
 
         /* jawOpen: the lower lip leaves the upper lip. */
@@ -660,9 +693,32 @@ int main(int argc, char** argv) {
                 for (int k = 0; k < 3; ++k) worstSum = std::max(worstSum, std::fabs(together[k] - sum[k]));
             }
             check(count >= 3 && worstSum < 2e-6f, "three channels at once give the sum of the three alone");
-            /* All 52 at full weight cannot fit; the strongest are kept and the count says so. */
+            /* Every channel at once: all the kernels fit in the renderer's block, and the shader
+               still agrees with the engine. */
             for (float& w : weights) w = 1.0f;
-            check(af_engine_pack_face(gen, weights.data(), channels, packed.data(), kMax, box) == kMax, "with every channel on, the upload is capped at the block size");
+            const int all = af_engine_pack_face(gen, weights.data(), channels, packed.data(), kMax, box);
+            check(all == kernelsGen && all <= kMax, "with every channel on, every kernel fits in the renderer's block");
+            float worstAll = 0.0f;
+            if (load_shader_block(weights.data()) == all && af_engine_apply_blendshapes(gen, weights.data(), channels) == AF_OK) {
+                const af_vertex* posed = af_engine_vertices(gen);
+                for (int i = 0; i < V; ++i) {
+                    float g[3] = {0, 0, 0};
+                    shader_delta(weights.data(), restVerts[static_cast<size_t>(i)].pos, g);
+                    for (int k = 0; k < 3; ++k) worstAll = std::max(worstAll, std::fabs(posed[i].pos[k] - restVerts[static_cast<size_t>(i)].pos[k] - g[k]));
+                }
+            } else {
+                worstAll = 1.0f;
+            }
+            std::printf("INFO shader, all 52 channels at once (%d kernels): differs from the engine by at most %.4f mm\n", all, worstAll * 1000.0f);
+            check(worstAll < 2e-5f, "with every channel on, the shader's function still gives the engine's offsets (20 micrometres)");
+            std::fill(weights.begin(), weights.end(), 0.0f);
+            af_engine_apply_blendshapes(gen, weights.data(), channels);
+            check(load_shader_block(weights.data()) == 0 && glsl_face::afFaceDelta(glsl_face::vec3(restVerts[0].pos[0], restVerts[0].pos[1], restVerts[0].pos[2])).x == 0.0f,
+                  "at rest the block holds no kernels and the shader moves nothing");
+            /* A block smaller than the rig is filled with the strongest kernels and says how many. */
+            for (float& w : weights) w = 1.0f;
+            check(af_engine_pack_face(gen, weights.data(), channels, packed.data(), 8, box) == 8, "a smaller block is filled and the count says so");
+            std::fill(weights.begin(), weights.end(), 0.0f);
         }
         /* The file: the rig moved with the model when the exporter stood it on the floor. */
         {
@@ -688,6 +744,177 @@ int main(int argc, char** argv) {
         }
         check(af_engine_pack_face(nullptr, weights.data(), channels, packed.data(), kMax, box) == 0 && af_engine_face_kernel_count(nullptr) == 0,
               "a null engine has no face rig");
+    }
+
+    /* ================================================================ playback ============== */
+    {
+        using af::AnimationPlayer;
+        const int walk = m.animation("walk"), run = m.animation("run"), jump = m.animation("jump"), wave = m.animation("wave"), idle = m.animation("idle");
+        const float walkLen = af_engine_animation_duration(shown, walk), runLen = af_engine_animation_duration(shown, run);
+        const float jumpLen = af_engine_animation_duration(shown, jump), waveLen = af_engine_animation_duration(shown, wave);
+        const float idleLen = af_engine_animation_duration(shown, idle);
+        af_animation_layer layers[AnimationPlayer::kMaxLayers];
+        const float frame = 1.0f / 60.0f;
+        auto run_for = [&](AnimationPlayer& p, float seconds) {
+            int n = 0;
+            for (int i = 0, steps = static_cast<int>(std::lround(seconds / frame)); i < steps; ++i) n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+            return n;
+        };
+        auto near = [](float a, float b, float tolerance) { return std::fabs(a - b) <= tolerance; };
+
+        AnimationPlayer p;
+        check(p.advance(frame, layers, AnimationPlayer::kMaxLayers) == 0 && !p.active() && p.state().animation == -1, "a new player is at rest and asks for no layers");
+
+        /* play, time, pause and resume */
+        p.play(walk, walkLen, 1.0f, true);
+        int n = run_for(p, 0.5f);
+        check(n == 1 && layers[0].animation == walk && layers[0].weight == 1.0f && layers[0].mask == AF_MASK_FULL_BODY && near(layers[0].time_seconds, 0.5f, 1e-3f),
+              "play: one full-body layer at weight 1, half a second in after half a second");
+        p.setPlayback(1.0f, true, true);
+        run_for(p, 1.0f);
+        check(p.state().paused && near(p.state().time, 0.5f, 1e-3f), "pause: a second later the clock has not moved");
+        p.setPlayback(1.0f, true, false);
+        run_for(p, 0.25f);
+        check(!p.state().paused && near(p.state().time, 0.75f, 1e-3f), "resume: it carries on from where it stopped");
+
+        /* speed */
+        p.play(walk, walkLen, 2.0f, true);
+        run_for(p, 0.25f);
+        check(near(p.state().time, 0.5f, 1e-3f) && p.state().speed == 2.0f, "speed 2: a quarter of a second moves the clip half a second");
+        p.setPlayback(0.5f, true, false);
+        run_for(p, 0.5f);
+        check(near(p.state().time, 0.75f, 1e-3f), "speed 0.5: half a second moves it a quarter");
+        p.setPlayback(99.0f, true, false);
+        check(p.state().speed == 4.0f, "a speed out of range is clamped to 4");
+
+        /* looping and its counter */
+        p.play(walk, walkLen, 1.0f, true);
+        run_for(p, walkLen * 2.5f);
+        check(p.state().loops == 2 && near(p.state().time, walkLen * 0.5f, 0.02f) && !p.state().finished, "loop: after two and a half cycles it has wrapped twice and is half-way");
+        /* a clip that ends */
+        p.play(jump, jumpLen, 1.0f, false);
+        run_for(p, jumpLen + 0.5f);
+        check(p.state().finished && near(p.state().time, jumpLen, 1e-4f) && p.state().loops == 0, "no loop: the clip stops on its last pose and reports finished");
+        p.setPlayback(1.0f, true, false);
+        run_for(p, 0.1f);
+        check(!p.state().finished && p.state().time < jumpLen, "turning looping on sets a finished clip going again");
+
+        /* seek */
+        p.play(walk, walkLen, 1.0f, true);
+        p.seek(0.4f);
+        p.setPlayback(1.0f, true, true);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 1 && near(layers[0].time_seconds, 0.4f, 1e-6f), "seek while paused: the layer is at the time asked for");
+        p.seek(99.0f);
+        check(near(p.state().time, walkLen, 1e-6f), "a seek past the end stops at the end");
+
+        /* crossfade */
+        p.play(walk, walkLen, 1.0f, true);
+        run_for(p, 0.3f);
+        p.crossFade(run, runLen, 0.4f, 1.0f, true);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 2 && layers[0].animation == walk && layers[0].weight == 1.0f && layers[1].animation == run && layers[1].weight > 0.0f && layers[1].weight < 0.02f,
+              "crossfade: the old clip stays underneath at full weight and the new one starts near zero");
+        check(p.state().animation == run && p.state().fading && p.state().fadingFrom == walk, "the state names the new clip, and the old one as fading out");
+        run_for(p, 0.2f - frame);
+        n = p.advance(0.0f, layers, AnimationPlayer::kMaxLayers);
+        check(n == 2 && near(layers[1].weight, 0.5f, 0.03f) && near(p.state().fadeProgress, 0.5f, 0.03f), "half-way through the fade the new clip weighs one half");
+        {
+            /* The layers it hands over really are a pose between the two clips. */
+            std::vector<af_animation_layer> v(layers, layers + n);
+            const std::vector<float> blended = m.layers(v), a = m.pose(walk, layers[0].time_seconds), b = m.pose(run, layers[1].time_seconds);
+            const float toA = length(m.at(blended, "hand_L") - m.at(a, "hand_L")), toB = length(m.at(blended, "hand_L") - m.at(b, "hand_L"));
+            const float span = length(m.at(a, "hand_L") - m.at(b, "hand_L"));
+            std::printf("INFO crossfade half-way: the hand is %.3f m from the walk and %.3f m from the run, which are %.3f m apart\n", toA, toB, span);
+            check(rigid(blended, J) && toA < span && toB < span && toA > 0.1f * span && toB > 0.1f * span, "and the engine turns those layers into a pose between walk and run");
+        }
+        const int before = p.state().transitions;
+        run_for(p, 0.25f);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 1 && layers[0].animation == run && layers[0].weight == 1.0f && !p.state().fading && p.state().transitions == before + 1,
+              "when the fade is over only the new clip is left, and one transition is counted");
+        check(layers[0].time_seconds > 0.0f && layers[0].time_seconds < runLen, "the new clip has been running during the fade");
+
+        /* a crossfade interrupted by another */
+        p.play(walk, walkLen, 1.0f, true);
+        p.crossFade(run, runLen, 0.4f, 1.0f, true);
+        run_for(p, 0.2f);
+        p.crossFade(idle, idleLen, 0.4f, 1.0f, true);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 3 && layers[0].animation == walk && layers[1].animation == run && layers[2].animation == idle && layers[1].weight > 0.4f && layers[2].weight < 0.02f,
+              "a second crossfade during the first keeps all three clips, so nothing jumps");
+        run_for(p, 0.5f);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 1 && layers[0].animation == idle, "and ends with the last one alone");
+        for (int i = 0; i < 8; ++i) { p.crossFade(i % 2 ? walk : run, i % 2 ? walkLen : runLen, 5.0f, 1.0f, true); p.advance(frame, layers, AnimationPlayer::kMaxLayers); }
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n <= AnimationPlayer::kMaxStack, "eight fades started at once never ask for more layers than the stack holds");
+
+        /* to the rest pose and from it */
+        p.play(walk, walkLen, 1.0f, true);
+        p.crossFade(-1, 0.0f, 0.3f, 1.0f, true);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 2 && layers[1].animation == -1 && layers[1].weight < 0.02f, "a crossfade to the rest pose blends the rest pose in");
+        run_for(p, 0.4f);
+        check(p.advance(frame, layers, AnimationPlayer::kMaxLayers) == 0 && !p.active() && p.state().animation == -1, "and ends at rest with no layers at all");
+        p.crossFade(walk, walkLen, 0.3f, 1.0f, true);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 1 && layers[0].animation == walk && layers[0].weight < 0.02f, "a crossfade from rest fades the clip in over the rest pose");
+        run_for(p, 0.4f);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 1 && layers[0].weight == 1.0f, "until it plays alone at full weight");
+        p.play(walk, walkLen, 1.0f, true);
+        p.crossFade(run, runLen, 0.4f, 1.0f, true);
+        run_for(p, 0.1f);
+        p.seek(0.2f);
+        n = p.advance(0.0f, layers, AnimationPlayer::kMaxLayers);
+        check(n == 1 && layers[0].animation == run && near(layers[0].time_seconds, 0.2f, 1e-6f), "seeking during a crossfade finishes it: the scrubbed pose is the clip alone");
+
+        /* overlay */
+        p.play(walk, walkLen, 1.0f, true);
+        p.setOverlay(wave, waveLen, AF_MASK_UPPER_BODY, 0.8f, 1.0f, true, 0.2f);
+        run_for(p, 0.5f);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 2 && layers[1].animation == wave && layers[1].mask == AF_MASK_UPPER_BODY && near(layers[1].weight, 0.8f, 1e-4f) && p.state().overlayAnimation == wave,
+              "overlay: a second layer on the upper body, faded in to the weight asked for");
+        {
+            std::vector<af_animation_layer> v(layers, layers + n);
+            const std::vector<float> mixed = m.layers(v), base = m.pose(walk, layers[0].time_seconds);
+            check(length(m.at(mixed, "foot_L") - m.at(base, "foot_L")) < 1e-4f && length(m.at(mixed, "hand_R") - m.at(base, "hand_R")) > 0.05f,
+                  "the engine walks the legs and moves a hand away from where the walk has it");
+        }
+        p.setOverlay(-1, 0.0f, 0, 0.0f, 1.0f, true, 0.2f);
+        run_for(p, 0.1f);
+        n = p.advance(0.0f, layers, AnimationPlayer::kMaxLayers);
+        check(n == 2 && layers[1].weight > 0.1f && layers[1].weight < 0.7f, "removing the overlay fades it out");
+        run_for(p, 0.2f);
+        check(p.advance(frame, layers, AnimationPlayer::kMaxLayers) == 1 && p.state().overlayAnimation == -1, "until only the base clip is left");
+        /* a one-shot gesture */
+        p.setOverlay(wave, waveLen, AF_MASK_UPPER_BODY, 1.0f, 1.0f, false, 0.2f);
+        run_for(p, waveLen - 0.1f);
+        check(p.state().overlayAnimation == wave, "a gesture that does not loop plays to its end");
+        run_for(p, 0.5f);
+        check(p.state().overlayAnimation == -1 && p.advance(frame, layers, AnimationPlayer::kMaxLayers) == 1, "and then leaves by itself");
+        /* an overlay on a figure at rest */
+        p.reset();
+        p.setOverlay(wave, waveLen, AF_MASK_ARMS, 1.0f, 1.0f, true, 0.0f);
+        n = p.advance(frame, layers, AnimationPlayer::kMaxLayers);
+        check(n == 1 && layers[0].animation == wave && layers[0].mask == AF_MASK_ARMS && layers[0].weight == 1.0f && p.active(), "an overlay on a figure at rest is the only layer");
+        p.play(walk, walkLen, 1.0f, true);
+        p.crossFade(run, runLen, 0.1f, 1.0f, true);
+        run_for(p, 0.3f);
+        const int counted = p.state().transitions;
+        p.setOverlay(wave, waveLen, AF_MASK_ARMS, 1.0f, 1.0f, true, 0.0f);
+        p.stop();
+        check(counted > 0 && !p.active() && p.state().transitions == counted && p.state().overlayAnimation == -1 && p.advance(frame, layers, AnimationPlayer::kMaxLayers) == 0,
+              "stop returns to rest at once, overlay included, and keeps the transition count");
+        p.reset();
+        check(!p.active() && p.state().transitions == 0 && p.advance(frame, layers, AnimationPlayer::kMaxLayers) == 0, "reset returns to rest and clears the counters");
+        /* nonsense in */
+        p.play(walk, std::nanf(""), std::nanf(""), true);
+        p.advance(std::nanf(""), layers, AnimationPlayer::kMaxLayers);
+        p.seek(std::nanf(""));
+        check(p.state().time == 0.0f && p.state().speed == 1.0f && p.advance(-1.0f, nullptr, 0) == 0, "not-a-number durations, speeds, steps and seeks leave the player at a defined state");
     }
 
     af_arena_free(bytes);

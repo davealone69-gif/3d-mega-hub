@@ -11,6 +11,7 @@ set(AF_KERNEL_FLAGS ${AF_OPT_FLAGS} -fno-math-errno -fno-finite-math-only -ffp-c
 
 add_library(afcore SHARED
     src/af_anatomy.cpp
+    src/af_anim_player.cpp
     src/af_body.cpp
     src/render/af_avatar_lod.cpp
     src/af_engine.cpp
@@ -163,10 +164,29 @@ if(BUILD_TESTING AND NOT ANDROID)
     # The animation system on real data: clips, skin weights, blending and layers, retargeting
     # of a humanoid motion pack onto a generated avatar, and the face rig. The two GLB files are
     # the ones the instrumented tests open on Android.
+    # The face-animation functions of forward.vert and shadow.vert are turned into C++ here, so
+    # the test can run the shader's own arithmetic against the engine's. No GLES runs on a
+    # build machine; without this nothing checks that hand-written GLSL until a face looks
+    # wrong on a phone. The script also fails when the two shaders differ.
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(AF_REPO_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../..)
+    set(AF_GLSL_FACE_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/af_glsl_face_generated.h)
+    add_custom_command(
+        OUTPUT ${AF_GLSL_FACE_HEADER}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/generated
+        COMMAND ${Python3_EXECUTABLE} -B ${AF_REPO_ROOT}/tools/shader_check/face_glsl_to_cpp.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/src/render/af_shaders_gl.h ${AF_GLSL_FACE_HEADER}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/render/af_shaders_gl.h
+                ${AF_REPO_ROOT}/tools/shader_check/face_glsl_to_cpp.py
+        COMMENT "Face-animation GLSL of the avatar shaders as C++"
+        VERBATIM)
     add_executable(af_animation_system_test
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/animation_system_test.cpp)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/animation_system_test.cpp
+        ${AF_GLSL_FACE_HEADER})
     target_include_directories(af_animation_system_test PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_BINARY_DIR}/generated)
     target_link_libraries(af_animation_system_test PRIVATE afcore)
     add_test(NAME animation_system
         COMMAND af_animation_system_test
