@@ -40,8 +40,14 @@ data class ClipMapping(
     val methods: List<ClipMatchMethod>,
     val notes: List<String>,
 ) {
-    /** True when every native clip found a renderer counterpart. */
-    val complete: Boolean get() = nativeToRenderer.all { it >= 0 }
+    /**
+     * True when there is at least one native clip and every one of them found a renderer counterpart.
+     *
+     * The emptiness check is not decoration. `all` on an empty collection is vacuously true, so without
+     * it a session that loaded NO clips at all would report itself as a complete mapping -- the exact
+     * case where "everything matched" is least true. Found by ClipMappingTest on the first CI run.
+     */
+    val complete: Boolean get() = nativeToRenderer.isNotEmpty() && nativeToRenderer.all { it >= 0 }
 
     val matchedCount: Int get() = nativeToRenderer.count { it >= 0 }
 
