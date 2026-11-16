@@ -654,7 +654,8 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         materialProvider = null
 
         if (lightEntity != 0) {
-            safelyDestroy("scene light removal") { scene?.removeEntity(lightEntity) }
+            // Filament 1.80.1 renamed Scene.removeEntity(int) to Scene.remove(int).
+            safelyDestroy("scene light removal") { scene?.remove(lightEntity) }
             safelyDestroy("scene light component") { activeEngine.getLightManager().destroy(lightEntity) }
             safelyDestroy("scene light entity") { EntityManager.get().destroy(lightEntity) }
         }
