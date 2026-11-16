@@ -292,6 +292,90 @@ using CrossFadeCommand = af::anim::CrossFadeCommand;
     check(foxPlayer.clipIndex("Survey") == 0, "clip 'Survey' is present at index 0");
     check(foxPlayer.clipIndex("Walk") == 1, "clip 'Walk' is present at index 1");
     check(foxPlayer.clipIndex("Run") == 2, "clip 'Run' is present at index 2");
+
+    /* ---- bind pose ----
+       loadGlb() auto-selects clip 0 and marks it playing, which suits a player about to be ticked but
+       not a model that has merely been loaded: a renderer importing a file needs "show me the model"
+       and "play its first animation from frame 0" to be different requests. resetToBindPose() is the
+       first of those. It is checked in its own Player so nothing below depends on this one's state. */
+    {
+        Player bindPlayer;
+        check(bindPlayer.loadGlb(fox, &err), "a Player loads Fox for the bind-pose test");
+        checkf(bindPlayer.currentClip() == 0, "loadGlb auto-selects clip 0 (currentClip=%d)",
+               bindPlayer.currentClip());
+        check(bindPlayer.isPlaying(), "loadGlb leaves the player marked as playing");
+
+        bindPlayer.resetToBindPose();
+        checkf(bindPlayer.currentClip() == -1,
+               "resetToBindPose drops the clip selection (currentClip=%d)",
+               bindPlayer.currentClip());
+        check(!bindPlayer.isPlaying(), "resetToBindPose stops playback");
+        checkf(bindPlayer.clipCount() == 3,
+               "resetToBindPose keeps the file's clips available (%d survive)",
+               bindPlayer.clipCount());
+        check(near(bindPlayer.position(), 0.0f, 1e-6f), "resetToBindPose rewinds the clock to 0");
+
+        const Skeleton& bsk = bindPlayer.skeleton();
+        const Pose& bpose = bindPlayer.currentPose();
+        check(bpose.matricesValid, "resetToBindPose recomputes the pose matrices");
+        bool atRest = bpose.jointCount() == bsk.count();
+        for (int j = 0; atRest && j < bsk.count(); ++j) {
+            if (!near(bpose.t[static_cast<size_t>(j)].x, bsk.restT[static_cast<size_t>(j)].x, 1e-6f) ||
+                !near(bpose.t[static_cast<size_t>(j)].y, bsk.restT[static_cast<size_t>(j)].y, 1e-6f) ||
+                !near(bpose.t[static_cast<size_t>(j)].z, bsk.restT[static_cast<size_t>(j)].z, 1e-6f) ||
+                !near(bpose.r[static_cast<size_t>(j)].w, bsk.restR[static_cast<size_t>(j)].w, 1e-6f)) {
+                atRest = false;
+            }
+        }
+        check(atRest, "resetToBindPose puts every joint back on the skeleton's rest transform");
+
+        /* The invariant an importer actually relies on: at the bind pose the skinning palette is the
+           identity, so skinning reproduces the positions the file declares instead of moving them. Fox's
+           mesh node has an identity world transform, so nothing should offset the result. */
+        std::vector<Mat4> palette;
+        bsk.buildPalette(bpose, &palette);
+        checkf(static_cast<int>(palette.size()) == bsk.skinSlotCount(),
+               "the bind-pose palette has one matrix per skin slot (%zu built for %d skin slots)",
+               palette.size(), bsk.skinSlotCount());
+        float worstDev = 0.0f;
+        for (const Mat4& m : palette) {
+            for (int k = 0; k < 16; ++k) {
+                const float want = (k % 5 == 0) ? 1.0f : 0.0f;
+                const float d = std::fabs(m.m[k] - want);
+                if (d > worstDev) worstDev = d;
+            }
+        }
+        checkf(worstDev < 1e-4f,
+               "the bind-pose skinning palette is the identity (worst deviation %.8f)",
+               worstDev);
+
+        /* seek() is documented to do nothing while no clip is selected. Callers must not read a
+           successful return as "the pose moved" - which is why the engine refuses the call outright
+           instead of forwarding it. */
+        const float posBefore = bindPlayer.position();
+        bindPlayer.seek(1.234f);
+        check(near(bindPlayer.position(), posBefore, 1e-6f),
+              "seek is a no-op while no clip is selected, as documented");
+
+        check(bindPlayer.play(1), "play() still works after resetToBindPose");
+        checkf(bindPlayer.currentClip() == 1, "play(1) selects Walk (currentClip=%d)",
+               bindPlayer.currentClip());
+        bindPlayer.advance(0.0f);
+        std::vector<Mat4> posed;
+        bsk.buildPalette(bindPlayer.currentPose(), &posed);
+        size_t offIdentity = 0;
+        for (const Mat4& m : posed) {
+            float d = 0.0f;
+            for (int k = 0; k < 16; ++k) {
+                const float want = (k % 5 == 0) ? 1.0f : 0.0f;
+                d += std::fabs(m.m[k] - want);
+            }
+            if (d > 1e-4f) ++offIdentity;
+        }
+        checkf(offIdentity > 0,
+               "sampling a clip moves the palette off identity (%zu of %zu matrices changed)",
+               offIdentity, posed.size());
+    }
     {
         const Clip* survey = foxPlayer.clipAt(foxPlayer.clipIndex("Survey"));
         const Clip* walk = foxPlayer.clipAt(foxPlayer.clipIndex("Walk"));

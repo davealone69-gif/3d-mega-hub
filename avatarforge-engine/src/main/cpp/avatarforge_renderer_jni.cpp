@@ -100,9 +100,28 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
         return 0;
     }
 
-    /* Apply the initial skin pose before reading submesh bounds for camera framing.
-       Static GLBs have no joints and keep their original import path. */
-    if (af_engine_joint_count(session->engine) > 0) {
+    /* Apply an initial pose before reading submesh bounds for camera framing. TWO different skeletons
+       can be live here and they are driven by different entry points - which used to be impossible to
+       confuse only because an imported file reported zero joints:
+         - a GENERATED avatar poses through the engine's authored library, af_engine_apply_clip();
+         - an IMPORTED file carries its own skeleton and its own clips, af_engine_imported_*(). Its
+           authored rig is empty, so af_engine_apply_clip() correctly answers AF_ERR_NOT_READY for it -
+           routing an import down that path would fail the whole session over a file that renders fine.
+       A static file has neither and simply keeps the geometry it imported. */
+    const int32_t importedClips = af_engine_imported_clip_count(session->engine);
+    if (importedClips > 0) {
+        /* A preview surface shows the file moving, the way a glTF viewer does. The engine-level import
+           still lands in the bind pose: starting playback is this renderer's choice, not the importer's,
+           and the app can pause it or choose another clip through the entry points below. */
+        const int32_t playResult = af_engine_imported_play(session->engine, 0);
+        if (playResult != AF_OK) {
+            const char* playError = af_engine_last_error(session->engine);
+            throwState(env, "Starting the imported file's first animation clip before GLES camera "
+                            "framing failed (" + std::to_string(playResult) + "): " +
+                            (playError ? playError : ""));
+            return 0;
+        }
+    } else if (af_engine_joint_count(session->engine) > 0) {
         const int32_t poseResult = af_engine_apply_clip(session->engine, AF_CLIP_REST, 0.0f);
         if (poseResult != AF_OK) {
             const char* poseError = af_engine_last_error(session->engine);
@@ -480,6 +499,18 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeRender(
     JNIEnv*, jobject, jlong handle, jfloat deltaSeconds) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return JNI_FALSE;
+    /* An imported file drives its own clock, so tick it here: the pose must be current BEFORE the frame
+       is drawn, or the geometry trails the animation by a frame. A paused import, an import with no
+       skinnable skeleton and a generated avatar are all left alone - is_playing is the only gate and it
+       is false for each of those. Kotlin clamps deltaSeconds to [0.001, 0.1] before calling. */
+    if (session->engine && af_engine_imported_is_playing(session->engine) == 1) {
+        if (af_engine_imported_advance(session->engine, deltaSeconds) != AF_OK) {
+            /* A render loop must not throw once per frame, but neither may it keep claiming to play
+               something it cannot advance: pause, so the state matches reality instead of failing 60
+               times a second. af_engine_last_error() still carries the reason for whoever looks. */
+            af_engine_imported_pause(session->engine);
+        }
+    }
     session->renderer->renderFrame(deltaSeconds);
     return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
 }

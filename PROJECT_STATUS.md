@@ -1,8 +1,20 @@
 # Project Status
 
-Last updated: 2026-11-13.
+Last updated: 2026-11-16.
 
-## Latest engineering update — 2026-11-15
+## Latest engineering update — 2026-11-16
+
+- Active branch: `arena/089497bd-3d-mega-hub`, branched from `f73eec156b1baf6d105b4e891d8db45f22e66f3f` of `integration/avatarforge-renderer-port`. Stable `main` remains unchanged.
+- **Fixed — imported GLBs were parsed for animation and then dropped on the floor.** The importer read a file's skeleton and its clips, logged two warnings saying they were *not applied*, and cleared them. Every imported model rendered in its bind pose forever, on every backend, and the only trace was a log line nobody reads. This was the last entry in the ledger claiming the GLES backend could not animate an imported file.
+- **Implemented:** an import now adopts the file's own skeleton and drives it through the same `af::anim::Player` the generated path and the JNI bridge already use — no importer-specific animation code. New engine ABI: `af_engine_imported_clip_count` / `_clip_name` / `_clip_duration` / `_play` / `_seek` / `_advance` / `_pause` / `_resume` / `_is_playing`. `af_engine_joint_count`, `_joint_info` and `_joint_matrices` now describe whichever skeleton is live.
+- **Implemented:** `af::anim::Player::resetToBindPose()`. `loadGlb()` auto-selects clip 0 and marks it playing, which conflated "show me the model" with "play its first animation from frame 0"; a fresh import now lands in its bind pose and playback is the caller's decision.
+- **Implemented (renderer):** `AvatarForgeSurfaceView.nativeCreate` starts the file's first clip and `nativeRender` advances it per frame, so the GLES preview animates an imported GLB with no Kotlin change. The initial-pose block now branches between the two skeletons — routing an import through `af_engine_apply_clip` fails the session, because that call correctly reports `AF_ERR_NOT_READY` for a file whose authored rig is empty.
+- **Deliberately still refused, and reported rather than faked:** a file with no skin (so no inverse bind matrices) adopts nothing and returns `AF_ERR_NOT_READY` — `AnimatedMorphCube.glb` and `female.glb` both take this path. Morph-target *displacements* are not decoded into the vertex pool on this CPU-skinning path, so a morph-only asset is imported as honest static geometry instead of advertising a clip the engine cannot play.
+- **Verified on host:** 8/8 ctest. New `imported_animation_regression` (100 checks) asserts on the vertex buffer itself — 95.9 % of Fox's coordinates move at mid-clip, displacement 23.09 units against a 175.55-unit extent, the same clip time re-sampled reproduces bit-for-bit, `af_engine_vertices_rest` is never mutated by posing, `advance` wraps where `seek` clamps, and pausing actually stops the geometry. `animation_system_regression` grew 338 → 353 checks. JNI/Kotlin parity still 86/86.
+- **UNVERIFIED:** the renderer JNI change is syntax-checked against a shim only — there is no NDK in this environment, so the CI Debug APK job is the sole proof it compiles against real `jni.h`. No on-device or emulator playback has been observed; nothing here proves visible pixels.
+- **BLOCKED (unchanged):** production signing pending an owner keystore in protected CI secrets.
+
+## Engineering update — 2026-11-15
 
 - Active implementation: `integration/avatarforge-renderer-port`, PR #9. Stable `main` remains unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
 - PR #8 is closed and unmerged; its head is `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. Do not use it as the work branch.
@@ -86,6 +98,7 @@ The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `wo
 | Embedded LLM | **MISSING** | Ollama remains external. |
 | Photo-to-identity reconstruction | **MISSING** | Deterministic prompt parsing is not image reconstruction. |
 | Voice lip-sync / visemes | **MISSING** | TTS exists; viseme extraction and avatar synchronization do not. |
+| Imported GLB skeletal animation | **IMPLEMENTED + HOST-VERIFIED; DEVICE UNVERIFIED** | `imported_animation_regression` (100 checks) drives `Fox.glb` and `CesiumMan.glb` through `af_engine_import_glb_from_memory` and asserts on the posed vertex buffer. The renderer JNI change is syntax-checked only (no NDK here): needs the Debug APK job plus an on-device look. Morph-target displacements are still not decoded on the CPU-skinning path, and skinless files refuse rather than fake it. |
 | External-resource `.gltf` | **MISSING** | Self-contained GLB only. |
 
 ## Fixture and release limitations

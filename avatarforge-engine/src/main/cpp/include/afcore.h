@@ -257,6 +257,32 @@ int32_t af_engine_apply_pose(af_engine* engine, const af_pose* pose);
 int32_t af_engine_sample_clip(af_engine* engine, int32_t clip, float time_seconds, af_pose* out_pose);
 int32_t af_engine_apply_clip(af_engine* engine, int32_t clip, float time_seconds);
 
+/* ------------------------------------------------------------- imported-file animation ------
+   These address the clips an imported GLB declared, by index into that file's own animation list.
+   They exist because AF_CLIP_* ids name the engine's AUTHORED library, which an imported file does not
+   carry: there is no id for "the second animation inside this particular Fox.glb". A generated avatar
+   returns 0 from af_engine_imported_clip_count and refuses the rest with AF_ERR_NOT_READY, so the two
+   paths cannot be confused by accident.
+
+   af_engine_imported_seek samples the clip and CPU-skins the vertex buffer, so the geometry returned by
+   af_engine_vertices is the posed result. */
+int32_t af_engine_imported_clip_count(const af_engine* engine);
+int32_t af_engine_imported_clip_name(const af_engine* engine, int32_t index,
+                                     char* out_name, int32_t out_size);
+float   af_engine_imported_clip_duration(const af_engine* engine, int32_t index);
+int32_t af_engine_imported_play(af_engine* engine, int32_t index);
+int32_t af_engine_imported_seek(af_engine* engine, float time_seconds);
+
+/* Per-frame transport for the file's own clips. advance() moves the playback clock by delta_seconds and
+   re-skins, wrapping at the end of a looping clip; seek() CLAMPS to [0, duration] instead, because a
+   timeline scrub that jumped to the start when dragged past the end would be unusable. Both refuse with
+   AF_ERR_NOT_READY until a clip has been selected with af_engine_imported_play - a call that reports
+   success while moving nothing is worse than one that fails. */
+int32_t af_engine_imported_advance(af_engine* engine, float delta_seconds);
+int32_t af_engine_imported_pause(af_engine* engine);
+int32_t af_engine_imported_resume(af_engine* engine);
+int32_t af_engine_imported_is_playing(const af_engine* engine);
+
 /* Clip metadata for the UI's animation picker. Both are pure introspection; duration reads only
    the immutable built-in clip table, so it may be queried with a null engine handle while a
    renderer owns the live engine lease. `af_engine_clip_duration` returns 0 for AF_CLIP_REST (a
@@ -364,12 +390,18 @@ void    af_arena_free(void* ptr);
  * with an error and leave the engine exactly as it was: the import is built beside the live state
  * and swapped in only once it is complete.
  *
- * WHAT IS NOT APPLIED, deliberately and visibly: the file's skin, joint hierarchy and animation
- * clips. Posing runs on the engine's own rig, which is built from the anthropometric solve; an
- * imported file cannot silently half-adopt a foreign skeleton, because a figure that looks rigged
- * and does not animate is exactly the kind of plausible fake this project forbids. When the file
- * does carry a skeleton or clips, the import succeeds, an AF_LOG_WARN names what was skipped, and
- * the engine's joint count reads 0 until it is re-rigged.
+ * WHAT IS ADOPTED FROM THE FILE ITSELF: its skin, joint hierarchy and animation clips. Importing
+ * sets the engine's own generated rig aside -- an imported figure is not the anthropometric solve, so
+ * posing it with that rig would be meaningless -- and drives the file's skeleton through the same
+ * animation core the generated path uses. af_engine_joint_count / joint_info / joint_matrices then
+ * describe the FILE's skeleton, and its clips are addressed through af_engine_imported_* below (the
+ * AF_CLIP_* ids name the authored library, which a foreign file does not carry).
+ *
+ * WHAT IS STILL NOT APPLIED, deliberately and visibly: morph-target DISPLACEMENTS on this path. The
+ * file's morph weights are tracked and its clips load, but the per-target position deltas are not
+ * decoded into the vertex pool, so a morph-only asset (no skin) is imported as static geometry and
+ * refuses to be posed rather than pretending to animate. Every partial adoption is reported through
+ * the log callback and af_engine_last_error; nothing is silently half-applied.
  *
  * Returns AF_OK, or AF_ERR_INVALID_ARG / AF_ERR_UNSUPPORTED / AF_ERR_IO / AF_ERR_OUT_OF_MEMORY.
  * `af_engine_last_error` carries the reader's specific reason.

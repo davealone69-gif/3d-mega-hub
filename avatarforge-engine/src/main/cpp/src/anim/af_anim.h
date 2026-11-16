@@ -21,6 +21,13 @@
  * authored library could never be applied to anything but the generated avatar. This module closes
  * both gaps with one implementation that both renderer backends consume:
  *
+ * The import half of that claim only became true when `af_engine`'s importer started adopting the
+ * file's own skeleton and clips into a Player and CPU-skinning from them -- see `af_engine_imported_*`
+ * in afcore.h and `imported_animation_test.cpp`. This module supplied the machinery, but for a while
+ * the importer still declined to use it: imported models stayed static in their bind pose while every
+ * test in here passed green. A capability nobody calls is not a closed gap, so if you extend this
+ * module, check which backends actually reach it.
+ *
  *   af::anim::Player  ->  af::anim::Pose  ->  { bone palette, morph weights }
  *                                              |                       |
  *                            AvatarForge GLES (CPU deform / GPU skin)  Filament (TransformManager
@@ -868,6 +875,15 @@ public:
     void pause();
     void resume();
     void stop();
+    /* Drops the clip selection and returns the pose to the skeleton's rest (bind) pose, recomputing its
+       matrices - the equivalent of gltfio's Animator.resetBoneMatrices(), and what a viewer shows before
+       anything is played. Playback stops; the clip list is untouched, so play() still starts any clip
+       afterwards. loadGlb() auto-selects clip 0 and marks it playing, which suits a player about to be
+       ticked but not a model that has merely been loaded: without this, "show me the file" and "play its
+       first animation from frame 0" are the same request and cannot be told apart.
+       While nothing is selected seek() is a no-op, so callers must check currentClip() rather than
+       assume a seek moved something. */
+    void resetToBindPose();
     void seek(float seconds);
     void setSpeed(float speed);
     void setLoop(bool loop);

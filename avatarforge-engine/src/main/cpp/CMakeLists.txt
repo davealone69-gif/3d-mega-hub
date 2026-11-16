@@ -168,5 +168,18 @@ if(BUILD_TESTING AND NOT ANDROID)
         ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(af_imported_glb_pbr_test PRIVATE afcore)
     add_test(NAME imported_glb_pbr_regression COMMAND af_imported_glb_pbr_test)
+
+    # Proves an imported GLB is actually animated: the skeleton and clips it carries are adopted and
+    # its vertex buffer is posed. Guards the path that used to parse both and then discard them.
+    add_executable(af_imported_animation_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/imported_animation_test.cpp)
+    target_include_directories(af_imported_animation_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_definitions(af_imported_animation_test PRIVATE
+        AF_TEST_ASSET_DIR="${AF_ANIMATION_TEST_ASSETS}")
+    target_link_libraries(af_imported_animation_test PRIVATE afcore)
+    add_test(NAME imported_animation_regression
+             COMMAND af_imported_animation_test "${AF_ANIMATION_TEST_ASSETS}")
 endif()
 

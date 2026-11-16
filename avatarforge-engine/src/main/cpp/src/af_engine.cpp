@@ -30,6 +30,7 @@
 #include "af_texture.h"
 #include "af_threads.h"
 #include "af_uv.h"
+#include "anim/af_anim.h"
 
 #include <algorithm>
 #include <chrono>
@@ -158,6 +159,16 @@ struct af_engine {
     std::vector<int> clipFrameCount;
     std::vector<Vec3> deformed;
     std::vector<uint8_t> glbBytes;
+
+    /* Animation for an IMPORTED file.
+       The generated path poses through `rig`, which is built from a BodyField. An imported GLB has no
+       BodyField and therefore cannot have a Rig, so it carries the skeleton its own file declared, in
+       the same af::anim::Player that the host animation suite and the JNI bridge use. That matters: an
+       imported model is animated by code that is actually tested, not by a second importer-specific
+       path that nobody exercises. Both routes converge on the same ABI buffers (verts, vertsRest,
+       joints, jointMatrices, poseQuats), so a caller does not need to know which one is active. */
+    af::anim::Player importedPlayer;
+    bool importedAnimReady = false;
 
     uint64_t budgetBytes = 1536ull * 1024ull * 1024ull;
     uint64_t peakFieldBytes = 0;
@@ -1002,9 +1013,118 @@ void refreshSubmeshBounds(af_engine* e) {
     }
 }
 
+/* How many joints the engine will report, from whichever skeleton is active. The generated rig wins
+   when it exists; an imported file falls back to the skeleton its own skin declared. */
+int engineJointCount(const af_engine* e) {
+    if (!e) return 0;
+    const int rigJoints = e->rig.jointCount();
+    if (rigJoints > 0) return rigJoints;
+    return e->importedAnimReady ? e->importedPlayer.skeleton().count() : 0;
+}
+
+/* Column-major upper-3x3 applied to a direction, for skinning normals. */
+Vec3 transformDir(const Mat4& m, const Vec3& d) {
+    return Vec3(m.m[0] * d.x + m.m[4] * d.y + m.m[8]  * d.z,
+                m.m[1] * d.x + m.m[5] * d.y + m.m[9]  * d.z,
+                m.m[2] * d.x + m.m[6] * d.y + m.m[10] * d.z);
+}
+
+/*
+ * Linear blend skinning for imported geometry, using the palette the file's own skeleton produced.
+ *
+ * The palette is indexed by SKIN SLOT, and af_glb_read already wrote slot indices and renormalised
+ * weights into every vertex's joints[]/weights[], so this is a straight four-influence LBS. It always
+ * evaluates from vertsRest -- the bind pose -- never from the currently displayed verts, because
+ * deforming the displayed geometry would compound each pose with the last. That is the same mistake the
+ * generated path documents, and it is invisible while a clip plays.
+ *
+ * Returns how many vertices actually left the bind pose, which is the only honest way to tell "skinned"
+ * apart from "ran without crashing".
+ */
+size_t skinImportedFromPalette(af_engine* e, const std::vector<Mat4>& palette) {
+    if (palette.empty() || e->verts.size() != e->vertsRest.size()) return 0;
+    size_t displaced = 0;
+    for (size_t i = 0; i < e->verts.size(); ++i) {
+        const af_vertex& rest = e->vertsRest[i];
+        af_vertex& out = e->verts[i];
+        const Vec3 rp(rest.pos[0], rest.pos[1], rest.pos[2]);
+        const Vec3 rn(rest.normal[0], rest.normal[1], rest.normal[2]);
+        Vec3 accP(0.0f, 0.0f, 0.0f);
+        Vec3 accN(0.0f, 0.0f, 0.0f);
+        float wsum = 0.0f;
+        for (int c = 0; c < 4; ++c) {
+            const float w = rest.weights[c];
+            if (!(w > 0.0f)) continue;
+            const size_t slot = static_cast<size_t>(rest.joints[c]);
+            if (slot >= palette.size()) continue;      /* an out-of-range slot is dropped, not wrapped */
+            const Mat4& m = palette[slot];
+            accP += m.transformPoint(rp) * w;
+            accN += transformDir(m, rn) * w;
+            wsum += w;
+        }
+        if (wsum <= 0.0f) {
+            /* No usable influence: hold the bind pose rather than collapsing the vertex to the origin. */
+            out.pos[0] = rp.x; out.pos[1] = rp.y; out.pos[2] = rp.z;
+            continue;
+        }
+        accP = accP / wsum;
+        out.pos[0] = accP.x; out.pos[1] = accP.y; out.pos[2] = accP.z;
+        const float nl = std::sqrt(accN.x * accN.x + accN.y * accN.y + accN.z * accN.z);
+        if (nl > 1e-6f) {
+            out.normal[0] = accN.x / nl; out.normal[1] = accN.y / nl; out.normal[2] = accN.z / nl;
+        }
+        const float dx = accP.x - rp.x, dy = accP.y - rp.y, dz = accP.z - rp.z;
+        if (dx * dx + dy * dy + dz * dz > 1e-12f) ++displaced;
+    }
+    return displaced;
+}
+
+/* Poses imported geometry from the player's current pose and skins it. */
+int32_t applyImportedPose(af_engine* e) {
+    if (!e || !e->importedAnimReady) return static_cast<int32_t>(AF_ERR_NOT_READY);
+    const af::anim::Skeleton& sk = e->importedPlayer.skeleton();
+    const af::anim::Pose& pose = e->importedPlayer.currentPose();
+    if (sk.empty() || pose.jointCount() != sk.count()) return static_cast<int32_t>(AF_ERR_NOT_READY);
+
+    /* Publish per-joint world matrices and local rotations through the very buffers the generated path
+       fills, so af_engine_joint_matrices and af_engine_apply_pose mean the same thing whichever
+       skeleton is active. */
+    const size_t J = static_cast<size_t>(sk.count());
+    if (pose.matricesValid && e->jointMatrices.size() >= J * 16) {
+        for (size_t j = 0; j < J; ++j) {
+            std::memcpy(&e->jointMatrices[j * 16], pose.world[j].m, 16 * sizeof(float));
+        }
+    }
+    if (e->poseQuats.size() == J * 4) {
+        for (size_t j = 0; j < J; ++j) {
+            const Quat& q = pose.r[j];
+            e->poseQuats[j * 4 + 0] = q.x; e->poseQuats[j * 4 + 1] = q.y;
+            e->poseQuats[j * 4 + 2] = q.z; e->poseQuats[j * 4 + 3] = q.w;
+        }
+    }
+
+    std::vector<Mat4> palette;
+    sk.buildPalette(pose, &palette);
+    if (palette.empty()) {
+        /* No inverse bind matrices means there is no correct palette to build, so nothing is claimed.
+           This is what a morph-only file such as AnimatedMorphCube gets: it has a clip and no skeleton,
+           and skinning it with a fabricated palette would be worse than leaving it still. */
+        return static_cast<int32_t>(AF_ERR_NOT_READY);
+    }
+    skinImportedFromPalette(e, palette);
+    refreshSubmeshBounds(e);
+    updateStats(e);
+    return static_cast<int32_t>(AF_OK);
+}
+
 /* Applies the current pose + blendshape weights and refreshes the renderable vertex buffer. */
 int32_t applyCurrentPose(af_engine* e) {
-    if (e->rig.jointCount() == 0) return static_cast<int32_t>(AF_ERR_NOT_READY);
+    if (e->rig.jointCount() == 0) {
+        /* No generated rig. An imported GLB poses through the skeleton its own file declared instead of
+           being reported as unposeable, which is what used to happen here. */
+        if (e->importedAnimReady) return applyImportedPose(e);
+        return static_cast<int32_t>(AF_ERR_NOT_READY);
+    }
     const int J = e->rig.jointCount();
     std::vector<Quat> locals(static_cast<size_t>(J));
     for (int j = 0; j < J; ++j) {
@@ -1217,8 +1337,103 @@ int32_t af_engine_material_count(const af_engine* engine) {
 const af_material* af_engine_materials(const af_engine* engine) {
     return (engine && !engine->materials.empty()) ? engine->materials.data() : nullptr;
 }
+/* ---- imported-file animation ------------------------------------------------------------- */
+int32_t af_engine_imported_clip_count(const af_engine* engine) {
+    return (engine && engine->importedAnimReady) ? engine->importedPlayer.clipCount() : 0;
+}
+
+int32_t af_engine_imported_clip_name(const af_engine* engine, int32_t index,
+                                     char* out_name, int32_t out_size) {
+    if (!engine || !out_name || out_size <= 0) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    out_name[0] = '\0';
+    if (!engine->importedAnimReady) return static_cast<int32_t>(AF_ERR_NOT_READY);
+    const af::anim::Clip* clip = engine->importedPlayer.clipAt(index);
+    if (!clip) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+    std::snprintf(out_name, static_cast<size_t>(out_size), "%s", clip->name.c_str());
+    return static_cast<int32_t>(AF_OK);
+}
+
+float af_engine_imported_clip_duration(const af_engine* engine, int32_t index) {
+    if (!engine || !engine->importedAnimReady) return 0.0f;
+    const af::anim::Clip* clip = engine->importedPlayer.clipAt(index);
+    return clip ? static_cast<float>(clip->duration) : 0.0f;
+}
+
+int32_t af_engine_imported_play(af_engine* engine, int32_t index) {
+    return guard(engine, "imported_play", [&]() -> int32_t {
+        if (!engine->importedAnimReady) return static_cast<int32_t>(AF_ERR_NOT_READY);
+        if (!engine->importedPlayer.play(index)) {
+            engine->lastError = "imported animation: no clip at that index in this file";
+            return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+        }
+        engine->importedPlayer.advance(0.0f);
+        return applyImportedPose(engine);
+    });
+}
+
+int32_t af_engine_imported_seek(af_engine* engine, float time_seconds) {
+    return guard(engine, "imported_seek", [&]() -> int32_t {
+        if (!engine->importedAnimReady) return static_cast<int32_t>(AF_ERR_NOT_READY);
+        if (!std::isfinite(time_seconds)) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+        /* Player::seek() returns early while no clip is selected, so the geometry would not move. Saying
+           AF_OK there would report success for a call that did nothing - a silent no-op is the one thing
+           this engine's error contract forbids. */
+        if (engine->importedPlayer.currentClip() < 0) {
+            engine->lastError = "imported animation: no clip is selected - call "
+                                "af_engine_imported_play() before seeking";
+            return static_cast<int32_t>(AF_ERR_NOT_READY);
+        }
+        engine->importedPlayer.seek(time_seconds);
+        /* seek() already resamples at 0 dt when the buffers are ready; advancing again would move the
+           clock, so the pose is pushed straight to the vertex buffer instead. */
+        return applyImportedPose(engine);
+    });
+}
+
+int32_t af_engine_imported_advance(af_engine* engine, float delta_seconds) {
+    return guard(engine, "imported_advance", [&]() -> int32_t {
+        if (!engine->importedAnimReady) return static_cast<int32_t>(AF_ERR_NOT_READY);
+        if (!std::isfinite(delta_seconds)) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
+        if (engine->importedPlayer.currentClip() < 0) {
+            engine->lastError = "imported animation: no clip is selected - call "
+                                "af_engine_imported_play() first";
+            return static_cast<int32_t>(AF_ERR_NOT_READY);
+        }
+        /* advance() owns the clock: it wraps a looping clip, runs the layer and face stages and keeps the
+           crossfade convention, so the engine does not reimplement any of that here. */
+        engine->importedPlayer.advance(delta_seconds);
+        return applyImportedPose(engine);
+    });
+}
+
+int32_t af_engine_imported_pause(af_engine* engine) {
+    return guard(engine, "imported_pause", [&]() -> int32_t {
+        if (!engine->importedAnimReady) return static_cast<int32_t>(AF_ERR_NOT_READY);
+        engine->importedPlayer.pause();
+        return static_cast<int32_t>(AF_OK);
+    });
+}
+
+int32_t af_engine_imported_resume(af_engine* engine) {
+    return guard(engine, "imported_resume", [&]() -> int32_t {
+        if (!engine->importedAnimReady) return static_cast<int32_t>(AF_ERR_NOT_READY);
+        if (engine->importedPlayer.currentClip() < 0) {
+            engine->lastError = "imported animation: no clip is selected - call "
+                                "af_engine_imported_play() first";
+            return static_cast<int32_t>(AF_ERR_NOT_READY);
+        }
+        engine->importedPlayer.resume();
+        return static_cast<int32_t>(AF_OK);
+    });
+}
+
+int32_t af_engine_imported_is_playing(const af_engine* engine) {
+    if (!engine || !engine->importedAnimReady) return 0;
+    return engine->importedPlayer.isPlaying() ? 1 : 0;
+}
+
 int32_t af_engine_joint_count(const af_engine* engine) {
-    return engine ? engine->rig.jointCount() : 0;
+    return engineJointCount(engine);
 }
 int32_t af_engine_joint_info(const af_engine* engine, int32_t joint, af_joint_info* out) {
     if (!engine || !out) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
@@ -1228,7 +1443,7 @@ int32_t af_engine_joint_info(const af_engine* engine, int32_t joint, af_joint_in
 }
 int32_t af_engine_joint_matrices(const af_engine* engine, float* out_matrices4x4, int32_t max_joints) {
     if (!engine || !out_matrices4x4) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
-    const int J = engine->rig.jointCount();
+    const int J = engineJointCount(engine);
     if (max_joints < J) return static_cast<int32_t>(AF_ERR_INVALID_ARG);
     const int n = std::min(J, static_cast<int>(engine->jointMatrices.size() / 16));
     std::memcpy(out_matrices4x4, engine->jointMatrices.data(), static_cast<size_t>(n) * 16 * sizeof(float));
@@ -1721,14 +1936,97 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
         }
     }
 
-    /* What the file carried that this import does not adopt - said out loud, every time. */
-    if (!asset.skins.empty()) {
-        e->log(AF_LOG_WARN, "import: file contains a skeleton; it is not applied - the engine poses "
-                            "with its own rig, so this model is static until it is re-rigged");
-    }
-    if (!asset.animations.empty()) {
-        e->log(AF_LOG_WARN, "import: file contains animation clips; they are not applied (rig playback "
-                            "requires a generated avatar)");
+    /* ---- adopt the file's own skeleton and animation clips ----------------------------------
+       This block used to be two warnings saying the skeleton and the clips had been parsed and were
+       now being dropped, which left every imported model static. The Player built here is the same one
+       the host animation suite and the JNI bridge use, so an imported GLB is animated by tested code
+       rather than by an importer-specific path nobody exercises. */
+    e->importedPlayer.clear();
+    e->importedAnimReady = false;
+    {
+        std::string animError;
+        if (!e->importedPlayer.loadGlb(asset, &animError)) {
+            /* Reported, not swallowed: a file whose channels could not be read says so, and stays
+               static, rather than silently animating with half its motion missing. */
+            e->log(AF_LOG_WARN, "import: the file's animation was not adopted - " + animError);
+        } else {
+            const af::anim::Skeleton& sk = e->importedPlayer.skeleton();
+            /* hasInverseBind is the honest gate for THIS backend. The animation core will happily build
+               a node-only skeleton for a morph-only file, because the gltfio path can still drive its
+               morph weights through RenderableManager. This path deforms by CPU skinning, and without
+               inverse bind matrices buildPalette() yields nothing - so adopting the clips here would
+               advertise animation the engine cannot apply. Refuse, and say exactly why. */
+            if (sk.empty()) {
+                e->log(AF_LOG_WARN, "import: the animation core produced an empty skeleton for this file");
+            } else if (!sk.hasInverseBind) {
+                char why[256];
+                std::snprintf(why, sizeof(why),
+                              "import: the file's %d animation clip(s) were NOT adopted - it carries no "
+                              "inverse bind matrices%s, so this CPU-skinning path has nothing to deform "
+                              "with and the model stays in its bind pose",
+                              e->importedPlayer.clipCount(),
+                              e->importedPlayer.morphCount() > 0
+                                  ? " and its morph-target displacements are not decoded here"
+                                  : "");
+                e->log(AF_LOG_WARN, why);
+                e->importedPlayer.clear();
+            } else {
+                e->importedAnimReady = true;
+                /* Publish the skeleton through the same ABI buffers the generated rig fills, so
+                   af_engine_joint_count / joint_info / joint_matrices describe this file too. */
+                const size_t J = static_cast<size_t>(sk.count());
+                e->joints.resize(J);
+                for (size_t j = 0; j < J; ++j) {
+                    af_joint_info& info = e->joints[j];
+                    info = af_joint_info{};
+                    std::snprintf(info.name, sizeof(info.name), "%s", sk.names[j].c_str());
+                    info.parent = sk.parents[j];
+                    info.flags = 0;
+                    const Vec3& rt = sk.restT[j];
+                    info.rest_translation[0] = rt.x; info.rest_translation[1] = rt.y; info.rest_translation[2] = rt.z;
+                    const Quat& rr = sk.restR[j];
+                    info.rest_rotation[0] = rr.x; info.rest_rotation[1] = rr.y;
+                    info.rest_rotation[2] = rr.z; info.rest_rotation[3] = rr.w;
+                }
+                e->poseQuats.assign(J * 4, 0.0f);
+                for (size_t j = 0; j < J; ++j) e->poseQuats[j * 4 + 3] = 1.0f;
+                const Mat4 identity = Mat4::identity();
+                e->jointMatrices.assign(J * 16, 0.0f);
+                for (size_t j = 0; j < J; ++j) {
+                    std::memcpy(&e->jointMatrices[j * 16], identity.m, 16 * sizeof(float));
+                }
+
+                const int clips = e->importedPlayer.clipCount();
+                /* loadGlb() auto-selects clip 0 and marks it playing. That is right for a player about
+                   to be ticked and wrong for an import: a freshly loaded model must show its BIND pose,
+                   the way a glTF viewer does before anything is played, so that importing a file does not
+                   silently change how it looks. The first play() is what starts motion. */
+                e->importedPlayer.resetToBindPose();
+                applyImportedPose(e);              /* skin at the bind pose so verts agree with vertsRest */
+
+                char msg[224];
+                std::snprintf(msg, sizeof(msg),
+                              "import: adopted the file's skeleton (%d joints, %d skin slots, %d/17 humanoid "
+                              "roles) and %d animation clip(s); no clip is playing yet, so the model "
+                              "is in its bind pose",
+                              sk.count(), sk.skinSlotCount(), sk.rolesMatched(), clips);
+                e->log(AF_LOG_INFO, msg);
+
+                /* What is still NOT applied, said out loud rather than left to be discovered. */
+                if (e->importedPlayer.morphCount() > 0) {
+                    char mmsg[192];
+                    std::snprintf(mmsg, sizeof(mmsg),
+                                  "import: the file declares %d morph target(s); their weights are tracked but "
+                                  "their displacements are not decoded into the vertex pool, so CPU morphing is "
+                                  "not applied on this path",
+                                  e->importedPlayer.morphCount());
+                    e->log(AF_LOG_WARN, mmsg);
+                }
+                for (const std::string& note : e->importedPlayer.loadNotes()) {
+                    e->log(AF_LOG_INFO, "import: " + note);
+                }
+            }
+        }
     }
     if (!asset.warnings.empty()) {
         e->log(AF_LOG_WARN, std::string("import: ") + asset.warnings.front().what + " - " +

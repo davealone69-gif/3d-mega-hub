@@ -285,13 +285,17 @@ int main(int argc, char** argv) {
             check(hasAnimationChannels, "generated GLB animation clips contain playable transform channels");
         }
 
-        // Foreign GLB import is intentionally static today. Prove that a rigged export is not
-        // silently advertised as animated after crossing the import boundary.
+        // Re-importing a rigged export crosses the same boundary any foreign GLB does: the engine's
+        // authored rig is set aside and the file's own skeleton is adopted in its place. This used to
+        // assert joint_count == 0, which encoded the defect rather than the intent -- see
+        // imported_animation_test.cpp for the vertex-level proof that the adopted skeleton is live.
         const int32_t reimportRc = af_engine_import_glb_from_memory(engine, generatedGlbBytes, generatedGlbSize);
         check(reimportRc == AF_OK, "generated rigged GLB can be re-imported as foreign geometry");
         if (reimportRc == AF_OK) {
-            check(af_engine_joint_count(engine) == 0,
-                  "foreign GLB import does not falsely adopt the embedded skeleton");
+            check(af_engine_joint_count(engine) > 0,
+                  "re-imported rigged GLB adopts the skeleton the file carries");
+            check(af_engine_imported_clip_count(engine) > 0,
+                  "re-imported rigged GLB adopts the animation clips the file carries");
         }
     }
     if (generatedGlbBytes != nullptr) af_arena_free(generatedGlbBytes);

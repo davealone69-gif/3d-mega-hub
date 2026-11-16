@@ -284,6 +284,23 @@ void Player::stop() {
     }
 }
 
+void Player::resetToBindPose() {
+    playing_ = false;
+    currentClip_ = -1;
+    previousClip_ = -1;
+    transitionTime_ = -1.0f;
+    position_ = 0.0f;
+    previousPosition_ = 0.0f;
+    speaking_ = false;
+    lipPosition_ = 0.0f;
+    ensureBuffers();
+    /* resetToRest + computeMatrices rather than advance(0): advance() would re-select nothing but still
+       run the layer, face and root-motion stages, and the bind pose must not depend on what a layer
+       happens to be doing. */
+    currentPose_.resetToRest(skeleton_);
+    currentPose_.computeMatrices(skeleton_);
+}
+
 void Player::seek(float seconds) {
     if (currentClip_ < 0) return;
     const float duration = currentDuration();
