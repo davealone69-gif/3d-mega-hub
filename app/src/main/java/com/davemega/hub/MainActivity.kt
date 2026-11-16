@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -114,6 +115,9 @@ private fun MegaHubApp(
     var busy by remember { mutableStateOf(false) }
     var prompt by remember { mutableStateOf("") }
     var chat by remember { mutableStateOf(listOf<ChatLine>()) }
+    var pendingReply by remember { mutableStateOf(false) }
+    /* What the model actually said, i.e. the display transcript minus failed requests. */
+    var history by remember { mutableStateOf(listOf<ChatTurn>()) }
     var avatarUri by remember { mutableStateOf(prefs.getString("avatar_uri", null)?.let(Uri::parse)) }
     var avatarName by remember { mutableStateOf(prefs.getString("avatar_name", "Built-in sample model") ?: "Built-in sample model") }
     var avatarImporting by remember { mutableStateOf(false) }
@@ -328,15 +332,18 @@ private fun MegaHubApp(
         model = modelName
         prefs.edit().putString("ollama_url", baseUrl).putString("ollama_model", modelName).apply()
         chat = chat + ChatLine(true, question)
+        history = history + ChatTurn(true, question)
         prompt = ""
         busy = true
-        chat = chat + ChatLine(false, "Thinking…")
+        pendingReply = true
         thread(name = "MegaHubOllamaChat") {
-            val result = try {
+            val outcome = try {
                 val payload = JSONObject()
                     .put("model", modelName)
                     .put("stream", false)
-                    .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", question)))
+                    /* Bounded multi-turn history: the local model previously saw only the newest
+                       message, so every follow-up was answered without context. */
+                    .put("messages", ChatTranscript.messages(history))
                 val conn = (URL("$baseUrl/api/chat").openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8_000
                     readTimeout = 120_000
@@ -353,16 +360,20 @@ private fun MegaHubApp(
                     val stream = if (code in 200..299) conn.inputStream else conn.errorStream
                     val body = stream?.use { readLimitedResponse(it, 4_194_304) }.orEmpty()
                     if (code !in 200..299) error("Ollama returned HTTP $code: ${body.take(2_048)}")
-                    JSONObject(body).optJSONObject("message")?.optString("content").orEmpty()
+                    true to JSONObject(body).optJSONObject("message")?.optString("content").orEmpty()
                         .ifBlank { "Ollama returned an empty response." }
                 } finally {
                     conn.disconnect()
                 }
             } catch (error: Exception) {
-                "Request failed: ${error.message ?: error.javaClass.simpleName}"
+                /* Shown in the chat but never stored as context: a transport error is not something
+                   the model said, and feeding it back would poison every later turn. */
+                false to "Request failed: ${error.message ?: error.javaClass.simpleName}"
             }
             (context as? ComponentActivity)?.runOnUiThread {
-                chat = chat.dropLast(1) + ChatLine(false, result)
+                chat = chat + ChatLine(false, outcome.second)
+                if (outcome.first) history = history + ChatTurn(false, outcome.second)
+                pendingReply = false
                 busy = false
             }
         }
@@ -431,7 +442,18 @@ private fun MegaHubApp(
                         Button(onClick = { checkOllama() }, enabled = !busy) { Text("Test connection") }
                         Text(connection, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     }
-                    Text("Chat", style = MaterialTheme.typography.titleLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Chat", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        OutlinedButton(
+                            onClick = {
+                                chat = emptyList()
+                                history = emptyList()
+                                pendingReply = false
+                                connection = "Conversation cleared."
+                            },
+                            enabled = chat.isNotEmpty() && !busy
+                        ) { Text("New chat") }
+                    }
                     chat.forEach { line ->
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(12.dp)) {
@@ -440,6 +462,19 @@ private fun MegaHubApp(
                             }
                         }
                     }
+                    if (pendingReply) {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text("ASSISTANT", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                Text("Thinking…")
+                            }
+                        }
+                    }
+                    Text(
+                        ChatTranscript.describe(history),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     OutlinedTextField(prompt, { prompt = it }, label = { Text("Message your local model") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
                     Button(onClick = { sendPrompt() }, enabled = !busy && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Working…" else "Send to Ollama") }
                     Text("This sends requests directly to the configured Ollama /api/chat endpoint. It does not use a cloud AI service.", style = MaterialTheme.typography.bodySmall)
