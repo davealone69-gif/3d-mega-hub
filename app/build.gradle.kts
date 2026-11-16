@@ -40,7 +40,10 @@ val releaseSigningPreflight = tasks.register("validateReleaseSigning") {
 
 android {
     namespace = "com.davemega.hub"
-    compileSdk = 36
+    // Compose 1.12.1 (BOM 2026.09.00) publishes AAR metadata requiring compilation against API 37.
+    // targetSdk stays 36 deliberately: raising it changes runtime behaviour, which no device here
+    // has verified.
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.davemega.hub"

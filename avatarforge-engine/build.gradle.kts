@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "com.davemega.hub.avatarforge"
-    compileSdk = 36
+    compileSdk = 37 // matches :app; Compose 1.12.1 AAR metadata requires API 37 to compile
     ndkVersion = "26.1.10909125"
 
     defaultConfig {
