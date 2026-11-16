@@ -64,12 +64,15 @@ jobs:
             echo "::error title=Gradle::$line"
           done
           if [ "$status" -ne 0 ]; then
-            grep -E "BUILD (FAILED|SUCCESSFUL)" build.log | tail -1 | while IFS= read -r line; do
-              echo "::notice::$line"
+            # The root cause is a "Caused by:" line, usually far above the tail.
+            grep -E "^Caused by: " build.log | tail -3 | while IFS= read -r line; do
+              echo "::error title=Root cause::$line"
             done
-            echo "::notice::last 12 lines follow"
-            tail -12 build.log | while IFS= read -r line; do
-              echo "::notice::$line"
+            grep -B2 -A8 -m1 "What went wrong" build.log | head -9 | while IFS= read -r line; do
+              echo "::error title=What went wrong::$line"
+            done
+            grep -E "was not found|requires|incompatible|not supported|Unsupported|deprecated|requires API|minimum" build.log               | head -6 | while IFS= read -r line; do
+              echo "::error title=Detail::$line"
             done
           fi
 
