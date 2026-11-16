@@ -1,8 +1,69 @@
 # 3D Mega Hub
 
+An Android app for offline avatar authoring and local-model interaction. It combines the AvatarForge
+engine (native C++ signed-distance-field generation, texture baking and GLB export), an OpenGL ES
+renderer with a GLES static preview path and a Filament live preview, a local Ollama chat page, and an
+Android text-to-speech page. No cloud service is used for generation, chat or speech.
+
 **Project status: integration and validation in progress. Not yet approved for merge to `main`.**
+Production signing is BLOCKED until the release keystore gate is satisfied.
+
+## Current status — 2026-11-16
+
+| Area | State |
+| --- | --- |
+| Kotlin build (both modules) | **GREEN** — `compileDebugKotlin` + `compileDebugUnitTestKotlin` pass in CI on `939f3a7` |
+| JVM unit tests | **GREEN — 46 tests** |
+| Native C++ regressions | **GREEN — 6/6 suites** under `g++ 12.2`, C++17, `-Wall -Wextra` |
+| Device / emulator execution | **NOT VERIFIED** — the `connectedDebugAndroidTest` lane is red at the instrumentation step |
+| Filament live preview | **COMPILES**, unverified at runtime |
+| R8 / minified release build | **NOT VERIFIED** |
+| Production signing | **BLOCKED** by design |
+
+Work is on `arena/25bd4008-3d-mega-hub` and is proposed through
+[PR #14](https://github.com/davealone69-gif/3d-mega-hub/pull/14) onto `integration/avatarforge-renderer-port`.
+Nothing has been merged. The sections below this one are a chronological evidence log; where an older
+section conflicts with this table, this table is current.
+
+### Toolchain
+
+Gradle 9.9.1 · AGP 9.5.1 · Kotlin 2.4.21 (built-in Kotlin, no `kotlin-android` plugin) · compileSdk 37 ·
+targetSdk 36 · minSdk 26 · Compose BOM 2026.09.00 · Filament 1.80.1 · coroutines 1.11.0 ·
+NDK 26.1.10909125 and CMake 3.22.1 (deliberately pinned).
+
+### App features
+
+- **Avatar Studio** — prompt-to-avatar generation with full appearance controls: sex, build, all ten
+  hair styles, seven hair colours, nine clothed outfits, six cloth colours, skin melanin and height.
+  Choices persist locally and are summarised before generation. `Outfit.NONE` is filtered out of the
+  UI, and every generation still passes the adult gate (`requireGeneratable`, `adultModeConfirmed`,
+  age ≥ 18, minor-prompt rejection).
+- **Local model chat** — talks to a user-configured Ollama `/api/chat` endpoint with bounded multi-turn
+  context (12 turns, 24,000 characters, 8,000 per message). Failed requests are shown but excluded from
+  the context so a transport error cannot poison later turns.
+- **Speech** — Android text-to-speech with rate and pitch (0.5×–2.0× inside the engine's 0.25×–4×
+  contract) and voice selection over the voices the device actually reports.
+- **Import and diagnostics** — imported GLBs are copied to app-private storage, validated, and rendered
+  with a published state machine (`ASSET_LOADING`, `FRAME_PRESENTED`, `PIXELS_VERIFIED`) plus GLB clip
+  inventories. Viseme extraction and lip-sync are not connected.
+
+### How this repository is verified
+
+```bash
+./gradlew :app:compileDebugKotlin :app:compileDebugUnitTestKotlin :app:testDebugUnitTest
+```
+
+CI runs that through `.github/workflows/kotlin-compile-gate.yml`, added because `Android CI` does not
+trigger on `arena/**` and the full runtime workflow's logs and artifacts are not reachable from every
+environment. The gate republishes Gradle diagnostics as check-run annotations and as a comment on the
+pull request. The native suites build and run under the host compiler with `-DAVATARFORGE_HOST_TEST`.
+
+Everything in this repository that claims a result states where the result came from. Where no such
+evidence exists, the code is described as **unverified** rather than working.
 
 ## Avatar quality implementation handover — procedural hair
+
+> Historical record from an earlier head. The current status is in the table near the top of this file.
 
 **Work branch:** `integration/avatarforge-renderer-port`  
 **Implementation commits:**
@@ -343,7 +404,9 @@ Do not merge PR #9 to `main`. Do not send a readiness notification until all fiv
 - The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `work/android-engine-dev`. It is divergent, not a fast-forward ancestor, of the standalone AvatarForge RB-01 line (`0e782166…` / `fc30efd0…`). Several generation-core files differ in both directions. No wholesale replacement was attempted; any core-only port needs a file-by-file API review and native tests. AvatarForge remains a separate project.
 - Prompt generation is deterministic native parsing, not photo-to-identity reconstruction and not an embedded LLM.
 - External-resource `.gltf` is unsupported; the current viewer path is self-contained GLB.
-- Voice lip-sync/visemes are missing.
+- Voice lip-sync/visemes are missing, so the speech page cannot drive avatar mouths.
+- Appearance and speech controls exist in source and are unit-tested, but their device behaviour has
+  not been observed; the same is true of the chat context changes.
 - The bundled fixture is not a rigged/animated model.
 - Samsung SM-S921B visible rendering, real-device generation, import lifecycle, memory and thermal behaviour remain **UNVERIFIED** until the phone test is completed.
 
