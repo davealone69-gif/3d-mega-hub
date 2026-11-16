@@ -46,7 +46,30 @@ jobs:
           packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
-      - run: ./gradlew --no-daemon testDebugUnitTest --stacktrace
+      # Tee to a log and re-emit the interesting lines as workflow annotations. Job logs live on a
+      # separate results host that is not always reachable, and "Process completed with exit code 1"
+      # is not a diagnosis; annotations are readable through the API, so a red run explains itself.
+      - name: Run unit tests
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon testDebugUnitTest --stacktrace 2>&1 | tee gradle-unit.log
+      - name: Surface unit test failures as annotations
+        if: failure()
+        shell: bash
+        run: |
+          emit() { while IFS= read -r line; do [ -n "$line" ] && echo "::error title=$1::${line:0:900}"; done; }
+          grep -rhoE '<testcase name="[^"]*" classname="[^"]*"' \
+            app/build/test-results/testDebugUnitTest/*.xml \
+            avatarforge-engine/build/test-results/testDebugUnitTest/*.xml 2>/dev/null | head -40 | emit "test-case"
+          grep -rhoE '<failure message="[^"]{0,700}"' \
+            app/build/test-results/testDebugUnitTest/*.xml \
+            avatarforge-engine/build/test-results/testDebugUnitTest/*.xml 2>/dev/null \
+            | sed 's/^<failure message="//; s/"$//' | head -25 | emit "ASSERTION"
+          grep -E '^e: |^w: .*(error|deprecat)|FAILED|BUILD FAILED|Caused by|error:' gradle-unit.log \
+            | head -40 | emit "gradle"
+          if [ ! -s gradle-unit.log ]; then echo "::error::no gradle log was produced"; fi
+          tail -30 gradle-unit.log | emit "gradle-tail"
 
   debug-build:
     name: Debug APK build
@@ -62,7 +85,23 @@ jobs:
           packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
       - run: chmod +x ./gradlew
-      - run: ./gradlew --no-daemon assembleDebug --stacktrace
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon assembleDebug --stacktrace 2>&1 | tee gradle-apk.log
+      # The native animation JNI is only compiled here: lint and R8 do not run externalNativeBuild, so
+      # a C++ error in avatarforge_animation_jni.cpp shows up in this job and nowhere else.
+      - name: Surface build failures as annotations
+        if: failure()
+        shell: bash
+        run: |
+          emit() { while IFS= read -r line; do [ -n "$line" ] && echo "::error title=$1::${line:0:900}"; done; }
+          grep -E 'error:|fatal error|undefined (reference|symbol)|ninja: build stopped|Error [0-9]+' gradle-apk.log \
+            | head -40 | emit "NATIVE-or-KOTLIN"
+          grep -E '^e: |FAILED|BUILD FAILED|Caused by|Execution failed|A problem occurred' gradle-apk.log \
+            | head -30 | emit "gradle"
+          tail -40 gradle-apk.log | emit "gradle-tail"
       - uses: actions/upload-artifact@v7
         with:
           name: 3D-Mega-Hub-debug-apk

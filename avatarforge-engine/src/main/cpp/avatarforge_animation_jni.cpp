@@ -212,7 +212,10 @@ JNIEXPORT jobjectArray JNICALL
 Java_com_davemega_hub_avatarforge_AnimationNative_nativeLoadNotes(JNIEnv* env, jobject, jlong handle) {
     AnimationSession* s = session(handle);
     const jclass stringClass = env->FindClass("java/lang/String");
-    const std::vector<std::string>& notes = s ? s->player->loadNotes() : *new std::vector<std::string>();
+    static const std::vector<std::string> kNoNotes;
+    /* A dead handle returns an empty array rather than leaking a vector to satisfy a reference
+       binding. Load notes are diagnostics; nothing is worth a leak per call. */
+    const std::vector<std::string>& notes = s ? s->player->loadNotes() : kNoNotes;
     jobjectArray out = env->NewObjectArray(static_cast<jsize>(notes.size()), stringClass, nullptr);
     for (size_t i = 0; i < notes.size(); ++i) {
         env->SetObjectArrayElement(out, static_cast<jsize>(i), toJString(env, notes[i]));
@@ -643,8 +646,8 @@ JNIEXPORT jobjectArray JNICALL
 Java_com_davemega_hub_avatarforge_AnimationNative_nativeUnboundFaceChannels(JNIEnv* env, jobject, jlong handle) {
     AnimationSession* s = session(handle);
     const jclass stringClass = env->FindClass("java/lang/String");
-    static const std::vector<std::string> kEmpty;
-    const std::vector<std::string>& unbound = s ? s->player->face().unbound() : kEmpty;
+    static const std::vector<std::string> kNoChannels;
+    const std::vector<std::string>& unbound = s ? s->player->face().unbound() : kNoChannels;
     jobjectArray out = env->NewObjectArray(static_cast<jsize>(unbound.size()), stringClass, nullptr);
     for (size_t i = 0; i < unbound.size(); ++i) {
         env->SetObjectArrayElement(out, static_cast<jsize>(i), toJString(env, unbound[i]));
@@ -857,7 +860,6 @@ Java_com_davemega_hub_avatarforge_AnimationNative_nativeDrainEvents(JNIEnv* env,
     }
     s->pendingEvents.clear();
     s->pendingEventValues.clear();
-    (void)kEmpty;
     return out;
 }
 
