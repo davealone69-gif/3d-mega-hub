@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.davemega.hub.avatarforge"
-    compileSdk = 35
+    compileSdk = 36
     ndkVersion = "26.1.10909125"
 
     defaultConfig {
@@ -29,7 +29,14 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
+}
+
+// AGP 9 removed the `kotlinOptions` DSL; Kotlin 2.4 configures the JVM target through the Kotlin
+// Gradle plugin's compilerOptions instead.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
 
 dependencies {
