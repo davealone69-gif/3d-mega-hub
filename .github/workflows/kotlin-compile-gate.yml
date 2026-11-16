@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: kotlin-compile-${{ github.event.pull_request.number || github.run_id }}
@@ -81,6 +82,28 @@ jobs:
             echo "::notice::$line"
           done
           exit $status
+
+      - name: Post the diagnostic excerpt to the pull request
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          # Artifact and log downloads are not always reachable, so put the part that matters where
+          # it can be read with the ordinary API.
+          {
+            echo "### Kotlin compile gate"
+            echo '```text'
+            if grep -q "What went wrong" build.log 2>/dev/null; then
+              sed -n '/What went wrong/,/BUILD FAILED/p' build.log | head -45
+            else
+              grep -E "^(e: |w: )" build.log | head -40
+            fi
+            echo '```'
+            grep -E "BUILD (FAILED|SUCCESSFUL)" build.log | tail -1
+          } > excerpt.md
+          gh pr comment "$PR" --body-file excerpt.md
 
       - name: Keep the Gradle log
         if: always()
