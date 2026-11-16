@@ -23,6 +23,79 @@ object GlbValidator {
     private val INDEX_COMPONENT_TYPES = setOf(5121, 5123, 5125)
     private val MORPH_SEMANTICS = setOf("POSITION", "NORMAL", "TANGENT")
 
+    /**
+     * What the GLB itself declares about animation. A viewer can only expose clips the file
+     * contains, so this separates "the asset has no clips" from "the viewer did not publish them"
+     * in the Avatar Studio preview.
+     */
+    data class AnimationInventory(
+        val animationCount: Int,
+        val animationNames: List<String>,
+        val skinCount: Int
+    ) {
+        val declaresClips: Boolean get() = animationCount > 0
+    }
+
+    fun inspectAnimations(file: File): AnimationInventory {
+        require(file.isFile) { "GLB file is missing." }
+        val fileLength = file.length()
+        require(fileLength in 20L..MAX_GLB_BYTES) { "GLB size is invalid: $fileLength bytes." }
+        return BufferedInputStream(file.inputStream()).use { inspectAnimations(readRootObject(it, fileLength)) }
+    }
+
+    fun inspectAnimations(bytes: ByteArray): AnimationInventory {
+        require(bytes.size.toLong() in 20L..MAX_GLB_BYTES) {
+            "GLB byte array size is invalid: ${bytes.size} bytes."
+        }
+        return ByteArrayInputStream(bytes).use { inspectAnimations(readRootObject(it, bytes.size.toLong())) }
+    }
+
+    private fun inspectAnimations(root: JSONObject): AnimationInventory {
+        val animations = root.optJSONArray("animations") ?: JSONArray()
+        val names = ArrayList<String>(animations.length())
+        for (index in 0 until animations.length()) {
+            val declared = animations.optJSONObject(index)?.optString("name").orEmpty().trim()
+            names.add(declared.ifEmpty { "clip ${index + 1}" })
+        }
+        return AnimationInventory(
+            animationCount = animations.length(),
+            animationNames = names,
+            skinCount = root.optJSONArray("skins")?.length() ?: 0
+        )
+    }
+
+    /**
+     * Reads only the leading JSON chunk, with the same bounds as [validate], so a clip inventory
+     * never needs the binary payload in memory.
+     */
+    private fun readRootObject(input: InputStream, fileLength: Long): JSONObject {
+        require(readU32(input) == GLB_MAGIC) { "File does not have the GLB magic header." }
+        require(readU32(input) == 2L) { "GLB must use binary version 2." }
+        require(readU32(input) == fileLength) { "GLB header length does not match the file size." }
+        require(fileLength - 12L >= 8L) { "GLB ends inside a chunk header." }
+        val chunkLength = readU32(input)
+        require(readU32(input) == JSON_CHUNK) { "The first GLB chunk must contain JSON." }
+        require(chunkLength in 2L..MAX_JSON_CHUNK_BYTES) { "GLB JSON chunk size is invalid." }
+        require(chunkLength <= fileLength - 20L) { "GLB contains a truncated chunk." }
+        val jsonBytes = ByteArray(chunkLength.toInt())
+        input.readFully(jsonBytes)
+        return decodeRoot(jsonBytes)
+    }
+
+    private fun decodeRoot(jsonBytes: ByteArray): JSONObject {
+        val jsonText = StandardCharsets.UTF_8.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT)
+            .decode(ByteBuffer.wrap(jsonBytes))
+            .toString()
+            .trimEnd(' ', '\t', '\r', '\n')
+        return try {
+            JSONObject(jsonText)
+        } catch (failure: Exception) {
+            throw IllegalArgumentException("GLB JSON chunk is not a valid JSON object.", failure)
+        }
+    }
+
     fun validate(file: File) {
         require(file.isFile) { "GLB file is missing." }
         val fileLength = file.length()
@@ -56,17 +129,7 @@ object GlbValidator {
                 require(chunkLength in 2L..MAX_JSON_CHUNK_BYTES) { "GLB JSON chunk size is invalid." }
                 val jsonBytes = ByteArray(chunkLength.toInt())
                 input.readFully(jsonBytes)
-                val jsonText = StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(jsonBytes))
-                    .toString()
-                    .trimEnd(' ', '\t', '\r', '\n')
-                val root = try {
-                    JSONObject(jsonText)
-                } catch (failure: Exception) {
-                    throw IllegalArgumentException("GLB JSON chunk is not a valid JSON object.", failure)
-                }
+                val root = decodeRoot(jsonBytes)
                 require(root.optJSONObject("asset")?.optString("version") == "2.0") {
                     "GLB JSON does not declare glTF asset version 2.0."
                 }

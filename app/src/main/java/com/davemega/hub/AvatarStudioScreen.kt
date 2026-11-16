@@ -20,6 +20,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,13 +37,16 @@ import com.davemega.hub.avatarforge.AvatarForgeEngine
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
 import com.davemega.hub.avatarforge.AvatarSpec
 import com.davemega.hub.avatarforge.Build
+import com.davemega.hub.avatarforge.GlbValidator
 import com.davemega.hub.avatarforge.HairStyle
 import com.davemega.hub.avatarforge.Outfit
 import com.davemega.hub.avatarforge.Sex
 import java.io.File
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun AvatarStudioScreen(
@@ -83,6 +87,20 @@ fun AvatarStudioScreen(
     val hasImportedFile = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.isFile == true
     var generationJob by remember { mutableStateOf<Job?>(null) }
     val generating = generationJob?.isActive == true
+    // Structural clip inventory read from the GLB's own JSON chunk. Filament can only publish
+    // clips the file declares, so this is what separates "the asset has no clips" from "the
+    // viewer has not published them" when no animation controls appear.
+    var clipInventory by remember(avatarUri) { mutableStateOf<GlbValidator.AnimationInventory?>(null) }
+    var clipInventoryError by remember(avatarUri) { mutableStateOf<String?>(null) }
+    LaunchedEffect(avatarUri) {
+        clipInventory = null
+        clipInventoryError = null
+        val selected = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.takeIf { it.isFile }
+            ?: return@LaunchedEffect
+        withContext(Dispatchers.IO) { runCatching { GlbValidator.inspectAnimations(selected) } }
+            .onSuccess { clipInventory = it }
+            .onFailure { clipInventoryError = it.message ?: it.javaClass.simpleName }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Avatar studio", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -189,6 +207,15 @@ fun AvatarStudioScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
+                if (hasImportedFile && !useFilamentAnimationPreview) {
+                    Text(
+                        "AvatarForge GLES preview: the imported model is drawn through the native " +
+                            "static path, which does not apply imported skeletal animation. Expect the bind " +
+                            "pose and no animation controls here — switch to the Filament preview below for " +
+                            "clip playback.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 if (hasImportedFile) {
                     OutlinedButton(
                         onClick = {
@@ -247,7 +274,27 @@ fun AvatarStudioScreen(
                             }
                         }
                     } else {
-                        Text("Waiting for GLB animation tracks. If this reports zero animations, the file has no playable clip for Filament.")
+                        val declared = clipInventory
+                        val clipLabel = declared?.animationNames?.take(6)?.joinToString(", ").orEmpty()
+                        val moreClips = (declared?.animationCount ?: 0) > 6
+                        Text(
+                            when {
+                                clipInventoryError != null ->
+                                    "Could not read this GLB's clip table ($clipInventoryError), so the Filament " +
+                                        "preview cannot be told apart from a file that simply has no clips."
+                                declared == null -> "Reading this GLB's clip table…"
+                                declared.declaresClips ->
+                                    "This GLB declares ${declared.animationCount} clip(s) and ${declared.skinCount} " +
+                                        "skin(s) — $clipLabel${if (moreClips) ", …" else ""} — but Filament has not " +
+                                        "published them yet. If the status line above reports a load failure, that is why " +
+                                        "no controls appeared."
+                                else ->
+                                    "This GLB declares no animation clips and ${declared.skinCount} skin(s), so there " +
+                                        "is nothing to play and this file will never produce animation controls. Import a " +
+                                        "GLB that contains an animations array."
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
                 Text(

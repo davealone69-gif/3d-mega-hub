@@ -79,6 +79,56 @@ This is **not** a like-for-like comparison: the emulator was asked to software-r
 
 **The 15 s gate is not the problem here.** `frameWaitStarted` is taken after `nativeCreate()` returns (`AvatarForgeSurfaceView.kt:231`, deadline checked at `:281`), so Session B's 1.92 s of render-loop time cleared it comfortably. What the artifacts show instead is that **asset load is unmeasured and unbounded**: nearly 14 s of GLB parse, GPU upload and texture decode ran on the render thread outside any deadline, with no progress reporting to the user. On a slower device, a cold page cache, or a larger asset that still passes the 128 MiB import cap, that phase is where the session will appear to hang — and nothing in the diagnostics distinguishes it from a genuine renderer failure, because `STARTING` is the only state recorded before it completes.
 
+## Why the owner saw no animation controls
+
+The owner reported that the same test produced **no animation controls**. The artifacts explain
+this, and it is not a renderer failure:
+
+- **The asset was drawn by the AvatarForge GLES preview, not the Filament gltfio preview.** Every
+  Session A/B report carries `"backend": "OpenGL ES"` and the counters produced by
+  `AvatarForgeSurfaceView.nativeGetStats()`. `FilamentPreviewView` writes no `renderer_diagnostics`
+  report at all, so a Filament-preview session would have left no such file. The GLES path is the
+  deliberate **static** imported-GLB path: it does not apply imported skeletal animation and has no
+  clip, play/pause, loop, speed or timeline controls by design.
+- **The asset is the preserved rigged reference, by size.** `imported-1794842029545-b69f92bf.glb` is
+  13,221,520 bytes. The private Dropbox `/3d-mega-hub-diagnostics/3d-mega-hub/mylove_rig_prepared.glb`
+  reports exactly that size (rev `016604839bc64a40000000368f04ea3`, Dropbox `content_hash`
+  `a25a00903b45d85cefd429e86c673823566f54fc3c3017e29b44a69f03552f25`). Size equality is strong
+  evidence of the same file, not proof: the device-side hash was not captured, and this workspace
+  could not download the binary to compare byte-for-byte (outbound access to Dropbox is blocked).
+  Either way the file the owner loaded is the rigged animation reference, and it was rendered
+  through the one preview path that cannot play it.
+
+Three situations can produce "no animation controls", and the folder cannot separate them on its own:
+
+| Cause | What it looks like |
+|---|---|
+| Installed APK predates commit `8b80b072187c1e471107fd9bb23ff8bdae9c4790` (Filament default for imported file GLBs) | Imported GLBs always open in GLES; no toggle choice is remembered because the code did not exist yet |
+| The GLES preview was selected (by hand or by an older default) | The toggle under the viewport reads **"Open animation-capable Filament preview"** |
+| Filament preview opened but reports zero clips, or its load failed | Toggle reads **"Use AvatarForge GLES preview"**; previously the only feedback was "Waiting for GLB animation tracks", which cannot distinguish zero clips from a failed load |
+
+Nothing in these artifacts identifies the installed build, so cause 1 cannot be excluded from the
+evidence. It is excluded only by re-running on a build that contains the preview-mode default.
+
+### Instrumentation added in this change
+
+Controls are gated on `animationCount > 0`, and that count only ever came from Filament. The app could
+therefore never say whether *the file* had no clips or *the viewer* had none to publish. Now:
+
+- `GlbValidator.inspectAnimations(File)` / `inspectAnimations(ByteArray)` read only the GLB's leading
+  JSON chunk, under the existing 128 MiB container and 16 MiB JSON bounds, and return
+  `AnimationInventory(animationCount, animationNames, skinCount)`. Unit coverage is in
+  `avatarforge-engine/src/test/java/com/davemega/hub/avatarforge/GlbValidatorAnimationInventoryTest.kt`.
+- Avatar Studio inspects the selected file off the main thread and states the outcome: the declared
+  clip names and skins, "declares no animation clips … this file will never produce animation controls",
+  a metadata-read failure, or "Filament has not published them yet" with a pointer to the status line.
+- The GLES preview now says on screen that it does not apply imported skeletal animation and that the
+  bind pose with no controls is expected there.
+
+**Evidence boundary:** the inventory is structural — it proves what the file declares, not that Filament
+plays it. Actual clip playback on `mylove_rig_prepared.glb` remains **UNVERIFIED** until a Filament-preview
+session on the phone reports clips and shows a changing pose.
+
 ## Remaining gaps
 
 - Device build identity: no APK version, source commit or APK SHA-256 is recorded in any artifact. These results must not be attributed to the current branch head.
