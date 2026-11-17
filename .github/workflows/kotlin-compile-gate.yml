@@ -74,8 +74,24 @@ jobs:
             :app:compileDebugKotlin \
             :app:compileDebugUnitTestKotlin \
             :app:testDebugUnitTest \
+            :app:assembleDebug \
             --console=plain --stacktrace > build.log 2>&1
           status=$?
+
+          # Artifact identity belongs in the readable channel: workflow artifacts and logs are
+          # served from hosts that are not always reachable, comments always are.
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          {
+            if [ -f "$APK" ]; then
+              echo "size_bytes=$(stat -c%s "$APK")"
+              echo "sha256=$(sha256sum "$APK" | cut -d' ' -f1)"
+              apksigner verify --print-certs "$APK" 2>/dev/null \
+                | grep -E "Signer #1 certificate (DN|SHA-256)" || echo "signing: apksigner unavailable"
+              unzip -l "$APK" | grep -cE "lib/.*\\.so" | sed 's/^/native_libraries=/'
+            else
+              echo "no APK produced"
+            fi
+          } > apk-identity.txt 2>&1
           echo "gradle exit code: $status"
 
           grep -E "^e: " build.log | head -8 | while IFS= read -r line; do
@@ -132,6 +148,13 @@ jobs:
               grep -E "^e: " build.log | head -30
               echo '```'
             fi
+            if [ -f apk-identity.txt ]; then
+              echo
+              echo "**Debug APK identity:**"
+              echo '```text'
+              cat apk-identity.txt
+              echo '```'
+            fi
             [ -f build.log ] && grep -E "BUILD (FAILED|SUCCESSFUL)" build.log | tail -1
           } > excerpt.md
           gh pr comment "$PR" --body-file excerpt.md
@@ -143,6 +166,7 @@ jobs:
           name: kotlin-compile-log
           path: |
             build.log
+            apk-identity.txt
             sdk-list.txt
             install-base.log
             install-platform.log
