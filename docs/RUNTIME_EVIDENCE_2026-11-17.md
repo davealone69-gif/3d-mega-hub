@@ -81,7 +81,46 @@ The engine is created once, resolves the OpenGL backend, reports feature level 1
 `disable_es2_srgb_ext` workaround and submits a frame. That is the lifecycle the previous code path
 was suspected of breaking.
 
-## Open question: the instrumented renderer tests
+## The generated-avatar render gate passes on the emulator
+
+`Android CI` run `44120205601`, job *App install, launch and runtime evidence*, instrumented class
+`com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest`:
+
+```
+test=generatedAvatarDebugShaderMustProduceMagentaPixels          STATUS_CODE 1 -> 0
+test=generatedAvatarTextureViewWindowCaptureA_B                  STATUS_CODE 1 -> 0
+test=generatedAvatarMustProduceVisiblePixels                     STATUS_CODE 1 -> 0
+test=generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView  STATUS_CODE 1 -> 0
+Time: 473.665
+OK (4 tests)
+INSTRUMENTATION_CODE: -1        # RESULT_OK; "OK (4 tests)" is the verdict
+```
+
+That is the central path of the project end to end: the native AvatarForge generator produces an
+avatar, the avatar is exported as a GLB, the GLB is loaded and rendered through the **production**
+`AvatarForgeSurfaceView` GLES path, and a `PixelCopy` capture confirms visible, geometrically
+non-trivial pixels. Four of four pass, 473 seconds.
+
+This is emulator (ANGLE/SwiftShader) evidence. It is strong evidence that the pipeline is correct and
+that no code path is stubbed; it is not evidence about Samsung GPU driver behaviour.
+
+## The remaining renderer blocker: a process crash
+
+The other instrumented class, `com.davemega.hub.AvatarForgeRendererSmokeTest`, does not fail an
+assertion — it takes the whole process down:
+
+```
+test=generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels
+INSTRUMENTATION_STATUS_CODE: 1
+INSTRUMENTATION_RESULT: shortMsg=Process crashed.
+```
+
+This is the reason `Android CI`'s *AvatarForge GLES GLB render smoke* job has been red. The capture
+script now clears logcat before each instrumentation run and, when it sees `Process crashed`, posts
+the fatal-signal lines, the abort message and any native backtrace frame naming `libav*`,
+`libfilament` or `libgltfio`, plus the newest tombstone (`adb root` works on `google_apis` images).
+
+### Superseded note from the first capture
 
 `GeneratedAvatarRuntimeTest` reports `numtests=4`:
 

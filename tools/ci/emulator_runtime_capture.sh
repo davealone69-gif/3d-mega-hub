@@ -98,6 +98,20 @@ if [ -s "$OUT/logcat-app.txt" ]; then
   { echo '```text'; head -25 "$OUT/logcat-app.txt"; echo '```'; } >> "$SUMMARY"
 fi
 
+section "Tombstones"
+adb root > /dev/null 2>&1
+sleep 3
+{
+  echo '```text'
+  adb shell ls -t /data/tombstones 2>/dev/null | head -3
+  LATEST=$(adb shell ls -t /data/tombstones/tombstone_* 2>/dev/null | head -1 | tr -d '\r')
+  if [ -n "$LATEST" ]; then
+    echo "--- $LATEST ---"
+    adb shell cat "$LATEST" 2>/dev/null | grep -E "pid:|signal|Abort message|backtrace|#0[0-9] pc|.so" | head -18
+  fi
+  echo '```'
+} >> "$SUMMARY" 2>&1
+
 section "Memory"
 {
   echo '```text'
@@ -116,10 +130,30 @@ section "App-written files"
 
 digest_instrumentation() {
   local class="$1"
-  local log_file="$OUT/instrumentation-$(basename "$class").log"
+  local slug
+  slug=$(basename "$class")
+  local log_file="$OUT/instrumentation-$slug.log"
+  adb logcat -c > /dev/null 2>&1
   adb shell am instrument -w -r -e class "$class" \
     "$APP_ID.test/androidx.test.runner.AndroidJUnitRunner" > "$log_file" 2>&1
   log "- \`$class\` exit: \`$?\`"
+
+  # A crashed instrumentation run reports only "Process crashed."; the reason lives in logcat and,
+  # for a native crash, in the tombstone.
+  if grep -q "Process crashed" "$log_file"; then
+    adb logcat -d > "$OUT/logcat-$slug.txt" 2>/dev/null
+    tr -d '\r' < "$OUT/logcat-$slug.txt" > "$OUT/logcat-$slug.clean.txt"
+    log ""
+    log "**Process crash detail for \`$class\`:**"
+    {
+      echo '```text'
+      grep -E "Fatal signal|FATAL EXCEPTION|Abort message|signal [0-9]+ \\(SIG|backtrace:|#0[0-9] pc|UnsatisfiedLink|libav|libfilament|libgltfio|av_avatar" \
+        "$OUT/logcat-$slug.clean.txt" | head -20
+      echo '--- process death ---'
+      grep -E "am_proc_died|Force finishing|Process $APP_ID|died" "$OUT/logcat-$slug.clean.txt" | head -5
+      echo '```'
+    } >> "$SUMMARY"
+  fi
 
   # Only the lines that carry a verdict; the full log stays in the artifacts.
   {

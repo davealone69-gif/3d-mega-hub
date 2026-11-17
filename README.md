@@ -16,7 +16,8 @@ Production signing is BLOCKED until the release keystore gate is satisfied.
 | JVM unit tests | **GREEN — 46 tests** |
 | Native C++ regressions | **GREEN — 6/6 suites** under `g++ 12.2`, C++17, `-Wall -Wextra` |
 | Emulator execution | **VERIFIED for launch and drawing** — installed, cold-launched in 1353 ms, 93.6 % non-black 1080×1920 frame, 150 monkey events, zero crashes ([evidence](docs/RUNTIME_EVIDENCE_2026-11-17.md)) |
-| Instrumented renderer tests | **PARTIAL** — `GeneratedAvatarRuntimeTest` runs 4 tests and the first passes; the verdicts for the rest and the `AvatarForgeRendererSmokeTest` job are still being captured |
+| Generated-avatar render gate | **VERIFIED on emulator** — `GeneratedAvatarRuntimeTest` is `OK (4 tests)` in 473 s: generation → GLB export → production SurfaceView → visible pixels |
+| Imported-GLB smoke test | **BLOCKED** — `AvatarForgeRendererSmokeTest` crashes the process (`shortMsg=Process crashed.`); the fatal signal is being captured |
 | Physical device (SM-S921B) | **NOT VERIFIED** — no device run exists |
 | Filament live preview | **COMPILES**, unverified at runtime |
 | R8 / minified release build | compiles (`minifyReleaseWithR8` **PASS**); runtime **NOT VERIFIED** |
