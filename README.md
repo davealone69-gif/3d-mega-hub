@@ -17,9 +17,10 @@ Production signing is BLOCKED until the release keystore gate is satisfied.
 | Native C++ regressions | **GREEN — 6/6 suites** under `g++ 12.2`, C++17, `-Wall -Wextra` |
 | Emulator execution | **VERIFIED for launch and drawing** — installed, cold-launched in 1353 ms, 93.6 % non-black 1080×1920 frame, 150 monkey events, zero crashes ([evidence](docs/RUNTIME_EVIDENCE_2026-11-17.md)) |
 | Generated-avatar render gate | **VERIFIED on emulator** — `GeneratedAvatarRuntimeTest` is `OK (4 tests)` in 473 s: generation → GLB export → production SurfaceView → visible pixels |
-| Imported-GLB smoke test | **BLOCKED** — `AvatarForgeRendererSmokeTest` crashes the process (`shortMsg=Process crashed.`); the fatal signal is being captured |
+| Filament live preview | **BLOCKED (upstream)** — `AssetLoader.createAsset` aborts with `utils::PreconditionPanic: uniform named "sheenColorIndex" not found` on the emulator's feature level 1; see [`docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md`](docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md) |
+| Imported-GLB smoke test | **BLOCKED** — same abort; it is the cause of the red *AvatarForge GLES GLB render smoke* job |
+| Animation playback | **MISSING in effect** — the GLES path does not animate imports and the Filament path aborts, so no clip has ever been played |
 | Physical device (SM-S921B) | **NOT VERIFIED** — no device run exists |
-| Filament live preview | **COMPILES**, unverified at runtime |
 | R8 / minified release build | compiles (`minifyReleaseWithR8` **PASS**); runtime **NOT VERIFIED** |
 | Debug APK | **BUILT** — `assembleDebug` passes and the APK installs on an emulator |
 | Production signing | **BLOCKED** by design |

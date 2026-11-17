@@ -1,0 +1,94 @@
+# Blocker: Filament preview aborts the process on GLB load
+
+**Status: BLOCKED upstream. Not a project code defect that inspection can remove.**
+**Affected feature: the Filament live preview — and therefore animation controls, since only the
+Filament path can play imported glTF clips.**
+
+## What happens
+
+On an x86_64 API 30 emulator (ANGLE/SwiftShader, Filament feature level 1) the app dies the moment the
+Filament preview loads a GLB. The sequence, from run `44134945773`:
+
+```
+17:28:23.857 MegaHubRenderer: Renderer status: Filament and gltfio JNI loaded; initializing OpenGL ES first
+17:28:23.857 libc++abi: terminating due to uncaught exception of type N5utils17PreconditionPanicE: Precondition
+17:28:23.857 libc++abi: in getFieldInfo:175
+17:28:23.857 libc++abi: reason: uniform named "sheenColorIndex" not found
+17:28:23.857 libc: Fatal signal 6 (SIGABRT) in tid 6280 (om.davemega.hub)
+17:28:24.182 ActivityManager: Process com.davemega.hub has died: fg TOP
+```
+
+Tombstone `tombstone_00`, thread `om.davemega.hub`, on the same run:
+
+```
+Abort message: 'terminating due to uncaught exception of type N5utils17PreconditionPanicE: Precondition
+in getFieldInfo:175
+#02..#10   libfilament-jni.so   (BuildId 88dacb49…)
+#11..#14   libgltfio-jni.so     (BuildId 67d04d19…)
+#15        filament::gltfio::AssetLoader::createAsset(unsigned char const*, unsigned int)+14
+#16        Java_com_google_android_filament_gltfio_AssetLoader_nCreateAsset+46
+#24        com.google.android.filament.gltfio.AssetLoader.createAsset+12
+```
+
+So the failure is: `AssetLoader.createAsset` → gltfio builds the asset → gltfio sets a material uniform
+named `sheenColorIndex` → the material instance in use does not declare it → Filament's
+`getFieldInfo` raises `PreconditionPanic` → nothing catches it → `abort()` → the whole app dies.
+
+This is exactly the class of failure that a compiler cannot catch: the Java and JNI signatures are
+unchanged between 1.71.6 and 1.80.1, so the code compiles and then aborts at runtime.
+
+## Why this is a Filament/gltfio problem, not ours
+
+- The app uses the stock `UbershaderProvider(engine)` and the stock
+  `AssetLoader(engine, provider, EntityManager.get())`; no custom material package, no custom
+  `MaterialProvider`, no modified gltfio.
+- All three artifacts are version-consistent at 1.80.1: `filament-android`, `filament-utils-android`,
+  `gltfio-android`.
+- The asset is structurally valid. `models/female.glb` was validated offline: GLB magic and version 2,
+  declared length equal to actual length, both chunks correctly sized, `asset.version` 2.0, one buffer
+  with no URI whose `byteLength` fits the BIN chunk, 11 accessors each with `componentType`/`count`/
+  `type` and in-range `bufferView`, meshes with POSITION, no dangling indices, **no extensions**, and
+  no sheen material — yet gltfio still touches a sheen uniform.
+- The same failure is reported upstream against other Filament consumers using `AssetLoader`
+  ([google/filament#6907](https://github.com/google/filament/issues/6907): "Panic in getFieldInfo:170
+  reason: uniform named \"sheenColorIndex\" not found"), where it was closed as the caller's problem
+  because the material variant did not match the asset. In our case the caller *is* the standard
+  `UbershaderProvider`, so the variant/material mismatch happens inside Filament.
+- The emulator's engine reports **`Feature level: 1`**. Filament strips material features at lower
+  feature levels, which is consistent with a ubershader variant that has no sheen uniforms while the
+  loader still writes them.
+
+## What has been ruled out
+
+| Hypothesis | Verdict |
+| --- | --- |
+| Heap `ByteBuffer` passed to `createAsset` | **Not the cause.** Filament's `AutoBuffer` copies non-direct buffers; the JNI signature is `(jobject javaBuffer, jint remaining)` and is unchanged in 1.80.1. |
+| Malformed GLB / bad accessors / dangling indices | **Not the cause.** Offline validation of the bundled asset found no structural defect. |
+| Missing/duplicated Filament engine, wrong lifecycle | **Not the cause here.** `FEngine` is created once, `resolved backend: OpenGL`, and teardown is balanced; the abort happens inside the loader call. |
+| R8/minification stripping Filament resources | **Not the cause.** The crash reproduces in the debug build. |
+| Our own GLES renderer | **Not involved.** It renders the same asset successfully (`GeneratedAvatarRuntimeTest`, `OK (4 tests)`). |
+
+## Options, in order of preference
+
+1. **Verify on hardware before changing anything.** The SM-S921B reports OpenGL ES 3.2 and should reach
+   Filament feature level 2 or 3, where the ubershader variant may well declare the sheen uniforms. A
+   single instrumented run on the phone decides whether this is emulator-only. Nothing in this
+   workspace can substitute for that run.
+2. **Try the previous feature-complete Filament release** (1.79.x) as a controlled experiment: if the
+   preview loads there, this is a 1.80.x regression and the pin becomes a documented, evidence-backed
+   decision rather than a guess.
+3. **Supply an explicit `MaterialProvider`** built from materials we compile ourselves with the exact
+   feature set we need, so the uniforms gltfio writes are guaranteed to exist. This is the durable fix
+   if the upstream path cannot be trusted, and it also gives us control over the toon/PBR look.
+4. **Report upstream** with the tombstone, the asset and the feature level — this is a reproducible
+   `AssetLoader` abort on a valid asset.
+
+Do not paper over this by removing the preview, by catching something uncatchable, or by declaring the
+preview verified because the app compiles.
+
+## What still works without the preview
+
+The production rendering path is not affected. The app renders imported and generated GLBs through
+`AvatarForgeSurfaceView` (native OpenGL ES), which is verified on the emulator down to pixel counts.
+The consequence is specifically that **imported skeletal animation cannot be exercised**, because clip
+playback depends on the Filament path.
