@@ -35,6 +35,9 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
+          # build-tools brings apksigner, which is what turns the APK into a signed artifact with a
+          # reportable certificate fingerprint.
+          packages: "platform-tools build-tools;36.0.0"
           accept-android-sdk-licenses: true
 
       - name: Resolve and install SDK packages
@@ -86,7 +89,10 @@ jobs:
               echo "size_bytes=$(stat -c%s "$APK")"
               echo "sha256=$(sha256sum "$APK" | cut -d' ' -f1)"
               apksigner verify --print-certs "$APK" 2>/dev/null \
-                | grep -E "Signer #1 certificate (DN|SHA-256)" || echo "signing: apksigner unavailable"
+                | grep -E "Signer #1 certificate (DN|SHA-256)" \
+                || "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" 2>/dev/null \
+                | grep -E "Signer #1 certificate (DN|SHA-256)" \
+                || echo "signing: apksigner unavailable"
               unzip -l "$APK" | grep -cE "lib/.*\\.so" | sed 's/^/native_libraries=/'
             else
               echo "no APK produced"
