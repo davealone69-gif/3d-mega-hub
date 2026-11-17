@@ -104,7 +104,56 @@ non-trivial pixels. Four of four pass, 473 seconds.
 This is emulator (ANGLE/SwiftShader) evidence. It is strong evidence that the pipeline is correct and
 that no code path is stubbed; it is not evidence about Samsung GPU driver behaviour.
 
-## The remaining renderer blocker: a process crash
+## The remaining renderer blocker: a native panic in Filament's loader
+
+Run `44130209112` captured the tombstone. The sequence is unambiguous:
+
+```
+17:03:58.723 MegaHubRenderer: Renderer status: Filament and gltfio JNI loaded; initializing OpenGL ES first
+17:03:59.126 libc++abi: terminating due to uncaught exception of type N5utils17PreconditionPanicE: Precondition
+17:03:59.126 libc    : Fatal signal 6 (SIGABRT) in tid 6465 (om.davemega.hub)
+17:03:59.623 ActivityManager: Process com.davemega.hub (pid 6465) has died: fg TOP
+```
+
+Tombstone `tombstone_00`, thread `om.davemega.hub`:
+
+```
+Abort message: 'terminating due to uncaught exception of type N5utils17PreconditionPanicE: Precondition
+#02..#10   libfilament-jni.so        (offset 0x3d48000, BuildId 88dacb49…)
+#11..#14   libgltfio-jni.so          (offset 0x40e0000, BuildId 67d04d19…)
+#15        filament::gltfio::AssetLoader::createAsset(unsigned char const*, unsigned int)+14
+#16        Java_com_google_android_filament_gltfio_AssetLoader_nCreateAsset+46
+#24        com.google.android.filament.gltfio.AssetLoader.createAsset+12
+```
+
+So: the app calls `AssetLoader.createAsset`, gltfio parses the asset, then a **Filament core
+precondition** throws `utils::PreconditionPanic`, which nothing catches, which aborts the process.
+It happens about 400 ms after the GLB viewer starts, i.e. on the first preview load, and it kills the
+whole app rather than failing a load.
+
+This is the Filament 1.80.1 behaviour change that compilation could not reveal: the API still
+compiles, but a failure that used to return `null` now terminates the process. It is why the
+*AvatarForge GLES GLB render smoke* job has been red, and it is the single reason the app's Filament
+preview path is unverified — the path that owns **animation controls**, since only Filament can play
+imported clips.
+
+### What has been ruled out
+
+The bundled `models/female.glb` was validated offline: GLB magic, version 2, declared length equal to
+actual length, both chunks present and correctly sized, `asset.version` 2.0, one buffer with no URI
+and a `byteLength` that fits inside the BIN chunk, all 11 accessors carrying `componentType`/`count`/
+`type` with in-range `bufferView`, meshes with POSITION, no dangling indices, no skins or animations.
+No structural defect explains why the loader panics. The JNI entry point was also checked: Filament's
+`AutoBuffer` copies heap `ByteBuffer`s, so `ByteBuffer.wrap(bytes)` is legal and not the cause.
+
+### Next step
+
+The panic text wraps past logcat's single-line limit, so the capture now keeps four lines of context
+after the exception and after the abort message. That text names the failing precondition and its
+location in Filament, which decides the fix: either the asset or configuration we hand to gltfio, or
+a defensive pre-validation step that keeps an unloadable asset from killing the app.
+
+## Superseded: the earlier crash observation
 
 The other instrumented class, `com.davemega.hub.AvatarForgeRendererSmokeTest`, does not fail an
 assertion — it takes the whole process down:
