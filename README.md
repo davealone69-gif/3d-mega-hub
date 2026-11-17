@@ -8,27 +8,105 @@ Android text-to-speech page. No cloud service is used for generation, chat or sp
 **Project status: integration and validation in progress. Not yet approved for merge to `main`.**
 Production signing is BLOCKED until the release keystore gate is satisfied.
 
-## Current status — 2026-11-16
+## Quality-first direction — 2026-11-17
 
-| Area | State |
-| --- | --- |
-| Kotlin build (both modules) | **GREEN** — `compileDebugKotlin` + `compileDebugUnitTestKotlin` pass in CI on `939f3a7` |
-| JVM unit tests | **GREEN — 46 tests** |
-| Native C++ regressions | **GREEN — 6/6 suites** under `g++ 12.2`, C++17, `-Wall -Wextra` |
-| Emulator execution | **VERIFIED for launch and drawing** — installed, cold-launched in 1353 ms, 93.6 % non-black 1080×1920 frame, 150 monkey events, zero crashes ([evidence](docs/RUNTIME_EVIDENCE_2026-11-17.md)) |
-| Generated-avatar render gate | **VERIFIED on emulator** — `GeneratedAvatarRuntimeTest` is `OK (4 tests)` in 473 s: generation → GLB export → production SurfaceView → visible pixels |
-| Filament live preview | **BLOCKED (upstream)** — `AssetLoader.createAsset` aborts with `utils::PreconditionPanic: uniform named "sheenColorIndex" not found` on the emulator's feature level 1; see [`docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md`](docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md) |
-| Imported-GLB smoke test | **BLOCKED** — same abort; it is the cause of the red *AvatarForge GLES GLB render smoke* job |
-| Animation playback | **MISSING in effect** — the GLES path does not animate imports and the Filament path aborts, so no clip has ever been played |
-| Physical device (SM-S921B) | **NOT VERIFIED** — no device run exists |
-| R8 / minified release build | compiles (`minifyReleaseWithR8` **PASS**); runtime **NOT VERIFIED** |
-| Debug APK | **BUILT** — `assembleDebug` passes and the APK installs on an emulator |
-| Production signing | **BLOCKED** by design |
+The objective is one thing done well: a character that looks convincing, moves naturally, speaks,
+listens and holds a conversation. Feature breadth is not the goal. Everything below is written to make
+the next engineering decision obvious, and every capability carries a status from this vocabulary:
 
-Work is on `arena/25bd4008-3d-mega-hub` and is proposed through
-[PR #14](https://github.com/davealone69-gif/3d-mega-hub/pull/14) onto `integration/avatarforge-renderer-port`.
-Nothing has been merged. The sections below this one are a chronological evidence log; where an older
-section conflicts with this table, this table is current.
+**REAL + VERIFIED** · **UNVERIFIED** · **PARTIAL** · **MISSING** · **BLOCKED**
+
+### What exists, honestly
+
+| Capability | Status | Evidence / reason |
+| --- | --- | --- |
+| Build, unit tests, lint, R8 | **REAL + VERIFIED** | 46 JVM tests, `lintDebug`, `minifyReleaseWithR8`, 6/6 native suites |
+| Install + launch on emulator | **REAL + VERIFIED** | cold start 1353 ms, `MainActivity` resumed |
+| Frames rendered by the app | **REAL + VERIFIED** | 1080×1920 capture, 93.6 % non-black, 117 colours |
+| Stability under interaction | **REAL + VERIFIED** | 150 monkey events, no crash, PSS 133,929 KB |
+| Generated avatar → GLB → production SurfaceView → visible pixels | **REAL + VERIFIED** (emulator) | `GeneratedAvatarRuntimeTest` `OK (4 tests)`, 473 s |
+| Filament live preview | **BLOCKED** | native abort, see below |
+| Imported animation playback | **BLOCKED** | depends on the Filament path; the GLES path does not animate imports |
+| Facial rig / blendshape driven expressions | **PARTIAL** | generated avatars carry joints and blendshapes; nothing drives them from conversation |
+| Blinking, eye movement, gaze | **MISSING** | no implementation |
+| Lip synchronisation / visemes | **MISSING** | no viseme extraction; the Voice page states this in-app |
+| Microphone capture / speech recognition | **MISSING** | no `RECORD_AUDIO` permission, no `SpeechRecognizer` or `AudioRecord` |
+| Text-to-speech | **REAL (compiles, unit-tested) + UNVERIFIED on device** | rate/pitch/voice selection, persisted |
+| Unified conversation controller | **MISSING** | chat lives in `MainActivity`, voice is a separate page, no shared state machine |
+| Phone-call and video-call modes | **MISSING** | not implemented, deliberately deferred behind the character experience |
+| Physical SM-S921B behaviour | **UNVERIFIED** | no device run exists |
+
+### The one blocker that gates the character experience
+
+The Filament preview aborts the process on load:
+
+```
+utils::PreconditionPanic: in getFieldInfo:175
+reason: uniform named "sheenColorIndex" not found
+#15 filament::gltfio::AssetLoader::createAsset(...)
+```
+
+gltfio writes a sheen uniform the material does not declare; Filament panics; the app dies. The app
+uses the stock `UbershaderProvider` and stock `AssetLoader` on internally consistent 1.80.1 artifacts,
+and the bundled GLB is a plain two-material metallic-roughness asset with no extensions. The emulator
+reports Filament **feature level 1**, where material features are stripped. Full analysis, ruled-out
+causes and the four options:
+[`docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md`](docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md).
+
+Consequence: no animation, no expressions and no lip-sync can be built or measured until either the
+phone (feature level ≥ 2) is proven to load it, or we ship our own `MaterialProvider` backed by
+materials we compile ourselves. Building that provider requires Filament's `matc`, which this
+environment cannot obtain — it is the highest-priority next task.
+
+### Asset and rig inventory
+
+- `app/src/main/assets/models/female.glb` — 418,312 bytes, 1 mesh, 1 primitive
+  (POSITION/NORMAL/TEXCOORD_0, 16,560 indices), 2 metallic-roughness materials, **0 animations**,
+  **0 skins**, no morph targets, no extensions.
+- Generated avatars — produced by the native AvatarForge generator; the runtime test asserts live
+  vertex, triangle, **joint** and **blendshape** counts, so generated output is skinned and
+  morph-target capable. Clips are not authored.
+- Filament preview — `Animator` playback (`applyAnimation`, duration, seek) is implemented; it is
+  unreachable while the loader aborts.
+
+### Rendering path
+
+`AvatarForgeSurfaceView` (native OpenGL ES 3.x, our own GLB loader, pixel-verified) is the proven path
+and stays the default. The Filament path exists for features only Filament can provide (glTF clip
+playback, PBR materials, morph targets) and is blocked as described. No third renderer is being added.
+
+### Voice and conversation state
+
+Text chat is bounded multi-turn context against a local Ollama endpoint (`ChatTranscript`, 12 turns /
+24k characters). Voice is Android TTS with rate/pitch/voice control (`SpeechSettings`). The two do not
+share a conversation object, and nothing yet drives the face from speech. The unified controller the
+product needs — one identity, one history, explicit states (`IDLE`, `LISTENING`, `PROCESSING`,
+`RESPONDING`, `SPEAKING`, `INTERRUPTED`, `PAUSED`, `ERROR`) — does not exist yet.
+
+### Measured performance (emulator, not the phone)
+
+Cold start 1353 ms · frame 1080×1920 analysed post-launch · TOTAL PSS 133,929 KB (Java 18,112 KB,
+native 65,412 KB) · instrumentation suite 473 s · 150 monkey events with no crash. Frame rate on
+hardware has **not** been measured and is not claimed.
+
+### Implementation priorities, in order
+
+1. Prove or disprove the Filament loader on the SM-S921B; if it fails there too, build our own
+   `MaterialProvider` (needs `matc`) — this unblocks animation, expressions and lip-sync together.
+2. Build the unified conversation controller with explicit states, so chat and voice share one
+   identity and history.
+3. Drive the face from real speech timing: visemes or audio analysis, never arbitrary motion; blinking
+   and gaze as continuous behaviours, not effects.
+4. Add microphone capture and speech recognition behind a proper permission flow, then interruption
+   handling.
+5. Only then the optional call modes, and release hardening with signed artifacts.
+
+### Outstanding work, stated plainly
+
+No lip-sync, no blinking, no gaze, no expressions driven by conversation, no speech input, no shared
+conversation state, no phone-call mode, no signed release, no hardware measurement. The app installs,
+launches, draws and survives interaction; it is not yet the character experience described above, and
+nothing in this file claims otherwise.
 
 ### Toolchain
 
