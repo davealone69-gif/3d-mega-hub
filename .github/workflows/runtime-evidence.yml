@@ -95,11 +95,20 @@ jobs:
           cat apk-summary.md
 
       - name: Post the APK summary
-        if: always() && github.event_name == 'pull_request'
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-        run: gh pr comment "$PR" --body-file apk-summary.md
+          EVENT_PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          # A dispatch has no pull request in its payload, so look the branch's PR up instead. This
+          # keeps the evidence readable when the pull request is temporarily unmergeable, in which
+          # case GitHub stops scheduling pull_request workflows entirely.
+          PR="$EVENT_PR"
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
+          if [ -n "$PR" ]; then gh pr comment "$PR" --body-file apk-summary.md; else cat apk-summary.md; fi
 
       - name: Upload the APK
         if: always()
@@ -161,12 +170,16 @@ jobs:
           script: bash tools/ci/emulator_runtime_capture.sh
 
       - name: Post the runtime evidence
-        if: always() && github.event_name == 'pull_request'
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
+          PR="$EVENT_PR"
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
           if [ -s runtime-evidence/summary.md ]; then
             # Keep the comment well inside GitHub's size limit.
             head -c 55000 runtime-evidence/summary.md > runtime-comment.md
@@ -177,7 +190,7 @@ jobs:
               echo "Boot failures happen before the script runs, so there is no device-side detail to show."
             } > runtime-comment.md
           fi
-          gh pr comment "$PR" --body-file runtime-comment.md
+          if [ -n "$PR" ]; then gh pr comment "$PR" --body-file runtime-comment.md; else cat runtime-comment.md; fi
 
       - name: Upload the evidence
         if: always()
