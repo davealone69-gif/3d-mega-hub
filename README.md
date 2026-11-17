@@ -15,9 +15,12 @@ Production signing is BLOCKED until the release keystore gate is satisfied.
 | Kotlin build (both modules) | **GREEN** — `compileDebugKotlin` + `compileDebugUnitTestKotlin` pass in CI on `939f3a7` |
 | JVM unit tests | **GREEN — 46 tests** |
 | Native C++ regressions | **GREEN — 6/6 suites** under `g++ 12.2`, C++17, `-Wall -Wextra` |
-| Device / emulator execution | **NOT VERIFIED** — the `connectedDebugAndroidTest` lane is red at the instrumentation step |
+| Emulator execution | **VERIFIED for launch and drawing** — installed, cold-launched in 1353 ms, 93.6 % non-black 1080×1920 frame, 150 monkey events, zero crashes ([evidence](docs/RUNTIME_EVIDENCE_2026-11-17.md)) |
+| Instrumented renderer tests | **PARTIAL** — `GeneratedAvatarRuntimeTest` runs 4 tests and the first passes; the verdicts for the rest and the `AvatarForgeRendererSmokeTest` job are still being captured |
+| Physical device (SM-S921B) | **NOT VERIFIED** — no device run exists |
 | Filament live preview | **COMPILES**, unverified at runtime |
-| R8 / minified release build | **NOT VERIFIED** |
+| R8 / minified release build | compiles (`minifyReleaseWithR8` **PASS**); runtime **NOT VERIFIED** |
+| Debug APK | **BUILT** — `assembleDebug` passes and the APK installs on an emulator |
 | Production signing | **BLOCKED** by design |
 
 Work is on `arena/25bd4008-3d-mega-hub` and is proposed through

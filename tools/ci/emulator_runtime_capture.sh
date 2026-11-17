@@ -123,11 +123,18 @@ digest_instrumentation() {
 
   # Only the lines that carry a verdict; the full log stays in the artifacts.
   {
+    clean="$OUT/instrumentation-$(basename "$class").clean.txt"
+    tr -d '\r' < "$log_file" > "$clean"
     echo '```text'
-    grep -E "^INSTRUMENTATION_STATUS: test=|STATUS_CODE: -[0-9]" "$log_file" | sed 's/^INSTRUMENTATION_STATUS: //' | head -24
-    grep -E "^Time: |^OK \(|^FAILURES|^Tests run:|^INSTRUMENTATION_CODE|There (was|were) [0-9]+ failure" "$log_file" | head -8
-    echo '--- first failure detail ---'
-    grep -A6 -m1 -E "stack=|java\.lang\.AssertionError|^junit\.framework" "$log_file" | head -10
+    # One line per test verdict: START (code 1) and END (code 0/-1/-2) both appear.
+    grep -E "^INSTRUMENTATION_STATUS: (test=|stack=|class=)" "$clean" \
+      | sed 's/^INSTRUMENTATION_STATUS: //' | head -14
+    grep -E "^INSTRUMENTATION_STATUS_CODE: -?[0-9]+" "$clean" | sed 's/^/code /' | head -12
+    grep -E "^OK \(|^FAILURES|^Tests run:|^Time: |^INSTRUMENTATION_CODE|INSTRUMENTATION_RESULT" "$clean" | head -6
+    if grep -q "stack=" "$clean"; then
+      echo '--- first stack trace ---'
+      grep -m1 -A6 "stack=" "$clean" | head -8
+    fi
     echo '```'
   } >> "$SUMMARY"
 }
