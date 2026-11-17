@@ -8,3 +8,6 @@ local.properties
 /captures/
 *.jks
 *.keystore
+
+# Local Kotlin DSL/compiler cache
+.kotlin/

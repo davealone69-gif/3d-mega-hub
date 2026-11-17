@@ -25,9 +25,7 @@ import com.google.android.filament.gltfio.Gltfio
 import com.google.android.filament.gltfio.ResourceLoader
 import com.google.android.filament.gltfio.UbershaderProvider
 import com.davemega.hub.avatarforge.GlbValidator
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.InputStream
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 import kotlin.math.max
@@ -406,7 +404,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     else -> context.contentResolver.openInputStream(uri)
                         ?: error("Android could not open the selected GLB URI")
                 }
-                bytes = readBounded(stream, knownModelLength(uri))
+                bytes = BoundedGlbReader.read(stream, context.cacheDir, MAX_MODEL_BYTES)
                 if (bytes!!.isEmpty()) error("Selected GLB is empty")
                 GlbValidator.validate(bytes!!)
             } catch (error: Exception) {
@@ -428,62 +426,6 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     }
                 }
             }
-        }
-    }
-
-    /**
-     * Declared length of the model when the platform can report it without reading the stream.
-     * A `file:` URI always can; a content provider can often supply it through its descriptor.
-     */
-    private fun knownModelLength(uri: Uri?): Long? = when {
-        uri == null -> null
-        uri.scheme == "file" -> uri.path?.let { File(it).length() }?.takeIf { it > 0L }
-        else -> runCatching {
-            context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
-                descriptor.length.takeIf { it > 0L }
-            }
-        }.getOrNull()
-    }
-
-    /**
-     * Reads at most MAX_MODEL_BYTES of GLB into one contiguous array.
-     *
-     * When the length is known this allocates exactly once. The previous implementation always
-     * accumulated into a ByteArrayOutputStream and then copied again in toByteArray(), so peak
-     * memory was roughly twice the asset size; that doubling is what produced the CI emulator's
-     * `OutOfMemoryError` while allocating 134,217,744 bytes while parsing the generated GLB. The
-     * streaming fallback keeps the bounded-growth path for providers that cannot report a length.
-     */
-    private fun readBounded(input: InputStream, knownLength: Long? = null): ByteArray {
-        input.use { source ->
-            val declared = knownLength?.takeIf { it in 1L..MAX_MODEL_BYTES }
-            if (declared != null) {
-                val buffer = ByteArray(declared.toInt())
-                var offset = 0
-                while (offset < buffer.size) {
-                    val count = source.read(buffer, offset, buffer.size - offset)
-                    if (count < 0) break
-                    offset += count
-                }
-                if (offset < buffer.size) return buffer.copyOf(offset)
-                require(source.read() < 0) {
-                    "GLB is larger than its declared ${declared / (1024L * 1024L)} MiB size"
-                }
-                return buffer
-            }
-            val output = ByteArrayOutputStream()
-            val buffer = ByteArray(64 * 1024)
-            var total = 0L
-            while (true) {
-                val count = source.read(buffer)
-                if (count < 0) break
-                total += count
-                require(total <= MAX_MODEL_BYTES) {
-                    "GLB exceeds the viewer's ${MAX_MODEL_BYTES / (1024L * 1024L)} MiB safety limit"
-                }
-                output.write(buffer, 0, count)
-            }
-            return output.toByteArray()
         }
     }
 

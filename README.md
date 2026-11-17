@@ -552,4 +552,47 @@ Do not mark avatar quality improved without matched before/after GLB and rendere
 Do not distribute or label either artifact as the first READY APK. The production generated-GLB-to-GLES SurfaceView test must pass on one exact current head, all required Android build jobs must pass, and the APK artifact from that same SHA must again be downloaded and inspected. The imported-GLB OOM is a separate failure worth fixing, but it cannot replace the production generated-GLB gate.
 
 This README evidence update creates a new branch commit. Consequently, all run and APK evidence above applies **only** to `7b19ca760ac529f2f157ae1bc516a3d0333029b6`; it must not be carried forward as proof for the new README commit. Fresh Actions runs and a fresh artifact are required for the new exact branch head. No application source was changed, `main` was not modified, and PR #9 was not merged.
-\n\n## Cross-project reuse audit — 2026-11-15\n\nSee [the branch and private-repository reuse audit](docs/PROJECT_REUSE_AUDIT_2026-11-15.md). AvatarForge's standalone engine has a real adult-only unclothed base surface in source, but this Hub UI still selects `Outfit.JEANS_JACKET` and does not expose the adult confirmation gate. The closest real 3D-video donor is 3DDD's Filament `MediaCodec`/`MediaMuxer` exporter; its camera update and per-frame animation sampling need correction before reuse. No detailed anatomical mesh donor was found. The prepared Dropbox rig remains **UNVERIFIED** until its binary is inspected.\n
+
+
+## Cross-project reuse audit — 2026-11-15
+
+See [the branch and private-repository reuse audit](docs/PROJECT_REUSE_AUDIT_2026-11-15.md). AvatarForge's standalone engine has a real adult-only unclothed base surface in source, but this Hub UI still selects `Outfit.JEANS_JACKET` and does not expose the adult confirmation gate. The closest real 3D-video donor is 3DDD's Filament `MediaCodec`/`MediaMuxer` exporter; its camera update and per-frame animation sampling need correction before reuse. No detailed anatomical mesh donor was found. The prepared Dropbox rig remains **UNVERIFIED** until its binary is inspected.
+
+## Bounded GLB import allocation fix (2026-11-17)
+
+- Replaced the in-memory `ByteArrayOutputStream` accumulation path with `BoundedGlbReader`: the input is streamed to a bounded app-cache spool, then read into one exact-sized byte array. The configured 128 MiB import ceiling remains enforced; empty and oversized input are rejected and the temporary file is removed on success or failure.
+- Added JVM regression tests for exact byte preservation, oversized/empty rejection and temporary-file cleanup. Corrected the native sampling test's `REGION_HAIR` reference to its namespaced enum.
+- Exact-head `testDebugUnitTest` was started for this working tree; its result must be recorded from the completed Gradle output. No phone runtime or generated-avatar render pass is claimed. The earlier imported-GLB OOM remains a separate required gate until the exact-head test and emulator/device evidence pass.
+- Root `.kotlin/` is a local generated cache and is ignored, not committed.
+
+## Exact-head Android test APK readiness monitor (2026-11-17)
+
+**Decision: NOT READY.** PR #9 remains open against `main`. At inspection, PR head and `integration/avatarforge-renderer-port` both resolved to `37561b19f266cd1d0d7d849b6441c47e2456121e`. The complete Actions run query for this SHA returned two runs, both push-triggered:
+
+- [Android CI run 43957608408](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43957608408) — overall **FAILURE**.
+  - Native C++ sampling regression, job `133616261791`: **PASS**.
+  - Unit tests, job `133616262204`: **PASS**.
+  - Android lint, job `133616262287`: **PASS**.
+  - Release R8/minification, job `133616262477`: **PASS**.
+  - Debug APK build, job `133616262558`: **PASS**.
+  - AvatarForge GLES GLB render smoke, job `133616262483`: **FAIL**. Job log records `AvatarForgeRendererSmokeTest#generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels` failed, followed by “Instrumentation run failed due to Process crashed.” The available log does not identify a more specific fatal cause. This job runs the separate renderer-smoke test class; it is not evidence that the required dedicated `GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` passed.
+- [Release preview and Android emulator smoke run 43957608293](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43957608293) — overall **SUCCESS**.
+  - Signed release preview with a one-run ephemeral CI key, job `133616200164`: **PASS**.
+  - Emulator install/launch smoke, job `133616200821`: **PASS**. This is not the production render-test gate and the ephemeral signing key is not a retained production identity.
+
+### Exact-SHA artifacts
+
+- Fresh debug APK artifact [14271344075](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43957608408/artifacts/14271344075) was produced by the Debug APK build job for this exact SHA.
+- Fresh signed-preview artifact [14271949045](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43957608293/artifacts/14271949045) was produced by the release-preview run for this exact SHA.
+- Renderer diagnostic evidence artifact [14274450108](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/43957608408/artifacts/14274450108) was uploaded by the failed renderer job.
+- These artifacts are not a READY APK. The APK binaries have not been downloaded and inspected for package ID, signing certificate/signature and APK SHA-256 because the mandatory production render test did not pass.
+
+### Mandatory production render test: missing on this SHA
+
+The required test exists in source as `GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView`. The dedicated diagnostic workflow contains a step that invokes this exact method, and the generated-runtime workflow invokes the containing test class. **Neither workflow has a run associated with this exact SHA.** The full exact-head Actions run list contains only the two runs above. The available imported-GLB/GLES smoke failure and successful emulator launch cannot substitute for the missing production generated-GLB-to-GLES SurfaceView result.
+
+### Decision and next check
+
+**NOT READY:** the required production test has no exact-head run/pass, and the Android CI renderer smoke job failed. All ordinary build jobs passed and fresh exact-head APK artifacts exist, but neither fact overrides the missing/failed render gate. Do not distribute either artifact as the first READY APK. No APK signing identity or APK digest has been independently inspected for this head.
+
+This monitor update is documentation-only. It does not modify application source, merge PR #9, or modify `main`. The README commit itself will create a new branch head and invalidates all evidence above as proof for that new head; the next check must fetch the new exact PR/branch SHA and inspect only its associated workflow runs and artifacts.
