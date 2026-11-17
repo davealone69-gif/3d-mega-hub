@@ -13,6 +13,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   native-regression:
@@ -136,3 +137,68 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  runtime-evidence:
+    name: App install, launch and runtime evidence (instrumented-adjacent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "emulator platform-tools platforms;android-30 platforms;android-36 build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1"
+          accept-android-sdk-licenses: true
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+      - name: Build app and test APKs
+        run: ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest --console=plain
+      - name: Enable KVM hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install, launch and capture runtime evidence
+        id: capture
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swangle -memory 4096 -cores 2 -no-snapshot -wipe-data
+          emulator-boot-timeout: 900
+          disable-animations: true
+          script: bash tools/ci/emulator_runtime_capture.sh
+      - name: Post the runtime evidence as a pull request comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          PR="$EVENT_PR"
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
+          if [ -s runtime-evidence/summary.md ]; then
+            head -c 55000 runtime-evidence/summary.md > runtime-comment.md
+          else
+            {
+              echo "### Runtime evidence"
+              echo
+              echo "The capture script produced nothing, so the emulator never booted; that happens before any device-side step runs."
+            } > runtime-comment.md
+          fi
+          if [ -n "$PR" ]; then gh pr comment "$PR" --body-file runtime-comment.md; else cat runtime-comment.md; fi
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-evidence
+          path: runtime-evidence/
+          if-no-files-found: warn
+          retention-days: 14
