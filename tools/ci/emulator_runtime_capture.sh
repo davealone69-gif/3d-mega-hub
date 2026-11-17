@@ -138,7 +138,9 @@ digest_instrumentation() {
     {
       echo '```text'
       grep -E "gltfio|glTF|cgltf|Unable to parse|Precondition|Panic|Abort message|Fatal signal|FATAL EXCEPTION|UnsatisfiedLink|av_avatar" \
-        "$OUT/logcat-$slug.clean.txt" | head -25
+        "$OUT/logcat-$slug.clean.txt" | head -15
+      echo '--- message continuation (the panic text wraps) ---'
+      grep -A4 -m1 -E "uncaught exception|Abort message" "$OUT/logcat-$slug.clean.txt" | head -8
       echo '--- process death ---'
       grep -E "am_proc_died|Force finishing|Process $APP_ID|died" "$OUT/logcat-$slug.clean.txt" | head -5
       echo '```'
@@ -179,8 +181,8 @@ sleep 2
   for t in $(adb shell ls -t /data/tombstones/tombstone_* 2>/dev/null | head -1 | tr -d '\r'); do
     echo "--- $t ---"
     adb shell cat "$t" 2>/dev/null \
-      | grep -E "^pid:|^signal|^Abort message|Abort message:|^backtrace:|#0[0-9] pc" \
-      | head -20
+      | grep -A4 -E "^pid:|^signal|^Abort message|^backtrace:|#0[0-9] pc" \
+      | head -28
   done
   echo '```'
 } >> "$SUMMARY" 2>&1
