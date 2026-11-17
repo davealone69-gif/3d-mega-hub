@@ -83,6 +83,23 @@ share a conversation object, and nothing yet drives the face from speech. The un
 product needs — one identity, one history, explicit states (`IDLE`, `LISTENING`, `PROCESSING`,
 `RESPONDING`, `SPEAKING`, `INTERRUPTED`, `PAUSED`, `ERROR`) — does not exist yet.
 
+### Latest verified build and runtime evidence
+
+| Item | Value |
+| --- | --- |
+| Branch / commit | `arena/25bd4008-3d-mega-hub` @ `d3a1a25` |
+| Variant | debug (`assembleDebug`) |
+| APK size | 72,437,192 bytes |
+| APK SHA-256 | `3883ad35ae44625f1a3ff199f717ac305958b193500207aac25ca267ba179e1b` (that run's artifact; builds are not byte-reproducible, so this identifies one artifact, not a reproducible hash) |
+| Signer | `C=US, O=Android, CN=Android Debug` — SHA-256 `3481f500ef4b1aeff33fbbdf2fdc57640152a2947067be57ac9824b5d6540ec9` |
+| Native libraries packaged | 22 |
+| Compile + unit tests + lint + R8 | PASS (46 JVM tests) |
+| Install and launch | PASS on emulator; cold start 1353 ms |
+| Generated-avatar render gate | PASS, `OK (4 tests)` in 473 s |
+
+Evidence lives in PR #14 comments, because this repository's workflow logs and artifacts are served
+from hosts that are not always reachable.
+
 ### Measured performance (emulator, not the phone)
 
 Cold start 1353 ms · frame 1080×1920 analysed post-launch · TOTAL PSS 133,929 KB (Java 18,112 KB,
