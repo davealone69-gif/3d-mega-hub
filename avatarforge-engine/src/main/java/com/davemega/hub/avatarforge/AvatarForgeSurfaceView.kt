@@ -206,6 +206,9 @@ class AvatarForgeSurfaceView(
         if (renderThread === previous) renderThread = null
         if (!running.compareAndSet(false, true)) return
         val worker = Thread({
+            /* Everything below is measured against this, so first-frame latency includes the wait for a
+               surface and the GLB import rather than starting from the first frame's own clock. */
+            val workerStartedAt = System.nanoTime()
             var nativeHandle = 0L
             var failureStatus: String? = null
             try {
@@ -215,7 +218,12 @@ class AvatarForgeSurfaceView(
                 if (!running.get() || !surfaceReady) return@Thread
                 check(glbFile.isFile && glbFile.length() > 0L) { "Selected GLB is not available in app storage." }
                 Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight}")
+                /* nativeCreate is the whole load: it reads the GLB from that path in C++, parses it,
+                   uploads the geometry and builds the shaders. Timing it is what makes "load duration"
+                   a measurement of the production path instead of an estimate. */
+                val createStartedAt = System.nanoTime()
                 nativeHandle = nativeCreate(surfaceHolder.surface, glbFile.absolutePath, max(1, surfaceWidth), max(1, surfaceHeight))
+                measuredLoadDurationMs = (System.nanoTime() - createStartedAt) / 1_000_000L
                 check(nativeHandle != 0L) { "AvatarForge native renderer returned a null session." }
                 val rendererInfo = nativeGetInfo(nativeHandle)
                 check(rendererInfo.startsWith("gles31|")) {
@@ -228,6 +236,10 @@ class AvatarForgeSurfaceView(
                 var lastWidth = surfaceWidth
                 var lastHeight = surfaceHeight
                 var reportedFrame = false
+                var frameCount = 0L
+                var frameTimeTotalMs = 0.0
+                var frameTimeMaxMs = 0.0
+                var firstPresentedAtNanos = 0L
                 val frameWaitStarted = System.nanoTime()
                 while (running.get() && surfaceReady) {
                     val width = surfaceWidth
@@ -271,6 +283,30 @@ class AvatarForgeSurfaceView(
                     val outsideCorners = stats[6]
                     val glError = stats[7]
                     val eglError = stats[8]
+                    /* Real per-frame cost: nativeRender plus the stats read. The pacing sleep further
+                       down is excluded on purpose - it is the 60 fps frame limiter, not the renderer,
+                       and including it would report the limit as the frame time. */
+                    val frameEndedAt = System.nanoTime()
+                    val frameMillis = (frameEndedAt - now) / 1_000_000.0
+                    frameCount += 1L
+                    frameTimeTotalMs += frameMillis
+                    if (frameMillis > frameTimeMaxMs) frameTimeMaxMs = frameMillis
+                    measuredFrameCount = frameCount
+                    measuredFrameTimeAvgMs = frameTimeTotalMs / frameCount
+                    measuredFrameTimeMaxMs = frameTimeMaxMs
+                    if (firstPresentedAtNanos == 0L && presentedThisFrame && framePresented) {
+                        firstPresentedAtNanos = frameEndedAt
+                        measuredFirstFrameLatencyMs = (frameEndedAt - workerStartedAt) / 1_000_000L
+                    }
+                    if (firstPresentedAtNanos != 0L && presentedFrames > 0) {
+                        /* Measured over the window since the first presented frame, so the startup
+                           frames that were not presented do not drag the rate down. */
+                        val presentedSeconds = (frameEndedAt - firstPresentedAtNanos) / 1_000_000_000.0
+                        /* 10 ms, not 50: the smoke test asserts this rate exists once three frames have
+                           been presented, and a threshold near the pacing interval would make that
+                           assertion depend on a race instead of on the renderer. */
+                        if (presentedSeconds > 0.01) measuredFps = presentedFrames / presentedSeconds
+                    }
                     if (!reportedFrame) {
                         if (presentedThisFrame && framePresented && presentedFrames >= 3 && drawCalls > 0 && triangles > 0 && boundsInFrustum) {
                             reportedFrame = true
@@ -327,6 +363,26 @@ class AvatarForgeSurfaceView(
         worker.start()
     }
 
+    /* Real measurements from the render loop, written into both the SharedPreferences record and the
+       durable JSON report.
+
+       Every one of these is nullable, and null means "not measured" - never zero. A frame time of 0 ms
+       and an absent frame time are different claims, and reporting the second as the first is how a
+       renderer that never presented a frame ends up looking like one that presented it instantly. The
+       JSON writes org.json.JSONObject.NULL for these so the distinction survives into the artifact.
+
+       gpuMemoryBytes and textureMemoryBytes are deliberately NOT here. GLES 3.1 exposes no portable
+       query for either, so there is nothing honest to put in them; inventing a figure from
+       Debug.getNativeHeapAllocatedSize would report the whole process and call it the GPU. The decoded
+       texture memory a generated avatar needs is known on the generating side instead - 68.00 MiB for
+       the diagnostic's seed-1337 avatar, from af_engine_stats.texture_bytes - and is recorded there. */
+    @Volatile private var measuredLoadDurationMs: Long? = null
+    @Volatile private var measuredFirstFrameLatencyMs: Long? = null
+    @Volatile private var measuredFrameTimeAvgMs: Double? = null
+    @Volatile private var measuredFrameTimeMaxMs: Double? = null
+    @Volatile private var measuredFps: Double? = null
+    @Volatile private var measuredFrameCount: Long = 0L
+
     private fun recordSmokeResult(
         status: String,
         apiVersion: String = "",
@@ -343,7 +399,11 @@ class AvatarForgeSurfaceView(
         error: String = ""
     ) {
         val preferences = context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE)
-        preferences.edit()
+        /* A named editor rather than a chained `.apply { }` block: SharedPreferences.Editor has its own
+           apply() method, and while overload resolution does pick Kotlin's stdlib extension when a lambda
+           is passed, spelling it out removes the ambiguity instead of depending on it. */
+        val editor = preferences.edit()
+        editor
             .putString("status", status)
             .putString("api_version", apiVersion)
             .putInt("frames", frames)
@@ -358,7 +418,22 @@ class AvatarForgeSurfaceView(
             .putString("screenshot_path", screenshotPath)
             .putString("error", error)
             .putLong("updated_at_epoch_ms", System.currentTimeMillis())
-            .commit()
+        /* Removed when not measured, so a value left over from an earlier run in the same process cannot
+           be read as this run's result. Integers are scaled because SharedPreferences has no float-free
+           way to keep sub-millisecond precision: fps_milli is frames per second times 1000 and
+           frame_time_*_us are microseconds. */
+        val load = measuredLoadDurationMs
+        if (load != null) editor.putLong("load_duration_ms", load) else editor.remove("load_duration_ms")
+        val firstFrame = measuredFirstFrameLatencyMs
+        if (firstFrame != null) editor.putLong("first_frame_latency_ms", firstFrame) else editor.remove("first_frame_latency_ms")
+        val frameTimeAvg = measuredFrameTimeAvgMs
+        if (frameTimeAvg != null) editor.putLong("frame_time_avg_us", (frameTimeAvg * 1000.0).toLong()) else editor.remove("frame_time_avg_us")
+        val frameTimeMax = measuredFrameTimeMaxMs
+        if (frameTimeMax != null) editor.putLong("frame_time_max_us", (frameTimeMax * 1000.0).toLong()) else editor.remove("frame_time_max_us")
+        val fps = measuredFps
+        if (fps != null) editor.putLong("fps_milli", (fps * 1000.0).toLong()) else editor.remove("fps_milli")
+        editor.putLong("measured_frame_count", measuredFrameCount)
+        editor.commit()
 
         // Keep a durable, machine-readable report in Downloads, not only SharedPreferences.
         val report = org.json.JSONObject()
@@ -385,6 +460,21 @@ class AvatarForgeSurfaceView(
             .put("screenshotDownloadsUri", preferences.getString("downloads_screenshot_uri", null))
             .put("error", error)
             .put("downloadsDirectory", DiagnosticDownloads.locationLabel())
+            /* null, not 0: these are the measurements the renderer either took or did not. */
+            .put("loadDurationMs", measuredLoadDurationMs ?: org.json.JSONObject.NULL)
+            .put("firstFrameLatencyMs", measuredFirstFrameLatencyMs ?: org.json.JSONObject.NULL)
+            .put("frameTimeAvgMs", measuredFrameTimeAvgMs ?: org.json.JSONObject.NULL)
+            .put("frameTimeMaxMs", measuredFrameTimeMaxMs ?: org.json.JSONObject.NULL)
+            .put("fps", measuredFps ?: org.json.JSONObject.NULL)
+            .put("measuredFrameCount", measuredFrameCount)
+            .put("gpuMemoryBytes", org.json.JSONObject.NULL)
+            .put("textureMemoryBytes", org.json.JSONObject.NULL)
+            .put("measurementNotes", "gpuMemoryBytes and textureMemoryBytes are null because GLES 3.1 " +
+                "exposes no portable query for either; they are reported as absent rather than as 0. " +
+                "loadDurationMs covers nativeCreate, which imports the GLB and uploads it. " +
+                "firstFrameLatencyMs is render-thread start to the first EGL-presented frame. " +
+                "frameTime* cover nativeRender plus the stats read, and include the software " +
+                "rasterizer's cost when running under -gpu swangle.")
         runCatching {
             val uri = DiagnosticDownloads.save(
                 context,

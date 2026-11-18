@@ -113,6 +113,21 @@ class AvatarForgeRendererSmokeTest {
             apiVersion.matches(Regex("OpenGL ES 3\\.[1-9].*")))
         assertTrue("Generated avatar had fewer than three successful EGL swaps",
             prefs.getInt("presented_frames", 0) >= 3)
+        /* These four are the renderer's own measurements of how long it took, and the sentinel is -1
+           rather than 0 on purpose: an absent key must fail this test, because a measurement that was
+           never taken and one that came out zero are different claims, and reporting the first as the
+           second is exactly how a renderer that never presented a frame looks instantaneous. */
+        fun measuredMillis(name: String): Long = prefs.getLong(name, -1L)
+        assertTrue("Generated avatar did not report a real GLB load duration (load_duration_ms absent or zero)",
+            measuredMillis("load_duration_ms") > 0L)
+        assertTrue("Generated avatar did not report a real first-frame latency (first_frame_latency_ms absent or zero)",
+            measuredMillis("first_frame_latency_ms") > 0L)
+        assertTrue("Generated avatar did not report a real frame time (frame_time_avg_us absent or zero)",
+            measuredMillis("frame_time_avg_us") > 0L)
+        assertTrue("Generated avatar did not report a real frame rate (fps_milli absent or zero)",
+            measuredMillis("fps_milli") > 0L)
+        assertTrue("Generated avatar measured no frames at all (measured_frame_count absent or zero)",
+            measuredMillis("measured_frame_count") > 0L)
         assertTrue("Generated avatar produced no triangles", prefs.getInt("triangles", 0) > 0)
         assertTrue("Generated avatar bounds were outside the frustum",
             prefs.getBoolean("bounds_in_frustum", false))
