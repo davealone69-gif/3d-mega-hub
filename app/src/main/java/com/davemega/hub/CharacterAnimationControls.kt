@@ -19,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +68,9 @@ internal fun CharacterAnimationControls(
                         val selected = clip != null && clip.index == playback.selectedIndex
                         val modifier = Modifier.weight(1f).semantics {
                             contentDescription = "${shortcut.label} animation"
+                            // The description can be exposed as a separate accessibility node;
+                            // mirror the disabled state there as well as on the Material button.
+                            if (clip == null) disabled()
                         }
                         if (selected) {
                             Button(onClick = { clip?.let { onSelectClip(it.index) } }, enabled = clip != null, modifier = modifier) {

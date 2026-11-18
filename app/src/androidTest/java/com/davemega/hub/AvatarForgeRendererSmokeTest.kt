@@ -273,16 +273,30 @@ class AvatarForgeRendererSmokeTest {
             val visible = Rect()
             return view is SurfaceView && view.isAttachedToWindow && view.isShown &&
                 view.width > 100 && view.height > 100 && view.getGlobalVisibleRect(visible) &&
-                visible.width() > 0 && visible.height() > 0 && view.holder.surface.isValid
+                visible.width() >= view.width * 0.8f && visible.height() >= view.height * 0.8f &&
+                view.holder.surface.isValid
         }
         val scrollDeadline = SystemClock.elapsedRealtime() + 30_000L
         var viewport = findAvatarForgeSurface(activity.window.decorView)
         while (!viewportReady(viewport) && SystemClock.elapsedRealtime() < scrollDeadline) {
             val visible = Rect()
-            if (viewport == null || !viewport.getGlobalVisibleRect(visible)) {
+            val position = IntArray(2)
+            viewport?.getLocationOnScreen(position)
+            val hasVisibleRect = viewport?.getGlobalVisibleRect(visible) == true
+            val sufficientlyVisible = viewport != null && hasVisibleRect &&
+                viewport.width > 100 && viewport.height > 100 &&
+                visible.width() >= viewport.width * 0.8f && visible.height() >= viewport.height * 0.8f
+            if (!sufficientlyVisible) {
+                val scrollTowardTop = when {
+                    viewport == null -> true
+                    !hasVisibleRect -> position[1] < device.displayHeight / 2
+                    else -> (visible.top - position[1]) > (position[1] + viewport.height - visible.bottom)
+                }
                 val width = device.displayWidth
                 val height = device.displayHeight
-                device.swipe(width / 2, (height * 0.30f).toInt(), width / 2, (height * 0.78f).toInt(), 18)
+                val start = if (scrollTowardTop) 0.42f else 0.62f
+                val end = if (scrollTowardTop) 0.62f else 0.42f
+                device.swipe(width / 2, (height * start).toInt(), width / 2, (height * end).toInt(), 18)
             }
             SystemClock.sleep(400L)
             viewport = findAvatarForgeSurface(activity.window.decorView)

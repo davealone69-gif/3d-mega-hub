@@ -145,8 +145,8 @@ class CharacterAnimationSmokeTest {
             findVisible(device, By.text("Animate your character"))
             assertTrue("The static sample should explain why animation is unavailable",
                 device.wait(Until.hasObject(By.textContains("This model has no animation clips")), 60_000))
-            assertFalse(findVisible(device, By.desc("Walk animation")).isEnabled)
-            assertFalse(findVisible(device, By.text("Play")).isEnabled)
+            assertFalse("Static sample Walk shortcut should be disabled", findVisible(device, By.desc("Walk animation")).isEnabled)
+            assertFalse("Static sample Play control should be disabled", findVisible(device, By.text("Play")).isEnabled)
         } finally {
             instrumentation.runOnMainSync { activity.finish() }
             prefs.edit().apply {
