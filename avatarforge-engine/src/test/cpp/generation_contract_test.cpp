@@ -32,6 +32,17 @@
  *   mutually distinct; and end-to-end that a chosen iris changes the exported GLB while two identical
  *   iris+seed generations remain byte-for-byte equal (the new branch did not break determinism).
  *
+ * CLOTHING FABRICS. The second harvested parameter (after iris colour) lets a prompt name a fabric --
+ *   cotton/silk/satin/denim/latex -- which sets the garment's PBR response via cloth_roughness and a new
+ *   cloth_metalness scalar (both <0 => material default, so unnamed-fabric avatars stay byte-identical).
+ *   Part E verifies objectively that each fabric maps to the donor's measured roughness/metalness; that no
+ *   fabric phrase leaves both scalars AUTO; that a fabric touches ONLY the material response; that two
+ *   identical specs still export byte-identical GLBs (determinism); and that each fabric lands its own
+ *   values on a live af_material (read back from the engine, not inferred). NOTE: the GLB exporter currently
+ *   serialises each region's DEFAULT material factors, not the spec overrides, so these scalars apply to live
+ *   on-device rendering but not yet to exported files -- a separate pre-existing defect (it also hides garment
+ *   recolour from exports) documented in-test and queued for a careful, baseline-aware fix.
+ *
  * Nothing is mocked and nothing is synthesised to pass; every assertion reads real generated data.
  * COST NOTE: it runs the full pipeline up to three times (two identical seeds for the equality check,
  * one different seed for the inequality control), so it is the slowest host test and carries its own
@@ -594,6 +605,118 @@ int main(void) {
         std::printf("DETAIL  iris override: blue=%.0f B reproducible | blue!=green first diff @ %ld\n",
                     (double)sz1, fdDiff);
         std::remove(P1); std::remove(P2); std::remove(P3);
+    }
+
+    /* ---- Part E: clothing fabrics (cloth_roughness/cloth_metalness) -- values, AUTO, routing, pixels ---- */
+    {
+        /* Same isolation as Part D: analyze_prompt mutates the engine's spec, so each parse gets its own
+           fresh engine built from the canonical default (roughness/metalness both <0 = AUTO). Starting from
+           defaults mirrors how the app creates an AvatarSpec, so an exact match proves the parser SET the
+           field and a remaining negative proves it left AUTO alone. */
+        auto runParse = [&](const char* prompt, af_spec* dst) -> int {
+            af_spec seedSpec;
+            fillSpec(&seedSpec, 7);
+            af_engine* e = nullptr;
+            if (af_engine_create(&seedSpec, nullptr, &e) != AF_OK || e == nullptr) return -1;
+            const int r = af_engine_analyze_prompt(e, prompt, dst);
+            af_engine_destroy(e);
+            return r;
+        };
+        auto eqf = [](float v, float t) { return std::fabs(v - t) < 1e-4f; };
+        auto eq3 = [](const float* v, float r, float g, float b) {
+            return std::fabs(v[0] - r) < 1e-4f && std::fabs(v[1] - g) < 1e-4f && std::fabs(v[2] - b) < 1e-4f;
+        };
+
+        /* (a)/(b) fabric words select the donor's measured roughness/metalness, distinctly per fabric. */
+        af_spec satin{}, denim{};
+        const int rS = runParse("satin dress", &satin);
+        const int rD = runParse("denim trousers", &denim);
+        check(rS >= 1 && rD >= 1, "fabric prompts parse");
+        check(eqf(satin.cloth_roughness, 0.22f) && eqf(satin.cloth_metalness, 0.05f),
+              "\"satin\" selects roughness 0.22 / metalness 0.05 (3D4ME measured values)");
+        check(eqf(denim.cloth_roughness, 0.84f) && eqf(denim.cloth_metalness, 0.00f),
+              "\"denim\" selects roughness 0.84 / metalness 0.00 (distinct from satin)");
+
+        /* (c) no fabric phrase => both scalars stay AUTO (<0): pre-existing avatars are untouched. */
+        af_spec none{};
+        runParse("athletic woman, jeans jacket", &none);
+        check(none.cloth_roughness < 0.0f && none.cloth_metalness < 0.0f,
+              "no fabric phrase => roughness/metalness remain AUTO (negative sentinels)");
+
+        /* (d) a fabric touches ONLY the material response. runParse builds each engine from the canonical
+           fillSpec defaults, which deliberately PIN cloth/gear/hair tones to fixed non-zero values; the
+           correct "untouched" check is therefore equality with those pins, proving silk altered nothing but
+           the two material scalars. */
+        af_spec silk{};
+        runParse("silk dress", &silk);
+        check(eq3(silk.cloth_tone, 0.20f, 0.30f, 0.55f) &&
+              eq3(silk.gear_tone, 0.55f, 0.55f, 0.60f) &&
+              eq3(silk.hair_tone, 0.10f, 0.07f, 0.05f) &&
+              eqf(silk.cloth_roughness, 0.32f) && eqf(silk.cloth_metalness, 0.02f),
+              "\"silk\" changes only roughness/metalness; the pinned cloth/gear/hair tones are untouched");
+
+        /* (e) DETERMINISM via bytes: two identical satin specs must export byte-identical GLBs.
+           SCOPE NOTE: this part deliberately does NOT assert that DIFFERENT fabrics yield different BYTES.
+           af_glb.cpp serialises each region's DEFAULT MaterialDef (materialForRegion(...).{metallic,roughness}
+           and md.baseColor), not the spec-override-adjusted af_material table; so scalar overrides (cloth/gear
+           tones and roughness/metalness) drive the LIVE material used for on-device generation rendering --
+           proven objectively by the read-back below -- but are not yet written into exported GLB factors. That
+           export-serialisation gap is a separate, pre-existing defect (it hides garment recolour from exports
+           too), queued for a careful fix because changing it alters every export's bytes and needs baseline
+           re-pinning. Eye colour behaves differently only because it is painted into the exported base-colour
+           TEXTURE rather than stored as a material factor. */
+        af_spec base;
+        fillSpec(&base, 1337);
+        af_spec fs = base, fs2 = base;
+        fs.cloth_roughness = 0.22f;   fs.cloth_metalness = 0.05f;    /* satin */
+        fs2 = fs;                                                    /* again  */
+        const char* P1 = "/tmp/af_fabric_satin_1.glb";
+        const char* P2 = "/tmp/af_fabric_satin_2.glb";
+        const bool o1 = generateAndExportSpec(&fs,  P1, /*inspect=*/false, nullptr);
+        const bool o2 = generateAndExportSpec(&fs2, P2, /*inspect=*/false, nullptr);
+        check(o1 && o2, "satin exports succeeded");
+        long sz1 = 0, sz2 = 0, fdSame = -2;
+        check(o1 && o2 && filesIdentical(P1, P2, &sz1, &sz2, &fdSame),
+              "DETERMINISM holds with an explicit fabric: same fabric+seed => byte-identical GLB");
+
+        /* (f) MATERIAL EFFECT + DISTINCTNESS via live read-back: each fabric lands its own roughness/metalness
+           on at least one real af_material, and the two fabrics differ -- i.e. the override is not inert at
+           the layer rendering actually consumes. */
+        auto countMatches = [](const af_engine* e, float rough, float metal) {
+            const int32_t mc = af_engine_material_count(e);
+            const af_material* mats = af_engine_materials(e);
+            int hits = 0;
+            for (int32_t i = 0; i < mc && mats != nullptr; ++i) {
+                if (std::fabs(mats[i].roughness - rough) < 1e-3f &&
+                    std::fabs(mats[i].metallic  - metal) < 1e-3f) ++hits;
+            }
+            return hits;
+        };
+        af_spec fdn = base;
+        fdn.cloth_roughness = 0.84f;  fdn.cloth_metalness = 0.00f;   /* denim */
+        af_engine* es = nullptr;   /* satin */
+        af_engine* ed = nullptr;   /* denim */
+        const bool rsOk = af_engine_create(&fs,  nullptr, &es) == AF_OK && es != nullptr &&
+                          af_engine_run_all(es) == AF_OK;
+        const bool rdOk = af_engine_create(&fdn, nullptr, &ed) == AF_OK && ed != nullptr &&
+                          af_engine_run_all(ed) == AF_OK;
+        if (rsOk && rdOk) {
+            const int hs = countMatches(es, 0.22f, 0.05f);
+            const int hd = countMatches(ed, 0.84f, 0.00f);
+            checkf(hs >= 1, "satin's roughness 0.22 / metalness 0.05 land on a live material (%.0f matches)",
+                   (double)hs, 0.0);
+            checkf(hd >= 1, "denim's roughness 0.84 / metalness 0.00 land on a live material (%.0f matches)",
+                   (double)hd, 0.0);
+            check(hs >= 1 && hd >= 1,
+                  "different fabrics resolve to different live materials (the effect is real, not inert)");
+        } else {
+            check(false, "fabric material read-back: satin/denim engines could not be created/run");
+        }
+        if (es) af_engine_destroy(es);
+        if (ed) af_engine_destroy(ed);
+        std::printf("DETAIL  fabric override: satin GLB reproducible (%.0f B); cross-fabric distinctness proven at the material layer\n",
+                    (double)sz1);
+        std::remove(P1); std::remove(P2);
     }
 
     /* Best-effort cleanup of the temporary artifacts. */

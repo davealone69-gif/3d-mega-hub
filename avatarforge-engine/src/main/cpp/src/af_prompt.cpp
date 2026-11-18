@@ -261,6 +261,24 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
         const std::string& w = words[i].text;
         float rgb[3];
 
+        /* ---- fabrics (checked first) ----
+           A clothing-fabric word sets the garment's PBR response (roughness/metalness) from the donor's
+           measured values, independent of colour or outfit. It is detected at the TOP of the loop so a
+           same-word noun rule below cannot shadow it: "denim" is also the jeans keyword, so for it we set
+           the material but do NOT consume the token -- letting it flow on to take its jeans-outfit role too
+           ("denim trousers" reads as denim-finished jeans). Every other fabric is purely a material word and
+           is consumed here. Moving this ahead of the noun rules changes nothing for cotton/silk/satin/latex
+           (they have no competing meaning) and only ADDS the correct denim material where it was missing. */
+        {
+            float fr = 0.0f, fm = 0.0f;
+            if (fabricValuesFor(w, &fr, &fm)) {
+                spec->cloth_roughness = fr;
+                spec->cloth_metalness = fm;
+                record(out, w, "fabric", &matched);
+                if (w != "denim") continue;   /* denim keeps its jeans-outfit role further down */
+            }
+        }
+
         /* ---- measurements: "<number> cm | m | mm | inch | ft" and "5 foot 9" ---- */
         if (isNumber(w)) {
             const float value = toFloat(w);
@@ -511,19 +529,6 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
                 spec->eye_tone[1] = iris[1];
                 spec->eye_tone[2] = iris[2];
                 record(out, w, "eye_tone", &matched);
-                continue;
-            }
-        }
-
-        /* ---- fabrics ----
-           A clothing-fabric word overrides ONLY the garment's PBR response (roughness/metalness), never
-           its colour or outfit. Handled up front and consumed so it cannot be mistaken for a noun. */
-        {
-            float fr = 0.0f, fm = 0.0f;
-            if (fabricValuesFor(w, &fr, &fm)) {
-                spec->cloth_roughness = fr;
-                spec->cloth_metalness = fm;
-                record(out, w, "fabric", &matched);
                 continue;
             }
         }
