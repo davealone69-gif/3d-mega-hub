@@ -707,6 +707,197 @@ int main(int argc, char** argv) {
         }
     }
 
+    /* ------------------------------------------------------------- AvatarForgeSkeleton.glb ------
+       The donor's own production skeleton, taken from AvatarForge rather than authored here.
+
+       WHY THIS FIXTURE EXISTS: every other skinned fixture in this repo has either foreign joint
+       naming (Fox.glb, CesiumMan.glb) or synthetic naming (CliplessRigged.glb's 17 canonical
+       joints), so all of them reach the skeleton through assignRoles()'s guessing path. This one
+       carries the 71 joint names af_rig.cpp itself builds -- hips, spine_01..spine_04, chest,
+       neck_01/02, head, clavicle_L, upperarm_01/02_L, forearm_01/02_L, hand_L, upperarm_twist_L,
+       forearm_twist_L, thigh_L, shin_L, foot_L, toe_L, thigh_twist_L -- with the donor's real
+       inverse bind matrices and all 15 of its clips, all 4,221 keyframes.
+
+       It is 162,496 bytes rather than the donor's 35,188,740. tools/make_avatarforge_skeleton_glb.py
+       keeps the nodes, hierarchy, rest transforms, skin and animations and replaces the mesh and
+       textures -- 365x the skeleton, and irrelevant to import -- with a 24-vertex box whose first
+       12 vertices are skinned to upperarm_01_L and whose last 12 are skinned to hips.
+
+       That split is what makes the two clips below discriminating, and it is why the assertions are
+       written as a FRACTION of coordinates rather than as vertex indices: the engine is free to
+       reorder or weld vertices, but it is not free to change how many of them a given joint drives.
+       'wave' animates only forearm_01_L, hand_L and upperarm_01_L and leaves hips untouched, so
+       roughly half the box must move and the other half must not. 'turn_360' animates only hips,
+       which is an ancestor of the arm, so nearly all of it must move. A path that bound every
+       vertex to the root, or applied one uniform transform, moves everything in both clips and
+       fails the wave case. */
+    {
+        std::vector<uint8_t> afBytes;
+        const std::string afPath = dir + "/AvatarForgeSkeleton.glb";
+        if (!readFile(afPath, &afBytes)) {
+            std::fprintf(stderr, "FATAL could not read %s\n", afPath.c_str());
+            af_engine_destroy(engine);
+            return 1;
+        }
+        check(af_engine_import_glb_from_memory(engine, afBytes.data(),
+                                               static_cast<int32_t>(afBytes.size())) == AF_OK,
+              "AvatarForgeSkeleton.glb imports");
+
+        /* The donor skin declares 71 joints. Fox taught us the engine may carry one closure node
+           above a file's own joints, so this is asserted as a range and the real number printed
+           rather than pinned to a constant that would pass for the wrong reason. */
+        const int32_t afJoints = af_engine_joint_count(engine);
+        checkf(afJoints >= 71 && afJoints <= 73,
+               "the donor's 71-joint production skeleton is adopted (joint_count=%.0f)",
+               static_cast<double>(afJoints), 71.0);
+
+        /* Names must survive, and specifically the twist bones: those exist only in AvatarForge's
+           own naming and are the part a generic humanoid matcher would drop. */
+        int sawTwist = 0, sawToe = 0, sawHips = 0;
+        for (int32_t j = 0; j < afJoints; ++j) {
+            af_joint_info ji{};
+            if (af_engine_joint_info(engine, j, &ji) != AF_OK) continue;
+            const std::string nm(ji.name);
+            if (nm == "upperarm_twist_L" || nm == "forearm_twist_R" || nm == "thigh_twist_L") ++sawTwist;
+            if (nm == "toe_R") ++sawToe;
+            if (nm == "hips") ++sawHips;
+        }
+        {
+            char detail[192];
+            std::snprintf(detail, sizeof(detail),
+                          "AvatarForge's own joint names survived the import, twist bones included "
+                          "(twist=%d of 3, toe_R=%d, hips=%d)",
+                          sawTwist, sawToe, sawHips);
+            check(sawTwist == 3 && sawToe == 1 && sawHips == 1, detail);
+        }
+
+        /* All 15 clips, by the names and durations the donor's keyframes declare. */
+        const int32_t afClips = af_engine_imported_clip_count(engine);
+        checkf(afClips == 15, "all 15 donor clips are reachable (got %.0f, expected %.0f)",
+               static_cast<double>(afClips), 15.0);
+        struct Want { int index; const char* name; float lo; float hi; };
+        const Want wants[] = {{0, "idle", 3.5f, 4.5f}, {7, "wave", 1.8f, 2.6f},
+                              {11, "t_pose", 0.05f, 0.2f}, {14, "turn_360", 1.6f, 2.4f}};
+        for (const Want& w : wants) {
+            char buf[64] = {0};
+            char detail[224];
+            const bool readable =
+                af_engine_imported_clip_name(engine, w.index, buf, sizeof(buf)) == AF_OK;
+            const bool named = readable && std::strcmp(buf, w.name) == 0;
+            std::snprintf(detail, sizeof(detail),
+                          "donor clip %d is named '%s' by the file, not by a positional guess "
+                          "(got '%s')",
+                          w.index, w.name, readable ? buf : "<unreadable>");
+            check(named, detail);
+            if (named) {
+                const float dur = af_engine_imported_clip_duration(engine, w.index);
+                std::snprintf(detail, sizeof(detail),
+                              "'%s' duration comes from the donor's keyframes, not a constant "
+                              "(%.3f s, expected %.2f-%.2f)",
+                              w.name, static_cast<double>(dur), static_cast<double>(w.lo),
+                              static_cast<double>(w.hi));
+                check(dur >= w.lo && dur <= w.hi, detail);
+            }
+        }
+
+        /* The replacement mesh is real, and its scale is the box the generator wrote, not Fox's
+           centimetre-authored body: a metre-scale import that was silently rescaled would still
+           deform and would pass every motion check below. */
+        const int32_t afVerts = af_engine_vertex_count(engine);
+        const int32_t afTris = triangleCount(engine);
+        checkf(afVerts == 24 && afTris == 12,
+               "the skinned probe box survived import (%.0f verts, %.0f triangles; 24 and 12 expected)",
+               static_cast<double>(afVerts), static_cast<double>(afTris));
+        const std::vector<float> afRest = captureRestPositions(engine);
+        const std::vector<float> afBind = capturePositions(engine);
+        const float afExtent = extentOf(afRest);
+        checkf(afExtent > 0.2f && afExtent < 0.6f,
+               "the probe box kept its metre-scale extent (%.4f units across the diagonal)",
+               static_cast<double>(afExtent), 0.0);
+        checkf(compare(afRest, afBind, 0.0f).maxDelta < afExtent * 1e-4f,
+               "a fresh import of the donor skeleton is in its bind pose, so its inverse bind "
+               "matrices were honoured rather than ignored (max delta %.8f vs extent %.4f)",
+               static_cast<double>(compare(afRest, afBind, 0.0f).maxDelta),
+               static_cast<double>(afExtent));
+
+        /* ---- the claim under test: 'wave' moves the arm-bound half and NOT the hips-bound half ---- */
+        check(af_engine_imported_play(engine, 7) == AF_OK, "donor 'wave' can be selected");
+        check(af_engine_imported_seek(engine, af_engine_imported_clip_duration(engine, 7) * 0.5f) == AF_OK,
+              "donor 'wave' samples at half its duration");
+        const std::vector<float> afWave = capturePositions(engine);
+        const Motion wMotion = compare(afBind, afWave, afExtent * 1e-5f);
+        check(wMotion.finite, "every posed coordinate of the donor skeleton is finite");
+        checkf(fraction(wMotion) >= 20.0f && fraction(wMotion) <= 80.0f,
+               "'wave' drives only the arm-bound half of the probe box, so roughly half its "
+               "coordinates move and the hips-bound half does not (%.1f%% moved; 100%% would mean "
+               "everything is bound to one joint)",
+               static_cast<double>(fraction(wMotion)), 50.0);
+        checkf(wMotion.maxDelta > afExtent * 1e-3f,
+               "'wave' displacement is real motion, not float noise (max %.6f vs extent %.4f)",
+               static_cast<double>(wMotion.maxDelta), static_cast<double>(afExtent));
+
+        /* ---- 'wave' does NOT progress, and that is a measured property of the donor, not a stall ----
+           The donor's 'wave' carries 67 keyframes on each of its 4 channels, but three of them --
+           upperarm_01_L, forearm_01_L and head -- hold ONE distinct quaternion across all 67 keys.
+           Only hand_L actually moves. The probe box binds its vertices to upperarm_01_L and hips, so
+           the arm-bound half is displaced from the bind pose by a held rotation (that is what the
+           50% above measured) and then does not move again. Asserting progress here would assert
+           something the file does not contain; asserting the hold pins what it does contain, and
+           would break if an import ever started inventing motion between static keys. */
+        check(af_engine_imported_seek(engine, af_engine_imported_clip_duration(engine, 7) * 0.8f) == AF_OK,
+              "donor 'wave' samples at 0.8 of its duration");
+        const Motion wProgress = compare(afWave, capturePositions(engine), afExtent * 1e-5f);
+        checkf(wProgress.moved == 0,
+               "'wave' holds still after its first displacement: the donor keeps upperarm_01_L on one "
+               "quaternion for all 67 keys and animates only hand_L, which the probe box does not bind "
+               "(%.0f of %.0f coordinates changed between t=0.5 and t=0.8)",
+               static_cast<double>(wProgress.moved), static_cast<double>(wProgress.coords));
+
+        /* ---- 'idle' does progress, and it moves both halves: hips and upperarm_01_L are both keyed ---- */
+        check(af_engine_imported_play(engine, 0) == AF_OK, "donor 'idle' can be selected");
+        check(af_engine_imported_seek(engine, af_engine_imported_clip_duration(engine, 0) * 0.5f) == AF_OK,
+              "donor 'idle' samples at half its duration");
+        const std::vector<float> afIdleMid = capturePositions(engine);
+        check(af_engine_imported_seek(engine, af_engine_imported_clip_duration(engine, 0) * 0.8f) == AF_OK,
+              "donor 'idle' samples at 0.8 of its duration");
+        const Motion iProgress = compare(afIdleMid, capturePositions(engine), afExtent * 1e-5f);
+        checkf(iProgress.moved > 0 && iProgress.maxDelta > afExtent * 1e-4f,
+               "'idle' keeps moving between t=0.5 and t=0.8, so the transport really samples the donor's "
+               "keyframes rather than latching one pose (%.6f units, %.1f%% of coordinates)",
+               static_cast<double>(iProgress.maxDelta), static_cast<double>(fraction(iProgress)));
+
+        /* ---- 'turn_360' is a yaw about the vertical axis, so y is held while x and z reflect ----
+           The donor's hips quaternion runs [0,0,0,1] -> [0,-0,0,-1]: a full 360 degree turn, so at
+           half duration the pose is 180 degrees and each vertex has x and z reflected with y held.
+           That is why exactly 2 of every 3 coordinates change -- 66.7%, measured. This assertion first
+           claimed "nearly all coordinates move", which was a guess about the axis rather than a
+           measurement of it. Asserting the axis is the stronger form: a rotation about the wrong axis,
+           a uniform scale and a translation each move a different set of coordinates. */
+        check(af_engine_imported_play(engine, 14) == AF_OK, "donor 'turn_360' can be selected");
+        check(af_engine_imported_seek(engine, af_engine_imported_clip_duration(engine, 14) * 0.5f) == AF_OK,
+              "donor 'turn_360' samples at half its duration");
+        const std::vector<float> afTurn = capturePositions(engine);
+        const Motion tMotion = compare(afBind, afTurn, afExtent * 1e-5f);
+        check(tMotion.finite, "every coordinate posed by 'turn_360' is finite");
+        float yMax = 0.0f, xzMax = 0.0f;
+        for (size_t i = 1; i + 1 < afBind.size() && i + 1 < afTurn.size(); i += 3) {
+            const float dy = std::fabs(afTurn[i] - afBind[i]);
+            const float dx = std::fabs(afTurn[i - 1] - afBind[i - 1]);
+            const float dz = std::fabs(afTurn[i + 1] - afBind[i + 1]);
+            if (dy > yMax) yMax = dy;
+            if (dx > xzMax) xzMax = dx;
+            if (dz > xzMax) xzMax = dz;
+        }
+        checkf(yMax * 10.0f < xzMax && xzMax > afExtent * 1e-3f,
+               "'turn_360' turns the probe box about the vertical axis: y is held while x and z move "
+               "(max |dy| %.8f vs max |dx,dz| %.6f)",
+               static_cast<double>(yMax), static_cast<double>(xzMax));
+        checkf(fraction(tMotion) >= 60.0f && fraction(tMotion) <= 73.0f,
+               "and because hips is an ancestor of every other joint, both halves of the box turn with "
+               "it: 2 of each vertex's 3 coordinates change (%.1f%% did)",
+               static_cast<double>(fraction(tMotion)), 66.7);
+    }
+
     /* female.glb: 0 skins AND 0 animations -- the common case for a sculpted avatar. */
     {
         std::vector<uint8_t> femaleBytes;
