@@ -313,6 +313,18 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         val candidateEngine = checkNotNull(Engine.create(backend)) {
             "Engine.create(${backend.displayName()}) returned null"
         }
+        // Filament defaults to feature level 1 even on GLES 3.1+ devices. Promote to the
+        // highest level this backend actually reports before constructing gltfio materials.
+        // This is capability-driven, not a forced level: unsupported levels are never requested.
+        val supportedFeatureLevel = candidateEngine.getSupportedFeatureLevel()
+        val activeFeatureLevel = candidateEngine.setActiveFeatureLevel(supportedFeatureLevel)
+        Log.i(
+            TAG,
+            "Filament ${backend.displayName()} feature levels: supported=$supportedFeatureLevel active=$activeFeatureLevel"
+        )
+        persistCheckpoint(
+            "Filament ${backend.displayName()} supported feature level $supportedFeatureLevel; active $activeFeatureLevel"
+        )
         var candidateRenderer: Renderer? = null
         var candidateScene: Scene? = null
         var candidateView: FilamentView? = null
