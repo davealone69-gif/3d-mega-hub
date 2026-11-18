@@ -79,8 +79,35 @@ def collect_crash_lines(log_path: str) -> list[str]:
 # block that "Fatal signal" opens, and ranked by CRASH_KEY_LINE when emitted.
 CRASH_BLOCK_HEADERS = re.compile(
     r"FATAL EXCEPTION|Fatal signal|beginning of crash|Process crashed|am_crash|ANR in "
-    r"|lowmemorykiller|ActivityManager: Killing"
 )
+
+# "lowmemorykiller: lmkd data connection established" and "ActivityManager: Killing
+# 1900:com.google.android.sdksetup" are boot noise that a real run's logcat is full of. Treating them
+# as crash headers filled every annotation slot with lines about other processes while the actual
+# death went unreported. A kill only matters if it is OUR process being killed.
+OUR_PACKAGE = re.compile(r"com\.davemega")
+KILL_LINE = re.compile(
+    r"lowmemorykiller|lmkd|ActivityManager: Killing|am_kill|has died|Process .* has died|Killing "
+    r"|Force finishing|Scheduling restart"
+)
+
+
+def collect_kill_lines(paths: list[str]) -> list[str]:
+    """Lines showing OUR process being killed or dying, as opposed to any process on the device."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        if not path or not os.path.isfile(path):
+            continue
+        with open(path, "r", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line[:160] in seen:
+                    continue
+                if KILL_LINE.search(line) and OUR_PACKAGE.search(line):
+                    seen.add(line[:160])
+                    found.append(line)
+    return found
 # Lines inside a crash block that actually explain the death, as opposed to the context around it. A
 # 10-annotation cap means a Java stack of "at ..." frames can otherwise crowd out the native abort
 # message and backtrace that name the real fault.
@@ -316,12 +343,19 @@ def main() -> int:
             level = "notice" if GRADLE_INTERNAL_FRAME.match(line) else "error"
             candidates.append((4, level, "gradle", line))
 
-        # 5: a suite that counts failures but recorded no message for some of them.
+        # 2: our own process being killed. This outranks generic crash context because it is the
+        #    only line in a device logcat that is definitely about us.
+        for line in collect_kill_lines(args.crash_log):
+            candidates.append((2, "error", "process-killed", line))
+
+        # 1: a suite that counts failures but recorded no message for some of them. Raised from last
+        #    to first among the details: it is the strongest available signal that a test died mid-run
+        #    rather than asserting false, and at the bottom of the queue the annotation cap ate it.
         if ran and (failed_total + errored) > len(failures):
-            candidates.append((5, "error", "test-totals",
+            candidates.append((1, "error", "test-totals",
                                "%d failure(s) counted by the result files but only %d carried a "
-                               "message, so the rest died before recording one (a crash, not an "
-                               "assertion)" % (failed_total + errored, len(failures))))
+                               "message, so the rest died before recording one (a crash or a kill, "
+                               "not an assertion)" % (failed_total + errored, len(failures))))
 
         candidates.sort(key=lambda item: item[0])
         budget = {"error": MAX_ERROR_COMMANDS, "notice": MAX_NOTICE_COMMANDS}
@@ -371,6 +405,13 @@ def main() -> int:
         for line in block[:CRASH_BLOCK_CONTEXT]:
             print(line[:900])
         print("```")
+        print()
+    kills = collect_kill_lines(args.crash_log)
+    if kills:
+        print("### Our process was killed")
+        print()
+        for line in kills[:MAX_ERROR_COMMANDS]:
+            print(f"- `{line[:900]}`")
         print()
     if ran and (failed_total + errored) > len(failures):
         print(f"> **{failed_total + errored} failure(s) were counted but only {len(failures)} carried a "

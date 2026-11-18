@@ -42,6 +42,21 @@ TEST_STATUS=0
 # evidence to shared Downloads before instrumentation cleanup.
 adb logcat -d -v threadtime > "$EVIDENCE/logcat.txt" 2>&1 || true
 adb logcat -d -v threadtime -s AvatarForge:V > "$EVIDENCE/avatarforge-logcat.txt" 2>&1 || true
+
+# "Instrumentation run failed due to Process crashed" is all Gradle ever says, and the main logcat
+# buffer is full of other processes' boot noise and rolls over. Android keeps a dedicated crash buffer
+# and dropbox retains crash/ANR/native-crash entries after the process is gone; a native crash also
+# leaves a tombstone carrying the backtrace that names the faulting library. Those three are where the
+# reason actually lives, and collecting only logcat.txt is why a crash stayed undiagnosed.
+adb logcat -b crash -d -v threadtime > "$EVIDENCE/logcat-crash.txt" 2>&1 || true
+adb shell dumpsys dropbox --print data_app_crash data_app_native_crash data_app_anr \
+  system_app_crash system_app_native_crash 2>&1 | head -n 4000 > "$EVIDENCE/dropbox-crashes.txt" || true
+# adb root is available on an emulator system image and is what makes /data/tombstones readable.
+adb root >/dev/null 2>&1 || true
+adb wait-for-device >/dev/null 2>&1 || true
+adb shell ls -1 /data/tombstones/ > "$EVIDENCE/tombstones-list.txt" 2>&1 || true
+mkdir -p "$EVIDENCE/tombstones"
+adb pull /data/tombstones/ "$EVIDENCE/tombstones/" >/dev/null 2>&1 || true
 adb shell dumpsys activity activities > "$EVIDENCE/activities.txt" 2>&1 || true
 adb exec-out screencap -p > "$EVIDENCE/final-screen.png" 2>/dev/null || true
 
@@ -54,7 +69,17 @@ adb pull "$DIAGNOSTICS_DIR/failed_render.png" "$EVIDENCE/failed_render.png" >/de
 # Report BEFORE any gate can exit, so a gate failure never costs us the diagnosis.
 # logcat is passed as well: Gradle only ever says "Instrumentation run failed due to Process crashed",
 # while the reason - a Java FATAL EXCEPTION stack or a native Fatal signal backtrace - is in logcat.
-CRASH_LOGS=(--crash-log "$EVIDENCE/logcat.txt" --crash-log "$EVIDENCE/avatarforge-logcat.txt")
+# Ordered most specific first: the crash buffer and dropbox hold only crashes, whereas the main
+# logcat holds the whole device's boot as well.
+CRASH_LOGS=(
+  --crash-log "$EVIDENCE/logcat-crash.txt"
+  --crash-log "$EVIDENCE/dropbox-crashes.txt"
+  --crash-log "$EVIDENCE/avatarforge-logcat.txt"
+  --crash-log "$EVIDENCE/logcat.txt"
+)
+for tombstone in "$EVIDENCE"/tombstones/*; do
+  [[ -f "$tombstone" ]] && CRASH_LOGS+=(--crash-log "$tombstone")
+done
 python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . "${CRASH_LOGS[@]}" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . "${CRASH_LOGS[@]}" --commands || true
 

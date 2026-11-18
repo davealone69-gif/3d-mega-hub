@@ -122,6 +122,32 @@ LOGCAT = """11-18 03:12:44.101  1234  1234 I MegaHubRenderer: Renderer status: G
 """
 
 
+# Real lines from run 44227951941's logcat. Every one of these was reported as a crash block and
+# consumed the annotation budget, while the actual death of our process went unreported.
+BOOT_NOISE_LOGCAT = """11-18 03:07:56.217   160   160 I lowmemorykiller: Using psi monitors for memory pressure detection
+11-18 03:07:56.217   160   160 I lowmemorykiller: Process polling is supported
+11-18 03:08:05.028   160   160 I lowmemorykiller: lmkd data connection established
+11-18 03:08:22.178   492   550 I ActivityManager: Killing 1900:com.google.android.sdksetup/u0a151 (adj 0): change com.google.android.sdksetup
+11-18 03:08:22.230   492   492 W AppWidgetServiceImpl: Failed to read state: java.io.FileNotFoundException: /data/system/users/0/appwidgets.xml
+11-18 03:09:10.000  2100  2100 I MegaHubRenderer: Renderer status: GLB parsed
+"""
+
+KILLED_LOGCAT = BOOT_NOISE_LOGCAT + """11-18 03:11:02.440   492   550 I ActivityManager: Killing 2431:com.davemega.hub/u0a152 (adj 900): empty #17
+11-18 03:11:02.450   160   160 I lowmemorykiller: Kill 'com.davemega.hub' (2431), uid 10152, oom_score_adj 900 to free 81234kB rss
+"""
+
+# One test counted as failed, with no message attached: how a process that died mid-test appears in
+# JUnit XML. This is the shape run 44227951941 actually produced.
+SUITE_COUNTS_NO_DETAIL = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<testsuite name="com.davemega.hub.AvatarForgeRendererSmokeTest" tests="1" failures="1"'
+    ' errors="0" skipped="0">\n'
+    '  <testcase name="generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels"\n'
+    '            classname="com.davemega.hub.AvatarForgeRendererSmokeTest" time="408.1"/>\n'
+    '</testsuite>\n'
+)
+
+
 def _write(root: Path, name: str, body: str) -> Path:
     path = root / name
     path.write_text(body, encoding="utf-8")
@@ -294,9 +320,46 @@ def main() -> None:
         assert lines[0].startswith("::notice title=test-totals"), lines[0]
         assert not any(ln.startswith("::error") for ln in lines), lines
 
+    # ---- 15. another process's boot noise must not be reported as our crash ----
+    # This is the exact failure of run 44227951941: five annotations about lowmemorykiller startup and
+    # com.google.android.sdksetup, and nothing about the process that actually died.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        lines = commands_with_logcat(root, "Instrumentation run failed due to Process crashed.\n",
+                                     BOOT_NOISE_LOGCAT)
+        assert not any("lowmemorykiller" in ln for ln in lines), lines
+        assert not any("sdksetup" in ln for ln in lines), lines
+        assert not any("AppWidgetServiceImpl" in ln for ln in lines), lines
+        assert reporter.collect_crash_blocks([str(_write(root, "lc.txt", BOOT_NOISE_LOGCAT))]) == []
+
+    # ---- 16. a kill of OUR process must be reported, and named as a kill ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        lines = commands_with_logcat(root, "Instrumentation run failed due to Process crashed.\n",
+                                     KILLED_LOGCAT)
+        kills = [ln for ln in lines if "title=process-killed" in ln]
+        assert kills, lines
+        assert any("Kill 'com.davemega.hub'" in ln for ln in kills), kills
+        assert any("Killing 2431:com.davemega.hub" in ln for ln in kills), kills
+        # ...while the other package's kill is still excluded.
+        assert not any("sdksetup" in ln for ln in kills), kills
+
+    # ---- 17. the "counted but no message" signal must survive a full annotation budget ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write(root, CONNECTED, SUITE_COUNTS_NO_DETAIL)
+        noisy = KILLED_LOGCAT + "".join(
+            "11-18 03:12:%02d.000  999  999 F DEBUG   : filler frame %d at com.example.Noise\n" % (i, i)
+            for i in range(40))
+        lines = commands_with_logcat(root, "BUILD FAILED in 6m 48s\n", noisy)
+        joined = "\n".join(lines)
+        assert "carried a message" in joined, joined
+        assert "tests=1 failures=1" in joined, joined
+
     print("PASS: connected + JVM discovery, failure detail, totals, the 0/1/2 gate statuses, "
           "always-annotated totals, crash detection, Gradle-frame deprioritisation, logcat crash "
-          "blocks, block integrity, cause-over-context ranking, and per-level budgets")
+          "blocks, block integrity, cause-over-context ranking, per-level budgets, boot-noise "
+          "rejection, package-aware kill detection, and mismatch survival under a full budget")
 
 
 if __name__ == "__main__":
