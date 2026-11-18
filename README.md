@@ -36,7 +36,19 @@ Do not create another implementation branch. Do not split work across competing 
 
 ## Latest implementation update: 2026-11-18
 
-**The production generated-GLB → GLES `SurfaceView` gate now passes, on named exact heads.** This README has recorded that gate as **FAILED** on every source SHA it ever inspected (`d66eb22a…`, `7b19ca76…`). It passes on branch `arena/089497bd-3d-mega-hub`. That is a different branch from PR #9's, so **PR #9's own readiness gate is unchanged and still NOT READY** — see the boundary at the end of this section.
+**The production generated-GLB → GLES `SurfaceView` gate passes on `arena/089497bd-3d-mega-hub`, and it is INTERMITTENT.** This README had recorded that gate as **FAILED** on every source SHA it ever inspected (`d66eb22a…`, `7b19ca76…`), always for the same reason, and that reason turned out to be a misdiagnosis — see defect 2 below. With it corrected the gate passes, and has passed on four Android CI runs and one diagnostic run listed below.
+
+**It has also failed again since, on a head where nothing relevant had changed.** [Android CI run 44267980737](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44267980737) at head `b47d836` — a commit that touched only the *other* workflow's YAML — reported `tests=7 failures=1` with:
+
+```
+GeneratedAvatarRuntimeTest.generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView
+java.lang.AssertionError: Production GLB-to-GLES render did not become visibly verified.
+FAILED: PixelCopy returned result=2 after 3 attempts
+```
+
+`result=2` is `PixelCopy.ERROR_TIMEOUT`. The same failure had appeared in `avatarforge-generated-runtime.yml`, which is what made it look like that workflow's plumbing; it is not. **The correct status of this gate is intermittent, not passing**, and every PASS row below is true of the run it names and is not a prediction about the next one. The failure correlates with slow runs: that one spent 21m52s in Gradle against 14m06s for the green ones. A fix targeting the mechanism is at head `5ce83af` and is **not yet confirmed by a run**.
+
+That branch is also not PR #9's, so **PR #9's own readiness gate is unchanged and still NOT READY** — see the boundary at the end of this section.
 
 | Workflow / run | Head | Result | Evidence |
 |---|---|---|---|
@@ -301,7 +313,7 @@ Work through these steps in order, on the single canonical branch. Do not skip a
 | R8/minification | **PASS (older exact source)** | Passed on application source `1deaf264032195989257845b884a5829f06fe9cf`; not current-head evidence |
 | Android lint | **CANCELLED (prior cycle)** | No pass claim |
 | Basic generated-avatar pixel gate | **PASS (older exact source only)** | Run `43528943730`, source `e9e7d76ef4a3f12c5c6a79951b5a1a99570c6228`: basic generated-avatar pixel test passed on Android 11 emulator. This is not the production exported-GLB SurfaceView end-to-end test |
-| Production generated-GLB-to-GLES SurfaceView — **on `arena/089497bd-3d-mega-hub`** | **PASS (emulator, software rasterizer)** | Runs `44235237569` (`cc878d8`), `44240305554` (`616ba96`), `44243386900` (`1251b3e`) all report `tests=7 failures=0 errors=0 skipped=0` with both classes named, and diagnostic run `44262473760` (`e68ad9c`) step 8 reports `tests=[GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView]` `tests=1 failures=0` in 4m33s. Not PR #9's head and not a phone. See the 2026-11-18 section |
+| Production generated-GLB-to-GLES SurfaceView — **on `arena/089497bd-3d-mega-hub`** | **INTERMITTENT — passes and fails on equivalent heads** | Passes: runs `44235237569` (`cc878d8`), `44240305554` (`616ba96`), `44243386900` (`1251b3e`) at `tests=7 failures=0`, and diagnostic run `44262473760` (`e68ad9c`) step 8 at `tests=1 failures=0` in 4m33s. Fails: run `44267980737` (`b47d836`) at `tests=7 failures=1` with `PixelCopy returned result=2` (`ERROR_TIMEOUT`), and runs `44269826494`/`44267877961` in the generated-runtime workflow with the same error. `b47d836` changed only another workflow's YAML, so nothing in the renderer differed between a pass and a failure. A fix targeting the mechanism (render loop yielding while a capture is in flight) is at `5ce83af`, **unconfirmed** | Runs `44235237569` (`cc878d8`), `44240305554` (`616ba96`), `44243386900` (`1251b3e`) all report `tests=7 failures=0 errors=0 skipped=0` with both classes named, and diagnostic run `44262473760` (`e68ad9c`) step 8 reports `tests=[GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView]` `tests=1 failures=0` in 4m33s. Not PR #9's head and not a phone. See the 2026-11-18 section |
 | Production generated-GLB-to-GLES SurfaceView — on PR #9's observed head | **FAILED on observed head** | Runs `43673389818` (job `132688476029`) and `43673389819` (job `132688165314`), head `d66eb22af0c82de12aeafccd70b283d44ddd5c52`: `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` failed. Assertion: no drawable model frame within 15 seconds; `frames=2`, `presented=2`, `draws=29`, `triangles=1626176`, bounds in frustum, `glError=0x0`, `eglError=0x0`. Required gate fails |
 | Required Android build jobs | **PARTIAL / FAILED on observed head** | Android CI run `43673389854`: native host regression, R8, unit tests, lint and debug APK build passed; instrumented imported-GLB GLES render smoke failed with `OutOfMemoryError` allocating 134,217,744 bytes with about 25 MB free. The separate production generated-GLB test also failed as above |
 | Fresh APK artifact | **PARTIAL on observed head** | Fresh debug APK artifacts exist for the exact observed head: run `43673389854`, artifact `14145098709` (`3D-Mega-Hub-debug-apk`), and run `43673389818`, artifact `14145536569` (`3D-Mega-Hub-generated-avatar-diagnostic-debug-apk`). GitHub ZIP digests are recorded in the latest monitor snapshot; APK package, signing certificate and APK SHA-256 have not been verified. Not a ready APK |
@@ -439,12 +451,18 @@ Do not mark avatar quality improved without matched before/after GLB and rendere
 
 ### Required production generated-GLB → GLES SurfaceView gate
 
-> **2026-11-18 update: this gate PASSES on `arena/089497bd-3d-mega-hub`, and the failure recorded below
-> was a misdiagnosis.** Diagnostic run [`44262473760`](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44262473760)
+> **2026-11-18 update: this gate is INTERMITTENT on `arena/089497bd-3d-mega-hub`, and the failure
+> recorded below was a misdiagnosis — but a different failure has replaced it.** Diagnostic run [`44262473760`](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44262473760)
 > at head `e68ad9c` ran exactly this instrumentation
 > (`GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView`) and
 > reported `tests=1 failures=0 errors=0 skipped=0` in 4m33s; Android CI runs `44235237569`, `44240305554`
 > and `44243386900` report the same test passing as part of `tests=7 failures=0`.
+>
+> **It then failed again at head `b47d836` (run `44267980737`) with `PixelCopy returned result=2 after 3
+> attempts` — `ERROR_TIMEOUT` — on a commit that changed only another workflow's YAML.** The 15-second
+> deadline below is genuinely fixed and that failure does not recur; this is a second, distinct failure
+> mode. The gate is therefore intermittent and must not be cited as passing on the strength of any
+> single run.
 >
 > The counters recorded below — `frames=2`, `presented=2`, `draws=29`, `triangles=1626176`,
 > `boundsInFrustum=true`, `glError=0x0`, `eglError=0x0` — are not a broken renderer. They are a healthy
