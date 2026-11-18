@@ -1038,6 +1038,19 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         }
     }
 
+    /**
+     * Duration in seconds of the clip an export would sample, or null when there is no clip to
+     * sample. Null and not 0: a model with no animation has no clip duration, and reporting 0 would
+     * read as a clip measured to be instantaneous, which is a different claim about the same file.
+     */
+    internal fun selectedClipDurationSeconds(): Float? {
+        val activeAnimator = animator ?: return null
+        if (animationCount <= 0) return null
+        val index = selectedAnimation.coerceIn(0, animationCount - 1)
+        val duration = activeAnimator.getAnimationDuration(index)
+        return if (duration.isFinite() && duration > 0f) duration else null
+    }
+
     /** frameCamera's eye/target/up framing with the eye rotated about the centre by [azimuthRadians]. */
     private fun orbitCamera(
         bounds: com.google.android.filament.Box,
