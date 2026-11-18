@@ -77,9 +77,18 @@ def collect_crash_lines(log_path: str) -> list[str]:
 # listing them here fragmented one native crash into several blocks, and the block cap then discarded
 # the backtrace - the part that names the faulting library. They are captured as context inside the
 # block that "Fatal signal" opens, and ranked by CRASH_KEY_LINE when emitted.
+# ANR traces are included because an ANR aborts an instrumentation run exactly like a crash does, and
+# Gradle reports it as nothing more than "Instrumentation run failed due to keyDispatchingTimedOut". The
+# reason - which process, what it was waiting on, and what the main thread was doing - is only in the
+# trace Android writes to /data/anr/ and in dropbox. Run 44259843505 failed that way and the report
+# could say no more than the Gradle line, because neither pattern below matched an ANR trace's shape.
 CRASH_BLOCK_HEADERS = re.compile(
     r"FATAL EXCEPTION|Fatal signal|beginning of crash|Process crashed|am_crash|ANR in "
+    r"|----- pid \d+ at|^Subject: "
 )
+# DALVIK THREADS is deliberately NOT a block header. A block stops at the next header, and in an ANR
+# trace that marker sits between the process preamble and the main thread's stack - making it a header
+# would capture the build fingerprint and throw away the one part that answers the question.
 
 # "lowmemorykiller: lmkd data connection established" and "ActivityManager: Killing
 # 1900:com.google.android.sdksetup" are boot noise that a real run's logcat is full of. Treating them
@@ -126,6 +135,10 @@ CRASH_KEY_LINE = re.compile(
     r"FATAL EXCEPTION|Fatal signal|Abort message|backtrace:|Caused by|Exception|Error"
     r"|com\.davemega|libafcore|libfilament|SIGSEGV|SIGABRT|lowmemorykiller|Killing"
     r"|Process crashed|am_crash|ANR in"
+    # ANR traces: the subject names what timed out, "main" prio is the thread whose stack is the answer,
+    # and the CPU/Load lines say whether it was blocked or merely starved of cores.
+    r"|^Subject: |Input dispatching timed out|^Cmd line: |\"main\" prio|native: #"
+    r"|CPU usage|Load: |Reason: |Wait queue|am_anr|REASON_ANR"
 )
 
 CRASH_BLOCK_CONTEXT = 30
@@ -162,6 +175,16 @@ def collect_crash_blocks(paths: list[str]) -> list[tuple[str, list[str]]]:
                 return blocks
     return blocks
 
+
+# ANR-trace lines that are scaffolding rather than evidence: the process preamble and each thread's
+# bookkeeping header. In the fixture modelled on run 44259843505 these filled the notice budget ahead of
+# the main thread's own stack frames, so the frames that answer "what was main doing when it stopped
+# answering input" were exactly the ones dropped. Within one priority, emission order decides what
+# survives GitHub's per-level cap, so the scaffolding goes last.
+ANR_TRACE_NOISE = re.compile(
+    r"^Build fingerprint:|^ABI: |^Build type:|^Zygote loaded|^Intern table|^DALVIK THREADS"
+    r"|^\| group=|^\| sysTid=|^\| state=|^\| held mutexes|^----- pid \d+ at"
+)
 
 ABORT_MESSAGE = re.compile(r"Abort message:")
 # A tombstone field that ends the abort message. The message itself is a quoted C++ string, so the
@@ -259,6 +282,55 @@ def collect_test_failures(root: str) -> list[tuple[str, str, str, str]]:
     return out
 
 
+# How many test names to put in a totals line. The names are what distinguishes "this step's results"
+# from "the previous step's results still on disk", so they have to be visible, but an annotation is not
+# the place to list two hundred of them.
+MAX_TOTALS_NAMES = 12
+
+
+def collect_test_names(root: str) -> list[str]:
+    """Every testcase name the JUnit XML on disk actually contains, as Class#method.
+
+    Counts and class names are not enough when one job runs the instrumentation task more than once.
+    avatarforge-diagnostic-apk.yml runs two emulator steps that both write to
+    app/build/outputs/androidTest-results, and a step whose run crashed before writing XML leaves the
+    previous step's passing XML on disk. The totals then read tests=1 failures=0 for a step that had
+    just failed, which is the same class of error as reporting a missing measurement as zero. Naming
+    the tests makes that visible without having to trust the ordering.
+    """
+    patterns = [
+        os.path.join(root, "*/build/test-results/*/*.xml"),
+        os.path.join(root, "build/test-results/*/*.xml"),
+        os.path.join(root, "*/build/outputs/androidTest-results/connected/**/*.xml"),
+        os.path.join(root, "*/build/outputs/androidTest-results/connected/*.xml"),
+        os.path.join(root, "build/outputs/androidTest-results/connected/**/*.xml"),
+    ]
+    files = sorted({f for pattern in patterns for f in glob.glob(pattern, recursive=True)})
+    names: list[str] = []
+    seen: set[str] = set()
+    for path in files:
+        try:
+            tree = ET.parse(path)
+        except ET.ParseError:
+            continue
+        for case in tree.iter("testcase"):
+            classname = case.get("classname") or ""
+            method = case.get("name") or ""
+            label = (classname.split(".")[-1] + "#" + method) if classname else method
+            if label and label not in seen:
+                seen.add(label)
+                names.append(label)
+    return names
+
+
+def format_test_names(names: list[str]) -> str:
+    if not names:
+        return "<none>"
+    shown = names[:MAX_TOTALS_NAMES]
+    suffix = "" if len(names) <= MAX_TOTALS_NAMES else ",+%d more" % (len(names) - MAX_TOTALS_NAMES)
+    return ",".join(shown) + suffix
+
+
 def collect_test_totals(root: str) -> tuple[int, int, int, int, list[str]]:
     """Returns (tests, failures, errors, skipped, classes) summed over every JUnit XML found.
 
@@ -344,8 +416,9 @@ def main() -> int:
 
     if args.counts:
         tests, failures, errors, skipped, classes = collect_test_totals(args.root)
-        print("tests=%d failures=%d errors=%d skipped=%d classes=%s"
-              % (tests, failures, errors, skipped, ",".join(classes)))
+        print("tests=%d failures=%d errors=%d skipped=%d classes=%s tests=[%s]"
+              % (tests, failures, errors, skipped, ",".join(classes),
+                 format_test_names(collect_test_names(args.root))))
         if tests == 0:
             print("no JUnit XML was found: the tests never ran, or the results path changed",
                   file=sys.stderr)
@@ -371,8 +444,9 @@ def main() -> int:
         # 0: totals, always. Without this a run that wrote no XML and a run whose tests all passed
         # produce identical annotations - which is how a suite that stopped running hides.
         ran, failed_total, errored, skipped_total, classes = collect_test_totals(args.root)
-        totals = ("tests=%d failures=%d errors=%d skipped=%d classes=%s"
-                  % (ran, failed_total, errored, skipped_total, ",".join(classes)))
+        totals = ("tests=%d failures=%d errors=%d skipped=%d classes=%s tests=[%s]"
+                  % (ran, failed_total, errored, skipped_total, ",".join(classes),
+                     format_test_names(collect_test_names(args.root))))
         if ran == 0:
             candidates.append((0, "error", "test-totals",
                                "no JUnit XML was found under %s, so nothing proves any test ran (%s)"
@@ -391,12 +465,16 @@ def main() -> int:
         for line in crashes:
             candidates.append((2, "error", "process-crash", line))
         for path, block in collect_crash_blocks(args.crash_log):
+            context: list[tuple[bool, str]] = []
             for line in block:
                 label = "%s: %s" % (os.path.basename(path), line)
                 if CRASH_KEY_LINE.search(line):
                     candidates.append((2, "error", "crash-log", label))
                 else:
-                    candidates.append((3, "notice", "crash-log", label))
+                    context.append((bool(ANR_TRACE_NOISE.search(line)), label))
+            # Stable sort: real stack frames keep their order and precede the trace scaffolding.
+            for _noise, label in sorted(context, key=lambda item: item[0]):
+                candidates.append((3, "notice", "crash-log", label))
 
         # 4: generic Gradle output, our own lines before its internal plumbing. Gradle's own
         #    TaskExecutionException plumbing is context, not cause, so it is demoted to a notice.
@@ -459,6 +537,7 @@ def main() -> int:
     print("```")
     print("tests=%d failures=%d errors=%d skipped=%d" % (ran, failed_total, errored, skipped_total))
     print("classes=%s" % (", ".join(classes) or "<none found>"))
+    print("tests=%s" % format_test_names(collect_test_names(args.root)))
     print("```")
     print()
     if ran == 0:

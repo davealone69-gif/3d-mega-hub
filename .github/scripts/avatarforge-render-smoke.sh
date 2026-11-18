@@ -54,6 +54,14 @@ chmod +x ./gradlew
 # the one outcome worse than a slow one.
 TEST_CLASSES="$AF_TEST_TARGET"
 
+# Delete the previous invocation's results before running. avatarforge-diagnostic-apk.yml calls this
+# script twice in one job, from two emulator steps, and both write to the same
+# app/build/outputs/androidTest-results tree. A step whose instrumentation dies before writing XML
+# leaves the earlier step's passing XML in place, and the report then reads tests=1 failures=0 for a
+# step that had just failed - a pass invented out of somebody else's evidence. Removing the tree makes
+# "no XML" mean "this invocation produced none", which the gate below already treats as a failure.
+rm -rf app/build/outputs/androidTest-results app/build/reports/androidTests 2>/dev/null || true
+
 TEST_STATUS=0
 ./gradlew --no-daemon :app:connectedDebugAndroidTest \
   "-Pandroid.testInstrumentationRunnerArguments.class=$TEST_CLASSES" \
@@ -80,6 +88,23 @@ adb wait-for-device >/dev/null 2>&1 || true
 adb shell ls -1 /data/tombstones/ > "$EVIDENCE/tombstones-list.txt" 2>&1 || true
 mkdir -p "$EVIDENCE/tombstones"
 adb pull /data/tombstones/ "$EVIDENCE/tombstones/" >/dev/null 2>&1 || true
+# ANR traces. An ANR ends an instrumentation run the same way a crash does, and all Gradle ever says is
+# "Instrumentation run failed due to keyDispatchingTimedOut" - which names the symptom and not the cause.
+# Run 44259843505 died exactly that way with two of four tests executed, and the report could add nothing
+# to the Gradle line because nothing collected /data/anr/. The trace there holds the main thread's stack
+# at the moment of the ANR, which is the difference between "the app stopped answering input" and knowing
+# whether it was blocked on a lock, blocked in our own code, or simply starved of cores by a software
+# rasterizer. Tombstones were already pulled for native crashes; this is the ANR equivalent.
+adb shell ls -1 /data/anr/ > "$EVIDENCE/anr-list.txt" 2>&1 || true
+mkdir -p "$EVIDENCE/anr"
+adb pull /data/anr/ "$EVIDENCE/anr/" >/dev/null 2>&1 || true
+# Why each of our processes ended, as Android itself records it: REASON_ANR, REASON_CRASH,
+# REASON_SIGNALED, REASON_LOW_MEMORY, each with its own description and timestamp. The test package is
+# asked for as well as the app, since instrumentation runs in either.
+{
+  adb shell dumpsys activity exit-info com.davemega.hub 2>&1
+  adb shell dumpsys activity exit-info com.davemega.hub.test 2>&1
+} | head -n 2000 > "$EVIDENCE/process-exit-info.txt" 2>&1 || true
 adb shell dumpsys activity activities > "$EVIDENCE/activities.txt" 2>&1 || true
 adb exec-out screencap -p > "$EVIDENCE/final-screen.png" 2>/dev/null || true
 
@@ -100,6 +125,12 @@ CRASH_LOGS=(
   --crash-log "$EVIDENCE/avatarforge-logcat.txt"
   --crash-log "$EVIDENCE/logcat.txt"
 )
+# Most specific first: an ANR trace and an exit-reason record are about one process and one moment,
+# while the main logcat is the whole device's history.
+for anr_trace in "$EVIDENCE"/anr/*; do
+  [[ -f "$anr_trace" ]] && CRASH_LOGS+=(--crash-log "$anr_trace")
+done
+[[ -s "$EVIDENCE/process-exit-info.txt" ]] && CRASH_LOGS+=(--crash-log "$EVIDENCE/process-exit-info.txt")
 for tombstone in "$EVIDENCE"/tombstones/*; do
   [[ -f "$tombstone" ]] && CRASH_LOGS+=(--crash-log "$tombstone")
 done

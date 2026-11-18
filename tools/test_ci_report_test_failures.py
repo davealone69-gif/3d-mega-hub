@@ -161,6 +161,47 @@ TOMBSTONE_LOGCAT = """11-18 03:31:22.752  6078  6078 F libc    : Fatal signal 6 
 
 # One test counted as failed, with no message attached: how a process that died mid-test appears in
 # JUnit XML. This is the shape run 44227951941 actually produced.
+# An ANR trace in the shape Android writes to /data/anr/, plus the dropbox entry that carries the
+# subject. Gradle reports only "keyDispatchingTimedOut"; the reason and the main thread's stack are here.
+ANR_TRACE = """Subject: Input dispatching timed out (com.davemega.hub/com.davemega.hub.MainActivity, 6309)
+Process: com.davemega.hub
+----- pid 6309 at 2026-11-18 07:45:12 -----
+Cmd line: com.davemega.hub
+Build fingerprint: 'google/sdk_gphone_x86_64/generic_x86_64_arm64:11/RSR1.240422.006/12134477:userdebug'
+ABI: 'x86_64'
+Build type: optimized
+DALVIK THREADS (24):
+"main" prio=5 tid=1 Native
+  | group="main" sCount=1 dsCount=0 flags=1 obj=0x7195e9f8 self=0x7f2c8c001000
+  | sysTid=6309 nice=-10 cgrp=default sched=0/0 handle=0x7f2cdb0f04f8
+  | state=S schedstat=( 44128871234 0 0 ) utm=3911 stm=501 core=1 HZ=100
+  native: #00 pc 00000000000d1a3f  /apex/com.android.runtime/lib64/bionic/libc.so (syscall+31)
+  at android.os.MessageQueue.nativePollOnce(Native method)
+  at android.os.MessageQueue.next(MessageQueue.java:335)
+  at android.os.Looper.loop(Looper.java:206)
+  at android.app.ActivityThread.main(ActivityThread.java:7406)
+  at java.lang.reflect.Method.invoke(Native method)
+"AvatarForge-GLES" prio=5 tid=22 Runnable
+  | sysTid=6402 nice=0 cgrp=default sched=0/0 handle=0x7f2b1c0f04f8
+  | state=R schedstat=( 401223344000 0 0 ) utm=39880 stm=242 core=0 HZ=100
+  at com.davemega.hub.avatarforge.AvatarForgeSurfaceView.nativeRender(Native method)
+"""
+
+GRADLE_ANR = """\
+> Task :app:connectedDebugAndroidTest FAILED
+com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest > generatedAvatarMustProduceVisiblePixels FAILED
+    Test run failed to complete. Instrumentation run failed due to keyDispatchingTimedOut at TestRunner.java:445
+BUILD FAILED in 12m 26s
+"""
+
+ANR_SUITE = """<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.davemega.hub.AvatarForgeRendererSmokeTest" tests="2" failures="1" errors="0" skipped="0">
+  <testcase name="generatedAvatarMustProduceVisiblePixels" classname="com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest" time="241.0">
+    <failure message="Instrumentation run failed due to keyDispatchingTimedOut" type="java.lang.AssertionError"/>
+  </testcase>
+</testsuite>
+"""
+
 SUITE_COUNTS_NO_DETAIL = (
     '<?xml version="1.0" encoding="UTF-8"?>\n'
     '<testsuite name="com.davemega.hub.AvatarForgeRendererSmokeTest" tests="1" failures="1"'
@@ -276,8 +317,10 @@ def main() -> None:
         lines = commands(root, GRADLE_LOG)
         assert lines[0].startswith("::error"), lines[0]
         assert "tests=3 failures=1" in lines[0], lines[0]
-        # ...and the failing test still gets its own annotation with its own message.
-        named = [ln for ln in lines if "generatedAvatarDebugDiagnostic" in ln]
+        # ...and the failing test still gets its own annotation with its own message. Filtered on the
+        # title rather than the test name, because the totals annotation now names every test it found
+        # and would otherwise be the first line to match.
+        named = [ln for ln in lines if ln.startswith("::error title=failure:")]
         assert named and "fewer than three successful EGL swaps" in named[0], named
 
     # ---- 10. a clean log must not invent a crash ----
@@ -482,13 +525,63 @@ def main() -> None:
         assert classes == ["com.davemega.hub.AvatarForgeRendererSmokeTest",
                            "com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest"], classes
 
+    # ---- 22. totals must name the tests, so stale XML from another step is visible ----
+    # avatarforge-diagnostic-apk.yml runs the instrumentation task twice in one job and both steps write
+    # to the same results tree. A step that dies before writing XML leaves the previous step's passing
+    # XML behind, and tests=1 failures=0 then describes the wrong step. Counts cannot show that; names
+    # can. The script now deletes the tree before each invocation, and this pins the reporting half.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        step_a = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                  '<testsuite name="com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest" tests="1"'
+                  ' failures="0" errors="0" skipped="0">\n'
+                  '  <testcase name="generatedAvatarMustProduceVisiblePixels"'
+                  ' classname="com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest" time="1.0"/>\n'
+                  '</testsuite>\n')
+        write(root, CONNECTED, step_a)
+        lines = commands(root, "BUILD SUCCESSFUL in 3m 16s\n")
+        assert any("tests=[GeneratedAvatarRuntimeTest#generatedAvatarMustProduceVisiblePixels]" in ln
+                   for ln in lines), lines
+        # A second step's XML next to the first shows both, which is how a leftover is recognised.
+        write(root, "app/build/outputs/androidTest-results/connected/pixel_2/TEST-second.xml",
+              step_a.replace("generatedAvatarMustProduceVisiblePixels",
+                             "generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView"))
+        lines = commands(root, "BUILD FAILED in 3m 16s\n")
+        joined = "\n".join(lines)
+        assert "generatedAvatarMustProduceVisiblePixels" in joined, lines
+        assert "generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView" in joined, lines
+        assert "tests=2" in joined, lines
+        counts = subprocess.run(
+            [sys.executable, str(MODULE_PATH), str(root / "gradle.log"), "--root", str(root),
+             "--counts"], capture_output=True, text=True)
+        assert "tests=[" in counts.stdout, counts.stdout
+
+    # ---- 23. an ANR trace must surface its reason and the main thread, not just Gradle's symptom ----
+    # Run 44259843505 aborted with "Instrumentation run failed due to keyDispatchingTimedOut" after two
+    # of four tests. That names a symptom. The subject line says what timed out and the trace says what
+    # the main thread and the render thread were doing, which is the difference between knowing an ANR
+    # happened and knowing whether the app blocked itself or was starved of cores.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write(root, CONNECTED, ANR_SUITE)
+        lines = commands_with_logcat(root, GRADLE_ANR, ANR_TRACE)
+        joined = "\n".join(lines)
+        assert "keyDispatchingTimedOut" in joined, lines
+        assert "Input dispatching timed out" in joined, lines
+        assert 'Cmd line: com.davemega.hub' in joined, lines
+        # The main thread's stack has to survive: DALVIK THREADS must not terminate the block early.
+        assert '\"main\" prio=5 tid=1' in joined, lines
+        assert "nativePollOnce" in joined, lines
+        # And the render thread that was competing with it for the two cores.
+        assert "AvatarForge-GLES" in joined or "nativeRender" in joined, lines
+
     print("PASS: connected + JVM discovery, failure detail, totals, the 0/1/2 gate statuses, "
           "always-annotated totals, crash detection, Gradle-frame deprioritisation, logcat crash "
           "blocks, block integrity, cause-over-context ranking, per-level budgets, boot-noise "
           "rejection, package-aware kill detection, mismatch survival under a full budget, "
           "wrapped abort-message merging, kill level decided by totals rather than by enumerating "
-          "teardown reasons, and class names taken from testcases when one suite element covers "
-          "several")
+          "teardown reasons, class names taken from testcases when one suite element covers several, "
+          "totals naming every test they found, and ANR traces surfacing subject plus main thread")
 
 
 if __name__ == "__main__":
