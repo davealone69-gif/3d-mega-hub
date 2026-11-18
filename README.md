@@ -706,3 +706,13 @@ This monitor update is documentation-only. It does not modify application source
 - CI workflow pull-request filters now include the integration base branch. The runtime collector now treats unavailable app-private data as optional and pulls exported diagnostics from Downloads without allowing a missing archive to overwrite the test result.
 
 Do not mark the app READY or merge on this emulator result alone. The exact new head must pass the re-triggered workflows, and the physical phone check remains outstanding.
+
+
+## Android build gate correction — 2026-11-19
+
+- **FIXED IN SOURCE:** the four Android Actions workflows that install a fixed SDK platform were requesting API 36 while both Android modules declare `compileSdk = 37`. Updated `.github/workflows/android.yml`, `avatarforge-diagnostic-apk.yml`, `avatarforge-generated-runtime.yml`, and `release-preview.yml` to install `platforms;android-37`. Build-tools remain pinned at 36.0.0; emulator system images remain API 30 where intended.
+- **UNVERIFIED:** this workflow correction has not yet been exercised. The current PR head has no associated Actions runs or commit status checks. Do not call it a successful build until the exact new head completes CI.
+- **UNRESOLVED:** Filament imported-GLB preview previously aborted in native gltfio with `sheenColorIndex` missing. The branch now pins Filament 1.79.0 as a rollback experiment, but no exact-head runtime test proves the abort is gone. Do not describe the root cause as confirmed upstream or as fixed.
+- **REAL + VERIFIED on prior exact CI emulator commit only:** the production AvatarForge GLES generated-GLB SurfaceView test passed all four instrumentation tests on commit `392ea220c6b5d8fc25a989be58f78148e514e40a`. That evidence does not transfer to the newer PR head and does not cover Filament.
+- **BLOCKED:** PR #14 is still open and GitHub reports it not mergeable. Production signing remains blocked until the owner supplies a production keystore through protected CI secrets. Physical Samsung SM-S921B runtime remains unverified.
+- Changes are isolated to the PR #14 arena branch. `main` has not been modified or merged.
