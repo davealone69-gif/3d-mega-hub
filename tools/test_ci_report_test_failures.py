@@ -575,13 +575,28 @@ def main() -> None:
         # And the render thread that was competing with it for the two cores.
         assert "AvatarForge-GLES" in joined or "nativeRender" in joined, lines
 
+    # ---- 24. log-tail must not spend the whole notice budget ----
+    # GitHub caps annotations at 10 per level per run, shared with every other source in the job. Run
+    # 44267877961 emitted exactly 10 notices, 7 of them Gradle task lines, and dropped the script's own
+    # notice saying whether a failing step had reached its exit statement.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write(root, CONNECTED, PASSING_SUITE)
+        long_tail = "".join("> Task :app:someTask%d\n" % i for i in range(40))
+        lines = commands(root, long_tail + "BUILD SUCCESSFUL in 14m 2s\n")
+        tail_lines = [ln for ln in lines if "title=log-tail" in ln]
+        assert len(tail_lines) <= 3, tail_lines
+        notices = [ln for ln in lines if ln.startswith("::notice")]
+        assert len(notices) < 10, notices
+
     print("PASS: connected + JVM discovery, failure detail, totals, the 0/1/2 gate statuses, "
           "always-annotated totals, crash detection, Gradle-frame deprioritisation, logcat crash "
           "blocks, block integrity, cause-over-context ranking, per-level budgets, boot-noise "
           "rejection, package-aware kill detection, mismatch survival under a full budget, "
           "wrapped abort-message merging, kill level decided by totals rather than by enumerating "
           "teardown reasons, class names taken from testcases when one suite element covers several, "
-          "totals naming every test they found, and ANR traces surfacing subject plus main thread")
+          "totals naming every test they found, ANR traces surfacing subject plus main thread, and "
+          "log-tail leaving notice budget for other sources")
 
 
 if __name__ == "__main__":

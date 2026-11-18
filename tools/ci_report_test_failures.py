@@ -30,6 +30,13 @@ import xml.etree.ElementTree as ET
 # at random. Everything is ranked by how much it explains, then the best 10 are emitted.
 MAX_ERROR_COMMANDS = 10
 MAX_NOTICE_COMMANDS = 8
+# Hard cap on log-tail lines, independent of how much notice budget is left. GitHub caps annotations at
+# 10 PER LEVEL PER RUN and that cap is shared with every other source in the job - the smoke script's own
+# instrumented-config notice, and the runner's own notices. Run 44267877961 emitted exactly 10 notices,
+# 7 of them Gradle task lines like "> Task :app:dexBuilderDebugAndroidTest", and the one notice that
+# would have said whether a failing step ever reached its own exit statement was dropped. Spending the
+# whole leftover budget on the lowest-value material there is starves the things that answer questions.
+MAX_LOG_TAIL_COMMANDS = 3
 
 # Lines in a Gradle log that carry an actual cause rather than progress noise.
 INTERESTING = re.compile(
@@ -520,9 +527,11 @@ def main() -> int:
             print("::error::no test results, no crash marker and no recognisable Gradle error were found")
         # The log tail is the lowest-value material there is, and it only gets whatever notice budget
         # the crash context and Gradle plumbing left over.
+        tail_emitted = 0
         for line in [item for item in tail if not GRADLE_INTERNAL_FRAME.match(item)]:
-            if budget["notice"] <= 0:
+            if budget["notice"] <= 0 or tail_emitted >= MAX_LOG_TAIL_COMMANDS:
                 break
+            tail_emitted += 1
             budget["notice"] -= 1
             print(f"::notice title=log-tail::{escape_command(line[:900])}")
         return 0
