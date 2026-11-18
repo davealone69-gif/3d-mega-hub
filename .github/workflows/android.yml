@@ -261,6 +261,14 @@ jobs:
             echo '```text'
             grep -E "Tests on |run finished:|^FAIL|^PASS|Process crashed|INSTRUMENTATION_" "$E/gradle.txt" "$E/logcat.txt" 2>/dev/null | tail -8
             echo '```'
+            if [ -s "$E/gradle.txt" ]; then
+              echo "**Instrumentation failure detail:**"
+              echo '```text'
+              grep -E "FAILED|AssertionError|junit|Caused by|expected|Expected" "$E/gradle.txt" | head -25
+              echo '--- tail ---'
+              tail -18 "$E/gradle.txt"
+              echo '```'
+            fi
             if [ -s "$E/logcat.txt" ] && grep -qE "uncaught exception|Abort message" "$E/logcat.txt"; then
               echo "**Native crash excerpt:**"
               echo '```text'
