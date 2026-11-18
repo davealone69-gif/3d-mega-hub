@@ -5,6 +5,7 @@ on:
   pull_request:
     branches:
       - main
+      - integration/avatarforge-renderer-port
     paths:
       - "app/**"
       - "avatarforge-engine/**"
