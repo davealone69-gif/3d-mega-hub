@@ -5,7 +5,8 @@ mkdir -p avatarforge-render-smoke-evidence
 chmod +x ./gradlew
 
 TEST_STATUS=0
-./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.AvatarForgeRendererSmokeTest --stacktrace || TEST_STATUS=$?
+./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.AvatarForgeRendererSmokeTest --stacktrace 2>&1 | tee avatarforge-render-smoke-evidence/gradle.txt
+TEST_STATUS=${PIPESTATUS[0]}
 
 # connectedDebugAndroidTest tears down the instrumented target/test packages after
 # the suite. The app process and app-private files are therefore not valid

@@ -141,6 +141,10 @@ jobs:
             fi
           } > runtime-comment.md
           cat runtime-comment.md
+          # Push-triggered runs carry no pull_request payload; resolve the PR from the branch.
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER=$(gh pr list --head "${GITHUB_REF_NAME}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
           if [ -n "$PR_NUMBER" ]; then
             gh pr comment "$PR_NUMBER" --body-file runtime-comment.md
           fi

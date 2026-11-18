@@ -243,6 +243,46 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           script: bash .github/scripts/avatarforge-render-smoke.sh
+      - name: Publish the smoke verdict where it can be read
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set +e
+          E=avatarforge-render-smoke-evidence
+          {
+            echo "### AvatarForge GLES GLB render smoke"
+            echo
+            echo "commit: \`${GITHUB_SHA}\`"
+            echo
+            echo "**Renderer test result:**"
+            echo '```text'
+            grep -E "Tests on |run finished:|^FAIL|^PASS|Process crashed|INSTRUMENTATION_" "$E/gradle.txt" "$E/logcat.txt" 2>/dev/null | tail -8
+            echo '```'
+            if [ -s "$E/logcat.txt" ] && grep -qE "uncaught exception|Abort message" "$E/logcat.txt"; then
+              echo "**Native crash excerpt:**"
+              echo '```text'
+              grep -m2 -A6 -E "uncaught exception|Abort message" "$E/logcat.txt"
+              echo '```'
+            fi
+            if [ -s "$E/renderer_diagnostics.json" ]; then
+              echo "**Persisted renderer status:**"
+              echo '```json'
+              head -c 600 "$E/renderer_diagnostics.json"
+              echo '```'
+            else
+              echo "No renderer_diagnostics.json was exported."
+            fi
+            ls -l "$E"/imported_glb_diagnostic.png "$E"/failed_render.png 2>/dev/null
+          } > smoke-comment.md
+          cat smoke-comment.md
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --head "${GITHUB_REF_NAME}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
+          if [ -n "$PR" ]; then gh pr comment "$PR" --body-file smoke-comment.md; fi
+
       - name: Upload AvatarForge renderer evidence
         if: always()
         uses: actions/upload-artifact@v7
