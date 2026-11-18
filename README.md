@@ -29,8 +29,9 @@ the next engineering decision obvious, and every capability carries a status fro
 | Frames rendered by the app | **REAL + VERIFIED** | 1080×1920 capture, 93.6 % non-black, 117 colours |
 | Stability under interaction | **REAL + VERIFIED** | 150 monkey events, no crash, PSS 133,929 KB |
 | Generated avatar → GLB → production SurfaceView → visible pixels | **REAL + VERIFIED** (emulator) | `GeneratedAvatarRuntimeTest` `OK (4 tests)`, 473 s |
-| Filament live preview | **BLOCKED** | native abort, see below |
+| Filament live preview | **BLOCKED** | gltfio aborts at 1.71.6, 1.79.0 and 1.80.1; now disabled at runtime so the app survives |
 | Imported animation playback | **BLOCKED** | depends on the Filament path; the GLES path does not animate imports |
+| GLES GLB render smoke (3 tests, pixel-verified) | **REAL + VERIFIED** (emulator) | `run finished: 3 tests, 0 failed`, `PIXELS_VERIFIED`, 549 ms load, commit `009e986` |
 | Facial rig / blendshape driven expressions | **PARTIAL** | generated avatars carry joints and blendshapes; nothing drives them from conversation |
 | Blinking, eye movement, gaze | **MISSING** | no implementation |
 | Lip synchronisation / visemes | **MISSING** | no viseme extraction; the Voice page states this in-app |
@@ -39,6 +40,21 @@ the next engineering decision obvious, and every capability carries a status fro
 | Unified conversation controller | **MISSING** | chat lives in `MainActivity`, voice is a separate page, no shared state machine |
 | Phone-call and video-call modes | **MISSING** | not implemented, deliberately deferred behind the character experience |
 | Physical SM-S921B behaviour | **UNVERIFIED** | no device run exists |
+
+### The blocker that gates the character experience (scoped, not solved)
+
+**Measured, not assumed:** the abort reproduces in our app on Filament **1.71.6, 1.79.0 and 1.80.1**
+(`getFieldInfo:169` on the older build, `:175` on the newer, same `uniform named "sheenColorIndex" not
+found`). The version rollback is therefore refuted and was reverted; the pin is back at 1.79.0.
+
+**What changed:** the Studio screen used to open *into* that renderer, so merely opening the app
+aborted the process — which is what killed the GLES smoke job before its tests ran. Imported files now
+always render through the verified AvatarForge GLES path, the no-file case explains itself instead of
+constructing a crashing view, and the animation-preview control is disabled with the reason. The next
+run of Android CI passed: **3 tests, 0 failed, `PIXELS_VERIFIED`, 549 ms asset load** (`009e986`).
+
+**What that does not give us:** clip playback, morph targets or skinned animation of imported assets —
+that still needs a working gltfio path.
 
 ### The one blocker that gates the character experience
 
@@ -99,7 +115,9 @@ product needs — one identity, one history, explicit states (`IDLE`, `LISTENING
 | Native libraries packaged | 22 |
 | Compile + unit tests + lint + R8 | PASS (46 JVM tests) |
 | Install and launch | PASS on emulator; cold start 1353 ms |
-| Generated-avatar render gate | PASS, `OK (4 tests)` in 473 s |
+| GLES GLB render smoke | PASS at `009e986`: 3/3 tests, `PIXELS_VERIFIED`, no native crash |
+| Generated-avatar render gate | last recorded pass `OK (4 tests)` in 473 s; currently red for unrelated harness reasons |
+| Still red | diagnostic APK lane, release-preview emulator boot, generated-avatar runtime lane |
 
 Evidence lives in PR #14 comments, because this repository's workflow logs and artifacts are served
 from hosts that are not always reachable.
