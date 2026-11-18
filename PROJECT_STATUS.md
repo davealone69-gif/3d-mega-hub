@@ -1,166 +1,40 @@
 # Project Status
 
-Last updated: 2026-11-16.
+Last updated: 2026-11-19.
 
-## Latest engineering update — 2026-11-15
+## Active work
 
-- Active implementation: `integration/avatarforge-renderer-port`, PR #9. Stable `main` remains unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
-- PR #8 is closed and unmerged; its head is `41c3069301dc772bad3aa8dba1a2cbf67f8110c9`. Do not use it as the work branch.
-- **Implemented:** `78cb75d81557623622f6989a285ebf958dea2844` preserves the original renderer and teardown failures in the final worker status. Diagnostic observability only, not a renderer fix.
-- **Implemented:** `ae43e0e271684d56336005450765a4577aafc591` fixes GLES 3.x extension enumeration. GLES 3.0+ requires `glGetStringi(GL_EXTENSIONS, index)`; the removed legacy extension-string query could return `GL_INVALID_ENUM` and incorrectly disable ES 3.1 extension detection. Float colour-buffer and anisotropy support are now reported from actual capabilities.
-- **Verified on prior exact head `2a5485c17ec656659c4841826a1048d1577b7301`:** signed ephemeral preview APK/AAB build and signature verification (run `43626247432`, job `132542586035`); Android emulator install/launch smoke (job `132542586459`); native host regression (run `43626247376`, job `132542664347`). These results do not validate the later GLES source change.
-- **Latest source head:** `ae43e0e271684d56336005450765a4577aafc591`. Fresh exact-head CI must validate the GLES capability change. **UNVERIFIED:** real imported/generated avatar visible pixels and Samsung SM-S921B runtime. **BLOCKED:** production signing pending owner keystore in protected CI secrets.
-- **Device evidence received 2026-11-16:** the app's own exported renderer diagnostics show the production `AvatarForgeSurfaceView` OpenGL ES path reaching `PIXELS_VERIFIED` in three of three runs on the physical phone for one imported GLB (13,221,520 bytes; 3 presented frames, 11 draw calls, 144,073 triangles, 401,066/401,066/401,062 visible pixels, zero GL/EGL errors). A 98.8 MiB remote-URL GLB reached `FRAME_PRESENTED` only. The device build's APK hash and source commit are unknown, so this is not exact-head evidence. See [`docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md`](docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md).
-- **Fixed 2026-11-16:** `recordSmokeResult("STARTING")` now clears inherited screenshot/report-error preferences, so an unverified asset's report can no longer advertise the previous asset's capture.
-- **Observed 2026-11-16, unfixed:** a 98.8 MiB imported GLB spent 13.9 s inside `nativeCreate()` with no dedicated diagnostic state or budget; the load phase sits outside the 15 s `FRAME_PRESENTED` gate, which begins after that call.
-- **Diagnosed 2026-11-16 ("no animation controls"):** the owner's asset (13,221,520 bytes, matching the preserved rigged `mylove_rig_prepared.glb`) was rendered by the AvatarForge GLES static path, which does not apply imported skeletal animation and exposes no clip controls. Avatar Studio now reports the GLB's declared clip table via `GlbValidator.inspectAnimations()` so "no clips in the file" is distinguishable from "Filament published none" or a failed preview load. Clip playback remains UNVERIFIED.
-- **Upgrade pass 2026-11-16 (compiles; unit tests green):** Gradle 9.9.1, AGP 9.5.1, Kotlin 2.4.21, compileSdk/targetSdk 36, Compose BOM 2026.09.00, core-ktx 1.19.1, activity-compose 1.13.0, Filament 1.80.1, coroutines 1.11.0, androidx.test 1.7.0/1.3.0/2.4.1. NDK and CMake stay pinned. No build or test has run on this head; see `docs/UPGRADE_2026-11-16.md` for the matrix and ranked risks (Filament gltfio API drift is the top one).
-- **CI blockers addressed 2026-11-16:** Filament preview now allocates once instead of twice (the 128 MiB emulator OOM), the frame budget is 180 s only for software rasterisers, and the asset load phase is published as `ASSET_LOADING` with `assetLoadMs`.
-- **Hair LOD 2026-11-16:** region-aware LOD keeps 55 %/28 % of hair and lash triangles at LOD1/LOD2 versus 12 %/5 % for skin and cloth; covered by native `avatar_lod_test`. Builds under the host compiler; the Kotlin side compiles in CI, the shader/LOD path has not run on a device.
-- **Runtime evidence 2026-11-17 (emulator):** the app was built, installed, cold-launched (1353 ms), left running and stressed with 150 fixed-seed monkey events on an x86_64 API 30 emulator. Screenshot analysis reported a 1080×1920 frame with 93.6 % non-black pixels and 117 distinct colours; `mResumedActivity` stayed `com.davemega.hub/.MainActivity`; the crash buffer stayed empty. Filament's own log confirms `FEngine` creation, `resolved backend: OpenGL`, feature level 1, the `disable_es2_srgb_ext` workaround and a submitted frame. Memory after the pass: TOTAL PSS 133,929 KB. Full record and caveats: [`docs/RUNTIME_EVIDENCE_2026-11-17.md`](docs/RUNTIME_EVIDENCE_2026-11-17.md). This is emulator evidence only — physical SM-S921B behaviour remains UNVERIFIED.
-- **Generated-avatar render gate VERIFIED 2026-11-17 (emulator):** `GeneratedAvatarRuntimeTest` reports `OK (4 tests)` in 473.665 s — debug shader magenta pixels, TextureView window capture, visible pixels, and the exported GLB rendered through the production `AvatarForgeSurfaceView` all pass. Level 5 for renderer + loader + export is therefore verified on emulator, not yet on hardware.
-- **Filament preview BLOCKED — root cause identified 2026-11-17:** the abort is
-  `utils::PreconditionPanic: in getFieldInfo:175, reason: uniform named "sheenColorIndex" not found`,
-  raised inside `filament::gltfio::AssetLoader::createAsset`. The app uses the stock
-  `UbershaderProvider` and the stock `AssetLoader`, all Filament artifacts are 1.80.1, and the bundled
-  GLB validates offline, so the mismatch is inside Filament's ubershader path on the emulator's
-  feature level 1. Matches the pattern in google/filament#6907. Options and ruled-out causes:
-  [`docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md`](docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md).
-- **Imported-GLB smoke BLOCKED 2026-11-17:** `AvatarForgeRendererSmokeTest.generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels` takes the process down (`INSTRUMENTATION_RESULT: shortMsg=Process crashed.`) instead of failing an assertion. This is the cause of the long-red *AvatarForge GLES GLB render smoke* job. Fatal-signal lines, native backtraces and the tombstone are now captured for diagnosis.
-- **CI compile gate GREEN 2026-11-16 (`26911d8`):** `:app:compileDebugKotlin`, `:app:compileDebugUnitTestKotlin` and `:app:testDebugUnitTest` pass with **46 JVM tests**, from a new compile-only workflow (`.github/workflows/kotlin-compile-gate.yml`) added because `Android CI` never triggers on `arena/**` and the full runtime workflow's log and artifacts are not reachable from the authoring environment. The gate publishes diagnostics as annotations and a PR comment (PR #14). It caught four defects inspection had missed: AGP 9's built-in Kotlin rejecting `org.jetbrains.kotlin.android`, Compose 1.12.1 requiring `compileSdk 37`, `Scene.removeEntity` renamed to `remove` in Filament 1.80.1, and a real bug in voice cycling.
-- **Still red:** the `AvatarForge generated-avatar runtime verification` workflow (`connectedDebugAndroidTest` on an x86_64 emulator) fails at the instrumentation step on the same head, so the app has been compiled and unit-tested but **never executed on a device or emulator**.
-- **Speech controls 2026-11-16 (compiles, unit-tested):** Voice page gained rate and pitch sliders (0.5x–2.0x over an engine contract of 0.25x–4x), a voice cycler over the engine-reported voice list, a settings summary and Reset, persisted as `speech_settings`. `SpeechSettingsTest` covers clamping, NaN repair, round-trip and stale-voice fallback. Uncompiled, not device-tested; viseme/lip-sync remains unconnected.
-- **Chat context 2026-11-16 (compiles, unit-tested):** the local-model chat now sends bounded multi-turn history (`ChatTranscript`: 12 turns / 24,000 chars / 8,000 per message) instead of a single message, with a pending indicator, a context-count line and a New chat reset. Failed requests stay out of the context. Covered by `ChatTranscriptTest`, which passes in CI; not device-tested.
-- **Appearance controls 2026-11-16 (compiles, unit-tested):** Avatar Studio now exposes sex, build, all ten hair styles, seven hair colours, nine clothed outfits, six cloth colours, skin melanin and height, with persistence and a JVM unit test (`AvatarAppearanceTest`). Skin-tone and hair-style/colour changes move from "no UI" to **IMPLEMENTED IN SOURCE, NOT YET TESTED on device**.
-- Keep `main` unchanged; no merge until exact-head renderer evidence passes.
+- Repository: `davealone69-gif/3d-mega-hub`
+- Active review: [PR #14](https://github.com/davealone69-gif/3d-mega-hub/pull/14)
+- PR head branch: `arena/25bd4008-3d-mega-hub`
+- Integration base: `integration/avatarforge-renderer-port`
+- Latest known head before this status update: `69c95c6e40b4bb7517ba223628c52a8c57f3a0a4`; fetch the PR again for the authoritative current head.
+- `main` has not been modified or merged.
 
-## Repository and active branch
+## Current fixes and evidence
 
-- Repository: [davealone69-gif/3d-mega-hub](https://github.com/davealone69-gif/3d-mega-hub)
-- Default branch: `main`; protected baseline remains unchanged at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`.
-- Single integration branch: [`integration/avatarforge-renderer-port`](https://github.com/davealone69-gif/3d-mega-hub/tree/integration/avatarforge-renderer-port).
-- Review PR: [#9](https://github.com/davealone69-gif/3d-mega-hub/pull/9).
-- The three-commit Samsung photoreal/WebP/GLES update and the FileProvider/launcher-icon consolidation are included in the final integration source.
-- PR #8 (`fix/mega-hub-candidate-hardening`) is a superseded, older Filament-only candidate. Do not merge it into the current integration.
-- No force-push or merge to `main` has been performed.
+- **FIXED IN SOURCE, CI UNVERIFIED:** four workflows now install Android platform API 37, matching `compileSdk = 37` in both Android modules. The previous fixed package was API 36 and could not satisfy the declared compile SDK.
+- **REAL + VERIFIED on prior exact emulator commit only:** `GeneratedAvatarRuntimeTest` reported 4 tests, 0 failures on `392ea220c6b5d8fc25a989be58f78148e514e40a`. The production AvatarForge GLES SurfaceView test presented 3 frames, 29 draw calls and 1,642,936 triangles. This evidence does not transfer to later commits and does not cover Filament.
+- **UNVERIFIED:** the current PR head has no associated Actions runs or commit status checks. No exact-head compile, APK, AAB, lint, R8, emulator or runtime pass is established.
+- **BLOCKED / UNVERIFIED:** Filament imported-GLB preview previously aborted in native gltfio on Filament 1.80.1 with missing `sheenColorIndex`. Current PR pins 1.79.0 as an experiment. No exact-head imported-GLB test proves the rollback works. Root cause remains unproven; see `docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md`.
+- **UNVERIFIED:** Samsung SM-S921B runtime for the current PR APK. Prior owner/device reports are not tied to this exact source SHA.
+- **BLOCKED:** production APK/AAB signing until the owner configures a production keystore and credentials in protected CI secrets. Do not use ephemeral preview keys as production signing.
+- **NOT READY:** PR #14 is open and GitHub reports it is not mergeable. Do not merge until exact-head CI, renderer tests, artifact inspection and review pass.
 
-## Consolidation audit
+## Renderer architecture
 
-The repository had 14 branches at the time of the audit. The working source was consolidated into the single integration branch without replacing the newer GLES path with older experimental implementations.
+- Native AvatarForge OpenGL ES SurfaceView remains the primary renderer for imported and generated GLBs.
+- Filament remains a separate preview path for imported glTF animation and PBR.
+- Vulkan is not the phone-first renderer target.
+- Do not replace these paths with a third renderer or merge competing app architectures.
 
-| Branch / workstream | Disposition |
-|---|---|
-| `work/samsung-s24-photoreal-patch` | Its three WebP/GLES commits were fast-forwarded into the canonical integration branch. Its ref is now a stale pre-finalization pointer; do not continue work there. |
-| `integration/avatarforge-renderer-port` | Canonical integration base and target branch. Retains native AvatarForge GLES for imported/generated GLBs and separate Filament preview for the bundled sample. |
-| `work/fileprovider-renderer-diagnostics` | Selectively ported the FileProvider capability. Its replacement foundation `MainActivity` and non-connected capability/diagnostic overlay were deliberately not copied. The real Avatar Studio now shares the actual PixelCopy file. |
-| `agent/android-build-check-2026-11-03` | Ported its launcher vector asset and manifest icon reference. Existing current `.gitignore` already excludes generated Gradle/build outputs and signing-key files. |
-| `fix/mega-hub-candidate-hardening` / PR #8 | Not merged. Its viewer architecture routes all GLBs through Filament and conflicts with the newer selected split: Filament sample preview plus AvatarForge GLES for imported/generated GLBs. Its hardening notes remain historical evidence only where explicitly referenced. |
-| `feature/first-working-gles-scene` | Earlier standalone GLES test scene. Superseded by the integrated AvatarForge GLES surface and runtime tests. |
-| `fix/filament-engine-jni-init`, `work/filament-renderer-live-diagnostics`, `work/engine-integration-candidate`, `work/filament-gles-renderer` | Older ancestors of the current integration line; their incorporated work is already present. No duplicate cherry-picks required. |
-| `work/avatarforge-core-integration` | Earlier divergent engine snapshot. Not copied over the newer integrated engine; doing so would roll back generation-core changes. |
-| `work/android-shell-foundation` | Divergent early shell/wrapper foundation. Not copied over the later application and pinned toolchain. |
-| `trae/agent-hDYcEF` | Contains generated `.gradle` cache/lock artifacts and older viewer edits. Cache files are not source and were not imported. |
+## Next required work
 
-Older branch refs are retained as historical recovery points; they are not parallel active work targets. Continue work only on `integration/avatarforge-renderer-port`. Keep `main` stable.
+1. Get GitHub Actions to execute on the exact PR head; inspect every job result and fix actual compiler/build/test failures.
+2. Add or run a dedicated instrumentation test that opens the bundled/imported GLB through `FilamentPreviewView` on the current Filament 1.79.0 pin. Capture logcat and prove the process survives asset creation, resource upload and visible rendering.
+3. Keep the generated-GLB-to-production-GLES SurfaceView test as a separate required gate.
+4. Download and inspect APK/AAB artifacts from the same passing SHA: package ID, ABI contents, signature/certificate and SHA-256.
+5. Install that exact APK on Samsung SM-S921B and verify launch, generation, import, appearance controls, animation and sustained rendering. Until this phone test passes, device status remains UNVERIFIED.
+6. Configure the owner-controlled production signing identity before any production release.
 
-## Integrated source
-
-| Component | Source / evidence |
-|---|---|
-| Filament host/viewer | Separate bundled-sample preview, Filament Android/gltfio 1.71.5 |
-| AvatarForge Android library | `:avatarforge-engine`, JNI/C++ generation kernel, Kotlin facade and resource governor |
-| Imported/generated avatar viewer | `AvatarForgeSurfaceView`, native GLES route; Vulkan is not selected for this phone-first path |
-| Bundled GLB fixture | `app/src/main/assets/models/female.glb` |
-| Fixture provenance | 3DDD revision `be5bf17d8afe46247646465941fa1b7317d8e415`; Git blob `a1c00c6b31f6ab0db3b2e68243526cb2d0e15967` |
-| Filament licence | Apache License 2.0 |
-| Fixture licence statement | 3DDD README at the pinned revision states generated base rigs are original work released under CC0 |
-| Diagnostic image sharing | AndroidX FileProvider restricted to app-specific external-files storage; real PixelCopy capture path is shared with ClipData and temporary read permission |
-
-The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `work/android-engine-dev`. It diverges from the standalone AvatarForge RB-01 line (`0e78216643d1a305be7d278011d6732e56d62d62` / merge `fc30efd0db3d7892cfee388a783508ea18f32471`). Multiple generation-core files differ in both directions. Do not wholesale replace either tree; any donor update must be a controlled core-only port with API review and native tests. AvatarForge remains a separate project.
-
-## Current implementation
-
-- AvatarForge generation is an isolated Android library with JNI/C++ generation, cancellation, resource/thermal checks, deformed-mesh validation and atomic publication of validated GLBs.
-- Imported/generated self-contained GLBs use the native GLES renderer. The bundled sample stays on the separate Filament preview.
-- Skinned GLBs apply the rest pose before camera framing. CPU deformation refreshes indexed submesh bounds before frustum checks.
-- WebP image decoding and `EXT_texture_webp` source resolution include core-source fallback. Geometry uploads are checked/retried.
-- Debug builds provide seed-1337 generated-avatar diagnostics, successful EGL swap checks, in-frustum checks and background-subtracted PixelCopy. The capture is saved as `generated_avatar_diagnostic.png` or `failed_render.png`.
-- Avatar Studio shares the actual capture only after the file exists. FileProvider path is app-private external-files storage, not broad shared storage.
-- GLB imports are copied to app-private storage, size-limited and structurally validated before publication. External-resource `.gltf` remains unsupported.
-- Ollama is an external service, not an embedded LLM. Cleartext HTTP is limited to loopback; remote endpoints require HTTPS.
-- Android TextToSpeech output is connected. Viseme extraction and avatar lip-sync are not connected.
-
-## Verification ledger
-
-| Gate | Status | Evidence / next requirement |
-|---|---|---|
-| Ollama endpoint utility | **REAL + VERIFIED on earlier revision** | Kotlin compiler smoke and Android unit tests passed on revision `34201cb`; phone-to-Ollama connection remains unverified. |
-| GLB validator | **REAL + VERIFIED on earlier revision** | Kotlin/synthetic GLB checks and unit tests passed on `34201cb`; bundled fixture passed structural validation. |
-| Native generation and atomic GLB publication | **PARTIAL** | Earlier release preview built the engine; exact consolidated HEAD requires fresh CI/build evidence. |
-| WebP decoding/source fallback | **IMPLEMENTED, UNVERIFIED on consolidated HEAD** | Source and host regression tests are present; run exact-head CTest and Android build. |
-| PixelCopy diagnostic and GLES renderer | **IMPLEMENTED, DEVICE VERIFIED for one imported GLB (2026-11-16)** | Three of three device runs reached `PIXELS_VERIFIED` with 3 swaps, 11 draws, 144,073 triangles and 401,066/401,066/401,062 pixels plus saved captures. Not verified for generated GLBs, ~100 MiB assets or the Filament preview path; the PNG captures have not been inspected in this workspace. |
-| FileProvider capture sharing | **IMPLEMENTED, BUILD UNVERIFIED** | Provider and scoped XML plus share action are present. Must verify Android manifest merge, install, chooser and receiving app read access. |
-| Launcher icon | **IMPLEMENTED, BUILD UNVERIFIED** | Vector drawable and manifest reference are present. |
-| Android unit tests / lint / debug APK / R8 | **PARTIAL** | Passed on earlier revisions; exact consolidated HEAD needs fresh run. |
-| Emulator install/launch/GLES smoke | **UNVERIFIED** | Prior emulator attempt timed out during boot; corrected smoke workflow exists but needs a successful run and screenshot inspection. |
-| Samsung SM-S921B runtime / visible pixels | **PARTIAL — device-reported 2026-11-16** | Owner-supplied app diagnostics prove imported-GLB rendering on a physical OpenGL ES 3.2 device, three times, with captures. The installed APK hash and source commit are unknown; generated-avatar rendering, lifecycle, memory and thermal behaviour remain unverified. |
-| Production APK/AAB signing | **BLOCKED** | User-owned release keystore and protected CI secrets are not configured. Never substitute debug or ephemeral preview keys. |
-| Embedded LLM | **MISSING** | Ollama remains external. |
-| Photo-to-identity reconstruction | **MISSING** | Deterministic prompt parsing is not image reconstruction. |
-| Voice lip-sync / visemes | **MISSING** | TTS exists; viseme extraction and avatar synchronization do not. |
-| External-resource `.gltf` | **MISSING** | Self-contained GLB only. |
-
-## Fixture and release limitations
-
-The bundled `female.glb` is a renderer fixture, not a complete rigged avatar: one mesh, one node, seven morph targets, zero skins, zero animations and zero embedded images. It does not prove skeletal animation, facial animation, texture quality or generated-avatar quality.
-
-Production release signing remains blocked until a user-owned keystore is configured through protected CI secrets. Preview signing is not a production signing identity.
-
-## Next single gate
-
-Run the exact consolidated branch through host CTest, Android unit tests, lint, debug APK, R8/minification, signed preview APK/AAB, corrected emulator GLES smoke and artifact/signature checks. Inspect the captured model pixels. Then install and test that exact APK on Samsung SM-S921B. Until the phone test passes, the app is not a green build and renderer status remains **UNVERIFIED**.
-
-## Repository consolidation audit (2026-11-11)
-
-The live GitHub inventory returned 15 branches. Keep exactly one active work target: `integration/avatarforge-renderer-port`. `main` remains the stable baseline and has not been modified by this consolidation.
-
-| Branch | Audit disposition |
-|---|---|
-| `integration/avatarforge-renderer-port` | **CANONICAL.** Continue all implementation, fixes and evidence updates here. PR #9 is the review path to `main`. |
-| `work/samsung-s24-photoreal-patch` | Behind canonical; its WebP/GLES work is already in the canonical line. No cherry-pick. |
-| `work/fileprovider-renderer-diagnostics` | Five-commit divergent foundation rewrite. The useful FileProvider capability is already selectively implemented in canonical Avatar Studio; its replacement Compose-only MainActivity and disconnected overlay are not to be merged. |
-| `agent/android-build-check-2026-11-03` | Launcher icon and manifest reference are already present in canonical. No additional source change required. |
-| `docs/glb-display-generation-baseline` / PR #11 | README-only update is redundant with the current canonical README, which already records the user-confirmed `mylove.glb` display result, fixture facts and separation of viewing from generation quality. Do not merge the stale baseline README over the current project handover. |
-| `fix/mega-hub-candidate-hardening` / closed PR #10 | Divergent older candidate. Its Filament-based generated-avatar capture path conflicts with the selected canonical split (AvatarForge GLES for imported/generated GLBs; Filament only for the bundled sample). The canonical engine already contains post-skin deformation validation and refreshed submesh bounds. Do not wholesale merge the older app, renderer or engine files. Preserve as a historical comparison until branch cleanup is approved. |
-| `feature/first-working-gles-scene` | Earlier standalone GLES scene, superseded by the integrated AvatarForge GLES viewport. |
-| `work/avatarforge-core-integration` | Earlier engine snapshot, not a safe replacement for the later canonical generation core. |
-| `work/android-shell-foundation` | Early divergent shell and wrapper foundation, superseded by the integrated app/toolchain. |
-| `trae/agent-hDYcEF` | Contains generated Gradle cache/lock files and older viewer edits; no cache files are to be imported. |
-| `fix/filament-engine-jni-init`, `work/engine-integration-candidate`, `work/filament-gles-renderer`, `work/filament-renderer-live-diagnostics` | Ancestor branches behind the canonical integration; no unique forward commits against canonical. |
-
-### Exact-head validation follow-up
-
-- The previously recorded baseline CI set for commit `46b13ee87f0daeaf5e89ae752575243b07e98a22` passed Android lint, unit tests, debug APK assembly, R8/minification, native host regression, and signed preview APK/AAB generation.
-- Emulator install and launch succeeded, but the smoke script then exited with code 1. This is a failed smoke gate, not a successful renderer test.
-- The generated-avatar and AvatarForge GLES instrumentation jobs failed before execution because `AvatarForgeRendererSmokeTest.kt` called a no-argument `UiDevice.takeScreenshot()` method unavailable in the pinned UI Automator 2.3.0 dependency. The test was corrected on this branch to use `InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()`, which returns the Bitmap used by the existing pixel assertions.
-- The corrected test change is committed as `42da0e396555eb6fb340a072b5d9396184e0164e`. The emulator smoke script was also corrected in `5b8f6c1aef6e1a88c3d5e3352300f6febcfe4baa`: it now trusts the successful `am start -W` result plus a live process PID instead of a brittle `dumpsys` text-format grep. Existing GLB-load, frame, ANR and screenshot checks remain in place. **Fresh CI for these exact commits is required; no pass is claimed yet.**
-- PR #11 was closed as superseded after confirming its unique GLB fixture facts and user-confirmed display note are already present in the canonical README. Its older baseline README was not merged.
-- Samsung SM-S921B rendering and visible-pixel verification remain **UNVERIFIED**. Production signing remains **BLOCKED** pending the user's production keystore and protected CI secrets.
-
-Do not merge to `main` until fresh exact-head CI, emulator install/launch, real GLES pixel evidence and review are complete. The user's physical-phone test remains a separate final gate.
-
-
-## Owner phone-test update and revised priority (2026-11-13)
-
-The owner reports testing the latest installed APK on the physical phone:
-- Avatar renderer displays the avatar.
-- The generation button changes avatar features, including male/female when given suitable prompts.
-- GLB import button works.
-- Skin-tone and hair changes have not yet been tested.
-- Overall avatar visual quality is too poor to judge appearance changes reliably.
-
-**Evidence classification:** OWNER-TESTED for those reported functions on the APK the owner installed. The exact APK SHA-256 and source commit are not yet known. Do not claim that the current PR head or a specific CI artifact is the tested build. Do not generalise these results to all GLBs, lifecycle states or device conditions.
-
-**Priority is now avatar quality first.** This supersedes the earlier README instruction to defer avatar quality until every renderer gate is complete. Preserve the working renderer, generation action and import path. Diagnose the generated model from parser/spec through anatomy, mesh, face, hair, clothing, materials/textures and export. Prioritise actual geometry/silhouette defects over lighting-only polish. Add deterministic data-level regression tests and matched before/after GLB/render captures. Then verify skin-tone and hair controls independently, followed by the Generate -> Export -> Reopen -> Import -> Render workflow.
-
-No implementation change, build, CI rerun or new phone test is claimed by this handover update. Exact-head CI, emulator tests, artifact signing and release gates remain separate. Production signing remains BLOCKED until the owner configures a production keystore in protected CI secrets. main remains unchanged.
+Update this file and README after each meaningful verified milestone. Never promote an unverified change to a fixed or green status.
