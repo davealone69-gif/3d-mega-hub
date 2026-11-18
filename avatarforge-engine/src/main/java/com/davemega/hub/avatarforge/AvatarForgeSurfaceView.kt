@@ -444,6 +444,10 @@ class AvatarForgeSurfaceView(
     @Volatile private var measuredFrameTimeMaxMs: Double? = null
     @Volatile private var measuredFps: Double? = null
     @Volatile private var measuredFrameCount: Long = 0L
+    /* When the first PixelCopy attempt was made, so a failure can say how long the whole retry sequence
+       spanned. "result=2 after 3 attempts" did not distinguish three attempts inside one 7.5 s frame
+       from three spread across a minute, and those call for opposite fixes. */
+    @Volatile private var firstPixelCopyAttemptAtNanos: Long = 0L
 
     private fun recordSmokeResult(
         status: String,
@@ -572,6 +576,7 @@ class AvatarForgeSurfaceView(
         if (!verifyVisiblePixels || pixelCopyComplete.get() ||
             !pixelCopyPending.compareAndSet(false, true)) return
         val attempt = pixelCopyAttempts.incrementAndGet()
+        if (attempt == 1) firstPixelCopyAttemptAtNanos = System.nanoTime()
         val posted = mainHandler.post {
             if (!surfaceReady || pixelCopyComplete.get()) {
                 pixelCopyActiveAttempt.compareAndSet(attempt, 0)
@@ -641,7 +646,12 @@ class AvatarForgeSurfaceView(
                         recycleBitmap()
                         if (attempt >= MAX_PIXEL_COPY_ATTEMPTS) {
                             pixelCopyComplete.set(true)
-                            val message = "FAILED: PixelCopy returned result=$copyResult after $attempt attempts"
+                            val sinceFirst = firstPixelCopyAttemptAtNanos
+                            val spannedMs = if (sinceFirst == 0L) -1L
+                                else (System.nanoTime() - sinceFirst) / 1_000_000L
+                            val message = "FAILED: PixelCopy returned result=$copyResult after $attempt " +
+                                "attempts spanning ${spannedMs}ms (frameTimeAvgMs=" +
+                                (measuredFrameTimeAvgMs?.let { String.format("%.1f", it) } ?: "not measured") + ")"
                             recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
                                 presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
                             onStatus(message)
@@ -751,7 +761,15 @@ class AvatarForgeSurfaceView(
         private const val TAG = "AvatarForge"
         private const val SMOKE_PREFS = "avatarforge_renderer_smoke"
         private const val MIN_VISIBLE_PIXELS = 5_000
-        private const val MAX_PIXEL_COPY_ATTEMPTS = 3
+        /* 3 -> 8. An ERROR_TIMEOUT comes back quickly and the retry waits for the next presented frame,
+           so at this scene's measured ~7.5 s per frame under -gpu swangle three attempts spanned about
+           22 s and then gave up - which is what "FAILED: PixelCopy returned result=2 after 3 attempts"
+           meant in runs 44267980737, 44269826494 and 44272751914. Eight attempts span roughly a minute
+           of frames. This does not weaken what is verified: the test still requires more than 5,000
+           background-subtracted geometry pixels from a real capture, and a renderer that cannot produce
+           them fails on attempt eight exactly as it did on attempt three. What changes is how long a
+           capture is allowed to wait for a machine that is momentarily busy. */
+        private const val MAX_PIXEL_COPY_ATTEMPTS = 8
         private const val PIXEL_COPY_TIMEOUT_MS = 15_000L
         /* How long the first EGL-presented frame may go without any rendering progress before the
            renderer is declared failed. 15 s is unchanged from the old fixed deadline - what changed is
@@ -761,9 +779,11 @@ class AvatarForgeSurfaceView(
            was only ever met by luck. */
         private const val FRAME_STALL_NANOS = 15_000_000_000L
         /* How long the render loop will stand aside for one in-flight pixel capture, and how often it
-           checks. The limit has to exceed PIXEL_COPY_TIMEOUT_MS (15 s) so a capture that is going to
-           time out is still given its full window, with room for the retry that follows it. */
-        private const val CAPTURE_YIELD_LIMIT_MS = 40_000L
+           checks. Kept below PIXEL_COPY_TIMEOUT_MS (15 s) on purpose: the retry path waits for the next
+           presented frame, so yielding longer than a frame would stall the very thing that spaces the
+           attempts out. With MAX_PIXEL_COPY_ATTEMPTS at 8 this bounds the total quiet time to well
+           inside the tests' own budgets. */
+        private const val CAPTURE_YIELD_LIMIT_MS = 10_000L
         private const val CAPTURE_YIELD_SLEEP_MS = 25L
         /* Absolute ceiling on waiting for a first presented frame, so a renderer that keeps producing
            draw calls but never presents cannot loop forever. 240 s is about 32 frames at the measured
