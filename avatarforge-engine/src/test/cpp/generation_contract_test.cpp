@@ -44,6 +44,14 @@
  *   sharing/export. That same exporter fix makes garment/gear recolour persist into files too, which previously
  *   it did not (eye colour always survived because it is baked into the base-colour texture).
  *
+ * MALE PATH. The owner explicitly asked for male avatars. af_spec.sex selects an ANSUR-based male build that no
+ *   test had ever exercised. Part F proves it end-to-end on the host: a canonical male avatar completes the full
+ *   pipeline, carries the production rig and face (71 joints / 52 ARKit blendshapes / all five PBR slots),
+ *   validates at rest, exports and re-imports cleanly, stays byte-deterministic across two identical seeds while a
+ *   different seed differs, and yields measurably different geometry/bytes than the female avatar from the same
+ *   prompt. (Visual masculine proportion/quality is deliberately out of scope -- the sandbox cannot render or view
+ *   images; what is locked here is pipeline correctness, rig completeness and determinism.)
+ *
  * Nothing is mocked and nothing is synthesised to pass; every assertion reads real generated data.
  * COST NOTE: it runs the full pipeline up to three times (two identical seeds for the equality check,
  * one different seed for the inequality control), so it is the slowest host test and carries its own
@@ -92,10 +100,10 @@ void checkf(bool cond, const char* fmt, double a, double b) {
 /* Deterministic spec: the canonical seed-1337 female/athletic/medium/jeans-jacket avatar, with every
    field pinned so two calls cannot drift. af_spec_init fills defaults (and struct_size); we then
    override. Tone arrays left at their documented sentinels except where pinning removes ambiguity. */
-void fillSpec(af_spec* s, int32_t seed) {
+void fillSpec(af_spec* s, int32_t seed, af_sex sex = AF_SEX_FEMALE) {
     *s = af_spec{};
     af_spec_init(s);
-    s->sex        = AF_SEX_FEMALE;
+    s->sex        = sex;   /* defaults to female; the male path is exercised explicitly by Part F */
     s->build      = AF_BUILD_ATHLETIC;
     s->hair_style = AF_HAIR_MEDIUM;
     s->outfit     = AF_OUTFIT_JEANS_JACKET;
@@ -736,6 +744,99 @@ int main(void) {
         std::printf("DETAIL  fabric override: satin=%.0f B reproducible | satin!=denim first diff @ %ld | export round-trips values\n",
                     (double)sz1, fdDiff);
         std::remove(P1); std::remove(P2); std::remove(P3);
+    }
+
+    /* ---- Part F: the MALE generation path (owner-requested) -- completeness, determinism, sex effect, round-trip ---- */
+    {
+        const char* PATH_M1 = "/tmp/af_male_1.glb";
+        const char* PATH_M2 = "/tmp/af_male_2.glb";
+        const char* PATH_M3 = "/tmp/af_male_seed1338.glb";
+        af_spec male, male2, maleOther;
+        fillSpec(&male, 1337, AF_SEX_MALE);
+        male2 = male;                                 /* identical spec+seed for determinism */
+        fillSpec(&maleOther, 1338, AF_SEX_MALE);
+        const bool mo1 = generateAndExportSpec(&male,      PATH_M1, /*inspect=*/false, nullptr);
+        const bool mo2 = generateAndExportSpec(&male2,     PATH_M2, /*inspect=*/false, nullptr);
+        const bool mo3 = generateAndExportSpec(&maleOther, PATH_M3, /*inspect=*/false, nullptr);
+        check(mo1 && mo2 && mo3, "MALE: full pipeline + export succeeds across three runs");
+
+        long mz1 = 0, mz2 = 0, mfd = -2;
+        check(mo1 && mo2 && filesIdentical(PATH_M1, PATH_M2, &mz1, &mz2, &mfd),
+              "MALE DETERMINISM: identical male spec+seed => byte-identical GLB");
+        long mz3 = 0, mfd3 = -2;
+        check(mo1 && mo3 && !filesIdentical(PATH_M1, PATH_M3, &mz1, &mz3, &mfd3),
+              "MALE CONTROL: a different seed produces a different GLB");
+        /* PATH_A is the female canonical avatar (seed 1337) written in Part A, still on disk until final cleanup. */
+        long fz = 0, sfd = -2;
+        check(mo1 && !filesIdentical(PATH_A, PATH_M1, &fz, &mz1, &sfd),
+              "SEX EFFECT: same prompt, male vs female => different geometry/bytes");
+
+        /* Live read-back: rig/face completeness, texture population, rest-mesh validation, generic quality floor. */
+        af_engine* me = nullptr;
+        if (mo1 && af_engine_create(&male, nullptr, &me) == AF_OK && me != nullptr &&
+            af_engine_run_all(me) == AF_OK) {
+            af_stats st{};
+            check(af_engine_stats(me, &st) == AF_OK && st.vertex_count > 0 && st.triangle_count > 0,
+                  "MALE: generated mesh has vertices and triangles");
+            checkf(st.joint_count == 71, "MALE: rig has exactly 71 joints (got %.0f)", (double)st.joint_count, 0.0);
+            checkf(st.blendshape_count == 52, "MALE: face has all 52 ARKit blendshapes (got %.0f)",
+                   (double)st.blendshape_count, 0.0);
+            char bsNames[64][64];
+            const int32_t bsc = af_engine_blendshape_names(bsNames, 64);
+            std::string allBs;
+            for (int32_t i = 0; i < bsc && i < 64; ++i) { allBs += bsNames[i]; allBs += ","; }
+            check(allBs.find("eyeBlinkLeft") != std::string::npos &&
+                  allBs.find("cheekPuff") != std::string::npos,
+                  "MALE: blendshape names include canonical ARKit targets");
+            /* All five PBR slots populated + a loose, sex-agnostic surface-detail floor (NOT the female-tuned ratchet). */
+            const int32_t slots[] = {AF_TEX_BASE_COLOR, AF_TEX_NORMAL, AF_TEX_METALLIC_ROUGHNESS,
+                                     AF_TEX_OCCLUSION, AF_TEX_SUBSURFACE};
+            bool texOk = true; double baseLumSd = 0.0, nrmSdR = 0.0;
+            for (int i = 0; i < 5; ++i) {
+                af_texture t{};
+                if (af_engine_texture(me, slots[i], &t) != AF_OK || t.data == nullptr ||
+                    t.width <= 0 || t.height <= 0 || t.channels <= 0) { texOk = false; continue; }
+                if (slots[i] == AF_TEX_BASE_COLOR && t.channels >= 3)
+                    baseLumSd = luminanceStdDev(t.data, t.width, t.height, t.channels);
+                if (slots[i] == AF_TEX_NORMAL && t.channels >= 3)
+                    nrmSdR = channelStdDev(t.data, t.width, t.height, t.channels, 0,
+                                           channelMean(t.data, t.width, t.height, t.channels, 0));
+            }
+            check(texOk, "MALE: all five procedural PBR texture slots are populated");
+            check(baseLumSd > 1.0 && nrmSdR > 3.0,
+                  "MALE: base colour has tonal spread and normal map has surface detail (not flat)");
+            char report[2048] = {};
+            check(af_engine_validate_deformed_mesh(me, report, (int32_t)sizeof(report)) == AF_OK,
+                  "MALE: rest mesh passes finite-position / weight / joint / bounds validation");
+            af_engine_destroy(me);
+        } else {
+            check(false, "MALE: live read-back engine could not be created/run");
+            if (me) af_engine_destroy(me);
+        }
+
+        /* Round-trip: the exported male GLB re-imports through the hardened reader, adopting 71 joints. */
+        std::vector<uint8_t> maleBytes;
+        if (mo1 && readFile(PATH_M1, &maleBytes)) {
+            af_spec rs; fillSpec(&rs, 1);
+            af_engine* re = nullptr;
+            if (af_engine_create(&rs, nullptr, &re) == AF_OK && re != nullptr) {
+                const int32_t irc = af_engine_import_glb_from_memory(re, maleBytes.data(), (int32_t)maleBytes.size());
+                const char* why = af_engine_last_error(re);
+                const bool silent = (why == nullptr) || (*why == '\0');
+                check(irc == AF_OK && silent, "MALE ROUND-TRIP: exported GLB re-imports rc==AF_OK, empty error");
+                checkf(af_engine_joint_count(re) == 71,
+                       "MALE ROUND-TRIP: imported skeleton adopts 71 joints (got %.0f)",
+                       (double)af_engine_joint_count(re), 0.0);
+                af_engine_destroy(re);
+            } else {
+                check(false, "MALE ROUND-TRIP: re-import engine could not be created");
+            }
+        } else {
+            check(false, "MALE ROUND-TRIP: could not read back the exported GLB");
+        }
+        std::printf("DETAIL  male path: male=%.0f B deterministic | female=%ld B | sex effect locked\n",
+                    (double)mz1, fz);
+        std::remove(PATH_M1); std::remove(PATH_M2); std::remove(PATH_M3);
     }
 
     /* Best-effort cleanup of the temporary artifacts. */
