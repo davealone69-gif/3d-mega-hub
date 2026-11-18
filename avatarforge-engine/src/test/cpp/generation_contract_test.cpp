@@ -232,12 +232,21 @@ bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* 
             }
         }
         check(allTexturesOk, "all five procedural PBR texture slots are populated with real pixels");
-        /* Non-vacuous APPEARANCE baselines. Thresholds are deliberately conservative; the QUALITY/DETAIL
-           lines printed above record the real magnitudes so they can be ratcheted up as quality improves. */
+        /* RATCHETED APPEARANCE BASELINES. These are regression floors, not aspirational targets: each
+           sits safely below the magnitudes measured after commit f5fdcea (garments gained real woven +
+           stitched relief), so any future change that flattens the surface back toward the old painted
+           regime fails here loudly. They are stable because the spec+seed above is pinned, which makes
+           the baked pixels -- and therefore these statistics -- byte-reproducible run to run.
+             measured @ f5fdcea : rawSdR 9.56, rawSdG 5.39, sdNx 0.075, sdNy 0.042, meanNz 0.996
+             previous (flat)    : rawSdR 4.14, rawSdG 2.14, sdNx 0.032, sdNy 0.017, meanNz ~0.999   */
         check(baseLumSd > 1.0,
               "base-colour map has tonal spread (not one flat tone): luminance stddev > 1.0 on 0-255");
-        check(normalRawSdR > 1.0 && normalRawSdG > 1.0,
-              "normal map carries real micro-relief: its R and G channels vary (not a dead-flat map)");
+        check(normalRawSdR > 6.0 && normalRawSdG > 4.0,
+              "normal map keeps garment weave/stitch relief: R/G channel stddev > 6.0 / > 4.0");
+        check(normalSdNx > 0.05 && normalSdNy > 0.03,
+              "normal map deviates from flat in tangent space: decoded sdNx > 0.05 and sdNy > 0.03");
+        check(normalMeanNz < 0.9988,
+              "surface is not globally flat: normal mean Z < 0.9988 (relief present somewhere)");
         std::printf("DETAIL  baseColour lumSd=%.2f | normal raw(sdR=%.2f sdG=%.2f) decoded(sdNx=%.3f sdNy=%.3f meanNz=%.3f)\n",
                     baseLumSd, normalRawSdR, normalRawSdG, normalSdNx, normalSdNy, normalMeanNz);
 
