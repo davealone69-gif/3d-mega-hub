@@ -335,12 +335,25 @@ void evaluateEye(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut*
            drives skin and hair, plus a deterministic per-avatar hue shift, which is what the
            photogrammetry literature reports as the real population correlation (light eyes
            appear with low melanin, and the hue varies by a few degrees between individuals). */
-        const float hueShift = ctx.noise.hash3f(101, which, 7) - 0.5f;
-        const float eumelanin = ctx.spec->skin_melanin;
-        const Vec3 base = Vec3(0.34f + 0.30f * (1.0f - eumelanin) + hueShift * 0.06f,
-                               0.30f + 0.28f * (1.0f - eumelanin) + hueShift * 0.03f,
-                               0.20f + 0.34f * (1.0f - eumelanin) - hueShift * 0.02f).lerp(
-            Vec3(0.20f, 0.11f, 0.05f), saturate(eumelanin * 1.25f));
+        Vec3 base;
+        const float etR = ctx.spec->eye_tone[0], etG = ctx.spec->eye_tone[1], etB = ctx.spec->eye_tone[2];
+        if (etR > 0.0f || etG > 0.0f || etB > 0.0f) {
+            /* Explicit iris colour was requested (via spec, or "<colour> eyes" in the prompt). Use it
+               as the base; the fibre / limbal-ring / collarette modulation below still applies, so it
+               reads as a real iris rather than a flat disc of paint. */
+            base = Vec3(saturate(etR), saturate(etG), saturate(etB));
+        } else {
+            /* Iris colour is not a separate spec field by default: it is derived from the same melanin
+               that drives skin and hair, plus a deterministic per-avatar hue shift, which is what the
+               photogrammetry literature reports as the real population correlation (light eyes appear
+               with low melanin, and the hue varies by a few degrees between individuals). */
+            const float hueShift = ctx.noise.hash3f(101, which, 7) - 0.5f;
+            const float eumelanin = ctx.spec->skin_melanin;
+            base = Vec3(0.34f + 0.30f * (1.0f - eumelanin) + hueShift * 0.06f,
+                        0.30f + 0.28f * (1.0f - eumelanin) + hueShift * 0.03f,
+                        0.20f + 0.34f * (1.0f - eumelanin) - hueShift * 0.02f).lerp(
+                Vec3(0.20f, 0.11f, 0.05f), saturate(eumelanin * 1.25f));
+        }
         const float fibres = fbm(ctx.noise, Vec3(std::cos(angle), std::sin(angle), t * 6.0f) * 40.0f, 3, 2.5f, 0.55f);
         const float limbal = saturate((t - 0.72f) / 0.28f);
         const float collarette = 1.0f - saturate(std::fabs(t - 0.48f) * 5.0f);

@@ -41,6 +41,7 @@ void af_spec_init(af_spec* spec) {
     spec->hair_tone[0] = spec->hair_tone[1] = spec->hair_tone[2] = 0.0f;
     spec->cloth_tone[0] = spec->cloth_tone[1] = spec->cloth_tone[2] = 0.0f;
     spec->gear_tone[0] = spec->gear_tone[1] = spec->gear_tone[2] = 0.0f;
+    spec->eye_tone[0] = spec->eye_tone[1] = spec->eye_tone[2] = 0.0f;   /* 0 => iris follows melanin */
     spec->cloth_roughness = -1.0f;
     spec->gear_metalness = -1.0f;
     spec->prompt[0] = '\0';

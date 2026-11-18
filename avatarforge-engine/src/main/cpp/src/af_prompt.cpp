@@ -141,6 +141,39 @@ bool isHairWord(const std::string& w) {
 
 /* Maps a body noun onto the af_spec field it names, writing `value` (centimetres). One table, so
    the noun-before-number and number-before-noun paths cannot drift apart. */
+bool isEyeWord(const std::string& w) {
+    return w == "eye" || w == "eyes" || w.rfind("eyed", 0) == 0;
+}
+
+/* Curated IRIS base reflectances (linear-sRGB) for the canonical eye-colour words, converted from
+   the 3D4ME display swatches (see docs/REFERENCE_3d4me_options.md). Used when a prompt names an eye
+   colour ("<colour> eyes"); any other colour word falls back to a lifted generic value at the call
+   site so unusual iris colours still resolve to something plausible. */
+struct NamedEyeColour { const char* word; float rgb[3]; };
+const NamedEyeColour kEyeColours[] = {
+    {"brown",  {0.125f, 0.060f, 0.029f}},
+    {"hazel",  {0.235f, 0.168f, 0.048f}},
+    {"green",  {0.070f, 0.216f, 0.115f}},
+    {"blue",   {0.095f, 0.205f, 0.372f}},
+    {"grey",   {0.242f, 0.278f, 0.333f}},
+    {"gray",   {0.242f, 0.278f, 0.333f}},
+    {"amber",  {0.450f, 0.240f, 0.020f}},
+    {"violet", {0.130f, 0.075f, 0.340f}},
+    {"black",  {0.030f, 0.020f, 0.015f}},
+};
+const int kEyeColourCount = static_cast<int>(sizeof(kEyeColours) / sizeof(kEyeColours[0]));
+bool eyeColourFor(const std::string& w, float rgb[3]) {
+    for (int i = 0; i < kEyeColourCount; ++i) {
+        if (w == kEyeColours[i].word) {
+            rgb[0] = kEyeColours[i].rgb[0];
+            rgb[1] = kEyeColours[i].rgb[1];
+            rgb[2] = kEyeColours[i].rgb[2];
+            return true;
+        }
+    }
+    return false;
+}
+
 const char* setBodyCm(af_spec* spec, const std::string& noun, float value) {
     if (noun == "waist") { spec->waist_cm = value; return "waist_cm"; }
     if (noun == "hip" || noun == "hips") { spec->hip_cm = value; return "hip_cm"; }
@@ -436,6 +469,24 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
 
         /* ---- colours ---- */
         if (colourFor(w, rgb)) {
+            /* "<colour> eye(s)" / "<colour>-eyed" sets the IRIS colour, never the garment. Handled
+               here (not by the pending-colour noun mechanism) because eyes are not a wardrobe slot. */
+            const std::string eyeNext = (i + 1 < words.size()) ? words[i + 1].text : std::string();
+            if (isEyeWord(eyeNext)) {
+                float iris[3];
+                if (!eyeColourFor(w, iris)) {
+                    /* Arbitrary colour word: lift the generic paint reflectance into a plausible iris
+                       range so e.g. "teal eyes" still yields a believable result. */
+                    iris[0] = std::fmin(0.85f, rgb[0] * 1.15f + 0.04f);
+                    iris[1] = std::fmin(0.85f, rgb[1] * 1.15f + 0.04f);
+                    iris[2] = std::fmin(0.85f, rgb[2] * 1.15f + 0.04f);
+                }
+                spec->eye_tone[0] = iris[0];
+                spec->eye_tone[1] = iris[1];
+                spec->eye_tone[2] = iris[2];
+                record(out, w + " eyes", "eye_tone", &matched);
+                continue;   /* the following 'eye(s)' token is intentionally left unmatched */
+            }
             pendingColour[0] = rgb[0];
             pendingColour[1] = rgb[1];
             pendingColour[2] = rgb[2];
