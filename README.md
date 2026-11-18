@@ -587,3 +587,11 @@ The APK archive was **not downloaded or inspected** for package ID, APK signing 
 **NOT READY.** The production generated-GLB-to-GLES SurfaceView test did not run; the only executed imported-GLB GLES instrumentation test failed and its process crashed. Ordinary build jobs and emulator install/launch passed, and fresh same-SHA APK artifacts exist, but none overrides the missing/failed renderer gate. Do not distribute either APK artifact as the first READY test APK.
 
 This entry is documentation-only. No application source was changed, `main` was not modified, and PR #9 was not merged. This README update creates a new branch head, so all evidence above applies only to `6a745d260997e3656eafcd2d316f8afafef35e94`; the new head requires fresh exact-SHA workflow runs and artifact evidence.
+
+## Launcher branding update — 2026-11-18
+
+- Added the electric-blue / silver wolf artwork as the Android launcher icon resource at `app/src/main/res/drawable-nodpi/ic_launcher_art.png`.
+- Added adaptive launcher icon definitions for Android 8.0+ and legacy bitmap resource wrappers for earlier Android versions.
+- Updated the manifest to use `@mipmap/ic_launcher` and `@mipmap/ic_launcher_round`.
+- The icon change is committed on `integration/avatarforge-renderer-port`; `main` remains untouched.
+- **Build status: UNVERIFIED** until GitHub Actions builds the exact new head. **Physical Samsung launcher appearance: UNVERIFIED** until installed and checked on the SM-S921B.
