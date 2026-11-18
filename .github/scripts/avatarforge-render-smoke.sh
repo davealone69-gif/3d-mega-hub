@@ -52,8 +52,11 @@ adb pull "$DIAGNOSTICS_DIR/generated_avatar_diagnostic.png" "$EVIDENCE/generated
 adb pull "$DIAGNOSTICS_DIR/failed_render.png" "$EVIDENCE/failed_render.png" >/dev/null 2>&1 || true
 
 # Report BEFORE any gate can exit, so a gate failure never costs us the diagnosis.
-python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
-python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . --commands || true
+# logcat is passed as well: Gradle only ever says "Instrumentation run failed due to Process crashed",
+# while the reason - a Java FATAL EXCEPTION stack or a native Fatal signal backtrace - is in logcat.
+CRASH_LOGS=(--crash-log "$EVIDENCE/logcat.txt" --crash-log "$EVIDENCE/avatarforge-logcat.txt")
+python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . "${CRASH_LOGS[@]}" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . "${CRASH_LOGS[@]}" --commands || true
 
 # Tells the workflow's own if:always() reporting step that this already happened. Without it both
 # report the same failure, and GitHub caps annotations at 10 per level per run - the duplicate halves

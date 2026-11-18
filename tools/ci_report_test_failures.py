@@ -26,7 +26,9 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 
-MAX_ERROR_COMMANDS = 8
+# GitHub keeps 10 annotations per level per run, so emitting more than 10 errors just drops the tail
+# at random. Everything is ranked by how much it explains, then the best 10 are emitted.
+MAX_ERROR_COMMANDS = 10
 MAX_NOTICE_COMMANDS = 8
 
 # Lines in a Gradle log that carry an actual cause rather than progress noise.
@@ -66,6 +68,61 @@ def collect_crash_lines(log_path: str) -> list[str]:
                 seen.add(line[:160])
                 found.append(line)
     return found
+
+
+# Header lines that begin a crash block in logcat. The reason a process died is never on the header
+# line itself: a Java crash puts its stack on the lines that follow "FATAL EXCEPTION", and a native
+# crash puts its abort message and backtrace after "Fatal signal". So the block is what matters.
+# Only lines that genuinely BEGIN a crash. "Abort message:" and "backtrace:" are deliberately absent:
+# listing them here fragmented one native crash into several blocks, and the block cap then discarded
+# the backtrace - the part that names the faulting library. They are captured as context inside the
+# block that "Fatal signal" opens, and ranked by CRASH_KEY_LINE when emitted.
+CRASH_BLOCK_HEADERS = re.compile(
+    r"FATAL EXCEPTION|Fatal signal|beginning of crash|Process crashed|am_crash|ANR in "
+    r"|lowmemorykiller|ActivityManager: Killing"
+)
+# Lines inside a crash block that actually explain the death, as opposed to the context around it. A
+# 10-annotation cap means a Java stack of "at ..." frames can otherwise crowd out the native abort
+# message and backtrace that name the real fault.
+CRASH_KEY_LINE = re.compile(
+    r"FATAL EXCEPTION|Fatal signal|Abort message|backtrace:|Caused by|Exception|Error"
+    r"|com\.davemega|libafcore|libfilament|SIGSEGV|SIGABRT|lowmemorykiller|Killing"
+    r"|Process crashed|am_crash|ANR in"
+)
+
+CRASH_BLOCK_CONTEXT = 30
+CRASH_BLOCK_MAX = 4
+
+
+def collect_crash_blocks(paths: list[str]) -> list[tuple[str, list[str]]]:
+    """Extracts crash blocks from logcat-style files, as (path, lines).
+
+    The Gradle log says only "Instrumentation run failed due to Process crashed." The reason is in
+    logcat, which the job captures but nothing read - so a crashed run was still undiagnosable even
+    after the totals and crash markers were surfaced.
+    """
+    blocks: list[tuple[str, list[str]]] = []
+    for path in paths:
+        if not path or not os.path.isfile(path):
+            continue
+        with open(path, "r", errors="replace") as handle:
+            lines = [line.rstrip("\n") for line in handle]
+        for index, line in enumerate(lines):
+            if not CRASH_BLOCK_HEADERS.search(line):
+                continue
+            block = [line.strip()]
+            for following in lines[index + 1:index + 1 + CRASH_BLOCK_CONTEXT]:
+                stripped = following.strip()
+                if not stripped:
+                    continue
+                # Stop at the next crash header so one block does not swallow the following one.
+                if CRASH_BLOCK_HEADERS.search(stripped):
+                    break
+                block.append(stripped)
+            blocks.append((path, block))
+            if len(blocks) >= CRASH_BLOCK_MAX:
+                return blocks
+    return blocks
 
 
 def escape_command(text: str) -> str:
@@ -187,6 +244,10 @@ def main() -> int:
     parser.add_argument("--commands", action="store_true",
                         help="emit GitHub workflow commands instead of Markdown")
     parser.add_argument("--root", default=".", help="repository root to search for test-results")
+    parser.add_argument("--crash-log", action="append", default=[],
+                        help="extra log to scan for process-death blocks, typically the pulled "
+                             "logcat. Repeatable. The Gradle log only says a process crashed; "
+                             "logcat says why.")
     parser.add_argument("--counts", action="store_true",
                         help="print one machine-readable line, 'tests=N failures=F errors=E skipped=S "
                              "classes=A,B', and exit non-zero if any test failed or none ran. For CI "
@@ -211,47 +272,75 @@ def main() -> int:
     crashes = collect_crash_lines(args.gradle_log)
 
     if args.commands:
-        # Totals go out FIRST and always. Without this a run that wrote no XML, and a run whose tests
-        # all passed, produce identical annotations - and the second is how a suite that stopped running
-        # hides behind a green-looking report.
+        # Everything competes for the same 10 annotation slots, so candidates are collected with a
+        # priority and the most explanatory ones are emitted. Emitting in discovery order let a long
+        # Java stack push out the native abort message that named the actual fault.
+        # (priority, level, title, message). Level matters as much as priority: GitHub caps 10
+        # annotations PER LEVEL per run, so demoting context to ::notice stops it competing with the
+        # lines that explain the failure for the same 10 ::error slots.
+        candidates: list[tuple[int, str, str, str]] = []
+
+        # 0: totals, always. Without this a run that wrote no XML and a run whose tests all passed
+        # produce identical annotations - which is how a suite that stopped running hides.
         ran, failed_total, errored, skipped_total, classes = collect_test_totals(args.root)
         totals = ("tests=%d failures=%d errors=%d skipped=%d classes=%s"
                   % (ran, failed_total, errored, skipped_total, ",".join(classes)))
         if ran == 0:
-            print("::error title=test-totals::no JUnit XML was found under %s, so nothing proves any "
-                  "test ran (%s)" % (escape_command(args.root), escape_command(totals)))
+            candidates.append((0, "error", "test-totals",
+                               "no JUnit XML was found under %s, so nothing proves any test ran (%s)"
+                               % (args.root, totals)))
         elif failed_total or errored:
-            print("::error title=test-totals::%s" % escape_command(totals))
+            candidates.append((0, "error", "test-totals", totals))
         else:
-            print("::notice title=test-totals::%s" % escape_command(totals))
+            candidates.append((0, "notice", "test-totals", totals))
 
-        errors = 0
+        # 1: a test's own assertion message and the first frame in our code.
         for kind, classname, name, detail in failures:
-            if errors >= MAX_ERROR_COMMANDS:
-                break
-            title = escape_command(f"{kind}: {classname}.{name}")
-            print(f"::error title={title}::{escape_command(detail)}")
-            errors += 1
-        # A dead process explains an empty XML, so it outranks generic Gradle output.
+            candidates.append((1, "error", f"{kind}: {classname}.{name}", detail))
+
+        # 2: why a process died. The Gradle log's own markers, then the lines of each logcat crash
+        #    block that actually name a fault. 3: the rest of that block, which is context.
         for line in crashes:
-            if errors >= MAX_ERROR_COMMANDS:
-                break
-            print(f"::error title=process-crash::{escape_command(line[:900])}")
-            errors += 1
-        # Our own frames and messages before Gradle's internal plumbing, which says nothing about us.
+            candidates.append((2, "error", "process-crash", line))
+        for path, block in collect_crash_blocks(args.crash_log):
+            for line in block:
+                label = "%s: %s" % (os.path.basename(path), line)
+                if CRASH_KEY_LINE.search(line):
+                    candidates.append((2, "error", "crash-log", label))
+                else:
+                    candidates.append((3, "notice", "crash-log", label))
+
+        # 4: generic Gradle output, our own lines before its internal plumbing. Gradle's own
+        #    TaskExecutionException plumbing is context, not cause, so it is demoted to a notice.
         for line in sorted(log_lines, key=lambda item: bool(GRADLE_INTERNAL_FRAME.match(item))):
-            if errors >= MAX_ERROR_COMMANDS:
-                break
-            print(f"::error title=gradle::{escape_command(line[:900])}")
-            errors += 1
-        if ran == 0 and not failures and not crashes and not log_lines:
+            level = "notice" if GRADLE_INTERNAL_FRAME.match(line) else "error"
+            candidates.append((4, level, "gradle", line))
+
+        # 5: a suite that counts failures but recorded no message for some of them.
+        if ran and (failed_total + errored) > len(failures):
+            candidates.append((5, "error", "test-totals",
+                               "%d failure(s) counted by the result files but only %d carried a "
+                               "message, so the rest died before recording one (a crash, not an "
+                               "assertion)" % (failed_total + errored, len(failures))))
+
+        candidates.sort(key=lambda item: item[0])
+        budget = {"error": MAX_ERROR_COMMANDS, "notice": MAX_NOTICE_COMMANDS}
+        emitted = 0
+        for _priority, level, title, message in candidates:
+            if budget[level] <= 0:
+                continue
+            budget[level] -= 1
+            emitted += 1
+            print("::%s title=%s::%s" % (level, escape_command(title), escape_command(message[:900])))
+        if emitted == 0:
             print("::error::no test results, no crash marker and no recognisable Gradle error were found")
-        notices = 0
+        # The log tail is the lowest-value material there is, and it only gets whatever notice budget
+        # the crash context and Gradle plumbing left over.
         for line in [item for item in tail if not GRADLE_INTERNAL_FRAME.match(item)]:
-            if notices >= MAX_NOTICE_COMMANDS:
+            if budget["notice"] <= 0:
                 break
+            budget["notice"] -= 1
             print(f"::notice title=log-tail::{escape_command(line[:900])}")
-            notices += 1
         return 0
 
     print("## Gradle failure report")
@@ -274,6 +363,18 @@ def main() -> int:
         print()
         for line in crashes[:MAX_ERROR_COMMANDS]:
             print(f"- `{line[:900]}`")
+        print()
+    for path, block in collect_crash_blocks(args.crash_log):
+        print(f"### Crash block from `{os.path.basename(path)}`")
+        print()
+        print("```")
+        for line in block[:CRASH_BLOCK_CONTEXT]:
+            print(line[:900])
+        print("```")
+        print()
+    if ran and (failed_total + errored) > len(failures):
+        print(f"> **{failed_total + errored} failure(s) were counted but only {len(failures)} carried a "
+              "message.** The others died before recording one.")
         print()
     if failures:
         print(f"### {len(failures)} failed test(s)")

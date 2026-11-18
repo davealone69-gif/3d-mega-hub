@@ -267,6 +267,79 @@ int main(int argc, char** argv) {
     check(exportRc == AF_OK && generatedGlbBytes != nullptr && generatedGlbSize > 0,
           "generated avatar exports a non-empty self-contained GLB");
     if (exportRc == AF_OK && generatedGlbBytes != nullptr && generatedGlbSize > 0) {
+        /* ------------------------------------------------------------------------------------
+         * Memory accounting for the file this engine hands its own app.
+         *
+         * These numbers were invisible until the instrumented renderer job started reporting them.
+         * It failed with:
+         *
+         *   java.lang.OutOfMemoryError: Failed to allocate a 134217744 byte allocation with
+         *   25149440 free bytes and 123MB until OOM, target footprint 97292424,
+         *   growth limit 201326592
+         *     at com.davemega.hub.FilamentPreviewView.readBounded(FilamentPreviewView.kt:615)
+         *
+         * 134217744 is exactly 128 MiB: a ByteArrayOutputStream doubling from 64 MiB, which is what
+         * reading a generated avatar of this size does. The growth limit in the same message,
+         * 201326592, is the 192 MiB Dalvik heap the viewer runs in. So the engine was generating a
+         * file its own app could not read, and nothing on the host said so.
+         * ------------------------------------------------------------------------------------ */
+        af_stats memStats{};
+        check(af_engine_stats(engine, &memStats) == AF_OK, "af_engine_stats reports the generated avatar");
+
+        /* The viewer budgets half of Runtime.maxMemory() for the file, because the same heap also
+           holds Filament's parse of it. Half of the measured 192 MiB growth limit. */
+        const uint64_t kHeapGrowthLimit = 201326592ULL;   /* measured on the CI emulator */
+        const uint64_t kViewerFileBudget = kHeapGrowthLimit / 2ULL;
+        std::printf("MEMORY  generated glb=%.2f MiB  heap growth limit=%.0f MiB  viewer file budget=%.0f MiB\n",
+                    static_cast<double>(generatedGlbSize) / 1048576.0,
+                    static_cast<double>(kHeapGrowthLimit) / 1048576.0,
+                    static_cast<double>(kViewerFileBudget) / 1048576.0);
+        check(generatedGlbSize <= kViewerFileBudget,
+              "generated GLB fits the Dalvik heap its own viewer reads it into");
+
+        /* texture_bytes must be the DECODED memory actually held, not the encoded PNG bytes in the
+           file (which are about 1.9 MiB) and not a partial sum. A slot that silently went empty
+           would under-report memory, which is the same defect as reporting a missing measurement
+           as zero. Summing the five slots independently is what makes the figure checkable. */
+        uint64_t decodedTextureBytes = 0;
+        int populatedSlots = 0;
+        for (int32_t slot = 0; slot < AF_TEX_COUNT; ++slot) {
+            af_texture tex{};
+            if (af_engine_texture(engine, slot, &tex) == AF_OK && tex.data != nullptr && tex.byte_size > 0) {
+                ++populatedSlots;
+                decodedTextureBytes += tex.byte_size;
+                /* 17 bytes per pixel across the set: baseColor/normal/metallicRoughness/subsurface
+                   are RGBA8 and occlusion is R8. Pinning this per slot means a change to the channel
+                   layout is a deliberate, visible act rather than a silent memory shift. */
+                check(tex.byte_size == static_cast<uint64_t>(tex.width) * tex.height * tex.channels,
+                      "texture slot byte_size equals width*height*channels for the baked resolution");
+            }
+        }
+        check(populatedSlots == AF_TEX_COUNT,
+              "all five baked texture slots are populated, so texture_bytes accounts for all of them");
+        check(decodedTextureBytes == memStats.texture_bytes,
+              "stats.texture_bytes equals the decoded bytes of the five slots it claims to cover");
+        check(memStats.texture_bytes > generatedGlbSize / 2ULL,
+              "texture_bytes reports decoded memory, not the encoded PNG bytes stored in the GLB");
+
+        /* geometry_bytes is verts*sizeof(af_vertex) + indices*4. Pinning it to the live counts means
+           an af_vertex ABI change cannot leave the reported figure describing the old layout. */
+        const uint64_t expectedGeometry =
+            static_cast<uint64_t>(memStats.vertex_count) * sizeof(af_vertex) +
+            static_cast<uint64_t>(memStats.index_count) * sizeof(uint32_t);
+        check(memStats.geometry_bytes == expectedGeometry,
+              "stats.geometry_bytes matches the live vertex and index counts at the current ABI");
+        check(memStats.vertex_count > 0 && memStats.triangle_count > 0,
+              "generated avatar reports live vertex and triangle counts rather than zero");
+
+        std::printf("MEMORY  verts=%d tris=%d submeshes=%d joints=%d blendshapes=%d\n",
+                    memStats.vertex_count, memStats.triangle_count, memStats.submesh_count,
+                    memStats.joint_count, memStats.blendshape_count);
+        std::printf("MEMORY  geometry=%.2f MiB  decodedTextures=%.2f MiB  peakField=%.2f MiB\n",
+                    static_cast<double>(memStats.geometry_bytes) / 1048576.0,
+                    static_cast<double>(decodedTextureBytes) / 1048576.0,
+                    static_cast<double>(memStats.peak_field_bytes) / 1048576.0);
+
         af::GlbAsset exportedAsset;
         std::string exportParseError;
         const int32_t parseRc = af::importGlb(generatedGlbBytes, generatedGlbSize,

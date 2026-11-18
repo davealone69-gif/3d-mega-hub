@@ -175,8 +175,10 @@ jobs:
             echo "renderer script already reported; standing down to avoid duplicate annotations"
             exit 0
           fi
-          python3 tools/ci_report_test_failures.py "$LOG" --root . >> "$GITHUB_STEP_SUMMARY" || true
-          python3 tools/ci_report_test_failures.py "$LOG" --root . --commands || true
+          CRASH_LOGS=(--crash-log avatarforge-render-smoke-evidence/logcat.txt
+                      --crash-log avatarforge-render-smoke-evidence/avatarforge-logcat.txt)
+          python3 tools/ci_report_test_failures.py "$LOG" --root . "${CRASH_LOGS[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 tools/ci_report_test_failures.py "$LOG" --root . "${CRASH_LOGS[@]}" --commands || true
           python3 tools/ci_report_test_failures.py "$LOG" --root . --counts || true
       - name: Upload AvatarForge renderer evidence
         if: always()

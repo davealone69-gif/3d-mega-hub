@@ -107,6 +107,40 @@ def titles(lines: list[str]) -> list[str]:
     return out
 
 
+LOGCAT = """11-18 03:12:44.101  1234  1234 I MegaHubRenderer: Renderer status: GLB parsed
+11-18 03:12:45.220  1234  1290 E AndroidRuntime: FATAL EXCEPTION: MegaHubGlbReader
+11-18 03:12:45.221  1234  1290 E AndroidRuntime: Process: com.davemega.hub, PID: 1234
+11-18 03:12:45.222  1234  1290 E AndroidRuntime: java.lang.OutOfMemoryError: Failed to allocate 83642456 byte allocation
+11-18 03:12:45.223  1234  1290 E AndroidRuntime: \tat com.davemega.hub.FilamentPreviewView.readBounded(FilamentPreviewView.kt:648)
+11-18 03:12:46.900  1234  1234 I MegaHubRenderer: unrelated line after the crash
+11-18 03:12:50.010   999   999 F DEBUG   : *** *** *** *** *** *** *** *** *** *** *** ***
+11-18 03:12:50.011   999   999 F DEBUG   : Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0 in tid 1290
+11-18 03:12:50.012   999   999 F DEBUG   : Abort message: 'filament: out of memory allocating vertex buffer'
+11-18 03:12:50.020   999   999 F DEBUG   : backtrace:
+11-18 03:12:50.021   999   999 F DEBUG   :       #00 pc 0000000000123456  /data/app/lib/x86_64/libafcore.so (af::importGlb+102)
+11-18 03:12:51.000  1234  1234 I MegaHubRenderer: nothing to see here
+"""
+
+
+def _write(root: Path, name: str, body: str) -> Path:
+    path = root / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def commands_with_logcat(root: Path, log: str, logcat: str) -> list[str]:
+    log_path = root / "gradle.log"
+    log_path.write_text(log, encoding="utf-8")
+    cat_path = root / "logcat.txt"
+    cat_path.write_text(logcat, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(MODULE_PATH), str(log_path), "--root", str(root),
+         "--crash-log", str(cat_path), "--commands"],
+        capture_output=True, text=True,
+    )
+    return proc.stdout.splitlines()
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -205,8 +239,64 @@ def main() -> None:
         assert not any("process-crash" in ln for ln in lines), lines
         assert not any("no JUnit XML" in ln for ln in lines), lines
 
+    # ---- 11. logcat is where the reason lives; the Gradle log only says a process crashed ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        lines = commands_with_logcat(
+            root, "Test run failed to complete. Instrumentation run failed due to Process crashed.\n",
+            LOGCAT)
+        joined = "\n".join(lines)
+        assert "Abort message" in joined, joined
+        assert "out of memory allocating vertex buffer" in joined, joined
+        assert "Fatal signal 11 (SIGSEGV)" in joined, joined
+        # The frame that names the faulting library is the single most useful line in a native crash.
+        assert "libafcore.so" in joined, joined
+        assert "af::importGlb" in joined, joined
+
+    # ---- 12. a crash block must not be fragmented by its own interior lines ----
+    # "Abort message:" and "backtrace:" used to count as block headers, so one native crash became
+    # three blocks and the block cap threw away the backtrace.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        blocks = reporter.collect_crash_blocks([str(_write(root, "logcat.txt", LOGCAT))])
+        assert len(blocks) == 2, [b[1][0] for b in blocks]
+        native = blocks[1][1]
+        assert any("Fatal signal" in ln for ln in native), native
+        assert any("Abort message" in ln for ln in native), native
+        assert any("backtrace:" in ln for ln in native), native
+        assert any("libafcore.so" in ln for ln in native), native
+        # The Java block keeps its own stack, and stops before the native crash begins.
+        java = blocks[0][1]
+        assert any("FATAL EXCEPTION" in ln for ln in java), java
+        assert any("readBounded" in ln for ln in java), java
+        assert not any("Fatal signal" in ln for ln in java), java
+
+    # ---- 13. cause lines outrank context inside the 10-error cap ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        lines = commands_with_logcat(root, "BUILD FAILED in 6m 48s\n", LOGCAT)
+        errors = [ln for ln in lines if ln.startswith("::error")]
+        notices = [ln for ln in lines if ln.startswith("::notice")]
+        assert len(errors) <= 10, len(errors)
+        # The abort message must survive even though a Java stack precedes it.
+        assert any("Abort message" in ln for ln in errors), errors
+        assert any("libafcore.so" in ln for ln in errors), errors
+        # Filler is demoted rather than dropped, so the notice budget carries it.
+        assert any("unrelated line after the crash" in ln for ln in notices), notices
+        assert any("*** ***" in ln for ln in notices), notices
+        assert not any("unrelated line after the crash" in ln for ln in errors), errors
+
+    # ---- 14. a passing run must not be annotated as an error ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write(root, CONNECTED, PASSING_SUITE)
+        lines = commands_with_logcat(root, "BUILD SUCCESSFUL in 4m 1s\n", "")
+        assert lines[0].startswith("::notice title=test-totals"), lines[0]
+        assert not any(ln.startswith("::error") for ln in lines), lines
+
     print("PASS: connected + JVM discovery, failure detail, totals, the 0/1/2 gate statuses, "
-          "always-annotated totals, crash detection, and Gradle-frame deprioritisation")
+          "always-annotated totals, crash detection, Gradle-frame deprioritisation, logcat crash "
+          "blocks, block integrity, cause-over-context ranking, and per-level budgets")
 
 
 if __name__ == "__main__":
