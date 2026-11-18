@@ -1,0 +1,91 @@
+name: Publish phone-test APK (tap-to-install)
+
+# On-demand only. Android CI already builds the debug APK on many refs; this workflow exists solely
+# to turn one chosen build into a permanent GitHub Release asset, so the owner gets a single
+# tap-to-install link that needs no sign-in and does not expire like a CI artifact (kept 7 days in
+# Android CI). It never fires on push or pull request, so it cannot spray releases across branches -
+# least of all main, which does not carry the renderer crash fix and must never be handed out as one.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish-debug-apk:
+    name: Build debug APK and publish release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      # Same environment Android CI's green debug-build job uses, including the NDK and cmake the
+      # avatarforge-engine native library needs; diverging here would invite a build that passes in
+      # one place and not the other.
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
+          accept-android-sdk-licenses: true
+      - run: chmod +x ./gradlew
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon assembleDebug --stacktrace 2>&1 | tee gradle-publish.log
+      - name: Surface build failures as annotations
+        if: failure()
+        shell: bash
+        run: |
+          python3 tools/ci_report_test_failures.py gradle-publish.log >> "$GITHUB_STEP_SUMMARY" || true
+          python3 tools/ci_report_test_failures.py gradle-publish.log --commands || true
+      - name: Package, fingerprint and publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          APK_SRC=$(ls app/build/outputs/apk/debug/*.apk)
+          COUNT=$(printf '%s\n' "$APK_SRC" | wc -l)
+          if [[ "$COUNT" -ne 1 ]]; then
+            echo "::error::expected exactly one debug APK, found $COUNT"
+            exit 1
+          fi
+          ASSET="3D-Mega-Hub-debug-${SHORT_SHA}.apk"
+          cp "$APK_SRC" "$ASSET"
+          SHA256=$(sha256sum "$ASSET" | cut -d' ' -f1)
+          SIZE=$(stat -c %s "$ASSET")
+          BRANCH=${GITHUB_REF_NAME}
+          TAG="phone-test-${SHORT_SHA}"
+          NOTES_FILE=release-notes.md
+          {
+            echo "Tap-to-install **debug test build** of 3D Mega Hub."
+            echo ""
+            echo "- Built from branch \`${BRANCH}\` at commit \`${SHORT_SHA}\` (CI run ${GITHUB_RUN_ID})."
+            echo "- Contains the renderer routing fix (\`9c5c484\`) that stops the app closing when you enter the 3D view, plus the large-avatar memory fix."
+            echo "- Debug-signed, like every earlier phone-test build. Emulator-verified only; not yet phone-verified, and not a production-signed release."
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| File | \`${ASSET}\` |"
+            echo "| Size | ${SIZE} bytes |"
+            echo "| SHA-256 | \`${SHA256}\` |"
+            echo ""
+            echo "If the downloaded file is not ${SIZE} bytes with the SHA-256 above, you tapped the wrong link."
+          } > "$NOTES_FILE"
+          # Re-dispatching against the same commit rebuilds that exact sha's release instead of failing.
+          gh release delete "$TAG" --yes >/dev/null 2>&1 || true
+          gh release create "$TAG" "$ASSET" \
+            --title "Phone-test build ${SHORT_SHA} (debug)" \
+            --notes-file "$NOTES_FILE" \
+            --prerelease
+          URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ASSET}"
+          echo "### Tap-to-install link" >> "$GITHUB_STEP_SUMMARY"
+          echo "$URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Published: $URL"
