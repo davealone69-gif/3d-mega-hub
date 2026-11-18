@@ -36,6 +36,18 @@ import org.json.JSONObject
 
 private const val VISIBILITY_THRESHOLD = 5000
 
+/* Reads one of the renderer's own timing measurements and returns JSON null when it was never taken.
+   The sentinel is -1 rather than 0 on purpose: a measurement that did not happen and one that came out
+   zero are different claims, and recording the first as the second is how a renderer that never
+   presented a frame ends up looking instantaneous in the evidence file. */
+private fun measuredOrNull(
+    preferences: android.content.SharedPreferences,
+    key: String
+): Any {
+    val value = preferences.getLong(key, -1L)
+    return if (value > 0L) value else JSONObject.NULL
+}
+
 private data class CaptureDiagnostics(
     val source: String,
     val pixelCopyStatus: Int?,
@@ -190,7 +202,13 @@ class GeneratedAvatarRuntimeTest {
                 surfaceView = view
             }
 
-            val rendered = visible.await(120, TimeUnit.SECONDS)
+            /* 300 s, and deliberately longer than AvatarForgeSurfaceView.FRAME_WAIT_CEILING_NANOS
+               (240 s). If this latch were the shorter of the two, a slow-but-working renderer would be
+               reported as a bare latch timeout, losing the renderer's own message - which is the one
+               that carries the measured frame time and says whether this is a broken renderer or a slow
+               rasterizer. The informative failure has to be the one that fires first. The enclosing
+               @Test(timeout = 900000) still bounds the whole thing. */
+            val rendered = visible.await(300, TimeUnit.SECONDS)
             if (!rendered) failed.await(1, TimeUnit.SECONDS)
             val status = latestStatus.get()
             val pixelCount = preferences.getInt("pixel_count", 0)
@@ -205,6 +223,15 @@ class GeneratedAvatarRuntimeTest {
                 .put("rendererTriangles", preferences.getInt("triangles", 0))
                 .put("boundsInFrustum", preferences.getBoolean("bounds_in_frustum", false))
                 .put("captureUpdatedAtEpochMs", preferences.getLong("updated_at_epoch_ms", 0L))
+                /* The renderer's own timing measurements, or JSON null when it never took them. The
+                   sentinel is -1 rather than 0 so a missing key becomes visibly absent here instead of
+                   being written out as a zero that looks like a measurement. */
+                .put("loadDurationMs", measuredOrNull(preferences, "load_duration_ms"))
+                .put("firstFrameLatencyMs", measuredOrNull(preferences, "first_frame_latency_ms"))
+                .put("frameTimeAvgUs", measuredOrNull(preferences, "frame_time_avg_us"))
+                .put("frameTimeMaxUs", measuredOrNull(preferences, "frame_time_max_us"))
+                .put("fpsMilli", measuredOrNull(preferences, "fps_milli"))
+                .put("measuredFrameCount", measuredOrNull(preferences, "measured_frame_count"))
                 .put("screenshotPathAppPrivate", screenshotPath ?: JSONObject.NULL)
             if (rendered && screenshotSource != null && screenshotSource.isFile) {
                 val archivedScreenshot = File(outputDir, "generated_avatar_from_glb.png")

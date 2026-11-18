@@ -240,7 +240,24 @@ class AvatarForgeSurfaceView(
                 var frameTimeTotalMs = 0.0
                 var frameTimeMaxMs = 0.0
                 var firstPresentedAtNanos = 0L
-                val frameWaitStarted = System.nanoTime()
+                /* The wait for a first presented frame is a STALL budget, not a wall-clock one. It used to
+                   be "no drawable EGL-presented model frame within 15 seconds", which fails a renderer that
+                   is working: run 44237522408 reported
+                     frames=2 presented=2 draws=29 triangles=1642936 boundsInFrustum=true
+                     glError=0x0 eglError=0x0
+                   and aborted. That is 1,642,936 triangles under -gpu swangle software rasterization,
+                   about 7.5 s per frame, so three presented frames need roughly 23 s and a 15 s deadline
+                   could only ever be met by luck. The same suite passed the run before at 14m02s and
+                   failed this one at 18m17s: the budget was marginal against ordinary runner variance,
+                   not against a defect.
+                   So progress resets the clock, and progress means real work - a presented frame, or a
+                   frame that issued draw calls over a non-empty mesh. A renderer with broken EGL presents
+                   nothing and draws nothing, still trips the stall deadline promptly, and an absolute
+                   ceiling bounds the whole thing either way. */
+                var lastProgressAt = System.nanoTime()
+                var lastProgressSignature = ""
+                val waitStartedAt = lastProgressAt
+                val absoluteFrameDeadline = waitStartedAt + FRAME_WAIT_CEILING_NANOS
                 while (running.get() && surfaceReady) {
                     val width = surfaceWidth
                     val height = surfaceHeight
@@ -291,6 +308,18 @@ class AvatarForgeSurfaceView(
                     frameCount += 1L
                     frameTimeTotalMs += frameMillis
                     if (frameMillis > frameTimeMaxMs) frameTimeMaxMs = frameMillis
+                    /* Reset the stall clock only on real work. frames alone is not enough: a session whose
+                       EGL surface never becomes drawable would still count loop iterations and would never
+                       stall, which is precisely the case this deadline exists to catch. */
+                    val progressSignature = if (presentedFrames > 0 || (drawCalls > 0 && triangles > 0)) {
+                        "$presentedFrames:$drawCalls:$triangles"
+                    } else {
+                        ""
+                    }
+                    if (progressSignature.isNotEmpty() && progressSignature != lastProgressSignature) {
+                        lastProgressSignature = progressSignature
+                        lastProgressAt = frameEndedAt
+                    }
                     measuredFrameCount = frameCount
                     measuredFrameTimeAvgMs = frameTimeTotalMs / frameCount
                     measuredFrameTimeMaxMs = frameTimeMaxMs
@@ -314,11 +343,21 @@ class AvatarForgeSurfaceView(
                                 presentedFrames, boundsInFrustum, outsideCorners, glError, eglError)
                             Log.i(TAG, "FRAME_PRESENTED api=$apiVersion frames=$frames presented=$presentedFrames draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum")
                             onStatus("EGL frame presented · $presentedFrames successful swaps · $drawCalls draw calls · $triangles triangles")
-                        } else if (System.nanoTime() - frameWaitStarted > 15_000_000_000L) {
-                            error("No drawable EGL-presented model frame within 15 seconds " +
+                        } else if (System.nanoTime() - lastProgressAt > FRAME_STALL_NANOS ||
+                            System.nanoTime() > absoluteFrameDeadline) {
+                            /* The measured frame time belongs in this message: it is the difference
+                               between "the renderer is broken" and "this rasterizer is slow". */
+                            val average = measuredFrameTimeAvgMs
+                            val slowest = measuredFrameTimeMaxMs
+                            error("No drawable EGL-presented model frame, and no rendering progress for " +
+                                "${FRAME_STALL_NANOS / 1_000_000_000L}s " +
                                 "(frames=$frames presented=$presentedFrames framePresented=$framePresented " +
                                 "draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
-                                "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)})")
+                                "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} " +
+                                "eglError=0x${eglError.toString(16)} " +
+                                "frameTimeAvgMs=${if (average == null) "not measured" else String.format("%.1f", average)} " +
+                                "frameTimeMaxMs=${if (slowest == null) "not measured" else String.format("%.1f", slowest)} " +
+                                "elapsedMs=${(System.nanoTime() - waitStartedAt) / 1_000_000L})")
                         }
                     }
                     if (verifyVisiblePixels && presentedThisFrame && presentedFrames >= 3 &&
@@ -691,6 +730,18 @@ class AvatarForgeSurfaceView(
         private const val MIN_VISIBLE_PIXELS = 5_000
         private const val MAX_PIXEL_COPY_ATTEMPTS = 3
         private const val PIXEL_COPY_TIMEOUT_MS = 15_000L
+        /* How long the first EGL-presented frame may go without any rendering progress before the
+           renderer is declared failed. 15 s is unchanged from the old fixed deadline - what changed is
+           what resets it, because that deadline used to fail a renderer that was measurably working:
+           1,642,936 triangles under -gpu swangle take about 7.5 s per frame (run 44237522408), so the
+           three presented frames the smoke check requires need roughly 23 s and a 15 s wall-clock budget
+           was only ever met by luck. */
+        private const val FRAME_STALL_NANOS = 15_000_000_000L
+        /* Absolute ceiling on waiting for a first presented frame, so a renderer that keeps producing
+           draw calls but never presents cannot loop forever. 240 s is about 32 frames at the measured
+           software-rasterizer cost, and comfortably inside the 600 s test timeout, so a genuinely stuck
+           renderer still produces this diagnostic instead of a bare test timeout. */
+        private const val FRAME_WAIT_CEILING_NANOS = 240_000_000_000L
         init { System.loadLibrary("mega_hub_avatarforge") }
     }
 }
