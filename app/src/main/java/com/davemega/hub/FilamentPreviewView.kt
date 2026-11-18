@@ -27,8 +27,10 @@ import com.google.android.filament.gltfio.UbershaderProvider
 import com.davemega.hub.avatarforge.GlbValidator
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.InputStream
 import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import kotlin.concurrent.thread
 import kotlin.math.max
 
@@ -71,6 +73,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     /* Retained so the core can parse the same bytes gltfio did. Both parsers must see one file, or the
        clip lists being matched would not describe the same asset. */
     private var loadedModelBytes: ByteArray? = null
+    /* Set INSTEAD of loadedModelBytes whenever the model is a real file, which is the case that
+       matters: a generated avatar is 79.77 MiB and the Dalvik heap growth limit measured on the CI
+       emulator is 192 MiB. The animation core reads this path in C++ and gltfio parses a
+       memory-mapped direct buffer, so neither consumer puts a full-size copy on the Java heap. */
+    private var loadedModelPath: String? = null
+    /* Holds the mapping alive. gltfio parses asynchronously, so the mapping must outlive the parse and
+       is released with the asset. Closing the source channel does not invalidate a mapping. */
+    private var mappedModelBuffer: ByteBuffer? = null
 
     private var running = false
     private var statusListener: ((String) -> Unit)? = null
@@ -215,15 +225,16 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             return
         }
         val bytes = loadedModelBytes
+        val path = loadedModelPath
         val activeAnimator = animator
         val activeEngine = engine
-        if (bytes == null || activeAnimator == null || activeEngine == null) {
-            nativeAnimationStatus = "the native animation core was not attached: no asset bytes, animator or engine"
+        if ((bytes == null && path == null) || activeAnimator == null || activeEngine == null) {
+            nativeAnimationStatus = "the native animation core was not attached: no asset file or bytes, no animator or no engine"
             return
         }
         val driver = NativeAnimationDriver(activeEngine.renderableManager)
         val attached = runCatching {
-            driver.attach(published, activeAnimator, bytes, label)
+            driver.attach(published, activeAnimator, bytes, label, glbPath = path)
         }.getOrElse { failure ->
             nativeAnimationStatus = "native animation attach failed: ${failure.message ?: failure.javaClass.simpleName}"
             false
@@ -567,12 +578,27 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         reportStatus(if (uri == null) "Reading bundled sample GLB" else "Reading selected GLB")
         thread(name = "MegaHubGlbReader") {
             var bytes: ByteArray? = null
+            var mapped: ByteBuffer? = null
             var failure: Exception? = null
+            /* A real file is read without ever materialising it on the Java heap: validation streams it,
+               gltfio parses a memory mapping, and the animation core reads the path in C++. Only a
+               source with no path - a bundled asset or a content URI - still needs the bounded read. */
+            val path = modelFilePath(uri)
             try {
-                val (stream, declaredLength) = openModel(uri)
-                bytes = readBounded(stream, declaredLength)
-                if (bytes!!.isEmpty()) error("Selected GLB is empty")
-                GlbValidator.validate(bytes!!)
+                if (path != null) {
+                    val file = File(path)
+                    require(file.length() in 1L..MAX_MODEL_BYTES) {
+                        "GLB is ${file.length() / (1024L * 1024L)} MiB, outside the viewer's " +
+                            "${MAX_MODEL_BYTES / (1024L * 1024L)} MiB limit"
+                    }
+                    GlbValidator.validate(file)
+                    mapped = mapModel(file)
+                } else {
+                    val (stream, declaredLength) = openModel(uri)
+                    bytes = readBounded(stream, declaredLength)
+                    if (bytes!!.isEmpty()) error("Selected GLB is empty")
+                    GlbValidator.validate(bytes!!)
+                }
             } catch (error: Exception) {
                 failure = error
             }
@@ -582,7 +608,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     reportStatus("GLB read failed: ${failure!!.message ?: failure!!.javaClass.simpleName}")
                 } else {
                     try {
-                        loadModelBytes(checkNotNull(bytes), uri)
+                        loadModelParsed(bytes, mapped, path, uri)
                     } catch (error: Exception) {
                         Log.e(TAG, "GLB load failed", error)
                         reportStatus("GLB load failed: ${error.message ?: error.javaClass.simpleName}")
@@ -592,6 +618,36 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * The file path behind [uri], or null when the model has no path and must be streamed.
+     *
+     * A bundled asset lives inside the APK and a content URI may be a network or provider stream, so
+     * neither has one. The generated-avatar diagnostic publishes a real file, which is exactly the
+     * 79.77 MiB case that could not be held on a 192 MiB heap.
+     */
+    private fun modelFilePath(uri: Uri?): String? {
+        if (uri == null || uri.scheme != "file") return null
+        val path = uri.path ?: return null
+        return if (File(path).isFile) path else null
+    }
+
+    /**
+     * Maps [file] read-only and returns a DIRECT buffer, which lives in native memory rather than on
+     * the Dalvik heap. This is what lets a generated avatar be parsed at all: as a byte array it needed
+     * 79.77 MiB of a 192 MiB heap, and the doubling read before it needed 64 + 128 MiB at once.
+     *
+     * The channel is closed immediately and the mapping stays valid, which is the documented contract
+     * of FileChannel.map; the buffer itself is retained in [mappedModelBuffer] until the asset is
+     * destroyed, because gltfio parses it asynchronously.
+     */
+    private fun mapModel(file: File): ByteBuffer {
+        val length = file.length()
+        require(length > 0L) { "GLB file is empty: ${file.absolutePath}" }
+        FileInputStream(file).use { stream ->
+            return stream.channel.map(FileChannel.MapMode.READ_ONLY, 0L, length)
         }
     }
 
@@ -697,17 +753,26 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
      * decoding completes. The emulator trace recorded a 45-second UI frame while this synchronous
      * path was in use, so asyncBeginLoad + asyncUpdateLoad now spreads resource work across frames.
      */
-    private fun loadModelBytes(bytes: ByteArray, uri: Uri?) {
+    /**
+     * Publishes an already-read model to gltfio. [bytes] and [mapped] are the two routes here: a file
+     * arrives as a memory mapping with [path] set and no heap copy at all, a pathless source arrives as
+     * a bounded byte array. Exactly one is non-null.
+     */
+    private fun loadModelParsed(bytes: ByteArray?, mapped: ByteBuffer?, path: String?, uri: Uri?) {
         val loader = checkNotNull(assetLoader) { "glTF asset loader is unavailable" }
         val resources = checkNotNull(resourceLoader) { "glTF resource loader is unavailable" }
+        val buffer = mapped ?: bytes?.let { ByteBuffer.wrap(it) }
+            ?: error("No model source was read: expected either bytes or a memory mapping")
 
         destroyPendingAsset()
         destroyCurrentAsset()
-        /* Retained after the destroys above, which clear the previous asset's bytes. The core parses
-           the very same array gltfio just parsed, so the two clip lists being matched describe one
-           file rather than two that happen to share a name. */
+        /* Retained after the destroys above, which clear the previous asset's source. The core parses
+           the very same file gltfio just parsed, so the two clip lists being matched describe one file
+           rather than two that happen to share a name. */
         loadedModelBytes = bytes
-        val newAsset = loader.createAsset(ByteBuffer.wrap(bytes))
+        loadedModelPath = path
+        mappedModelBuffer = mapped
+        val newAsset = loader.createAsset(buffer)
             ?: error("Filament gltfio could not parse this file as glTF 2.0 / GLB")
         try {
             require(newAsset.resourceUris.isEmpty()) {
@@ -814,6 +879,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         nativeDriver?.detach()
         nativeDriver = null
         loadedModelBytes = null
+        loadedModelPath = null
+        /* Released with the asset, not before: gltfio may still be parsing this mapping. */
+        mappedModelBuffer = null
         val current = filamentAsset ?: return
         scene?.removeEntities(current.entities)
         assetLoader?.let { loader -> safelyDestroy("glTF asset") { loader.destroyAsset(current) } }

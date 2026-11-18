@@ -194,6 +194,51 @@ Java_com_davemega_hub_avatarforge_AnimationNative_nativeLoadGlb(
     return 0;
 }
 
+/* Loads the same asset from a path instead of a Java byte array.
+
+   nativeLoadGlb copies the entire array into a std::vector before parsing, so a generated avatar of
+   79.77 MiB exists twice at once: once on the Dalvik heap, which the CI emulator caps at a 192 MiB
+   growth limit, and once here. af::importGlbFile was already in the engine with the same contract as
+   importGlb and nothing called it. Reading the file in C++ removes the second copy entirely and never
+   touches the Java heap, which is the difference between an avatar that loads and an
+   OutOfMemoryError. Return codes mirror nativeLoadGlb so the Kotlin side branches on one contract. */
+JNIEXPORT jint JNICALL
+Java_com_davemega_hub_avatarforge_AnimationNative_nativeLoadGlbFile(
+        JNIEnv* env, jobject, jlong handle, jstring path, jstring sourceLabel, jstring licence) {
+    AnimationSession* s = session(handle);
+    if (!s) return -1;
+    if (!path) { fail(s, "loadGlbFile: no path"); return -2; }
+    const std::string absolutePath = fromJString(env, path);
+    if (absolutePath.empty()) { fail(s, "loadGlbFile: empty path"); return -3; }
+
+    af::GlbAsset asset;
+    std::string importError;
+    const int rc = af::importGlbFile(absolutePath.c_str(), &asset, &importError);
+    if (rc != AF_OK) {
+        fail(s, "importGlbFile failed: " +
+                (importError.empty() ? std::string("unknown error") : importError));
+        return -5;
+    }
+
+    std::string loadError;
+    if (!s->player->loadGlb(asset, &loadError)) {
+        fail(s, "the animation core refused this asset: " + loadError);
+        releaseAsset(&asset);
+        return -6;
+    }
+
+    s->source = fromJString(env, sourceLabel);
+    s->licence = fromJString(env, licence);
+
+    /* Built from what actually loaded, exactly as nativeLoadGlb does, so the two entry points cannot
+       drift into offering different clip lists for the same file. */
+    s->library->clear();
+    s->library->addFromPlayer(*s->player, s->source.empty() ? std::string("imported GLB") : s->source,
+                              s->licence);
+    releaseAsset(&asset);
+    return 0;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_davemega_hub_avatarforge_AnimationNative_nativeLoadAuthoredLibrary(
         JNIEnv* env, jobject, jlong handle) {

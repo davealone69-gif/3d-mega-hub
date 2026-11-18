@@ -221,6 +221,22 @@ class AnimationSession internal constructor(internal val handle: Long) : AutoClo
         return rc == 0
     }
 
+    /**
+     * Imports the same asset from a path, with the identical contract to [loadGlb].
+     *
+     * Prefer this whenever the asset is a real file. [loadGlb] needs the whole file as a Java
+     * ByteArray, and the JNI then copies that array into native memory before parsing, so a generated
+     * avatar of 79.77 MiB occupies that much twice over - inside a Dalvik heap the CI emulator caps at
+     * a 192 MiB growth limit. Reading the path in C++ avoids both the heap allocation and the copy.
+     */
+    fun loadGlbFile(path: String, source: String, licence: String = ""): Boolean {
+        if (isClosed) return false
+        val rc = AnimationNative.nativeLoadGlbFile(handle, path, source, licence)
+        if (rc != 0 && morphCount == 0) return false
+        if (morphBuffer.size != morphCount) morphBuffer = FloatArray(morphCount)
+        return rc == 0
+    }
+
     /** Adds the engine's 16 hand-authored clips to the library index. Returns the new entry count. */
     fun indexAuthoredLibrary(): Int =
         if (isClosed) 0 else AnimationNative.nativeLoadAuthoredLibrary(handle)
@@ -688,6 +704,7 @@ internal object AnimationNative {
     external fun nativeIsAlive(handle: Long): Boolean
 
     external fun nativeLoadGlb(handle: Long, bytes: ByteArray, source: String, licence: String): Int
+    external fun nativeLoadGlbFile(handle: Long, path: String, source: String, licence: String): Int
     external fun nativeLoadAuthoredLibrary(handle: Long): Int
     external fun nativeLoadNotes(handle: Long): Array<String>
 

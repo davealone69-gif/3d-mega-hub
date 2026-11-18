@@ -89,7 +89,14 @@ class NativeAnimationDriver(private val renderableManager: RenderableManager) {
     }
 
     /**
-     * Adopts [glbBytes] -- the same bytes Filament already parsed -- and matches the two clip lists.
+     * Adopts the same asset Filament already parsed and matches the two clip lists.
+     *
+     * Pass [glbPath] whenever the asset is a real file: the core then reads it in C++ and the file
+     * never has to exist as a Java ByteArray. [glbBytes] is the fallback for a stream with no path,
+     * such as a bundled asset or a content URI, and it costs a full-size copy on the Dalvik heap plus
+     * another in JNI. A generated avatar is 79.77 MiB, and the heap on the CI emulator has a 192 MiB
+     * growth limit, so which of these two is used is the difference between loading and an
+     * OutOfMemoryError. At least one must be supplied; the path wins when both are.
      *
      * @return true when the core loaded the asset AND at least one clip can be applied through this
      *   renderer. False leaves the driver detached; [status] explains why. A partial success (some clips
@@ -99,9 +106,10 @@ class NativeAnimationDriver(private val renderableManager: RenderableManager) {
     fun attach(
         target: FilamentAsset,
         targetAnimator: Animator,
-        glbBytes: ByteArray,
+        glbBytes: ByteArray?,
         source: String,
         licence: String = "",
+        glbPath: String? = null,
     ): Boolean {
         detach()
         if (!AnimationEngine.health.usable) {
@@ -113,7 +121,16 @@ class NativeAnimationDriver(private val renderableManager: RenderableManager) {
             status = "the native animation core could not create a session"
             return false
         }
-        if (!created.loadGlb(glbBytes, source, licence)) {
+        val loaded = when {
+            !glbPath.isNullOrEmpty() -> created.loadGlbFile(glbPath, source, licence)
+            glbBytes != null -> created.loadGlb(glbBytes, source, licence)
+            else -> {
+                status = "the animation core was given neither a file path nor bytes to load"
+                created.close()
+                return false
+            }
+        }
+        if (!loaded) {
             status = "the animation core refused this asset: ${created.lastError()}"
             val notes = created.loadNotes()
             if (notes.isNotEmpty()) status += " (${notes.first()})"
