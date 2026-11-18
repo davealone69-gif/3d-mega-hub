@@ -24,12 +24,22 @@ GRADLE_LOG="$EVIDENCE/gradle-connected.log"
 mkdir -p "$EVIDENCE"
 chmod +x ./gradlew
 
-# The classes this job is responsible for. GeneratedAvatarRuntimeTest is deliberately NOT here yet: its
-# four tests carry timeouts of 900 s + 600 s + 600 s + 600 s, which on a -gpu swangle software
-# rasterizer can exceed this job's whole budget on their own and would turn a diagnosable failure into a
-# timeout that reports nothing. It is the next thing to add once this suite is green and its real runtime
-# is known. Recorded here so the omission is a decision on the record, not an oversight.
-TEST_CLASSES="com.davemega.hub.AvatarForgeRendererSmokeTest"
+# The classes this job is responsible for.
+#
+# GeneratedAvatarRuntimeTest was held back while the smoke suite was red: its four tests carry timeouts
+# of 900 s + 600 s + 600 s + 600 s, which on a -gpu swangle software rasterizer could exceed this job's
+# whole budget on their own, turning a diagnosable failure into a timeout that reports nothing. The
+# condition for adding it was the smoke suite going green and its real runtime being known, and both are
+# now true - run 44233306427 reported tests=3 failures=0 and the job took 14m51s end to end, emulator
+# boot and Gradle build included.
+#
+# That is the production route and it is what this job exists to prove: it builds an
+# AvatarForgeSurfaceView on the generated GLB directly rather than going through the studio screen, so
+# it covers generated-GLB-to-GLES-SurfaceView independent of any UI routing. Leaving it out let a green
+# job stand for less than it appeared to. The worst case is now 15 min + 45 min of timeouts, so the
+# job's timeout-minutes is raised to 75 to match; a job that times out reports nothing at all, which is
+# the one outcome worse than a slow one.
+TEST_CLASSES="com.davemega.hub.AvatarForgeRendererSmokeTest,com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest"
 
 TEST_STATUS=0
 ./gradlew --no-daemon :app:connectedDebugAndroidTest \

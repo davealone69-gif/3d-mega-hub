@@ -92,6 +92,14 @@ KILL_LINE = re.compile(
 )
 
 
+# Our package being killed is not always a crash. Android tears the app down when instrumentation
+# finishes, and that line names our process too:
+#   ActivityManager: Killing 6110:com.davemega.hub/u0a167 (adj 0): stop com.davemega.hub due to
+#   finished inst
+# Reporting it put a failure-level annotation on a run whose three tests had all passed.
+BENIGN_KILL = re.compile(r"due to finished inst|finished inst|due to stop|due to empty")
+
+
 def collect_kill_lines(paths: list[str]) -> list[str]:
     """Lines showing OUR process being killed or dying, as opposed to any process on the device."""
     found: list[str] = []
@@ -104,7 +112,7 @@ def collect_kill_lines(paths: list[str]) -> list[str]:
                 line = line.strip()
                 if not line or line[:160] in seen:
                     continue
-                if KILL_LINE.search(line) and OUR_PACKAGE.search(line):
+                if KILL_LINE.search(line) and OUR_PACKAGE.search(line) and not BENIGN_KILL.search(line):
                     seen.add(line[:160])
                     found.append(line)
     return found

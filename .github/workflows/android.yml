@@ -135,7 +135,10 @@ jobs:
   avatarforge-render-smoke:
     name: AvatarForge GLES GLB render smoke (instrumented)
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    # 15 min for the smoke suite as measured on run 44233306427, plus GeneratedAvatarRuntimeTest's
+    # four timeouts (900 + 600 + 600 + 600 s = 45 min) worst case, plus headroom. A job that exceeds
+    # its own timeout reports nothing, which is worse than a slow one.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v6

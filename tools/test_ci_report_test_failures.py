@@ -421,11 +421,24 @@ def main() -> None:
         assert len(aborts) == 1, aborts
         assert aborts[0].count("continuation") <= 5, aborts[0]
 
+    # ---- 20. instrumentation teardown must not be reported as a kill on a green run ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write(root, CONNECTED, PASSING_SUITE)
+        teardown = ("11-18 04:06:10.331   497   524 I ActivityManager: Killing "
+                    "6110:com.davemega.hub/u0a167 (adj 0): stop com.davemega.hub due to finished inst\n")
+        lines = commands_with_logcat(root, "BUILD SUCCESSFUL in 14m 2s\n", teardown)
+        assert not any("process-killed" in ln for ln in lines), lines
+        assert not any(ln.startswith("::error") for ln in lines), lines
+        # A real kill of our package is still reported.
+        lines = commands_with_logcat(root, "BUILD FAILED in 14m 2s\n", KILLED_LOGCAT)
+        assert any("process-killed" in ln for ln in lines), lines
+
     print("PASS: connected + JVM discovery, failure detail, totals, the 0/1/2 gate statuses, "
           "always-annotated totals, crash detection, Gradle-frame deprioritisation, logcat crash "
           "blocks, block integrity, cause-over-context ranking, per-level budgets, boot-noise "
           "rejection, package-aware kill detection, mismatch survival under a full budget, and "
-          "wrapped abort-message merging")
+          "wrapped abort-message merging, and benign teardown not reported as a kill")
 
 
 if __name__ == "__main__":
