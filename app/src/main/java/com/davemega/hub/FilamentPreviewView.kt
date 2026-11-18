@@ -78,9 +78,10 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
        emulator is 192 MiB. The animation core reads this path in C++ and gltfio parses a
        memory-mapped direct buffer, so neither consumer puts a full-size copy on the Java heap. */
     private var loadedModelPath: String? = null
-    /* Holds the mapping alive. gltfio parses asynchronously, so the mapping must outlive the parse and
-       is released with the asset. Closing the source channel does not invalidate a mapping. */
-    private var mappedModelBuffer: ByteBuffer? = null
+    /* Holds the DIRECT buffer gltfio was given alive - a memory mapping for a file, a direct copy for
+       a pathless source. gltfio parses asynchronously, so the buffer must outlive the parse and is
+       released with the asset; closing the source channel does not invalidate a mapping. */
+    private var retainedModelBuffer: ByteBuffer? = null
 
     private var running = false
     private var statusListener: ((String) -> Unit)? = null
@@ -640,7 +641,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
      * 79.77 MiB of a 192 MiB heap, and the doubling read before it needed 64 + 128 MiB at once.
      *
      * The channel is closed immediately and the mapping stays valid, which is the documented contract
-     * of FileChannel.map; the buffer itself is retained in [mappedModelBuffer] until the asset is
+     * of FileChannel.map; the buffer itself is retained in [retainedModelBuffer] until the asset is
      * destroyed, because gltfio parses it asynchronously.
      */
     private fun mapModel(file: File): ByteBuffer {
@@ -649,6 +650,23 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         FileInputStream(file).use { stream ->
             return stream.channel.map(FileChannel.MapMode.READ_ONLY, 0L, length)
         }
+    }
+
+    /**
+     * Copies [bytes] into a DIRECT buffer for gltfio.
+     *
+     * gltfio's JNI reaches a ByteBuffer through its native address, which a heap buffer - what
+     * ByteBuffer.wrap returns - does not have. The instrumented job's crash is that case: an uncaught
+     * `utils::PreconditionPanic` inside libfilament-jni.so, on the main thread where createAsset runs,
+     * aborting the process with SIGABRT rather than returning null. A file-backed model avoids the copy
+     * entirely by being memory-mapped, which is already direct; this is for a bundled asset or a content
+     * URI, where the bytes had to be read through a stream first.
+     */
+    private fun directCopy(bytes: ByteArray): ByteBuffer {
+        val direct = ByteBuffer.allocateDirect(bytes.size)
+        direct.put(bytes)
+        direct.flip()
+        return direct
     }
 
     /**
@@ -761,7 +779,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private fun loadModelParsed(bytes: ByteArray?, mapped: ByteBuffer?, path: String?, uri: Uri?) {
         val loader = checkNotNull(assetLoader) { "glTF asset loader is unavailable" }
         val resources = checkNotNull(resourceLoader) { "glTF resource loader is unavailable" }
-        val buffer = mapped ?: bytes?.let { ByteBuffer.wrap(it) }
+        val direct = mapped ?: bytes?.let { directCopy(it) }
             ?: error("No model source was read: expected either bytes or a memory mapping")
 
         destroyPendingAsset()
@@ -771,8 +789,8 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
            rather than two that happen to share a name. */
         loadedModelBytes = bytes
         loadedModelPath = path
-        mappedModelBuffer = mapped
-        val newAsset = loader.createAsset(buffer)
+        retainedModelBuffer = direct
+        val newAsset = loader.createAsset(direct)
             ?: error("Filament gltfio could not parse this file as glTF 2.0 / GLB")
         try {
             require(newAsset.resourceUris.isEmpty()) {
@@ -881,7 +899,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         loadedModelBytes = null
         loadedModelPath = null
         /* Released with the asset, not before: gltfio may still be parsing this mapping. */
-        mappedModelBuffer = null
+        retainedModelBuffer = null
         val current = filamentAsset ?: return
         scene?.removeEntities(current.entities)
         assetLoader?.let { loader -> safelyDestroy("glTF asset") { loader.destroyAsset(current) } }
