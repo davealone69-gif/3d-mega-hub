@@ -63,6 +63,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var animationLoop = true
     private var animationSpeed = 1.0f
     private var lastAnimationTickNanos = 0L
+
+    /** The bounds frameCamera() last framed, kept so an export can orbit the same centre. */
+    private var framedBounds: com.google.android.filament.Box? = null
     private var animationFrameCounter = 0
     private var animationInfoListener: ((Int, Int, Boolean, Boolean, Float, Float, Float) -> Unit)? = null
 
@@ -878,6 +881,10 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     private fun frameCamera(bounds: com.google.android.filament.Box) {
         val activeCamera = camera ?: return
+        /* Remembered so an export can orbit around the same centre and return the preview camera to
+           exactly this viewpoint afterwards, rather than re-deriving framing from a model that may
+           since have been replaced. */
+        framedBounds = bounds
         val center = bounds.center
         val half = bounds.halfExtent
         val radius = max(half[0], max(half[1], half[2])).takeIf { it.isFinite() && it > 0.01f } ?: 0.9f
@@ -887,6 +894,172 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         activeCamera.setProjection(45.0, width.toDouble() / height.toDouble(), 0.03, max(1000.0, distance.toDouble() * 20.0), Camera.Fov.VERTICAL)
         activeCamera.lookAt(
             center[0].toDouble(), (center[1] + radius * 0.12f).toDouble(), (center[2] + distance).toDouble(),
+            center[0].toDouble(), center[1].toDouble(), center[2].toDouble(),
+            0.0, 1.0, 0.0
+        )
+    }
+
+    /* ============================================================================================
+     * MP4 export
+     *
+     * Three narrow entry points, added so an exporter can drive THIS view's existing Engine, View,
+     * Camera and gltfio Animator rather than standing up a second renderer beside them. Everything
+     * about encoding, muxing and validation lives in com.davemega.hub.export.AvatarMp4Exporter.
+     *
+     * Two properties here are deliberate, and both come from defects found in the donor
+     * implementation this path was adapted from (3DDD, ExportManager.exportMp4):
+     *
+     *  1. The camera is positioned by calling lookAt() every frame, immediately before the render.
+     *     The donor assigned renderer.orbit.azimuth and then rendered without calling
+     *     OrbitCamera.apply(), so the turntable value it wrote never reached the camera and every
+     *     frame of the exported file showed the same viewpoint. There is no separate apply step here
+     *     that a caller can forget, which is the point: the defect is designed out, not avoided.
+     *
+     *  2. Animation is sampled at an explicit time the CALLER supplies, never from wall-clock
+     *     elapsed time. The donor's encode loop never advanced the character's Animator at all, so
+     *     its MP4 was a static model on a turntable that did not turn. Encoding runs as fast or as
+     *     slowly as the encoder and the machine allow, so a wall clock would make the exported
+     *     motion depend on machine load and would not be reproducible; frame N is sampled at exactly
+     *     N / fps seconds of the clip whatever that costs in wall time.
+     *
+     * The View's viewport is sized to the display surface, so an export at a different resolution
+     * sets its own viewport for the duration of the frame and restores the previous one. Leaving the
+     * display viewport in place would render a 1080x1920 encoder surface from a phone-shaped
+     * sub-rectangle and still produce a file that validates.
+     * ========================================================================================== */
+
+    /** Creates a second SwapChain aimed at an encoder's input Surface. The display SwapChain is
+     *  left alone; both are drawn by the same Renderer. */
+    internal fun createEncoderSwapChain(surface: Surface): SwapChain? {
+        val activeEngine = engine ?: run {
+            Log.e(TAG, "encoder SwapChain requested before the renderer session existed")
+            return null
+        }
+        return try {
+            activeEngine.createSwapChain(surface)
+        } catch (error: Exception) {
+            Log.e(TAG, "encoder SwapChain creation failed", error)
+            null
+        }
+    }
+
+    internal fun destroyEncoderSwapChain(encoderSwapChain: SwapChain?) {
+        if (encoderSwapChain == null) return
+        val activeEngine = engine ?: return
+        safelyDestroy("encoder swap chain") { activeEngine.destroySwapChain(encoderSwapChain) }
+    }
+
+    /**
+     * Stops the Choreographer preview loop so an export owns animation sampling and the camera.
+     *
+     * Without this the preview loop keeps calling applyAnimation with wall-clock positions between
+     * encoded frames, so the exported motion is whatever the two sampling schedules happen to
+     * interleave into. Returns the running state to hand back to [resumePreviewAfterExport].
+     */
+    internal fun suspendPreviewForExport(): Boolean {
+        val wasRunning = running
+        running = false
+        Choreographer.getInstance().removeFrameCallback(frameCallback)
+        return wasRunning
+    }
+
+    /** Restores the preview: camera back to the framed viewpoint, and a clean animation clock. */
+    internal fun resumePreviewAfterExport(wasRunning: Boolean) {
+        val bounds = framedBounds
+        if (bounds != null) {
+            orbitCamera(
+                bounds, 0.0,
+                surfaceView.width.coerceAtLeast(1),
+                surfaceView.height.coerceAtLeast(1)
+            )
+        }
+        /* The preview loop measures elapsed time from this stamp. Left at the pre-export value it
+           would see the whole export as one huge frame and jump the animation to its end. */
+        lastAnimationTickNanos = 0L
+        running = wasRunning
+        if (wasRunning) Choreographer.getInstance().postFrameCallback(frameCallback)
+    }
+
+    /**
+     * Renders exactly one frame into [encoderSwapChain] at [timestampNs], sampling the selected clip
+     * at [animationSeconds] and the turntable at [azimuthRadians] (0.0 reproduces the viewpoint
+     * frameCamera chose). [width] and [height] are the encoder's, not the display's.
+     *
+     * Returns false when the frame could not be rendered. A caller must treat that as a failed
+     * export and not skip the frame: an encoder fed fewer frames than the container's timestamps
+     * claim repeats the previous one, so the file still validates and plays while showing less
+     * motion than it reports.
+     */
+    internal fun renderEncoderFrame(
+        encoderSwapChain: SwapChain,
+        timestampNs: Long,
+        animationSeconds: Float,
+        azimuthRadians: Double,
+        width: Int,
+        height: Int
+    ): Boolean {
+        val activeRenderer = renderer ?: return false
+        val activeView = view ?: return false
+        val bounds = framedBounds
+        if (bounds == null) {
+            Log.e(TAG, "encoder frame requested before any model had been framed")
+            return false
+        }
+
+        /* A static model is exportable - the turntable alone is motion - but a model with clips must
+           actually be sampled, so a null Animator with animations advertised is a real failure. */
+        val activeAnimator = animator
+        if (animationCount > 0) {
+            if (activeAnimator == null) {
+                Log.e(TAG, "encoder frame requested with $animationCount clips but no Animator")
+                return false
+            }
+            val index = selectedAnimation.coerceIn(0, animationCount - 1)
+            val duration = activeAnimator.getAnimationDuration(index)
+            if (!duration.isFinite() || duration <= 0f) {
+                Log.e(TAG, "encoder frame requested but clip $index has duration $duration")
+                return false
+            }
+            activeAnimator.applyAnimation(index, animationSeconds.coerceIn(0f, duration))
+            activeAnimator.updateBoneMatrices()
+        }
+
+        orbitCamera(bounds, azimuthRadians, width, height)
+
+        val previousViewport = activeView.viewport
+        activeView.viewport = Viewport(0, 0, width, height)
+        try {
+            if (!activeRenderer.beginFrame(encoderSwapChain, timestampNs)) return false
+            activeRenderer.render(activeView)
+            activeRenderer.endFrame()
+            return true
+        } finally {
+            activeView.viewport = previousViewport
+        }
+    }
+
+    /** frameCamera's eye/target/up framing with the eye rotated about the centre by [azimuthRadians]. */
+    private fun orbitCamera(
+        bounds: com.google.android.filament.Box,
+        azimuthRadians: Double,
+        width: Int,
+        height: Int
+    ) {
+        val activeCamera = camera ?: return
+        val center = bounds.center
+        val half = bounds.halfExtent
+        val radius = max(half[0], max(half[1], half[2])).takeIf { it.isFinite() && it > 0.01f } ?: 0.9f
+        val distance = (radius * 3.2f).coerceIn(1.0f, 80.0f)
+        activeCamera.setProjection(
+            45.0, width.toDouble() / height.toDouble(), 0.03,
+            max(1000.0, distance.toDouble() * 20.0), Camera.Fov.VERTICAL
+        )
+        /* azimuth 0 must land exactly where frameCamera put the eye, so the export starts from the
+           framing the user is looking at rather than from an unrelated angle. */
+        activeCamera.lookAt(
+            center[0].toDouble() + distance * Math.sin(azimuthRadians),
+            (center[1] + radius * 0.12f).toDouble(),
+            center[2].toDouble() + distance * Math.cos(azimuthRadians),
             center[0].toDouble(), center[1].toDouble(), center[2].toDouble(),
             0.0, 1.0, 0.0
         )
