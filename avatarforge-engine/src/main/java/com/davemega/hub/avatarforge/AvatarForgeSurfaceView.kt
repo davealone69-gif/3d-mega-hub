@@ -254,6 +254,7 @@ class AvatarForgeSurfaceView(
                    frame that issued draw calls over a non-empty mesh. A renderer with broken EGL presents
                    nothing and draws nothing, still trips the stall deadline promptly, and an absolute
                    ceiling bounds the whole thing either way. */
+                var captureYieldMillis = 0L
                 var lastProgressAt = System.nanoTime()
                 var lastProgressSignature = ""
                 val waitStartedAt = lastProgressAt
@@ -265,6 +266,28 @@ class AvatarForgeSurfaceView(
                         nativeResize(nativeHandle, width, height)
                         lastWidth = width
                         lastHeight = height
+                    }
+                    /* Yield the CPU while a pixel capture is in flight.
+                       requestVisiblePixelCopy posts to the main looper, and PixelCopy has to be serviced
+                       by this surface's own producer - the thread we are on. Rendering straight through
+                       therefore starves both: run 44269826494 reported
+                         FAILED: PixelCopy returned result=2 after 3 attempts
+                         Instrumentation run failed due to keyDispatchingTimedOut
+                       where result=2 is ERROR_TIMEOUT, and the ANR is the same starvation seen from the
+                       input dispatcher's side. One frame of this scene costs about 7.5 s under -gpu
+                       swangle, so a main-thread post can sit behind a frame for longer than the 5 s an
+                       input event is allowed to wait. Sleeping here instead gives the posted capture and
+                       the main thread a quiet window.
+                       Bounded per capture episode so a copy that never completes cannot stall the loop
+                       forever; the counter resets as soon as no capture is pending. */
+                    if (pixelCopyPending.get() || pixelCopyActiveAttempt.get() != 0) {
+                        if (captureYieldMillis < CAPTURE_YIELD_LIMIT_MS) {
+                            captureYieldMillis += CAPTURE_YIELD_SLEEP_MS
+                            Thread.sleep(CAPTURE_YIELD_SLEEP_MS)
+                            continue
+                        }
+                    } else {
+                        captureYieldMillis = 0L
                     }
                     var deltaYaw = 0f
                     var deltaPitch = 0f
@@ -737,6 +760,11 @@ class AvatarForgeSurfaceView(
            three presented frames the smoke check requires need roughly 23 s and a 15 s wall-clock budget
            was only ever met by luck. */
         private const val FRAME_STALL_NANOS = 15_000_000_000L
+        /* How long the render loop will stand aside for one in-flight pixel capture, and how often it
+           checks. The limit has to exceed PIXEL_COPY_TIMEOUT_MS (15 s) so a capture that is going to
+           time out is still given its full window, with room for the retry that follows it. */
+        private const val CAPTURE_YIELD_LIMIT_MS = 40_000L
+        private const val CAPTURE_YIELD_SLEEP_MS = 25L
         /* Absolute ceiling on waiting for a first presented frame, so a renderer that keeps producing
            draw calls but never presents cannot loop forever. 240 s is about 32 frames at the measured
            software-rasterizer cost, and comfortably inside the 600 s test timeout, so a genuinely stuck
