@@ -108,6 +108,26 @@ adb pull /data/anr/ "$EVIDENCE/anr/" >/dev/null 2>&1 || true
 adb shell dumpsys activity activities > "$EVIDENCE/activities.txt" 2>&1 || true
 adb exec-out screencap -p > "$EVIDENCE/final-screen.png" 2>/dev/null || true
 
+# Device-side captures that used to live in avatarforge-generated-runtime.yml's own script block, moved
+# here so that this script's exit status IS the step's exit status. That block captured the status with
+# `test_status=$?` and ended with `exit "$test_status"`; across the emulator action's shell boundary the
+# variable arrived EMPTY, and in POSIX sh `exit ""` is an illegal number, so the step exited 2 - which is
+# how run 44276642189 failed with tests=4 failures=0 and a notice reading
+# `shared_script_exit= block_reached_exit=1`. Every test had passed. Nothing here may change the exit
+# status, so all of it ends in `|| true`.
+adb exec-out screencap -p > "$EVIDENCE/emulator-screen.png" 2>/dev/null || true
+adb shell pm list packages 2>/dev/null | grep -F com.davemega.hub > "$EVIDENCE/installed-packages.txt" || true
+# The instrumentation test's own avatar PNGs and JSON live in app-internal storage; run-as reaches them
+# on a debuggable build and avoids Android 11+ scoped-storage restrictions on /Android/data.
+adb exec-out sh -c 'run-as com.davemega.hub sh -c "cd files/avatarforge-diagnostics && tar -cf - ."'   > "$EVIDENCE/app-diagnostics.tar" 2> "$EVIDENCE/run-as-error.txt" || true
+[[ -s "$EVIDENCE/app-diagnostics.tar" ]] &&   tar -xf "$EVIDENCE/app-diagnostics.tar" -C "$EVIDENCE/" 2>/dev/null || true
+{
+  echo "build_commit=${GITHUB_SHA:-unknown}"
+  echo "capture_time_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "test_target=${TEST_CLASSES}"
+  find "$EVIDENCE" -type f ! -name evidence-manifest.txt -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum
+} > "$EVIDENCE/evidence-manifest.txt" 2>/dev/null || true
+
 DIAGNOSTICS_DIR="/sdcard/Download/3D Mega Hub Diagnostics"
 adb pull "$DIAGNOSTICS_DIR/renderer_diagnostics.json" "$EVIDENCE/renderer_diagnostics.json" >/dev/null 2>&1 || true
 adb pull "$DIAGNOSTICS_DIR/imported_glb_diagnostic.png" "$EVIDENCE/imported_glb_diagnostic.png" >/dev/null 2>&1 || true

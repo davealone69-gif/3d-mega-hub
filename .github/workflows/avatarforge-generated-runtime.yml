@@ -75,40 +75,13 @@ jobs:
           emulator-options: -memory 4096 -cores 2 -no-window -no-audio -no-boot-anim -gpu swangle -camera-back none -no-snapshot -wipe-data
           emulator-boot-timeout: 900
           disable-animations: true
-          script: |
-            set +e
-            # Runs the whole GeneratedAvatarRuntimeTest class through the shared instrumented script, so
-            # this job gets the same annotations, job summary and XML-derived gate as the other two
-            # instead of only "sh failed with exit code 1". The captures below are kept because they
-            # collect things that script does not: the emulator display, and the app's own diagnostics
-            # directory via run-as with a SHA-256 manifest.
-            bash .github/scripts/avatarforge-render-smoke.sh
-            test_status=$?
-            mkdir -p artifacts/avatarforge/runtime-captures
-            # Capture the emulator display independently of app storage as a fallback.
-            # The instrumentation test's actual avatar PNGs/JSON live in internal app files;
-            # retrieve them through run-as, which works with the debuggable test APK and
-            # avoids Android 11+ scoped-storage restrictions on /Android/data.
-            adb exec-out screencap -p > artifacts/avatarforge/runtime-captures/emulator-screen.png || true
-            adb shell pm list packages | grep -F com.davemega.hub > artifacts/avatarforge/runtime-captures/installed-packages.txt || true
-            adb exec-out sh -c 'run-as com.davemega.hub sh -c "cd files/avatarforge-diagnostics && tar -cf - ."' > artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar 2> artifacts/avatarforge/runtime-captures/run-as-error.txt || true
-            # || true because tar exits 2 on a truncated archive, and an empty or partial run-as capture
-            # is a missing extra, not a failed test run. Exit code 2 is exactly what this step has been
-            # dying with while all four tests passed, so no command here is allowed to be the last word.
-            test ! -s artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar || tar -xf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar -C artifacts/avatarforge/runtime-captures/ || true
-            find artifacts/avatarforge/runtime-captures -type f -printf '%p %s bytes\\n'
-            echo "build_commit=${GITHUB_SHA}" > artifacts/avatarforge/runtime-captures/evidence-manifest.txt
-            echo "capture_time_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
-            find artifacts/avatarforge/runtime-captures -type f ! -name evidence-manifest.txt -print0 | sort -z | xargs -0 -r sha256sum >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
-            cat artifacts/avatarforge/runtime-captures/evidence-manifest.txt
-            # Discriminating annotation. Run 44265574974 exited 2 while the shared script reported
-            # gradle_exit=0, counts_exit=0 and tests=4 failures=0, so the 2 came from somewhere after
-            # that script returned. This line says whether the block reached its own exit and with what
-            # value: if it appears with shared_script_exit=0 and the step still fails, the exit code is
-            # being produced by the emulator action rather than by anything in this block, and the fix
-            # belongs there instead.
-            echo "::notice title=runtime-captures::shared_script_exit=${test_status} block_reached_exit=1"
-            exit "$test_status"
+          # One command, so this script's exit status is the step's. The block that used to be here
+          # captured `test_status=$?` and ended with `exit "$test_status"`; the variable crossed the
+          # emulator action's shell boundary EMPTY and `exit ""` is an illegal number in POSIX sh, so the
+          # step exited 2 with tests=4 failures=0 (run 44276642189). The screencap, run-as diagnostics
+          # tar and SHA-256 manifest it produced are now collected by the shared script into
+          # AF_EVIDENCE_DIR, which the upload step below already publishes.
+          script: bash .github/scripts/avatarforge-render-smoke.sh
 
       - name: Upload instrumentation reports and screenshots
         if: always()
