@@ -431,12 +431,43 @@ void evaluateCloth(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOu
     out->thickness = 0.008f;
     out->scatterRadius = 0.004f;
     out->tint = 0.0f;
-    out->occlusion = saturate(0.5f + 0.6f * s.curvature);
-    /* Subtle weave relief; avoid sub-millimetre normals that shimmer after atlas filtering. */
-    const float amp = 0.00010f;
-    out->reliefGradient = Vec3(std::cos(q.x * 6.2831853f) * amp * 6.2831853f / yarn,
-                               std::cos(q.z * 6.2831853f) * amp * 6.2831853f / yarn * 0.5f, 0.0f);
-    (void)upper;
+    /* Construction shading: the weave troughs and the stitch rows below gently occlude and roughen,
+       so seams and the twill read from ambient occlusion and specular spread as well as from the
+       normal map -- i.e. FORM, not painted lines. */
+    out->occlusion = saturate((0.5f + 0.6f * s.curvature) * (1.0f - 0.10f * (1.0f - twill)));
+
+    /* Relief: two RESOLVABLE layers. Both sit comfortably above the atlas sampling floor the header
+       warns about -- nothing approaches the sub-millimetre / ~150-cycles-per-metre regime that turned
+       into moire and sparkle -- so the added detail survives atlas filtering and mobile mip selection:
+         1. the existing 6.5 mm twill weave, DEEPENED from 0.10 mm to 0.22 mm (pitch unchanged, so no new
+            aliasing) so the cloth genuinely catches the light instead of lying flat;
+         2. coarse 18 mm raised STITCH / PANEL rows -- an order of magnitude below any aliasing risk --
+            running along the garment's length, giving the eye real stitching rather than a smooth sheet.
+       Every term is a pure function of the 3D surface point and the seed-derived ctx.noise, so the bake
+       remains byte-identical for identical af_spec+seed (afcore.h's determinism contract). */
+    const float amp = 0.00022f;                                  /* twill crest height (was 0.00010) */
+    const float kWeave = amp * 6.2831853f / yarn;
+    const float weaveGx = std::cos(q.x * 6.2831853f) * kWeave;
+    const float weaveGz = std::cos(q.z * 6.2831853f) * kWeave * 0.5f;
+
+    const float stitchPitch = 0.018f;                            /* 18 mm stitch/panel rows          */
+    const float stitchAmp   = 0.00040f;                          /* ridge crest height               */
+    const float kStitch = stitchAmp * 6.2831853f / stitchPitch;
+    float stitchGx = 0.0f, stitchGz = 0.0f, ridge = 0.5f;
+    if (upper) {                                                 /* jacket: rows advance front-to-back */
+        const float phase = s.position.z / stitchPitch;
+        stitchGz = std::cos(phase * 6.2831853f) * kStitch;
+        ridge    = std::sin(phase * 6.2831853f) * 0.5f + 0.5f;
+    } else {                                                     /* trousers: rows advance side-to-side */
+        const float phase = s.position.x / stitchPitch;
+        stitchGx = std::cos(phase * 6.2831853f) * kStitch;
+        ridge    = std::sin(phase * 6.2831853f) * 0.5f + 0.5f;
+    }
+    /* Stitch troughs read a touch darker and rougher than the raised thread. */
+    out->occlusion = saturate(out->occlusion * (1.0f - 0.06f * (1.0f - ridge)));
+    out->roughness = saturate(out->roughness + 0.03f * (1.0f - ridge));
+
+    out->reliefGradient = Vec3(weaveGx + stitchGx, weaveGz + stitchGz, 0.0f);
 }
 
 void evaluateShoe(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out) {
