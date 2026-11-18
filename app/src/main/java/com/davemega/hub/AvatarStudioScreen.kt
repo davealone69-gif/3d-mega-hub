@@ -69,11 +69,30 @@ fun AvatarStudioScreen(
     }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
     var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
-    // Imported GLBs open in the animation-capable gltfio preview by default.
-    // The native AvatarForge GLES renderer currently does not skin imported GLBs.
-    var useFilamentAnimationPreview by remember(avatarUri) {
-        mutableStateOf(avatarUri != null && avatarUri.scheme == "file")
-    }
+    /* File-backed avatars - imported or generated - render through the native AvatarForge GLES route,
+       so this defaults to false. It used to default to true for any file URI, on the stated grounds
+       that "the native AvatarForge GLES renderer currently does not skin imported GLBs". That stopped
+       being true when the import path began adopting a file's own skeleton and driving it through
+       af::anim::Player, with nativeRender advancing the imported clock before each draw.
+
+       The stale default had two consequences, and the second is a crash:
+
+         1. The native route never ran for a file, so its diagnostics - presented_frames, triangles,
+            draw_calls, gl_error, egl_error, pixel_count, bounds_in_frustum, screenshot_path - were
+            never written. The instrumented smoke test asserts on exactly those, so it could not pass
+            no matter how well the renderer worked.
+         2. gltfio took the file instead and aborted the process on an extension our own writer emits:
+            "terminating due to uncaught exception of type utils::PreconditionPanic: Precondition in
+            getFieldInfo:169 reason: uniform named \"sheenColorIndex\" not found", an uncaught C++
+            exception in libfilament-jni.so, SIGABRT on the main thread. 10 of the 13 materials in a
+            generated avatar declare KHR_materials_sheen, and the pinned Filament 1.71.6 ubershader has
+            no such uniform. The native renderer implements that sheen lobe itself (Charlie
+            distribution, af_gl.cpp), so routing here is also the higher-fidelity choice.
+
+       The bundled sample still uses Filament: with no file URI there is no importedGlb, so it takes the
+       preview branch whatever this flag says. The toggle below keeps the Filament route reachable for
+       any file, so both renderers remain usable and neither is being retired. */
+    var useFilamentAnimationPreview by remember(avatarUri) { mutableStateOf(false) }
     var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
     var animationCount by remember { mutableStateOf(0) }
     var selectedAnimation by remember { mutableStateOf(0) }
@@ -154,7 +173,7 @@ fun AvatarStudioScreen(
                 Text(if (generating) "Diagnostic running…" else "Run generated-avatar GLES diagnostic")
             }
         }
-        Text("Imported GLBs open in the Filament gltfio preview so embedded skeletal animation can play. Switch to AvatarForge GLES preview for the native static-render path.")
+        Text("Imported and generated GLBs render through the native AvatarForge GLES path, which skins the file's own skeleton and plays its clips. Switch to the Filament gltfio preview to compare against gltfio's own sampler.")
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -233,7 +252,7 @@ fun AvatarStudioScreen(
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open animation-capable Filament preview")
+                        Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open Filament gltfio preview")
                     }
                 }
                 if (useFilamentAnimationPreview) {
