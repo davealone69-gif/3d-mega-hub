@@ -50,12 +50,29 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var filamentAsset: FilamentAsset? = null
     private var pendingAsset: FilamentAsset? = null
     private var pendingAssetUri: Uri? = null
+    private var pendingAnimation: AnimationSelection? = null
     private var lastReportedLoadProgress = -1
-    private data class RestTransform(val entity: Int, val localMatrix: FloatArray)
+
+    private data class AnimationSelection(
+        val index: Int,
+        val name: String,
+        val looping: Boolean,
+        val speed: Float,
+    )
+
+    private data class PlaybackSnapshot(
+        val asset: FilamentAsset,
+        val animator: Animator,
+        val clips: List<AnimationClip>,
+        val selectedIndex: Int,
+        val positionSeconds: Float,
+        val playing: Boolean,
+        val looping: Boolean,
+        val speed: Float,
+    )
 
     private var animator: Animator? = null
     private var animationClips: List<AnimationClip>? = null
-    private var restTransforms = emptyList<RestTransform>()
     private var animationCount = 0
     private var selectedAnimation = 0
     private var animationPositionSeconds = 0f
@@ -173,34 +190,50 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private fun currentPlayableClip(): AnimationClip? =
         animationClips?.firstOrNull { it.index == selectedAnimation && it.isPlayable }
 
-    // Different clips may animate different joints. Restoring local transforms prevents nodes
-    // omitted by the next clip from being left frozen in the previous clip's pose. Filament still
-    // owns the individual TRS and morph-weight channels on nodes touched by the new clip.
-    private fun restoreRestTransforms() {
-        val transforms = engine?.transformManager ?: return
-        transforms.openLocalTransformTransaction()
-        try {
-            restTransforms.forEach { rest ->
-                if (transforms.hasComponent(rest.entity)) {
-                    transforms.setTransform(transforms.getInstance(rest.entity), rest.localMatrix)
-                }
-            }
-        } finally {
-            transforms.commitLocalTransformTransaction()
-        }
-    }
-
     fun selectAnimation(index: Int) {
         val clip = animationClips?.firstOrNull { it.index == index && it.isPlayable } ?: return
         val activeAnimator = animator ?: return
-        selectedAnimation = clip.index
+        if (clip.index != selectedAnimation) {
+            // Filament keeps internal TRS components and morph weights outside its local matrices.
+            // A fresh asset is the public gltfio API's reliable rest pose for every channel, not
+            // just for nodes untouched by the new clip. Reload asynchronously and start only the
+            // requested clip; applying the default clip first would reintroduce stale state.
+            val selection = AnimationSelection(clip.index, clip.name, animationLoop, animationSpeed)
+            loadModelAsync(modelUri, ++modelLoadToken, selection)
+            return
+        }
+
+        // Restarting the same clip does not mix it with another clip on this asset.
         animationPositionSeconds = 0f
         animationPlaying = true
         lastAnimationTickNanos = 0L
-        restoreRestTransforms()
         activeAnimator.applyAnimation(selectedAnimation, 0f)
         activeAnimator.updateBoneMatrices()
         publishAnimationInfo()
+    }
+
+    private fun snapshotPlayback(): PlaybackSnapshot? {
+        val asset = filamentAsset ?: return null
+        val activeAnimator = animator ?: return null
+        val clips = animationClips ?: return null
+        return PlaybackSnapshot(
+            asset, activeAnimator, clips, selectedAnimation, animationPositionSeconds,
+            animationPlaying, animationLoop, animationSpeed,
+        )
+    }
+
+    private fun restorePlayback(snapshot: PlaybackSnapshot?): Boolean {
+        if (snapshot == null || filamentAsset !== snapshot.asset) return false
+        animator = snapshot.animator
+        animationClips = snapshot.clips
+        selectedAnimation = snapshot.selectedIndex
+        animationPositionSeconds = snapshot.positionSeconds
+        animationPlaying = snapshot.playing
+        animationLoop = snapshot.looping
+        animationSpeed = snapshot.speed
+        lastAnimationTickNanos = 0L
+        publishAnimationInfo()
+        return true
     }
 
     fun setAnimationPlaying(playing: Boolean) {
@@ -421,12 +454,16 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         resourceLoader = ResourceLoader(activeEngine)
     }
 
-    private fun loadModelAsync(uri: Uri?, token: Int) {
+    private fun loadModelAsync(uri: Uri?, token: Int, selection: AnimationSelection? = null) {
         val activeEngine = engine ?: return
+        val previousPlayback = if (selection != null) snapshotPlayback() else null
         // A superseded resource load must not publish its clip list for the newly selected model.
         destroyPendingAsset()
         clearAnimationPlayback()
-        reportStatus(if (uri == null) "Reading bundled sample GLB" else "Reading selected GLB")
+        reportStatus(
+            if (selection != null) "Switching animation: reloading the model to reset its pose"
+            else if (uri == null) "Reading bundled sample GLB" else "Reading selected GLB"
+        )
         thread(name = "MegaHubGlbReader") {
             var bytes: ByteArray? = null
             var failure: Exception? = null
@@ -446,16 +483,22 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             post {
                 if (token != modelLoadToken || engine !== activeEngine) return@post
                 if (failure != null) {
-                    reportStatus("GLB read failed: ${failure!!.message ?: failure!!.javaClass.simpleName}")
+                    val restored = restorePlayback(previousPlayback)
+                    val detail = failure!!.message ?: failure!!.javaClass.simpleName
+                    reportStatus(if (restored) "Animation switch failed; previous clip restored: $detail" else "GLB read failed: $detail")
                 } else {
                     try {
-                        loadModelBytes(checkNotNull(bytes), uri)
+                        loadModelBytes(checkNotNull(bytes), uri, selection)
                     } catch (error: Exception) {
                         Log.e(TAG, "GLB load failed", error)
-                        reportStatus("GLB load failed: ${error.message ?: error.javaClass.simpleName}")
+                        val restored = restorePlayback(previousPlayback)
+                        val detail = error.message ?: error.javaClass.simpleName
+                        reportStatus(if (restored) "Animation switch failed; previous clip restored: $detail" else "GLB load failed: $detail")
                     } catch (error: LinkageError) {
                         Log.e(TAG, "GLB native load failed", error)
-                        reportStatus("GLB native load failed: ${error.message ?: error.javaClass.simpleName}")
+                        val restored = restorePlayback(previousPlayback)
+                        val detail = error.message ?: error.javaClass.simpleName
+                        reportStatus(if (restored) "Animation switch failed; previous clip restored: $detail" else "GLB native load failed: $detail")
                     }
                 }
             }
@@ -468,7 +511,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
      * decoding completes. The emulator trace recorded a 45-second UI frame while this synchronous
      * path was in use, so asyncBeginLoad + asyncUpdateLoad now spreads resource work across frames.
      */
-    private fun loadModelBytes(bytes: ByteArray, uri: Uri?) {
+    private fun loadModelBytes(bytes: ByteArray, uri: Uri?, selection: AnimationSelection?) {
         val loader = checkNotNull(assetLoader) { "glTF asset loader is unavailable" }
         val resources = checkNotNull(resourceLoader) { "glTF resource loader is unavailable" }
 
@@ -485,6 +528,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             }
             pendingAsset = newAsset
             pendingAssetUri = uri
+            pendingAnimation = selection
             lastReportedLoadProgress = -1
             reportStatus("GLB parsed; loading textures and GPU resources asynchronously")
         } catch (failure: Exception) {
@@ -525,20 +569,17 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     durationSeconds = loadedAnimator?.getAnimationDuration(index) ?: 0f,
                 )
             }
-            animationClips = clips
-            val firstPlayable = clips.firstOrNull { it.isPlayable }
-            val transforms = checkNotNull(engine).transformManager
-            restTransforms = if (firstPlayable == null) emptyList() else buildList {
-                for (entity in pending.entities) {
-                    if (transforms.hasComponent(entity)) {
-                        add(RestTransform(entity, transforms.getTransform(transforms.getInstance(entity), FloatArray(16))))
-                    }
-                }
+            val requested = pendingAnimation
+            val firstPlayable = if (requested == null) clips.firstOrNull { it.isPlayable } else {
+                clips.firstOrNull { it.index == requested.index && it.name == requested.name && it.isPlayable }
+                    ?: error("The selected animation is no longer available in this model")
             }
+            animationClips = clips
             selectedAnimation = firstPlayable?.index ?: 0
             animationPositionSeconds = 0f
             animationPlaying = firstPlayable != null
-            animationLoop = true
+            animationLoop = requested?.looping ?: true
+            if (requested != null) animationSpeed = requested.speed
             lastAnimationTickNanos = 0L
             animationFrameCounter = 0
             if (firstPlayable != null && loadedAnimator != null) {
@@ -551,6 +592,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             pendingAsset = null
             val label = pendingAssetUri?.lastPathSegment ?: BUNDLED_MODEL
             pendingAssetUri = null
+            pendingAnimation = null
             lastReportedLoadProgress = -1
             reportStatus("GLB loaded and GPU resources submitted: $label · ${pending.entities.size} nodes · $animationCount animation(s)")
         } catch (failure: Exception) {
@@ -578,6 +620,7 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         }
         pendingAsset = null
         pendingAssetUri = null
+        pendingAnimation = null
         lastReportedLoadProgress = -1
     }
 
@@ -600,7 +643,6 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private fun clearAnimationPlayback() {
         animator = null
         animationClips = null
-        restTransforms = emptyList()
         animationCount = 0
         selectedAnimation = 0
         animationPositionSeconds = 0f

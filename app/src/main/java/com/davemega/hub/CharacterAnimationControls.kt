@@ -52,7 +52,7 @@ internal fun CharacterAnimationControls(
             Text("Animate your character", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             val message = when {
                 !usingFilament -> "Switch to the Filament preview above to play this model's animation clips."
-                clips == null -> "Waiting for the model to load. If loading fails, check the renderer status below."
+                clips == null -> "Loading the model or switching animations. If loading fails, check the renderer status below."
                 clips.isEmpty() -> "This model has no animation clips. Generate a character or import an animated GLB to enable these buttons."
                 current == null -> "This model has no playable animation clips."
                 else -> "${if (playback.playing) "Playing" else "Paused"}: ${current.label} · ${current.index + 1} / ${clips.size}"
