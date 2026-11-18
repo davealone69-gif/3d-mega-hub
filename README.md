@@ -1,5 +1,9 @@
 # 3D Mega Hub
 
+## Renderer compatibility experiment — 2026-11-19
+
+**PARTIAL / UNVERIFIED:** PR #14 now pins all three Filament Android artifacts to **1.79.0** as a controlled rollback from 1.80.1. This isolates the reported `sheenColorIndex` native abort against the last pre-1.80 release line; it is an experiment, not a claimed fix. Exact-head Android build and the same imported-GLB emulator test must pass before accepting the pin. If 1.79.0 still aborts, restore the prior pin and proceed with a feature-level-aware/custom `MaterialProvider` investigation. Do not infer Samsung behaviour from the x86_64 feature-level-1 emulator.
+
 An Android app for offline avatar authoring and local-model interaction. It combines the AvatarForge
 engine (native C++ signed-distance-field generation, texture baking and GLB export), an OpenGL ES
 renderer with a GLES static preview path and a Filament live preview, a local Ollama chat page, and an
