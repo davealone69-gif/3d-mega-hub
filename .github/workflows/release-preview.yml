@@ -5,7 +5,7 @@ on:
   push:
     branches: ["work/engine-integration-candidate", "integration/avatarforge-renderer-port"]
   pull_request:
-    branches: [main]
+    branches: [main, "integration/**"]
     paths:
       - "app/**"
       - "avatarforge-engine/**"
