@@ -138,6 +138,7 @@ typedef struct af_spec {
     float     gear_tone[3];     /* armour / equipment colour,  0 => steel                   */
     float     eye_tone[3];      /* explicit iris base (linear-sRGB); 0 => derived from melanin */
     float     cloth_roughness;  /* 0..1 override,  <0 => material default                   */
+    float     cloth_metalness;  /* 0..1 garment metalness override, <0 => material default  */
     float     gear_metalness;   /* 0..1 override,  <0 => material default                   */
 
     /* Text prompt that produced this spec (informational; stored in the GLB as metadata). */

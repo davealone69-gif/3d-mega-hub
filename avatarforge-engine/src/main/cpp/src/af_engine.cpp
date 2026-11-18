@@ -348,10 +348,24 @@ void rebuildSubmeshesAndMaterials(af_engine* e) {
             am.base_color_factor[1] = base[1];
             am.base_color_factor[2] = base[2];
             am.base_color_factor[3] = 1.0f;
-            am.metallic = (e->spec.gear_metalness >= 0.0f && (r == REGION_GEAR || r == REGION_SHOE))
-                              ? e->spec.gear_metalness : md.metallic;
-            am.roughness = (e->spec.cloth_roughness >= 0.0f && (r == REGION_CLOTH_UPPER || r == REGION_CLOTH_LOWER))
-                               ? e->spec.cloth_roughness : md.roughness;
+            /* PBR factor overrides follow the documented convention: a negative spec value means "keep
+               the material default". gear_metalness targets gear/shoes; cloth_roughness AND the new
+               cloth_metalness target the garment regions. When both metalness sources are auto (<0) the
+               result is byte-for-byte identical to before this field existed. */
+            if (e->spec.gear_metalness >= 0.0f && (r == REGION_GEAR || r == REGION_SHOE)) {
+                am.metallic = e->spec.gear_metalness;
+            } else if (e->spec.cloth_metalness >= 0.0f &&
+                       (r == REGION_CLOTH_UPPER || r == REGION_CLOTH_LOWER)) {
+                am.metallic = e->spec.cloth_metalness;
+            } else {
+                am.metallic = md.metallic;
+            }
+            if (e->spec.cloth_roughness >= 0.0f &&
+                (r == REGION_CLOTH_UPPER || r == REGION_CLOTH_LOWER)) {
+                am.roughness = e->spec.cloth_roughness;
+            } else {
+                am.roughness = md.roughness;
+            }
             am.ior = md.ior;
             am.sheen = md.sheen;
             am.sheen_tint = md.sheenTint;

@@ -174,6 +174,32 @@ bool eyeColourFor(const std::string& w, float rgb[3]) {
     return false;
 }
 
+/* Clothing-fabric presets harvested from the 3D4ME donor (docs/REFERENCE_3d4me_options.md): each names a
+   garment surface finish as a roughness/metalness pair. They ride the existing cloth_roughness /
+   cloth_metalness spec scalars (<0 => material default), so a prompt that names no fabric keeps today's
+   bytes exactly. NOTE: "leather" is intentionally absent here -- it already drives the leather-armour
+   outfit path, and overloading it would change existing deterministic prompts. Leather garments still
+   read correctly through that outfit. */
+struct NamedFabric { const char* word; float roughness; float metalness; };
+const NamedFabric kFabrics[] = {
+    {"cotton", 0.90f, 0.00f},
+    {"silk",   0.32f, 0.02f},
+    {"satin",  0.22f, 0.05f},
+    {"denim",  0.84f, 0.00f},
+    {"latex",  0.12f, 0.08f},
+};
+const int kFabricCount = static_cast<int>(sizeof(kFabrics) / sizeof(kFabrics[0]));
+bool fabricValuesFor(const std::string& w, float* roughness, float* metalness) {
+    for (int i = 0; i < kFabricCount; ++i) {
+        if (w == kFabrics[i].word) {
+            *roughness = kFabrics[i].roughness;
+            *metalness = kFabrics[i].metalness;
+            return true;
+        }
+    }
+    return false;
+}
+
 const char* setBodyCm(af_spec* spec, const std::string& noun, float value) {
     if (noun == "waist") { spec->waist_cm = value; return "waist_cm"; }
     if (noun == "hip" || noun == "hips") { spec->hip_cm = value; return "hip_cm"; }
@@ -485,6 +511,19 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
                 spec->eye_tone[1] = iris[1];
                 spec->eye_tone[2] = iris[2];
                 record(out, w, "eye_tone", &matched);
+                continue;
+            }
+        }
+
+        /* ---- fabrics ----
+           A clothing-fabric word overrides ONLY the garment's PBR response (roughness/metalness), never
+           its colour or outfit. Handled up front and consumed so it cannot be mistaken for a noun. */
+        {
+            float fr = 0.0f, fm = 0.0f;
+            if (fabricValuesFor(w, &fr, &fm)) {
+                spec->cloth_roughness = fr;
+                spec->cloth_metalness = fm;
+                record(out, w, "fabric", &matched);
                 continue;
             }
         }
