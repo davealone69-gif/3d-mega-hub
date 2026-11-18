@@ -5,6 +5,8 @@ name: Kotlin compile gate
 # its log behind hosts that are not always reachable, while annotations and comments are.
 
 on:
+  push:
+    branches: ["arena/**", "integration/**"]
   pull_request:
     branches: [main, integration/avatarforge-renderer-port, "fix/**"]
   workflow_dispatch:
