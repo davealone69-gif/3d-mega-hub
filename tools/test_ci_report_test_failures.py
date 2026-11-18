@@ -136,6 +136,29 @@ KILLED_LOGCAT = BOOT_NOISE_LOGCAT + """11-18 03:11:02.440   492   550 I Activity
 11-18 03:11:02.450   160   160 I lowmemorykiller: Kill 'com.davemega.hub' (2431), uid 10152, oom_score_adj 900 to free 81234kB rss
 """
 
+# Modelled on the tombstone from run 44229690337. The header lines, the pid/uid/signal lines and the
+# two libfilament-jni.so frames are copied from that run's annotations. The abort message's SECOND line
+# is synthetic: that run captured only "Abort message: 'terminating due to uncaught exception of type
+# utils::PreconditionPanic: Precondition" and the annotation cap dropped whatever followed, which is the
+# defect this fixture pins. The wording stands in for the file, line and condition a real Filament
+# precondition failure puts there; it is not a quotation from that run.
+TOMBSTONE_LOGCAT = """11-18 03:31:22.752  6078  6078 F libc    : Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 6078 (om.davemega.hub), pid 6078 (om.davemega.hub)
+11-18 03:31:22.819  6376  6376 F DEBUG   : *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***
+11-18 03:31:22.819  6376  6376 F DEBUG   : Build fingerprint: 'google/sdk_gphone_x86_64/generic_x86_64_arm64:11/RSR1.240422.006/12134477:userdebug/dev-keys'
+11-18 03:31:22.819  6376  6376 F DEBUG   : Revision: '0'
+11-18 03:31:22.819  6376  6376 F DEBUG   : ABI: 'x86_64'
+11-18 03:31:22.819  6376  6376 F DEBUG   : Timestamp: 2026-11-18 03:31:22+0000
+11-18 03:31:22.819  6376  6376 F DEBUG   : pid: 6078, tid: 6078, name: om.davemega.hub  >>> com.davemega.hub <<<
+11-18 03:31:22.819  6376  6376 F DEBUG   : uid: 10167
+11-18 03:31:22.819  6376  6376 F DEBUG   : signal 6 (SIGABRT), code -1 (SI_QUEUE), fault addr --------
+11-18 03:31:22.819  6376  6376 F DEBUG   : Abort message: 'terminating due to uncaught exception of type utils::PreconditionPanic: Precondition
+11-18 03:31:22.819  6376  6376 F DEBUG   : in AssetLoader.cpp:88: buffer must be a direct ByteBuffer'
+11-18 03:31:22.972  6376  6376 F DEBUG   : backtrace:
+11-18 03:31:22.972  6376  6376 F DEBUG   :       #00 pc 00000000000a1234  /apex/com.android.runtime/lib64/bionic/libc.so (abort+164)
+11-18 03:31:22.972  6376  6376 F DEBUG   :       #02 pc 0000000000301225  /data/app/base.apk!libfilament-jni.so (offset 0x4588000)
+11-18 03:31:22.972  6376  6376 F DEBUG   :       #03 pc 0000000000300c76  /data/app/base.apk!libfilament-jni.so (offset 0x4588000)
+"""
+
 # One test counted as failed, with no message attached: how a process that died mid-test appears in
 # JUnit XML. This is the shape run 44227951941 actually produced.
 SUITE_COUNTS_NO_DETAIL = (
@@ -356,10 +379,53 @@ def main() -> None:
         assert "carried a message" in joined, joined
         assert "tests=1 failures=1" in joined, joined
 
+    # ---- 18. a wrapped abort message must arrive as ONE annotation, complete ----
+    # The real crash read "utils::PreconditionPanic: Precondition" and stopped there, because the file,
+    # line and condition that failed were on the next logcat line and the cap dropped it.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        path = _write(root, "logcat-crash.txt", TOMBSTONE_LOGCAT)
+        blocks = reporter.collect_crash_blocks([str(path)])
+        assert len(blocks) == 1, [b[1][0] for b in blocks]
+        aborts = [ln for ln in blocks[0][1] if "Abort message" in ln]
+        assert len(aborts) == 1, aborts
+        assert "utils::PreconditionPanic" in aborts[0], aborts[0]
+        # The half that was being lost:
+        assert "AssetLoader.cpp:88" in aborts[0], aborts[0]
+        assert "must be a direct ByteBuffer" in aborts[0], aborts[0]
+        # Merging must not swallow the fields after the message.
+        joined = "\n".join(blocks[0][1])
+        assert "backtrace:" in joined, joined
+        assert "libfilament-jni.so" in joined, joined
+        assert "Build fingerprint" in joined, joined
+
+        lines = commands_with_logcat(root, "Instrumentation run failed due to Process crashed.\n",
+                                     TOMBSTONE_LOGCAT)
+        errors = [ln for ln in lines if ln.startswith("::error")]
+        assert any("AssetLoader.cpp:88" in ln for ln in errors), errors
+        assert any("Fatal signal 6 (SIGABRT)" in ln for ln in errors), errors
+        assert any("libfilament-jni.so" in ln for ln in errors), errors
+
+    # ---- 19. merging must not run away when the closing quote never arrives ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        # A header is required to open a block at all, which is itself the point of narrowing the
+        # header list: "Abort message:" no longer starts one.
+        truncated = ("F libc    : Fatal signal 6 (SIGABRT), code -1 (SI_QUEUE) in tid 1 (a.b)\n"
+                     "F DEBUG   : Abort message: 'terminating due to uncaught exception\n"
+                     + "".join("F DEBUG   : continuation %d\n" % i for i in range(20)))
+        path = _write(root, "lc.txt", truncated)
+        blocks = reporter.collect_crash_blocks([str(path)])
+        assert len(blocks) == 1, blocks
+        aborts = [ln for ln in blocks[0][1] if "Abort message" in ln]
+        assert len(aborts) == 1, aborts
+        assert aborts[0].count("continuation") <= 5, aborts[0]
+
     print("PASS: connected + JVM discovery, failure detail, totals, the 0/1/2 gate statuses, "
           "always-annotated totals, crash detection, Gradle-frame deprioritisation, logcat crash "
           "blocks, block integrity, cause-over-context ranking, per-level budgets, boot-noise "
-          "rejection, package-aware kill detection, and mismatch survival under a full budget")
+          "rejection, package-aware kill detection, mismatch survival under a full budget, and "
+          "wrapped abort-message merging")
 
 
 if __name__ == "__main__":

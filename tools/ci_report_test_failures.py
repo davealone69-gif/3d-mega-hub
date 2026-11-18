@@ -146,10 +146,52 @@ def collect_crash_blocks(paths: list[str]) -> list[tuple[str, list[str]]]:
                 if CRASH_BLOCK_HEADERS.search(stripped):
                     break
                 block.append(stripped)
-            blocks.append((path, block))
+            blocks.append((path, merge_abort_messages(block)))
             if len(blocks) >= CRASH_BLOCK_MAX:
                 return blocks
     return blocks
+
+
+ABORT_MESSAGE = re.compile(r"Abort message:")
+# A tombstone field that ends the abort message. The message itself is a quoted C++ string, so the
+# closing quote is the reliable terminator; these are the fields that follow it when the quote is
+# missing from a truncated capture.
+TOMBSTONE_FIELD = re.compile(
+    r"\b(signal \d+|backtrace:|pid:|uid:|Timestamp:|ABI:|Revision:|Build fingerprint:)\b"
+)
+
+
+def merge_abort_messages(block: list[str]) -> list[str]:
+    """Joins a tombstone's abort message, which wraps across logcat lines, into one line.
+
+    The message is the single most useful thing a native crash carries - it is the assertion that
+    failed, in the crashing library's own words. Captured one logcat line at a time it reads
+    "terminating due to uncaught exception of type utils::PreconditionPanic: Precondition" and stops
+    exactly where the useful part begins: the file, line and condition are on the next line. Emitting
+    the halves separately lost the second to the annotation cap.
+    """
+    merged: list[str] = []
+    index = 0
+    while index < len(block):
+        line = block[index]
+        if not ABORT_MESSAGE.search(line):
+            merged.append(line)
+            index += 1
+            continue
+        parts = [line]
+        index += 1
+        # Continuation lines until the closing quote of the message, a new tombstone field, or a
+        # short bound so a malformed capture cannot swallow the whole block.
+        while index < len(block) and len(parts) < 6:
+            following = block[index]
+            if ABORT_MESSAGE.search(following) or TOMBSTONE_FIELD.search(following):
+                break
+            parts.append(following)
+            index += 1
+            if following.rstrip().endswith("'"):
+                break
+        merged.append(" ".join(part.strip() for part in parts))
+    return merged
 
 
 def escape_command(text: str) -> str:
