@@ -181,5 +181,18 @@ if(BUILD_TESTING AND NOT ANDROID)
     target_link_libraries(af_imported_animation_test PRIVATE afcore)
     add_test(NAME imported_animation_regression
              COMMAND af_imported_animation_test "${AF_ANIMATION_TEST_ASSETS}")
+
+    # Generation contract: determinism + structural completeness + self export/import round-trip.
+    # It runs the full pipeline up to three times (two identical seeds to prove byte-identical
+    # output, one different seed as a non-vacuity control), so it is deliberately the slowest host
+    # test and carries its own timeout. Needs no external assets: it generates everything itself.
+    add_executable(af_generation_contract_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/generation_contract_test.cpp)
+    target_include_directories(af_generation_contract_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_generation_contract_test PRIVATE afcore)
+    add_test(NAME generation_contract_regression COMMAND af_generation_contract_test)
+    set_tests_properties(generation_contract_regression PROPERTIES TIMEOUT 1200)
 endif()
 
