@@ -197,6 +197,7 @@ bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* 
         double baseLumSd = 0.0;                     /* tonal spread of the base-colour map          */
         double normalRawSdR = 0.0, normalRawSdG = 0.0; /* tangent-plane detail in the normal map    */
         double normalSdNx = 0.0, normalSdNy = 0.0, normalMeanNz = 0.0; /* decoded deviation + flatness */
+        double ssScatterMean = 0.0, ssScatterSd = 0.0, ssThickMean = 0.0; /* subsurface-map R/G channels */
         for (int i = 0; i < 5; ++i) {
             const int32_t slot = slots[i];
             af_texture t{};
@@ -229,6 +230,10 @@ bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* 
                 normalRawSdG = sd[1];
                 decodedNormalStats(t.data, t.width, t.height, t.channels,
                                    &normalSdNx, &normalSdNy, &normalMeanNz);
+            } else if (slot == AF_TEX_SUBSURFACE && nCh >= 2) {
+                ssThickMean   = mean[0];   /* R = geometric thickness                */
+                ssScatterMean = mean[1];   /* G = scatter radius (drives red translucency) */
+                ssScatterSd   = sd[1];     /* spread = how strongly skin stands out from cloth/hair */
             }
         }
         check(allTexturesOk, "all five procedural PBR texture slots are populated with real pixels");
@@ -247,8 +252,18 @@ bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* 
               "normal map deviates from flat in tangent space: decoded sdNx > 0.05 and sdNy > 0.03");
         check(normalMeanNz < 0.9988,
               "surface is not globally flat: normal mean Z < 0.9988 (relief present somewhere)");
+        /* Subsurface-scattering floors, ratcheted after commit 95a5390 fixed the inverted bake.
+           Pre-fix the scatter channel averaged ~7.3 with stddev ~27.4; post-fix 13.9 / 47.0. The
+           floors below reject the old regime while clearing the new one with margin; pinned spec+seed
+           keeps them byte-stable. */
+        check(ssScatterMean > 11.0,
+              "skin keeps strong subsurface SCATTER across the atlas: channel-G mean > 11 on 0-255");
+        check(ssScatterSd > 35.0,
+              "subsurface scatter separates skin from cloth/hair: channel-G stddev > 35");
         std::printf("DETAIL  baseColour lumSd=%.2f | normal raw(sdR=%.2f sdG=%.2f) decoded(sdNx=%.3f sdNy=%.3f meanNz=%.3f)\n",
                     baseLumSd, normalRawSdR, normalRawSdG, normalSdNx, normalSdNy, normalMeanNz);
+        std::printf("DETAIL  subsurface thickness(R) mean=%.1f | scatter(G) mean=%.1f sd=%.2f\n",
+                    ssThickMean, ssScatterMean, ssScatterSd);
 
         /* Authored clip library responds with finite, positive durations (REST excluded: it is 0). */
         const int32_t clips[] = {AF_CLIP_IDLE, AF_CLIP_WALK, AF_CLIP_JUMP, AF_CLIP_TURN_360, AF_CLIP_DANCE};
