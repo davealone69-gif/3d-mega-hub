@@ -102,6 +102,14 @@ double nowMs() {
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
 
+/* Forward declarations: the objective texture-quality metrics are defined further down (beside the
+   other file helpers) but are needed earlier, inside generateAndExport's inspection pass. */
+double channelMean(const uint8_t* px, int w, int h, int ch, int c);
+double channelStdDev(const uint8_t* px, int w, int h, int ch, int c, double mean);
+double luminanceStdDev(const uint8_t* px, int w, int h, int ch);
+void   decodedNormalStats(const uint8_t* px, int w, int h, int ch,
+                          double* sdNx, double* sdNy, double* meanNz);
+
 /* Runs the full pipeline for `seed` and writes the resulting GLB to `outPath`. When `inspect` is set,
    asserts the live-engine structural contract (Part B) before export. Returns true iff every stage
    succeeded; records wall-clock generation time into *elapsedMs when provided. */
@@ -179,20 +187,59 @@ bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* 
         }
         check(!missingBs, "blendshapes include canonical ARKit names (blink/look/brow/cheek)");
 
-        /* Every PBR slot populated by the bake, base colour/normal/subsurface in particular. */
+        /* Every PBR slot populated by the bake. While verifying population we also extract OBJECTIVE
+           quality metrics from the live pixels (Part B-QUALITY), so "the avatar looks flat/wrong" is a
+           number each CI run records and a fix must measurably move -- not an opinion. */
         const int32_t slots[] = {AF_TEX_BASE_COLOR, AF_TEX_NORMAL, AF_TEX_METALLIC_ROUGHNESS,
                                  AF_TEX_OCCLUSION, AF_TEX_SUBSURFACE};
+        const char* slotName[] = {"BASE_COLOR", "NORMAL", "METALLIC_ROUGHNESS", "OCCLUSION", "SUBSURFACE"};
         bool allTexturesOk = true;
-        for (int32_t slot : slots) {
+        double baseLumSd = 0.0;                     /* tonal spread of the base-colour map          */
+        double normalRawSdR = 0.0, normalRawSdG = 0.0; /* tangent-plane detail in the normal map    */
+        double normalSdNx = 0.0, normalSdNy = 0.0, normalMeanNz = 0.0; /* decoded deviation + flatness */
+        for (int i = 0; i < 5; ++i) {
+            const int32_t slot = slots[i];
             af_texture t{};
             const int32_t trc = af_engine_texture(engine, slot, &t);
-            if (trc != AF_OK || t.data == nullptr || t.width <= 0 || t.height <= 0) {
-                std::fprintf(stderr, "      texture slot %d not populated (rc=%d w=%d h=%d data=%p)\n",
-                             (int)slot, (int)trc, t.width, t.height, (const void*)t.data);
+            if (trc != AF_OK || t.data == nullptr || t.width <= 0 || t.height <= 0 || t.channels <= 0) {
+                std::fprintf(stderr, "      texture slot %s not populated (rc=%d w=%d h=%d ch=%d data=%p)\n",
+                             slotName[i], (int)trc, t.width, t.height, t.channels, (const void*)t.data);
                 allTexturesOk = false;
+                continue;
+            }
+            const size_t level0Bytes = (size_t)t.width * (size_t)t.height * (size_t)t.channels;
+            if ((uint64_t)level0Bytes > t.byte_size) {
+                std::fprintf(stderr, "      texture slot %s: level0 bytes %zu exceed byte_size %llu; skipping metrics\n",
+                             slotName[i], level0Bytes, (unsigned long long)t.byte_size);
+                continue; /* populated but cannot be read safely; report, do not crash */
+            }
+            const int nCh = t.channels < 8 ? t.channels : 8;
+            double mean[8] = {}, sd[8] = {};
+            for (int c = 0; c < nCh; ++c) {
+                mean[c] = channelMean(t.data, t.width, t.height, t.channels, c);
+                sd[c]   = channelStdDev(t.data, t.width, t.height, t.channels, c, mean[c]);
+            }
+            std::printf("QUALITY %-18s %dx%dx%d ", slotName[i], t.width, t.height, t.channels);
+            for (int c = 0; c < nCh; ++c) std::printf("c%d(mean=%.1f sd=%.2f) ", c, mean[c], sd[c]);
+            std::printf("\n");
+            if (slot == AF_TEX_BASE_COLOR && nCh >= 3) {
+                baseLumSd = luminanceStdDev(t.data, t.width, t.height, t.channels);
+            } else if (slot == AF_TEX_NORMAL && nCh >= 3) {
+                normalRawSdR = sd[0];
+                normalRawSdG = sd[1];
+                decodedNormalStats(t.data, t.width, t.height, t.channels,
+                                   &normalSdNx, &normalSdNy, &normalMeanNz);
             }
         }
         check(allTexturesOk, "all five procedural PBR texture slots are populated with real pixels");
+        /* Non-vacuous APPEARANCE baselines. Thresholds are deliberately conservative; the QUALITY/DETAIL
+           lines printed above record the real magnitudes so they can be ratcheted up as quality improves. */
+        check(baseLumSd > 1.0,
+              "base-colour map has tonal spread (not one flat tone): luminance stddev > 1.0 on 0-255");
+        check(normalRawSdR > 1.0 && normalRawSdG > 1.0,
+              "normal map carries real micro-relief: its R and G channels vary (not a dead-flat map)");
+        std::printf("DETAIL  baseColour lumSd=%.2f | normal raw(sdR=%.2f sdG=%.2f) decoded(sdNx=%.3f sdNy=%.3f meanNz=%.3f)\n",
+                    baseLumSd, normalRawSdR, normalRawSdG, normalSdNx, normalSdNy, normalMeanNz);
 
         /* Authored clip library responds with finite, positive durations (REST excluded: it is 0). */
         const int32_t clips[] = {AF_CLIP_IDLE, AF_CLIP_WALK, AF_CLIP_JUMP, AF_CLIP_TURN_360, AF_CLIP_DANCE};
@@ -276,6 +323,72 @@ bool readFile(const char* path, std::vector<uint8_t>* out) {
     const size_t got = std::fread(out->data(), 1, out->size(), fp);
     std::fclose(fp);
     return got == out->size();
+}
+
+/* ------------------------------------------------------------------------------------------
+ * Objective texture-quality metrics over a LEVEL-0 8-bit image (width*height*channels bytes).
+ * These exist so "the avatar looks flat/wrong" becomes a number every CI run records and a
+ * future fix must measurably move -- the qualitative analogue of the byte-determinism check.
+ * Nothing here renders; it reads the same engine-owned buffers af_engine_texture hands back.
+ * -------------------------------------------------------------------------------------------- */
+double channelMean(const uint8_t* px, int w, int h, int ch, int c) {
+    if (!px || w <= 0 || h <= 0 || ch <= 0 || c < 0 || c >= ch) return 0.0;
+    const size_t n = (size_t)w * (size_t)h;
+    double s = 0.0;
+    for (size_t i = 0; i < n; ++i) s += (double)px[i * (size_t)ch + c];
+    return s / (double)n;
+}
+
+double channelStdDev(const uint8_t* px, int w, int h, int ch, int c, double mean) {
+    if (!px || w <= 0 || h <= 0 || ch <= 0 || c < 0 || c >= ch) return 0.0;
+    const size_t n = (size_t)w * (size_t)h;
+    double v = 0.0;
+    for (size_t i = 0; i < n; ++i) { const double d = (double)px[i * (size_t)ch + c] - mean; v += d * d; }
+    return std::sqrt(v / (double)n);
+}
+
+/* Luminance standard deviation (Rec.709 weights) on a >=3-channel map: a measure of tonal spread. */
+double luminanceStdDev(const uint8_t* px, int w, int h, int ch) {
+    if (!px || w <= 0 || h <= 0 || ch < 3) return 0.0;
+    const size_t n = (size_t)w * (size_t)h;
+    std::vector<double> l(n);
+    double m = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t* p = px + i * (size_t)ch;
+        l[i] = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+        m += l[i];
+    }
+    m /= (double)n;
+    double v = 0.0;
+    for (size_t i = 0; i < n; ++i) { const double d = l[i] - m; v += d * d; }
+    return std::sqrt(v / (double)n);
+}
+
+/* Tangent-space normal maps encode xyz in [0,255]->[-1,+1]. A perfectly flat surface is uniform
+   (128,128,255): its decoded x/y standard deviation is ~0. Reporting that deviation quantifies how
+   much real micro-relief the bake actually produced (skin pores, cloth weave, seams), independent
+   of which tangent convention the map uses, because we measure spread rather than sign. */
+void decodedNormalStats(const uint8_t* px, int w, int h, int ch,
+                        double* sdNx, double* sdNy, double* meanNz) {
+    *sdNx = 0.0; *sdNy = 0.0; *meanNz = 0.0;
+    if (!px || w <= 0 || h <= 0 || ch < 3) return;
+    const size_t n = (size_t)w * (size_t)h;
+    std::vector<double> vx(n), vy(n);
+    double sx = 0.0, sy = 0.0, sz = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t* p = px + i * (size_t)ch;
+        const double dx = (double)p[0] / 255.0 * 2.0 - 1.0;
+        const double dy = (double)p[1] / 255.0 * 2.0 - 1.0;
+        const double dz = (double)p[2] / 255.0 * 2.0 - 1.0;
+        vx[i] = dx; vy[i] = dy;
+        sx += dx; sy += dy; sz += dz;
+    }
+    const double mx = sx / (double)n, my = sy / (double)n;
+    double ex = 0.0, ey = 0.0;
+    for (size_t i = 0; i < n; ++i) { ex += (vx[i] - mx) * (vx[i] - mx); ey += (vy[i] - my) * (vy[i] - my); }
+    *sdNx = std::sqrt(ex / (double)n);
+    *sdNy = std::sqrt(ey / (double)n);
+    *meanNz = sz / (double)n;
 }
 
 } // namespace

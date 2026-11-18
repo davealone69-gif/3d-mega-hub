@@ -9,3 +9,4 @@ local.properties
 *.jks
 *.keystore
 __pycache__
+/dropbox/
