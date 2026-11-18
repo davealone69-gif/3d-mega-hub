@@ -193,6 +193,37 @@ object GlbValidator {
         return accessor
     }
 
+    /**
+     * The `extensionsUsed` list from a GLB's JSON chunk, or an empty set when it cannot be read.
+     *
+     * Deliberately never throws. This decides whether a renderer may be offered at all, so an
+     * unreadable header must not be mistaken for a reason to refuse one: an empty set means "no known
+     * reason to refuse" and fails open towards offering the button. Structural validity is validate()'s
+     * job, and reading only the JSON chunk keeps this bounded the same way - MAX_JSON_CHUNK_BYTES, and
+     * the binary chunk is never touched, so a 79.77 MiB avatar costs one header read here.
+     */
+    fun extensionsUsed(file: File): Set<String> = runCatching {
+        if (!file.isFile) return@runCatching emptySet<String>()
+        BufferedInputStream(file.inputStream()).use { input ->
+            if (readU32(input) != GLB_MAGIC) return@use emptySet<String>()
+            if (readU32(input) != 2L) return@use emptySet<String>()
+            readU32(input) /* total length: validate() is what checks it against the file */
+            val chunkLength = readU32(input)
+            val chunkType = readU32(input)
+            if (chunkType != JSON_CHUNK || chunkLength !in 2L..MAX_JSON_CHUNK_BYTES) {
+                return@use emptySet<String>()
+            }
+            val jsonBytes = ByteArray(chunkLength.toInt())
+            input.readFully(jsonBytes)
+            /* The JSON chunk is space-padded to a 4-byte boundary, so trim before parsing. */
+            val root = JSONObject(String(jsonBytes, StandardCharsets.UTF_8).trim())
+            val used = root.optJSONArray("extensionsUsed") ?: return@use emptySet<String>()
+            (0 until used.length())
+                .mapNotNull { index -> used.optString(index).takeIf { it.isNotEmpty() } }
+                .toSet()
+        }
+    }.getOrDefault(emptySet())
+
     private fun readU32(input: InputStream): Long {
         val bytes = ByteArray(4)
         input.readFully(bytes)

@@ -41,10 +41,22 @@ import com.davemega.hub.avatarforge.Build
 import com.davemega.hub.avatarforge.HairStyle
 import com.davemega.hub.avatarforge.Outfit
 import com.davemega.hub.avatarforge.Sex
+import com.davemega.hub.avatarforge.GlbValidator
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+
+/* glTF extensions that the pinned Filament 1.71.6 gltfio cannot load without aborting the process.
+   Measured, not guessed: a generated avatar declares KHR_materials_sheen on 10 of its 13 materials,
+   and handing that file to gltfio produced
+
+     utils::PreconditionPanic: Precondition in getFieldInfo:169
+     reason: uniform named "sheenColorIndex" not found
+
+   as an uncaught C++ exception in libfilament-jni.so - SIGABRT on the main thread, which no Kotlin
+   runCatching can intercept. Anything listed here must not be routed to the Filament preview. */
+private val FILAMENT_UNSUPPORTED_EXTENSIONS = setOf("KHR_materials_sheen")
 
 @Composable
 fun AvatarStudioScreen(
@@ -93,6 +105,17 @@ fun AvatarStudioScreen(
        preview branch whatever this flag says. The toggle below keeps the Filament route reachable for
        any file, so both renderers remain usable and neither is being retired. */
     var useFilamentAnimationPreview by remember(avatarUri) { mutableStateOf(false) }
+    /* Extensions the pinned Filament 1.71.6 gltfio cannot survive. KHR_materials_sheen makes gltfio
+       set a "sheenColorIndex" uniform the ubershader does not declare, and Filament turns that into an
+       uncaught utils::PreconditionPanic - SIGABRT on the main thread, not a catchable Kotlin error, so
+       there is nothing to recover from and the only defence is not to offer the route. The native
+       AvatarForge GLES renderer implements the sheen lobe itself, so this is a limitation of the pinned
+       Filament build rather than a missing feature in the avatar. */
+    val filamentBlockedExtensions = remember(avatarUri) {
+        val file = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)
+        if (file == null) emptySet()
+        else GlbValidator.extensionsUsed(file) intersect FILAMENT_UNSUPPORTED_EXTENSIONS
+    }
     var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
     var animationCount by remember { mutableStateOf(0) }
     var selectedAnimation by remember { mutableStateOf(0) }
@@ -250,9 +273,23 @@ fun AvatarStudioScreen(
                                 animationPosition = 0f
                             }
                         },
+                        /* Disabled rather than allowed to crash: switching a sheen-bearing file to
+                           gltfio aborts the process, and a button that kills the app is not a control. */
+                        enabled = filamentBlockedExtensions.isEmpty(),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open Filament gltfio preview")
+                    }
+                    if (filamentBlockedExtensions.isNotEmpty()) {
+                        Text(
+                            "Filament preview is unavailable for this file: it declares " +
+                                filamentBlockedExtensions.sorted().joinToString(", ") +
+                                ", and the pinned Filament 1.71.6 gltfio aborts the process on that " +
+                                "extension (uniform \"sheenColorIndex\" not found). The AvatarForge " +
+                                "GLES renderer implements it and is being used instead.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 if (useFilamentAnimationPreview) {
