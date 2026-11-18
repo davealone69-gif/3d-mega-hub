@@ -1,6 +1,6 @@
 # Blocker: Filament preview aborts the process on GLB load
 
-**Status: BLOCKED upstream. Not a project code defect that inspection can remove.**
+**Status: BLOCKED. The native abort is observed; its root cause is not yet proven.**
 **Affected feature: the Filament live preview — and therefore animation controls, since only the
 Filament path can play imported glTF clips.**
 
@@ -37,13 +37,12 @@ named `sheenColorIndex` → the material instance in use does not declare it →
 This is exactly the class of failure that a compiler cannot catch: the Java and JNI signatures are
 unchanged between 1.71.6 and 1.80.1, so the code compiles and then aborts at runtime.
 
-## Why this is a Filament/gltfio problem, not ours
+## Evidence and hypotheses (do not treat the hypothesis as a diagnosis)
 
 - The app uses the stock `UbershaderProvider(engine)` and the stock
   `AssetLoader(engine, provider, EntityManager.get())`; no custom material package, no custom
   `MaterialProvider`, no modified gltfio.
-- All three artifacts are version-consistent at 1.80.1: `filament-android`, `filament-utils-android`,
-  `gltfio-android`.
+- The three artifacts are version-aligned through the Gradle version catalog. The failing run described below used 1.80.1. The current PR branch pins 1.79.0 as a rollback experiment; it has not yet been runtime-tested.
 - The asset is structurally valid. `models/female.glb` was validated offline: GLB magic and version 2,
   declared length equal to actual length, both chunks correctly sized, `asset.version` 2.0, one buffer
   with no URI whose `byteLength` fits the BIN chunk, 11 accessors each with `componentType`/`count`/
@@ -58,15 +57,15 @@ unchanged between 1.71.6 and 1.80.1, so the code compiles and then aborts at run
   feature levels, which is consistent with a ubershader variant that has no sheen uniforms while the
   loader still writes them.
 
-## What has been ruled out
+## Checks already performed (limited scope)
 
 | Hypothesis | Verdict |
 | --- | --- |
-| Heap `ByteBuffer` passed to `createAsset` | **Not the cause.** Filament's `AutoBuffer` copies non-direct buffers; the JNI signature is `(jobject javaBuffer, jint remaining)` and is unchanged in 1.80.1. |
-| Malformed GLB / bad accessors / dangling indices | **Not the cause.** Offline validation of the bundled asset found no structural defect. |
-| Missing/duplicated Filament engine, wrong lifecycle | **Not the cause here.** `FEngine` is created once, `resolved backend: OpenGL`, and teardown is balanced; the abort happens inside the loader call. |
+| Heap `ByteBuffer` passed to `createAsset` | **Not currently indicated.** Filament's `AutoBuffer` copies non-direct buffers; this does not rule out every input/lifetime issue. |
+| Malformed GLB / bad accessors / dangling indices | The bundled fixture passed the documented offline structural checks. This does not prove every runtime/material condition is valid. |
+| Missing/duplicated Filament engine, wrong lifecycle | The captured run shows one engine creation and OpenGL backend selection. This does not fully rule out lifecycle or thread-ownership defects. |
 | R8/minification stripping Filament resources | **Not the cause.** The crash reproduces in the debug build. |
-| Our own GLES renderer | **Not involved.** It renders the same asset successfully (`GeneratedAvatarRuntimeTest`, `OK (4 tests)`). |
+| Our own GLES renderer | Separate path. It passed the generated-GLB test suite on a prior exact CI commit; that is not a test of this Filament preview path. |
 
 ## Options, in order of preference
 
@@ -74,9 +73,7 @@ unchanged between 1.71.6 and 1.80.1, so the code compiles and then aborts at run
    Filament feature level 2 or 3, where the ubershader variant may well declare the sheen uniforms. A
    single instrumented run on the phone decides whether this is emulator-only. Nothing in this
    workspace can substitute for that run.
-2. **Try the previous feature-complete Filament release** (1.79.x) as a controlled experiment: if the
-   preview loads there, this is a 1.80.x regression and the pin becomes a documented, evidence-backed
-   decision rather than a guess.
+2. **Test the current 1.79.0 pin** as a controlled rollback experiment. Only a dedicated imported-GLB preview test on the exact current commit can establish whether it changes the result. A pass would support the rollback; it would not by itself prove the upstream root cause.
 3. **Supply an explicit `MaterialProvider`** built from materials we compile ourselves with the exact
    feature set we need, so the uniforms gltfio writes are guaranteed to exist. This is the durable fix
    if the upstream path cannot be trusted, and it also gives us control over the toon/PBR look.
@@ -92,3 +89,8 @@ The production rendering path is not affected. The app renders imported and gene
 `AvatarForgeSurfaceView` (native OpenGL ES), which is verified on the emulator down to pixel counts.
 The consequence is specifically that **imported skeletal animation cannot be exercised**, because clip
 playback depends on the Filament path.
+
+
+## Current branch handover — 2026-11-19
+
+The active PR #14 branch pins Filament 1.79.0. This is an experiment only: the latest PR head has no Actions run or status check, and no new imported-GLB Filament runtime result is available. The prior 1.80.1 native abort remains a valid historical observation, not proof that 1.79.0 fails or passes. Keep the feature labelled **BLOCKED / UNVERIFIED** until an exact-head test exercises the imported GLB through `FilamentPreviewView` and captures process/logcat evidence. The native AvatarForge GLES path is separate and must remain the default production route.
