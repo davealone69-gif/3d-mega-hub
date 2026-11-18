@@ -467,6 +467,28 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
         if (anyOf(w, kHeels, 3)) { spec->footwear = AF_FOOTWEAR_HEEL; record(out, w, "footwear", &matched); continue; }
         if (anyOf(w, kSabatons, 3)) { spec->footwear = AF_FOOTWEAR_SABATON; record(out, w, "footwear", &matched); continue; }
 
+        /* Hyphenated eye adjectives reach this loop as ONE token ("green-eyed"), because isWordChar
+           keeps internal hyphens (it must, to recognise "t-shirt"). Catch "<colour>-eyed" up front and
+           route the colour straight to the iris; the space-separated "<colour> eye(s)" form is handled
+           inside the colour branch below. */
+        if (w.size() > 5 && w.compare(w.size() - 5, 5, "-eyed") == 0) {
+            const std::string stem = w.substr(0, w.size() - 5);
+            float hrgb[3];
+            if (colourFor(stem, hrgb)) {
+                float iris[3];
+                if (!eyeColourFor(stem, iris)) {
+                    iris[0] = std::fmin(0.85f, hrgb[0] * 1.15f + 0.04f);
+                    iris[1] = std::fmin(0.85f, hrgb[1] * 1.15f + 0.04f);
+                    iris[2] = std::fmin(0.85f, hrgb[2] * 1.15f + 0.04f);
+                }
+                spec->eye_tone[0] = iris[0];
+                spec->eye_tone[1] = iris[1];
+                spec->eye_tone[2] = iris[2];
+                record(out, w, "eye_tone", &matched);
+                continue;
+            }
+        }
+
         /* ---- colours ---- */
         if (colourFor(w, rgb)) {
             /* "<colour> eye(s)" / "<colour>-eyed" sets the IRIS colour, never the garment. Handled

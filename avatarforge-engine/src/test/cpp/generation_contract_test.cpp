@@ -24,6 +24,14 @@
  *     (af_engine_import_glb_from_memory) with rc==AF_OK and an empty af_engine_last_error, adopting a
  *     71-joint skeleton - i.e. the file the app receives is one the app can read back.
  *
+ * EXPLICIT IRIS COLOUR. The owner asked for selectable eye colour (harvested from the 3D4ME donor's
+ *   named swatches -- see docs/REFERENCE_3d4me_options.md). It rides af_spec.eye_tone[3], where all-zero
+ *   means AUTO, so every pre-existing avatar keeps the unchanged melanin-derived iris and stays
+ *   byte-identical. Part D proves objectively that a "<colour> eyes" phrase routes ONLY to the iris while
+ *   a separate garment colour still lands on cloth_tone (no cross-talk); that distinct curated presets are
+ *   mutually distinct; and end-to-end that a chosen iris changes the exported GLB while two identical
+ *   iris+seed generations remain byte-for-byte equal (the new branch did not break determinism).
+ *
  * Nothing is mocked and nothing is synthesised to pass; every assertion reads real generated data.
  * COST NOTE: it runs the full pipeline up to three times (two identical seeds for the equality check,
  * one different seed for the inequality control), so it is the slowest host test and carries its own
@@ -113,13 +121,15 @@ void   decodedNormalStats(const uint8_t* px, int w, int h, int ch,
 /* Runs the full pipeline for `seed` and writes the resulting GLB to `outPath`. When `inspect` is set,
    asserts the live-engine structural contract (Part B) before export. Returns true iff every stage
    succeeded; records wall-clock generation time into *elapsedMs when provided. */
-bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* elapsedMs) {
+/* Spec-driven generation: runs the full pipeline for a caller-supplied, already-filled spec. This lets
+   one overridden field -- here, an explicit iris colour -- be exercised end-to-end without disturbing
+   the pinned canonical spec used by the determinism and completeness parts above. */
+bool generateAndExportSpec(const af_spec* s, const char* outPath, bool inspect, double* elapsedMs) {
     const double t0 = nowMs();
-    af_spec spec;
-    fillSpec(&spec, seed);
+    const af_spec spec = *s;
     af_engine* engine = nullptr;
     if (af_engine_create(&spec, nullptr, &engine) != AF_OK || engine == nullptr) {
-        std::fprintf(stderr, "FAIL  af_engine_create (seed=%d)\n", (int)seed);
+        std::fprintf(stderr, "FAIL  af_engine_create (seed=%d)\n", (int)s->seed);
         ++g_failures; ++g_checks;
         return false;
     }
@@ -302,6 +312,14 @@ bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* 
     af_engine_destroy(engine);
     if (elapsedMs) *elapsedMs = nowMs() - t0;
     return expRc == AF_OK;
+}
+
+/* Convenience wrapper used by the determinism / completeness parts: build the canonical pinned spec for
+   `seed` and delegate to the spec-driven generator above. */
+bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* elapsedMs) {
+    af_spec spec;
+    fillSpec(&spec, seed);
+    return generateAndExportSpec(&spec, outPath, inspect, elapsedMs);
 }
 
 /* Compares two files byte-for-byte without holding them both in memory. Reports sizes and the first
@@ -504,6 +522,78 @@ int main(void) {
         } else {
             check(false, "prompt-parse engine could not be created");
         }
+    }
+
+    /* ---- Part D: an explicit iris colour (eye_tone) -- routing, palette, effect, determinism ---- */
+    {
+        /* analyze_prompt mutates the ENGINE's spec, so each parse gets its OWN fresh engine built from
+           the canonical default spec (whose eye_tone is all-zero). Starting from the documented default
+           is exactly how the app creates an AvatarSpec, so an exact match against a curated value proves
+           the parser SET the field, and a remaining zero proves it deliberately left AUTO untouched. */
+        auto runParse = [&](const char* prompt, af_spec* dst) -> int {
+            af_spec seedSpec;
+            fillSpec(&seedSpec, 7);
+            af_engine* e = nullptr;
+            if (af_engine_create(&seedSpec, nullptr, &e) != AF_OK || e == nullptr) return -1;
+            const int r = af_engine_analyze_prompt(e, prompt, dst);
+            af_engine_destroy(e);
+            return r;
+        };
+        auto eq3 = [](const float* v, float r, float g, float b) {
+            return std::fabs(v[0] - r) < 1e-4f && std::fabs(v[1] - g) < 1e-4f && std::fabs(v[2] - b) < 1e-4f;
+        };
+
+        /* (a) "<colour> eyes" drives ONLY the iris; a separate garment colour still reaches cloth_tone. */
+        af_spec mix{};
+        const int rMix = runParse("green jacket, blue eyes", &mix);
+        check(rMix >= 1, "prompt carrying a garment colour AND an eye colour parses");
+        check(eq3(mix.eye_tone, 0.095f, 0.205f, 0.372f),
+              "\"blue eyes\" selects the curated BLUE iris base (linearised 3D4ME swatch)");
+        check(eq3(mix.cloth_tone, 0.075f, 0.230f, 0.080f),
+              "the garment keeps generic GREEN -- the eye branch did not steal its colour");
+
+        /* (b) the hyphenated form resolves identically (tokeniser strips the hyphen to "eyed"). */
+        af_spec hyp{};
+        const int rHyp = runParse("green-eyed woman", &hyp);
+        check(rHyp >= 1 && eq3(hyp.eye_tone, 0.070f, 0.216f, 0.115f),
+              "\"green-eyed\" maps to the curated GREEN iris base");
+
+        /* (c) with no eye phrase, eye_tone stays at the AUTO sentinel: existing avatars are untouched. */
+        af_spec none{};
+        runParse("athletic woman, jeans jacket", &none);
+        check(none.eye_tone[0] == 0.0f && none.eye_tone[1] == 0.0f && none.eye_tone[2] == 0.0f,
+              "no eye phrase => eye_tone remains all-zero (AUTO preserved)");
+
+        /* (d) curated presets are genuinely distinct, so different eyes really differ. */
+        const double dBG = std::fabs((double)mix.eye_tone[0] - hyp.eye_tone[0])
+                         + std::fabs((double)mix.eye_tone[1] - hyp.eye_tone[1])
+                         + std::fabs((double)mix.eye_tone[2] - hyp.eye_tone[2]);
+        checkf(dBG > 0.2, "blue vs green iris bases are distinct (L1 distance %.3f > 0.2)", dBG, 0.0);
+
+        /* (e) END-TO-END: the iris choice changes the exported bytes, yet determinism survives the new
+               branch -- identical iris+seed twice must be byte-identical, blue vs green must differ. */
+        af_spec base;
+        fillSpec(&base, 1337);
+        af_spec eb = base, eb2 = base, eg = base;
+        eb.eye_tone[0] = 0.095f;  eb.eye_tone[1] = 0.205f;  eb.eye_tone[2] = 0.372f;   /* blue  */
+        eb2 = eb;                                                                     /* again  */
+        eg.eye_tone[0] = 0.070f;  eg.eye_tone[1] = 0.216f;  eg.eye_tone[2] = 0.115f;   /* green */
+        const char* P1 = "/tmp/af_iris_blue_1.glb";
+        const char* P2 = "/tmp/af_iris_blue_2.glb";
+        const char* P3 = "/tmp/af_iris_green.glb";
+        const bool o1 = generateAndExportSpec(&eb,  P1, /*inspect=*/false, nullptr);
+        const bool o2 = generateAndExportSpec(&eb2, P2, /*inspect=*/false, nullptr);
+        const bool o3 = generateAndExportSpec(&eg,  P3, /*inspect=*/false, nullptr);
+        check(o1 && o2 && o3, "iris-blue (x2) and iris-green exports all succeeded");
+        long sz1 = 0, sz2 = 0, fdSame = -2;
+        const bool detIris = o1 && o2 && filesIdentical(P1, P2, &sz1, &sz2, &fdSame);
+        check(detIris, "DETERMINISM holds with an explicit iris: same eye_tone+seed => identical GLB");
+        long sz3 = 0, fdDiff = -2;
+        const bool irisEffect = o1 && o3 && !filesIdentical(P1, P3, &sz1, &sz3, &fdDiff);
+        check(irisEffect, "CONTROL: a different iris colour produces a different GLB (eye_tone reaches pixels)");
+        std::printf("DETAIL  iris override: blue=%.0f B reproducible | blue!=green first diff @ %ld\n",
+                    (double)sz1, fdDiff);
+        std::remove(P1); std::remove(P2); std::remove(P3);
     }
 
     /* Best-effort cleanup of the temporary artifacts. */
