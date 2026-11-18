@@ -61,6 +61,9 @@ That branch is also not PR #9's, so **PR #9's own readiness gate is unchanged an
 | [Android CI 44276635644](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44276635644) | `fb91a10` | **PASS — all six jobs** | `tests=7 failures=0 errors=0 skipped=0`, `gradle_exit=0 counts_exit=0`. First green run after the PixelCopy retry window widened 3 → 8 attempts |
 | [Android CI 44279291033](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44279291033) | `60e7a60` | **PASS — all six jobs** | `tests=7 failures=0 errors=0 skipped=0` with all seven tests named |
 | [Generated-avatar runtime 44279286846](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44279286846) | `60e7a60` | **PASS** | `tests=4 failures=0 errors=0 skipped=0`. First green run of this workflow in six attempts; every earlier one exited 2 on the shell bug above |
+| [Diagnostic APK 44283224421](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44283224421) | `60e7a60` | **PASS — both jobs** | Each emulator step reporting its own single test: `tests=[…#generatedAvatarMustProduceVisiblePixels]` and `tests=[…#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView]`, both `tests=1 failures=0` |
+
+**`60e7a60` is the first head at which all three instrumented workflows are green at once** — Android CI (7 tests), generated-avatar runtime (4 tests) and diagnostic APK (1 test per step, twice). Two commits after it are documentation only (`98a1823`, `2cdd440`), so the verified source is `60e7a60` and nothing in the renderer, the tests or the CI scripts differs at HEAD.
 
 Every one of those is an **x86_64 API 30 emulator under `-gpu swangle` software rasterization**. It is not a Galaxy S24, not Adreno/Maleoon, not Xclipse 940, and not a real GPU.
 
