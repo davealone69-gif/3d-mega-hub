@@ -221,6 +221,31 @@ bool fakeFallbackWebpDecoder(const uint8_t* data, std::size_t size,
 
 } // namespace
 
+/* A refusal must name the engine's own reason, and a success must leave that reason empty.
+
+   guard() fills af_engine_last_error with the reader's specific message and clears it when the
+   call succeeds, so error text always describes the most recent call. A refused import leaves the
+   previous asset loaded, which makes the assertions that follow describe a different file than the
+   one they name - imported_animation_test reported a 71-joint probe box as joint_count=17 that way.
+   No test in this tree used to ask. */
+void checkImportRc(const af_engine* engine, int32_t rc, const char* label) {
+    const char* why = af_engine_last_error(engine);
+    const bool silent = (why == nullptr) || (*why == '\0');
+    char msg[512];
+    if (rc == AF_OK && silent) {
+        std::snprintf(msg, sizeof(msg),
+                      "%s, and af_engine_last_error is empty afterwards as guard() promises", label);
+    } else if (rc != AF_OK) {
+        std::snprintf(msg, sizeof(msg), "%s -- REFUSED, rc=%d: %s", label, static_cast<int>(rc),
+                      silent ? "<the engine gave no reason>" : why);
+    } else {
+        std::snprintf(msg, sizeof(msg),
+                      "%s -- but left a stale reason behind, which would misdirect the next "
+                      "diagnosis (af_engine_last_error=\"%s\")", label, why);
+    }
+    check(rc == AF_OK && silent, msg);
+}
+
 int main(int argc, char** argv) {
     af_spec spec{};
     af_spec_init(&spec);
@@ -363,7 +388,8 @@ int main(int argc, char** argv) {
         // assert joint_count == 0, which encoded the defect rather than the intent -- see
         // imported_animation_test.cpp for the vertex-level proof that the adopted skeleton is live.
         const int32_t reimportRc = af_engine_import_glb_from_memory(engine, generatedGlbBytes, generatedGlbSize);
-        check(reimportRc == AF_OK, "generated rigged GLB can be re-imported as foreign geometry");
+        checkImportRc(engine, reimportRc,
+                      "generated rigged GLB can be re-imported as foreign geometry");
         if (reimportRc == AF_OK) {
             check(af_engine_joint_count(engine) > 0,
                   "re-imported rigged GLB adopts the skeleton the file carries");
@@ -374,8 +400,8 @@ int main(int argc, char** argv) {
     if (generatedGlbBytes != nullptr) af_arena_free(generatedGlbBytes);
 
     const std::vector<uint8_t> glb = buildSyntheticForeignGlb();
-    check(af_engine_import_glb_from_memory(engine, glb.data(), glb.size()) == AF_OK,
-          "af_engine_import_glb_from_memory imports foreign GLB");
+    checkImportRc(engine, af_engine_import_glb_from_memory(engine, glb.data(), glb.size()),
+                  "af_engine_import_glb_from_memory imports foreign GLB");
 
     // 1. Degenerate normal repaired
     const int32_t vcount = af_engine_vertex_count(engine);
@@ -436,7 +462,8 @@ int main(int argc, char** argv) {
 
     // 7. Optional real-file verification when passed on CLI (e.g. mylove.glb)
     if (argc > 1 && argv[1] && argv[1][0] != '\0') {
-        check(af_engine_import_glb(engine, argv[1]) == AF_OK, "CLI real GLB asset imports cleanly");
+        checkImportRc(engine, af_engine_import_glb(engine, argv[1]),
+                      "CLI real GLB asset imports cleanly");
         af_texture realBc{}, realMr{};
         check(af_engine_texture(engine, AF_TEX_BASE_COLOR, &realBc) == AF_OK && realBc.width > 0,
               "CLI real GLB baseColor decoded");

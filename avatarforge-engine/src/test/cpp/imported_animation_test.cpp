@@ -76,6 +76,40 @@ bool readFile(const std::string& path, std::vector<uint8_t>* out) {
     return got == out->size();
 }
 
+/* Imports a fixture and reports the engine's OWN reason when it refuses.
+
+   WHY THIS EXISTS: af_engine_import_glb_from_memory returns only a code, and a refused import
+   leaves the PREVIOUS file's state in place, so every assertion after it quietly describes a
+   different asset. That is how a 24-vertex probe box bound to a 71-joint skeleton came to be
+   reported as joint_count=17 with 14 clips -- numbers belonging to CliplessRigged.glb, imported
+   moments earlier in the same process. The reason was reachable the whole time through
+   af_engine_last_error, which guard() fills with the reader's specific message and clears on
+   success; not one test in this tree called it. Asking turns a silent refusal into a named one.
+
+   The success side is asserted too, because guard() documents that error text describes the most
+   recent call rather than an older failure a later call recovered from. A success that leaves a
+   stale reason behind would make every later diagnosis point at the wrong file. */
+void checkImport(af_engine* engine, const std::vector<uint8_t>& bytes, const char* label) {
+    const int32_t rc = af_engine_import_glb_from_memory(
+        engine, bytes.data(), static_cast<int32_t>(bytes.size()));
+    const char* why = af_engine_last_error(engine);
+    const bool silent = (why == nullptr) || (*why == '\0');
+    char msg[512];
+    if (rc == AF_OK && silent) {
+        std::snprintf(msg, sizeof(msg),
+                      "%s imports, and af_engine_last_error is empty afterwards as guard() promises",
+                      label);
+    } else if (rc != AF_OK) {
+        std::snprintf(msg, sizeof(msg), "%s imports (REFUSED, rc=%d: %s)", label,
+                      static_cast<int>(rc), silent ? "<the engine gave no reason>" : why);
+    } else {
+        std::snprintf(msg, sizeof(msg),
+                      "%s imports but left a stale reason behind, which would misdirect the next "
+                      "diagnosis (af_engine_last_error=\"%s\")", label, why);
+    }
+    check(rc == AF_OK && silent, msg);
+}
+
 std::vector<float> flatten(const af_vertex* verts, int32_t count, bool positions) {
     std::vector<float> p;
     if (count <= 0 || !verts) return p;
@@ -220,9 +254,7 @@ int main(int argc, char** argv) {
         af_engine_destroy(engine);
         return 1;
     }
-    check(af_engine_import_glb_from_memory(engine, foxBytes.data(),
-                                           static_cast<int32_t>(foxBytes.size())) == AF_OK,
-          "Fox.glb imports");
+    checkImport(engine, foxBytes, "Fox.glb");
 
     /* The skeleton is adopted -- the exact opposite of what this engine used to assert here. Fox's skin
        declares 24 joints; the skeleton carries 25 because the hierarchy needs one closure node above
@@ -475,9 +507,7 @@ int main(int argc, char** argv) {
        be quietly tuned to one file. */
     std::vector<uint8_t> cesiumBytes;
     if (readFile(dir + "/CesiumMan.glb", &cesiumBytes)) {
-        check(af_engine_import_glb_from_memory(engine, cesiumBytes.data(),
-                                               static_cast<int32_t>(cesiumBytes.size())) == AF_OK,
-              "CesiumMan.glb imports");
+        checkImport(engine, cesiumBytes, "CesiumMan.glb");
         checkf(af_engine_imported_clip_count(engine) == 1,
                "CesiumMan exposes its single animation clip (got %.0f, expected %.0f)",
                static_cast<double>(af_engine_imported_clip_count(engine)), 1.0);
@@ -523,9 +553,7 @@ int main(int argc, char** argv) {
        advertise animation the engine cannot play, so the import refuses and says why. */
     std::vector<uint8_t> cubeBytes;
     if (readFile(dir + "/AnimatedMorphCube.glb", &cubeBytes)) {
-        check(af_engine_import_glb_from_memory(engine, cubeBytes.data(),
-                                               static_cast<int32_t>(cubeBytes.size())) == AF_OK,
-              "AnimatedMorphCube.glb imports");
+        checkImport(engine, cubeBytes, "AnimatedMorphCube.glb");
         check(af_engine_joint_count(engine) == 0,
               "a file that cannot be skinned adopts no skeleton rather than inventing one");
         check(af_engine_imported_clip_count(engine) == 0,
@@ -564,9 +592,7 @@ int main(int argc, char** argv) {
         if (!readFile(cliplessPath, &cliplessBytes)) {
             skip("CliplessRigged.glb", cliplessPath);
         } else {
-            check(af_engine_import_glb_from_memory(engine, cliplessBytes.data(),
-                                                   static_cast<int32_t>(cliplessBytes.size())) == AF_OK,
-                  "a rigged file with no animations imports successfully");
+            checkImport(engine, cliplessBytes, "CliplessRigged.glb, a rigged file with no animations,");
             const int32_t joints = af_engine_joint_count(engine);
             checkf(joints >= 17 && joints <= 18,
                    "the authored library was bound to its skeleton: %.0f joints adopted (file declares 17)",
@@ -739,9 +765,7 @@ int main(int argc, char** argv) {
             af_engine_destroy(engine);
             return 1;
         }
-        check(af_engine_import_glb_from_memory(engine, afBytes.data(),
-                                               static_cast<int32_t>(afBytes.size())) == AF_OK,
-              "AvatarForgeSkeleton.glb imports");
+        checkImport(engine, afBytes, "AvatarForgeSkeleton.glb");
 
         /* The donor skin declares 71 joints. Fox taught us the engine may carry one closure node
            above a file's own joints, so this is asserted as a range and the real number printed
@@ -903,9 +927,7 @@ int main(int argc, char** argv) {
         std::vector<uint8_t> femaleBytes;
         const std::string femalePath = dir + "/../female.glb";
         if (readFile(femalePath, &femaleBytes)) {
-            check(af_engine_import_glb_from_memory(engine, femaleBytes.data(),
-                                                   static_cast<int32_t>(femaleBytes.size())) == AF_OK,
-                  "female.glb imports");
+            checkImport(engine, femaleBytes, "female.glb");
             check(af_engine_imported_clip_count(engine) == 0,
                   "a file with no animations advertises no imported clips");
             check(af_engine_imported_seek(engine, 0.5f) == static_cast<int32_t>(AF_ERR_NOT_READY),
