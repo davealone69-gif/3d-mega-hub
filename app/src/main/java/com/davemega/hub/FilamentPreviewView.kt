@@ -569,13 +569,8 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             var bytes: ByteArray? = null
             var failure: Exception? = null
             try {
-                val stream = when {
-                    uri == null -> context.assets.open(BUNDLED_MODEL)
-                    uri.scheme == "file" -> File(uri.path ?: error("Selected file URI has no path")).inputStream()
-                    else -> context.contentResolver.openInputStream(uri)
-                        ?: error("Android could not open the selected GLB URI")
-                }
-                bytes = readBounded(stream)
+                val (stream, declaredLength) = openModel(uri)
+                bytes = readBounded(stream, declaredLength)
                 if (bytes!!.isEmpty()) error("Selected GLB is empty")
                 GlbValidator.validate(bytes!!)
             } catch (error: Exception) {
@@ -600,21 +595,99 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         }
     }
 
-    private fun readBounded(input: InputStream): ByteArray {
+    /**
+     * Opens the model to display and reports its length when Android knows it, as -1 when it does not.
+     *
+     * The length is not an optimisation. Without it the reader has to grow a buffer by doubling, and
+     * that is what produced `OutOfMemoryError: Failed to allocate a 134217744 byte allocation ...
+     * growth limit 201326592` in the generated-avatar diagnostic.
+     */
+    private fun openModel(uri: Uri?): Pair<InputStream, Long> {
+        if (uri == null) {
+            /* openFd throws for a compressed asset, which is a legitimate "length unknown", not a
+               failure to open - the open() below is the one that has to succeed. */
+            val length: Long = runCatching {
+                context.assets.openFd(BUNDLED_MODEL).use { it.length }
+            }.getOrDefault(-1L)
+            return context.assets.open(BUNDLED_MODEL) to length
+        }
+        if (uri.scheme == "file") {
+            val file = File(uri.path ?: error("Selected file URI has no path"))
+            return file.inputStream() to file.length()
+        }
+        val length: Long = runCatching {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: -1L
+        }.getOrDefault(-1L)
+        val stream = context.contentResolver.openInputStream(uri)
+            ?: error("Android could not open the selected GLB URI")
+        return stream to length
+    }
+
+    /**
+     * Reads a GLB into ONE byte array.
+     *
+     * The version this replaced streamed into a ByteArrayOutputStream and failed on the emulator with a
+     * 128 MiB allocation against a 192 MiB heap growth limit. Two separate things were wrong:
+     *
+     *  * A doubling buffer holds the old array and the new one at the same time, so crossing 64 MiB
+     *    needs 64 + 128 MiB live, and toByteArray() then copies the result a third time. Peak usage was
+     *    about three times the file size.
+     *  * MAX_MODEL_BYTES was 128 MiB on a 192 MiB heap, so the "safety limit" described a file this
+     *    viewer could never actually read. A bound that cannot be honoured is not a bound. The check
+     *    now measures the heap that is really available and names it in the failure.
+     *
+     * With a known length this allocates exactly once. Without one it still streams, pre-sized, and
+     * enforces the same bound on every chunk.
+     */
+    private fun readBounded(input: InputStream, declaredLength: Long): ByteArray {
         input.use { source ->
-            val output = ByteArrayOutputStream()
+            val heapLimit = Runtime.getRuntime().maxMemory()
+            if (declaredLength > 0L) {
+                requireModelBytesFit(declaredLength, heapLimit)
+                /* Safe to narrow: requireModelBytesFit has already rejected anything above
+                   MAX_MODEL_BYTES, which is far under Int.MAX_VALUE. */
+                val exact = ByteArray(declaredLength.toInt())
+                var offset = 0
+                while (offset < exact.size) {
+                    val count = source.read(exact, offset, exact.size - offset)
+                    if (count < 0) break
+                    offset += count
+                }
+                /* A stat size that overshoots the real file is a short read, not a corrupt model. */
+                return if (offset == exact.size) exact else exact.copyOf(offset)
+            }
+            val output = ByteArrayOutputStream(64 * 1024)
             val buffer = ByteArray(64 * 1024)
             var total = 0L
             while (true) {
                 val count = source.read(buffer)
                 if (count < 0) break
                 total += count
-                require(total <= MAX_MODEL_BYTES) {
-                    "GLB exceeds the viewer's ${MAX_MODEL_BYTES / (1024L * 1024L)} MiB safety limit"
-                }
+                requireModelBytesFit(total, heapLimit)
                 output.write(buffer, 0, count)
             }
             return output.toByteArray()
+        }
+    }
+
+    /**
+     * Refuses a model that cannot fit, with the numbers in the message.
+     *
+     * The heap is shared with Filament, the decoded textures (the imported avatar's two WebP images
+     * decode to 32 MiB) and the native core's own copy of the file, so the file alone is budgeted half
+     * of it. Failing here reports the size, the budget and the heap; failing inside the allocator
+     * reported only "OutOfMemoryError" with no way to act on it.
+     */
+    private fun requireModelBytesFit(bytes: Long, heapLimit: Long) {
+        val mib = 1024L * 1024L
+        require(bytes <= MAX_MODEL_BYTES) {
+            "GLB is ${bytes / mib} MiB, above the viewer's ${MAX_MODEL_BYTES / mib} MiB limit"
+        }
+        val budget = heapLimit / 2L
+        require(bytes <= budget) {
+            "GLB is ${bytes / mib} MiB but only ${budget / mib} MiB of the ${heapLimit / mib} MiB " +
+                "Dalvik heap is budgeted for it; the rest is needed for Filament, decoded textures " +
+                "and the native core"
         }
     }
 
