@@ -94,3 +94,7 @@ playback depends on the Filament path.
 ## Current branch handover — 2026-11-19
 
 The active PR #14 branch pins Filament 1.79.0. This is an experiment only: the latest PR head has no Actions run or status check, and no new imported-GLB Filament runtime result is available. The prior 1.80.1 native abort remains a valid historical observation, not proof that 1.79.0 fails or passes. Keep the feature labelled **BLOCKED / UNVERIFIED** until an exact-head test exercises the imported GLB through `FilamentPreviewView` and captures process/logcat evidence. The native AvatarForge GLES path is separate and must remain the default production route.
+
+### Capability-level handling added 2026-11-19
+
+The current branch now queries `Engine.getSupportedFeatureLevel()` after creating the selected backend and calls `setActiveFeatureLevel()` with that reported supported level before constructing `UbershaderProvider` / gltfio loaders. Filament's default is feature level 1 even on some GLES 3.1+ contexts; this change avoids silently retaining that default when the backend reports a higher supported level. It does not force unsupported capabilities. **Runtime result: UNVERIFIED.** This is a grounded capability-selection correction, not proof that feature level caused the missing-uniform panic or that the panic is fixed.
