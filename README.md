@@ -695,3 +695,14 @@ The required test exists in source as `GeneratedAvatarRuntimeTest#generatedAvata
 **NOT READY:** the required production test has no exact-head run/pass, and the Android CI renderer smoke job failed. All ordinary build jobs passed and fresh exact-head APK artifacts exist, but neither fact overrides the missing/failed render gate. Do not distribute either artifact as the first READY APK. No APK signing identity or APK digest has been independently inspected for this head.
 
 This monitor update is documentation-only. It does not modify application source, merge PR #9, or modify `main`. The README commit itself will create a new branch head and invalidates all evidence above as proof for that new head; the next check must fetch the new exact PR/branch SHA and inspect only its associated workflow runs and artifacts.
+
+
+## Renderer verification update — 2026-11-19
+
+- **REAL + VERIFIED on CI emulator, exact test commit `392ea220c6b5d8fc25a989be58f78148e514e40a`:** the generated-avatar instrumentation report records 4 tests, 0 failures, 0 errors. This includes `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView`, whose assertions require visible-pixel verification, the minimum pixel threshold, draw calls, at least three presented frames, and a saved screenshot. Its log records GLES 3.1, 3 presented frames, 29 draw calls, and 1,642,936 triangles.
+- **PARTIAL:** the workflow job was marked failed after the tests because its post-test artifact collector ran `run-as` against a package that was no longer installed (`run-as: unknown package`) and then tried to extract the resulting non-tar text. The instrumentation XML itself records all four tests passing; the workflow status is therefore a capture-script failure, not a renderer-test failure.
+- **UNVERIFIED:** physical Samsung SM-S921B runtime. Emulator GLES evidence is not phone evidence.
+- **UNVERIFIED:** Filament preview compatibility. This test exercises the production AvatarForge GLES SurfaceView, not Filament gltfio; the 1.79.0 rollback remains an experiment until the Filament imported-GLB crash is tested directly.
+- CI workflow pull-request filters now include the integration base branch. The runtime collector now treats unavailable app-private data as optional and pulls exported diagnostics from Downloads without allowing a missing archive to overwrite the test result.
+
+Do not mark the app READY or merge on this emulator result alone. The exact new head must pass the re-triggered workflows, and the physical phone check remains outstanding.
