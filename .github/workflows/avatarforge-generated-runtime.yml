@@ -57,6 +57,16 @@ jobs:
         # 13m08s with no annotation at all, which is the exact blind spot the shared script exists to
         # close: without it the only reachable signal is "sh failed with exit code 1".
         uses: reactivecircus/android-emulator-runner@v2
+        # Step-level env, NOT exports inside the script block. Run 44262469686 exported these three
+        # inside `script:` and the child bash never saw them, so the shared script fell back to its
+        # defaults: it ran all seven tests of both classes instead of this job's four, and re-enabled the
+        # AvatarForgeRendererSmokeTest presentation gates that this job cannot satisfy. All seven tests
+        # passed and the step still exited 2. avatarforge-diagnostic-apk.yml uses step-level env for the
+        # same three variables and both of its steps reported exactly the one test each requested.
+        env:
+          AF_TEST_TARGET: com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest
+          AF_EVIDENCE_DIR: avatarforge-generated-runtime-evidence
+          AF_REQUIRE_SMOKE_EVIDENCE: "0"
         with:
           api-level: 30
           target: google_apis
@@ -72,9 +82,6 @@ jobs:
             # instead of only "sh failed with exit code 1". The captures below are kept because they
             # collect things that script does not: the emulator display, and the app's own diagnostics
             # directory via run-as with a SHA-256 manifest.
-            export AF_TEST_TARGET=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest
-            export AF_EVIDENCE_DIR=avatarforge-generated-runtime-evidence
-            export AF_REQUIRE_SMOKE_EVIDENCE=0
             bash .github/scripts/avatarforge-render-smoke.sh
             test_status=$?
             mkdir -p artifacts/avatarforge/runtime-captures

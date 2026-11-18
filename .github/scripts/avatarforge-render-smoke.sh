@@ -144,6 +144,12 @@ touch "$EVIDENCE/.reported" 2>/dev/null || true
 
 COUNTS="$(python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . --counts 2>/dev/null)"
 COUNTS_STATUS=$?
+# The job's own stdout is not readable programmatically - logs are served from a results host and the
+# step summary is not exposed through the check-run API - so the resolved configuration and both exit
+# codes are emitted as an annotation. Run 44262469686 exited 2 with all seven tests passing and nothing
+# reachable said which gate had fired or even which tests had been requested; this line is what makes
+# that question answerable in one read instead of by inference.
+echo "::notice title=instrumented-config::target=${TEST_CLASSES} evidence=${EVIDENCE} smoke_gates=${AF_REQUIRE_SMOKE_EVIDENCE} gradle_exit=${TEST_STATUS} counts_exit=${COUNTS_STATUS} ${COUNTS:-no-junit-xml}"
 echo "instrumented results: ${COUNTS:-<none>}"
 {
   echo "### Instrumented renderer results"
@@ -181,6 +187,7 @@ fi
 # own test passed, which would be this script inventing a failure. The evidence is still COLLECTED and
 # uploaded either way; only the gates are conditional.
 if [[ "$AF_REQUIRE_SMOKE_EVIDENCE" != "1" ]]; then
+  echo "::notice title=instrumented-gates::smoke-suite presentation gates skipped by request; the XML-derived gate above is the only pass condition for this job"
   echo "PASS: instrumented tests passed. Smoke-suite presentation gates skipped (AF_REQUIRE_SMOKE_EVIDENCE=$AF_REQUIRE_SMOKE_EVIDENCE); evidence was still collected in $EVIDENCE/."
   echo "instrumented results: $COUNTS"
   exit 0
