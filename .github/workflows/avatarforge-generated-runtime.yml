@@ -1,6 +1,8 @@
 name: AvatarForge generated-avatar runtime verification
 
 on:
+  push:
+    branches: ["arena/**", "integration/**"]
   pull_request:
     branches:
       - main
