@@ -31,6 +31,10 @@ jobs:
         run: |
           python3 -m py_compile tools/glb_anatomy_probe.py tools/test_glb_anatomy_probe.py
           python3 tools/test_glb_anatomy_probe.py
+      - name: Verify the CI failure reporter
+        run: |
+          python3 -m py_compile tools/ci_report_test_failures.py tools/test_ci_report_test_failures.py
+          python3 tools/test_ci_report_test_failures.py
       - name: Configure native host tests
         run: |
           cmake -S avatarforge-engine/src/main/cpp \
