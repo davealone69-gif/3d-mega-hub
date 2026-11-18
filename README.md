@@ -716,3 +716,5 @@ Do not mark the app READY or merge on this emulator result alone. The exact new 
 - **REAL + VERIFIED on prior exact CI emulator commit only:** the production AvatarForge GLES generated-GLB SurfaceView test passed all four instrumentation tests on commit `392ea220c6b5d8fc25a989be58f78148e514e40a`. That evidence does not transfer to the newer PR head and does not cover Filament.
 - **BLOCKED:** PR #14 is still open and GitHub reports it not mergeable. Production signing remains blocked until the owner supplies a production keystore through protected CI secrets. Physical Samsung SM-S921B runtime remains unverified.
 - Changes are isolated to the PR #14 arena branch. `main` has not been modified or merged.
+
+- **IMPLEMENTED, RUNTIME UNVERIFIED:** Filament session creation now queries the selected backend's supported feature level and activates that reported level before creating gltfio loaders/materials. This avoids silently staying at Filament's default feature level 1 on hardware that reports a higher supported level. It does not force an unsupported level and is not yet proven to resolve the historical `sheenColorIndex` abort.
