@@ -241,8 +241,19 @@ void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
     out->albedo = albedo;
     out->roughness = saturate(0.62f - 0.10f * ctx.spec->body_fat + 0.10f * age - 0.06f * s.curvature);
     out->metallic = 0.0f;
-    out->thickness = s.thickness;
-    out->scatterRadius = saturate(s.thickness * 1.6f);
+    /* Subsurface scattering. The GLES shader reads this as scatterRadius = clamp(baked_g * 0.25)
+       and drives a wrapped-diffuse, red-biased transmission term gated on thinness, so it is what
+       makes ears, the nose rim, fingers and alae glow warmly when back-lit instead of reading as
+       opaque plastic. The old setting (scatterRadius = thickness * 1.6) had it backwards: thin
+       anatomy, where light actually passes through, got the LEAST scatter (ears encoded a scatter
+       byte near 10/255) while thick flesh got more - the inverse of real skin. Give every patch of
+       skin a healthy base scatter and bias it UP where the body is thin, staying inside the encoder's
+       non-saturating band (scatterRadius below ~0.25 so *4 does not clamp to max and wipe out
+       spatial variation). s.thickness is the medial-axis half-thickness proxy, so this is a pure
+       function of the deterministic surface; output stays byte-identical per spec+seed. */
+    const float thinFac = saturate(1.0f - s.thickness * 12.0f);   /* ~1 at ears/nose/fingers, ~0 on the torso */
+    out->thickness     = s.thickness;                              /* geometric thickness kept for the shader's own gating */
+    out->scatterRadius = saturate(0.10f + 0.12f * thinFac + s.thickness * 0.6f);
     out->tint = ctx.spec->skin_melanin;
     /* Occlusion: crevices darken, and the belt/bust/armpit contact regions darken further. */
     out->occlusion = saturate(0.55f + 0.55f * s.curvature);
