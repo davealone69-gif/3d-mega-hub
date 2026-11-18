@@ -422,17 +422,41 @@ def main() -> None:
         assert aborts[0].count("continuation") <= 5, aborts[0]
 
     # ---- 20. instrumentation teardown must not be reported as a kill on a green run ----
+    # Android tears our process down at the end of every instrumentation run and that line names our
+    # package. Two such reasons have now reached this code as FAILURE-level annotations on runs whose
+    # tests had all passed: "due to finished inst" (run 44233306427) and "due to deletePackageX"
+    # (run 44240305554) - the second getting straight through the filter added for the first. So the
+    # level is decided by the totals rather than by recognising the reason, and this pins an
+    # unrecognised reason as well, because the next teardown string Android invents will not be on any
+    # list either.
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         write(root, CONNECTED, PASSING_SUITE)
-        teardown = ("11-18 04:06:10.331   497   524 I ActivityManager: Killing "
-                    "6110:com.davemega.hub/u0a167 (adj 0): stop com.davemega.hub due to finished inst\n")
-        lines = commands_with_logcat(root, "BUILD SUCCESSFUL in 14m 2s\n", teardown)
-        assert not any("process-killed" in ln for ln in lines), lines
+
+        def kill_line(reason: str) -> str:
+            return ("11-18 04:06:10.331   497   524 I ActivityManager: Killing "
+                    "6110:com.davemega.hub/u0a167 (adj 900): stop com.davemega.hub due to "
+                    + reason + "\n")
+
+        # The invariant that holds for every reason, enumerated or not: never failure-level on a run
+        # whose tests all passed. A recognised teardown reason is dropped outright; an unrecognised one
+        # still surfaces, as a notice, because it is true - it is simply not the reason for anything.
+        for reason in ("finished inst", "deletePackageX", "too many empty"):
+            lines = commands_with_logcat(root, "BUILD SUCCESSFUL in 14m 2s\n", kill_line(reason))
+            assert not any(ln.startswith("::error") for ln in lines), (reason, lines)
+            assert not any("title=process-killed" in ln for ln in lines), (reason, lines)
+
+        novel = kill_line("some-reason-nobody-enumerated")
+        lines = commands_with_logcat(root, "BUILD SUCCESSFUL in 14m 2s\n", novel)
         assert not any(ln.startswith("::error") for ln in lines), lines
-        # A real kill of our package is still reported.
+        assert not any("title=process-killed::" in ln for ln in lines), lines
+        assert any("title=process-killed-after-success::" in ln for ln in lines), lines
+
+        # A kill of our package on a run that actually failed is still a cause, at failure level.
+        write(root, CONNECTED, FAILING_SUITE)
         lines = commands_with_logcat(root, "BUILD FAILED in 14m 2s\n", KILLED_LOGCAT)
-        assert any("process-killed" in ln for ln in lines), lines
+        assert any(ln.startswith("::error") and "title=process-killed::" in ln for ln in lines), lines
+        assert not any("title=process-killed-after-success::" in ln for ln in lines), lines
 
     # ---- 21. one suite element covering two classes must still name both ----
     # A connected run reported "tests=7 classes=...SmokeTest" for seven tests spread over two classes,
@@ -462,8 +486,9 @@ def main() -> None:
           "always-annotated totals, crash detection, Gradle-frame deprioritisation, logcat crash "
           "blocks, block integrity, cause-over-context ranking, per-level budgets, boot-noise "
           "rejection, package-aware kill detection, mismatch survival under a full budget, "
-          "wrapped abort-message merging, benign teardown not reported as a kill, and class names "
-          "taken from testcases when one suite element covers several")
+          "wrapped abort-message merging, kill level decided by totals rather than by enumerating "
+          "teardown reasons, and class names taken from testcases when one suite element covers "
+          "several")
 
 
 if __name__ == "__main__":

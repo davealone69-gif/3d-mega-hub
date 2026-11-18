@@ -97,7 +97,10 @@ KILL_LINE = re.compile(
 #   ActivityManager: Killing 6110:com.davemega.hub/u0a167 (adj 0): stop com.davemega.hub due to
 #   finished inst
 # Reporting it put a failure-level annotation on a run whose three tests had all passed.
-BENIGN_KILL = re.compile(r"due to finished inst|finished inst|due to stop|due to empty")
+BENIGN_KILL = re.compile(
+    r"due to finished inst|finished inst|due to stop|due to empty"
+    r"|due to deletePackageX|deletePackageX|due to remove task|too many empty"
+)
 
 
 def collect_kill_lines(paths: list[str]) -> list[str]:
@@ -401,10 +404,21 @@ def main() -> int:
             level = "notice" if GRADLE_INTERNAL_FRAME.match(line) else "error"
             candidates.append((4, level, "gradle", line))
 
-        # 2: our own process being killed. This outranks generic crash context because it is the
-        #    only line in a device logcat that is definitely about us.
+        # 2: our own process being killed. This outranks generic crash context because it is the only
+        #    line in a device logcat that is definitely about us - but it is a CAUSE only if the run
+        #    actually failed. Android tears our process down at the end of every instrumentation run and
+        #    that teardown names our package too, so the level is decided by the totals rather than by
+        #    recognising the reason. Enumerating benign reasons is a losing game: "due to finished inst"
+        #    (run 44233306427) and then "due to deletePackageX" (run 44240305554) each reached here as a
+        #    failure-level annotation on a run whose tests had all passed, and the second got through the
+        #    filter added for the first. On a green run the line is still reported, as a notice: it is
+        #    true and it is simply not the reason for anything.
+        green_run = bool(ran) and (failed_total + errored) == 0
         for line in collect_kill_lines(args.crash_log):
-            candidates.append((2, "error", "process-killed", line))
+            if green_run:
+                candidates.append((2, "notice", "process-killed-after-success", line))
+            else:
+                candidates.append((2, "error", "process-killed", line))
 
         # 1: a suite that counts failures but recorded no message for some of them. Raised from last
         #    to first among the details: it is the strongest available signal that a test died mid-run
