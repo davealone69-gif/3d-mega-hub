@@ -72,11 +72,11 @@ fun AvatarStudioScreen(
     }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
     var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
-    // Imported GLBs open in the animation-capable gltfio preview by default.
-    // The native AvatarForge GLES renderer currently does not skin imported GLBs.
-    var useFilamentAnimationPreview by remember(avatarUri) {
-        mutableStateOf(avatarUri != null && avatarUri.scheme == "file")
-    }
+    // The gltfio preview is NOT the default: it aborts the process on load in every Filament
+    // version this project has tested (1.71.6, 1.79.0, 1.80.1), see
+    // docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md. Opening a screen must never kill the app, so
+    // the GLES renderer stays the default until that is resolved.
+    var useFilamentAnimationPreview by remember(avatarUri) { mutableStateOf(false) }
     var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
     var animationCount by remember { mutableStateOf(0) }
     var selectedAnimation by remember { mutableStateOf(0) }
@@ -172,7 +172,7 @@ fun AvatarStudioScreen(
                 Text("3D viewport", style = MaterialTheme.typography.titleMedium)
                 key(avatarUri, useFilamentAnimationPreview) {
                     val importedGlb = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)
-                    if (importedGlb != null && importedGlb.isFile && !useFilamentAnimationPreview) {
+                    if (importedGlb != null && importedGlb.isFile) {
                         AndroidView(
                             factory = { viewContext ->
                                 AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = isDebuggable) { status ->
@@ -187,28 +187,13 @@ fun AvatarStudioScreen(
                             modifier = Modifier.fillMaxWidth().height(420.dp)
                         )
                     } else {
-                        AndroidView(
-                            factory = { viewContext ->
-                                FilamentPreviewView(viewContext).apply {
-                                    setStatusListener { rendererStatus = it }
-                                    setAnimationInfoListener { count, index, playing, loop, speed, duration, position ->
-                                        animationCount = count
-                                        selectedAnimation = index
-                                        animationPlaying = playing
-                                        animationLoop = loop
-                                        animationSpeed = speed
-                                        animationDuration = duration
-                                        animationPosition = position
-                                    }
-                                    setModel(avatarUri)
-                                    filamentPreviewView = this
-                                }
-                            },
-                            update = { view ->
-                                filamentPreviewView = view
-                                view.setModel(avatarUri)
-                            },
-                            modifier = Modifier.fillMaxWidth().height(420.dp)
+                        Text(
+                            "No model is loaded. Import a GLB to preview it through the AvatarForge " +
+                                "GLES renderer. The animation-capable Filament preview is disabled in " +
+                                "this build because gltfio aborts on load; see " +
+                                "docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -228,18 +213,15 @@ fun AvatarStudioScreen(
                     )
                 }
                 if (hasImportedFile) {
+                    // Disabled rather than removed: the control is real work that becomes usable the
+                    // moment the loader is fixed, but offering a button that aborts the process would
+                    // be worse than offering none.
                     OutlinedButton(
-                        onClick = {
-                            useFilamentAnimationPreview = !useFilamentAnimationPreview
-                            if (!useFilamentAnimationPreview) {
-                                filamentPreviewView = null
-                                animationCount = 0
-                                animationPosition = 0f
-                            }
-                        },
+                        onClick = { },
+                        enabled = false,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open animation-capable Filament preview")
+                        Text("Animation preview (Filament) unavailable: gltfio aborts on load")
                     }
                 }
                 if (useFilamentAnimationPreview) {
