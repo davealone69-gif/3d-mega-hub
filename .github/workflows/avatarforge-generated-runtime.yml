@@ -60,8 +60,8 @@ jobs:
           disable-animations: true
           script: |
             set +e
-            ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace
-            test_status=$?
+            ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace 2>&1 | tee instrumentation.log
+            test_status=${PIPESTATUS[0]}
             mkdir -p artifacts/avatarforge/runtime-captures
             # Capture the emulator display independently of app storage as a fallback.
             # The instrumentation test's actual avatar PNGs/JSON live in internal app files;
@@ -72,11 +72,54 @@ jobs:
             adb exec-out sh -c 'run-as com.davemega.hub sh -c "cd files/avatarforge-diagnostics && tar -cf - ."' > artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar 2> artifacts/avatarforge/runtime-captures/run-as-error.txt || true
             test ! -s artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar || tar -xf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar -C artifacts/avatarforge/runtime-captures/
             find artifacts/avatarforge/runtime-captures -type f -printf '%p %s bytes\\n'
+            # Native aborts carry their reason on the following lines, so context matters: a
+            # single-line grep is what hid the "sheenColorIndex" panic the first time.
+            adb logcat -d -v brief > artifacts/avatarforge/runtime-captures/logcat.txt || true
+            grep -A6 -E "uncaught exception|Abort message|FATAL EXCEPTION" artifacts/avatarforge/runtime-captures/logcat.txt \
+              > artifacts/avatarforge/runtime-captures/crash-excerpt.txt || true
+            adb shell ls /data/tombstones 2>/dev/null | tail -3 > artifacts/avatarforge/runtime-captures/tombstone-list.txt || true
             echo "build_commit=${GITHUB_SHA}" > artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             echo "capture_time_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             find artifacts/avatarforge/runtime-captures -type f ! -name evidence-manifest.txt -print0 | sort -z | xargs -0 -r sha256sum >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             cat artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             exit $test_status
+
+      - name: Publish the outcome where it can be read
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          {
+            echo "### Generated-avatar runtime verification"
+            echo
+            echo "commit: \`${GITHUB_SHA}\` · run: ${GITHUB_RUN_ID}"
+            echo
+            if grep -qE "FAILURES|Process crashed" instrumentation.log 2>/dev/null; then
+              echo "**Instrumentation failed.** Tail of the run:"
+              echo '```text'
+              grep -E "FAILURES|Process crashed|Tests on|INSTRUMENTATION" instrumentation.log | tail -6
+              echo '```'
+            else
+              echo "Instrumentation output tail:"
+              echo '```text'
+              tail -5 instrumentation.log 2>/dev/null || echo "no instrumentation log"
+              echo '```'
+            fi
+            EXC=artifacts/avatarforge/runtime-captures/crash-excerpt.txt
+            if [ -s "$EXC" ]; then
+              echo
+              echo "**Native/Java crash excerpt:**"
+              echo '```text'
+              head -30 "$EXC"
+              echo '```'
+            fi
+          } > runtime-comment.md
+          cat runtime-comment.md
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file runtime-comment.md
+          fi
 
       - name: Upload instrumentation reports and screenshots
         if: always()
