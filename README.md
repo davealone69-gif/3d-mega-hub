@@ -1,5 +1,60 @@
 # 3D Mega Hub
 
+**Current handover: 2026-11-18.** Integration is active on review branches; `main` is intentionally still the stable baseline. This is not a release-ready or Samsung-verified build.
+
+## Current handover — 2026-11-18
+
+### Git state and active work
+
+- Default branch: `main`. The current integration PR records its base at `aaee4443dbf53ef4707cce01d99f71a59e903ec7`; no evidence in this check shows the integration has been merged to `main`.
+- **PR #9** — [Wire AvatarForge GLB engine to native GLES viewport](https://github.com/davealone69-gif/3d-mega-hub/pull/9). Canonical renderer integration branch: `integration/avatarforge-renderer-port`, head `fa3f6f810f1ad586f8e51567a97f5c3fd423ef58`. Open, 383 commits / 125 files, currently reported not mergeable. It contains the AvatarForge native GLES route for imported/generated self-contained GLBs, a separate Filament bundled-sample preview, WebP decoding/fallback, post-skin deformation checks, refreshed submesh bounds, EGL/PixelCopy diagnostics, scoped FileProvider sharing and launcher icon.
+- **PR #14** — [Upgrade pass 2026-11-16: toolchain, CI blockers, and app feature work](https://github.com/davealone69-gif/3d-mega-hub/pull/14). Branch: `arena/25bd4008-3d-mega-hub`, head `c4a04108c3505138add43057a3ee85dbe61fe9b2`, based on the integration branch. Open, 37 commits / 34 files, reported mergeable. It adds the toolchain migration, renderer/CI fixes, animation diagnostics, appearance controls, bounded chat history and speech settings. It is a review/compile-gate branch, not a second product.
+- GitHub currently lists **20 branches**. Treat `integration/avatarforge-renderer-port` as the canonical renderer line and PR #14 as a dependent upgrade/feature change set. Do not resume stale experimental branches or create another competing implementation branch. Consolidate PR #14 into the canonical line only after exact-head validation and conflict review. Keep `main` unchanged until the merge gates pass.
+- The repository's latest commit search on `main` returned 15 November documentation commits. The README on `main` had not captured the later PR #9 / PR #14 work; this section corrects that handover gap.
+
+### Evidence and honest capability status
+
+| Area | Current status | Evidence boundary |
+|---|---|---|
+| Android Kotlin compile + JVM tests | **REAL + VERIFIED on intermediate PR #14 commit(s)** | Compile gate passed Kotlin main/test compilation and 46 JVM tests on the recorded gate commit(s). This is not proof for current PR #14 head `c4a0410`. |
+| Native host regression | **REAL + VERIFIED on recorded upgrade workspace** | Six host CTest suites passed; 22/25 native translation units compiled there. Three required Android/system headers were unavailable in that host environment. |
+| Emulator install / launch / interaction | **REAL + VERIFIED on recorded PR #14 evidence head** | 17 Nov evidence: API 30 x86_64 emulator installed and cold-launched the app (1353 ms), resumed MainActivity, captured a 1080×1920 non-black frame, survived 150 fixed-seed monkey events without crash/ANR; PSS 133,929 KB. This evidence is tied to the recorded earlier evidence run/head, not automatically to current PR #14 head. |
+| AvatarForge generation → GLB → production native GLES SurfaceView → visible pixels | **REAL + VERIFIED on emulator, recorded evidence head only** | 17 Nov `GeneratedAvatarRuntimeTest`: 4/4 instrumentation tests passed in 473.665 s, including generated GLB visible-pixel capture through production `AvatarForgeSurfaceView`. Not a Samsung-phone result and not proof for a later branch head. |
+| Imported GLB on physical Samsung | **PARTIAL / DEVICE-REPORTED** | Owner-supplied app diagnostics on 16 Nov recorded one 12.6 MiB imported GLB reaching `PIXELS_VERIFIED` in 3/3 runs on GLES 3.2, 144,073 triangles, 11 draw calls, ~401k visible pixels, zero GL/EGL errors. The reports contain no APK hash or source SHA, so this is not exact-head verification. |
+| Large remote GLB | **PARTIAL** | A 98.8 MiB remote GLB reached `FRAME_PRESENTED`, but no terminal `PIXELS_VERIFIED` state or matching screenshot was recorded. Its load phase took about 13.9 s and needs bounded progress/diagnostics. |
+| Filament gltfio preview / imported animation | **BLOCKED on recorded emulator path** | Filament 1.80.1 emulator preview aborts in `AssetLoader.createAsset` with `PreconditionPanic`: uniform `sheenColorIndex` not found (feature level 1). This blocks the Filament preview and imported skeletal animation controls on that path. Hardware behaviour is not established by the emulator failure. |
+| Procedural hair quality work | **PARTIAL / SOURCE IMPLEMENTED** | Braid geometry, curved hairline, Afro coil variation, long-hair clump channels, root-to-tip pigment gradient and region-aware hair LOD are in source. Native logic/regression coverage exists in the work record; final-head CI and visual quality/performance validation remain separate gates. |
+| Appearance controls | **PARTIAL** | Sex/build, ten hair styles, seven hair colours, nine clothed outfits, six cloth colours, melanin and height are implemented in PR #14 source with JVM tests. Do not claim device-tested controls on the current head. |
+| Chat context | **PARTIAL** | Bounded local-Ollama transcript (12 turns / 24k characters / 8k per message), pending state and reset are implemented with JVM tests. This does not establish a unified chat/voice character controller or verified provider connectivity on the target phone. |
+| Speech | **PARTIAL** | Android TTS rate/pitch and engine-reported voice selection are implemented with JVM tests. Microphone capture, speech recognition, viseme extraction and lip-sync are missing/unconnected. |
+| Unified character experience | **MISSING / PARTIAL** | Chat and TTS remain separate; no shared conversation state machine, listening/input pipeline, blinking/gaze behaviours or conversation-driven facial expression/lip-sync. |
+| Physical Samsung SM-S921B runtime | **UNVERIFIED for current PR heads** | Historical owner-supplied device diagnostics are useful but lack exact APK/source identity. No claim that current PR #9 or #14 head has passed phone installation, lifecycle, animation or thermal testing. |
+| Production APK/AAB signing | **BLOCKED** | Requires the owner's release keystore and protected CI secrets. Ephemeral CI/debug signing is not production signing. |
+
+### Exact-head and merge rules
+
+1. The PR #14 compile gate passed on an earlier commit (the branch README records 46 JVM tests; the detailed upgrade record names gate commits `26911d8` / `2e53765`). The PR #14 README records the latest verified emulator artifact at `d3a1a25`; current PR #14 head is `c4a04108c3505138add43057a3ee85dbe61fe9b2`. **Do not transfer earlier green results to the current head.** Re-run compile, JVM tests, native tests, lint, R8, APK assembly and emulator runtime on the exact proposed merge SHA.
+2. PR #9 head `fa3f6f810f1ad586f8e51567a97f5c3fd423ef58` has no successful combined status returned in this check; its PR description says fresh exact-head CI is running and makes no new pass claim. Treat its current head as **UNVERIFIED** until checks are read for that exact SHA.
+3. Resolve the Filament loader abort without hiding it or claiming the GLES route fixes it. Keep the native AvatarForge GLES route and Filament preview distinct; they have different capabilities and evidence.
+4. A successful emulator build/runtime is not Samsung verification. The phone gate must install the exact APK and verify the actual model pixels, import, animation where supported, repeated open/close, background/resume, memory and thermal behaviour.
+5. Do not merge either PR to `main` until exact-head checks pass, branch overlap is reconciled, and the owner-facing phone gate is clearly reported. No force-push.
+6. Do not label an APK/AAB production-signed until the user-owned keystore is configured and the resulting artifact's signature is inspected.
+
+### Current next engineering objective
+
+**Close the character-rendering path before expanding feature breadth.** First reconcile PR #14 into the canonical renderer line, establish a single exact candidate SHA, rerun the full build/test/emulator matrix, then address the Filament preview blocker and the imported-animation path. Preserve the native GLES path that has actual pixel evidence. Keep the Samsung install/runtime test as a separate owner-side gate. After renderer stability, unify chat and TTS behind one conversation/session controller, then implement speech input, viseme timing, facial expression, blinking and gaze with real runtime tests.
+
+### Evidence documents on the current PR #14 work branch
+
+- [PR #14](https://github.com/davealone69-gif/3d-mega-hub/pull/14)
+- [Runtime evidence — 2026-11-17](https://github.com/davealone69-gif/3d-mega-hub/blob/arena/25bd4008-3d-mega-hub/docs/RUNTIME_EVIDENCE_2026-11-17.md)
+- [Physical-device renderer diagnostics — 2026-11-16](https://github.com/davealone69-gif/3d-mega-hub/blob/arena/25bd4008-3d-mega-hub/docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md)
+- [Filament gltfio blocker](https://github.com/davealone69-gif/3d-mega-hub/blob/arena/25bd4008-3d-mega-hub/docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md)
+- [Toolchain upgrade record](https://github.com/davealone69-gif/3d-mega-hub/blob/arena/25bd4008-3d-mega-hub/docs/UPGRADE_2026-11-16.md)
+- [Android renderer build and verification procedure](https://github.com/davealone69-gif/3d-mega-hub/blob/arena/25bd4008-3d-mega-hub/BUILD_AND_VERIFY.md)
+
+---
+
 **Android-first avatar studio with an integrated AI assistant and a real 3D runtime.**
 
 This repository is the new product host. Existing repositories remain independent donor/source projects until their code, dependencies, licences, tests, and build status have been checked. No donor is considered integrated merely because its files or documentation were copied.
@@ -50,7 +105,11 @@ This is a starting map from prior audits, not a claim that every repository or b
 - **MISSING**: not implemented.
 - **BLOCKED**: a concrete dependency or access limitation prevents the next check.
 
-## Current baseline
+## Initial repository baseline (2026-10-29; superseded)
+
+The bullets below describe the repository at creation, not the current project state. Use the **Current handover — 2026-11-18** section above as the current source of truth.
+
+### Historical baseline
 
 - Repository created and writable: **verified**.
 - Product scope and donor shortlist: **documented; source integration not yet verified**.
