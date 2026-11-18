@@ -131,8 +131,9 @@ Convert "owner-recorded" to "measured" by running the repository probes on the a
 lives and recording their output here:
 
 ```
-python3 tools/glb_anatomy_probe.py   <path-to>/ink.glb
-python3 tools/glb_animation_probe.py <path-to>/ink.glb
+python3 tools/glb_quality_targets_probe.py <path-to>/ink.glb   # verts/tris, UV sets, materials+per-material extensions, IMAGE DIMENSIONS, skin joint NAMES, morph NAMES (--json for a comparable record)
+python3 tools/glb_anatomy_probe.py         <path-to>/ink.glb   # bounds, slice widths, named landmarks
+python3 tools/glb_animation_probe.py       <path-to>/ink.glb   # clips, durations, driven joints, animated morph channels
 ```
 
 Must capture: generator string; exact vertex/index/triangle counts and primitive layout; UV set count
