@@ -418,6 +418,7 @@ Do not merge PR #9 to `main`. Do not send a readiness notification until all fiv
 - Voice lip-sync/visemes are missing.
 - The bundled fixture is not a rigged/animated model.
 - Samsung SM-S921B visible rendering, real-device generation, import lifecycle, memory and thermal behaviour remain **UNVERIFIED** until the phone test is completed.
+- **Avatar-quality reference target (`ink.glb`).** A private DAZ Studio Genesis-8-Female export (~103.6 MB; SHA-256 `081e2ddd…`, owner-held, **not committed**) is the formal photorealistic benchmark for generated-avatar quality. Owner-recorded structure (*pending fresh inspection*): 199 joints, ~27,292 triangles, four 4096² skin maps, no morphs or animation clips, A-pose, 45 renderer parts. The gap to close is texture/material fidelity, skin subsurface scattering, eyes and hair-card realism, plus anatomy targeting — **not polygon count**, which the generator already exceeds ~40× — and it is bounded by the mobile texture-memory ceiling (recorded ~1,152 MB decoded vs a ~128–200 MB crash ceiling). See [docs/QUALITY_REFERENCE_ink_glb.md](docs/QUALITY_REFERENCE_ink_glb.md).
 
 ## Older debug build
 
