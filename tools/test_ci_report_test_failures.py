@@ -434,11 +434,36 @@ def main() -> None:
         lines = commands_with_logcat(root, "BUILD FAILED in 14m 2s\n", KILLED_LOGCAT)
         assert any("process-killed" in ln for ln in lines), lines
 
+    # ---- 21. one suite element covering two classes must still name both ----
+    # A connected run reported "tests=7 classes=...SmokeTest" for seven tests spread over two classes,
+    # because the runner put them all under one suite name. Under-reporting which classes ran is the
+    # exact failure this tool exists to prevent.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        combined = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<testsuite name="com.davemega.hub.AvatarForgeRendererSmokeTest" tests="7" failures="0"'
+            ' errors="0" skipped="0">\n'
+            + "".join(
+                '  <testcase name="smoke%d" classname="com.davemega.hub.AvatarForgeRendererSmokeTest"'
+                ' time="1.0"/>\n' % i for i in range(3))
+            + "".join(
+                '  <testcase name="runtime%d"'
+                ' classname="com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest" time="1.0"/>\n'
+                % i for i in range(4))
+            + "</testsuite>\n")
+        write(root, CONNECTED, combined)
+        tests, failed, errors, skipped, classes = reporter.collect_test_totals(str(root))
+        assert (tests, failed, errors, skipped) == (7, 0, 0, 0), (tests, failed, errors, skipped)
+        assert classes == ["com.davemega.hub.AvatarForgeRendererSmokeTest",
+                           "com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest"], classes
+
     print("PASS: connected + JVM discovery, failure detail, totals, the 0/1/2 gate statuses, "
           "always-annotated totals, crash detection, Gradle-frame deprioritisation, logcat crash "
           "blocks, block integrity, cause-over-context ranking, per-level budgets, boot-noise "
-          "rejection, package-aware kill detection, mismatch survival under a full budget, and "
-          "wrapped abort-message merging, and benign teardown not reported as a kill")
+          "rejection, package-aware kill detection, mismatch survival under a full budget, "
+          "wrapped abort-message merging, benign teardown not reported as a kill, and class names "
+          "taken from testcases when one suite element covers several")
 
 
 if __name__ == "__main__":

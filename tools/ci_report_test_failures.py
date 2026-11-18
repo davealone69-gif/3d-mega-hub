@@ -291,6 +291,14 @@ def collect_test_totals(root: str) -> tuple[int, int, int, int, list[str]]:
             name = suite.get("name")
             if name:
                 classes.append(name)
+            # A connected run can put every test under one <testsuite> named after whichever class the
+            # runner started with, so suite names alone reported "classes=...SmokeTest" for a run that
+            # had executed seven tests across two classes. Which classes actually ran is the single
+            # thing this report exists to prove, so it is taken from the testcases as well.
+            for case in suite.iter("testcase"):
+                case_class = case.get("classname")
+                if case_class:
+                    classes.append(case_class)
     return (tests, failures, errors, skipped, sorted(set(classes)))
 
 
