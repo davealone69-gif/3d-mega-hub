@@ -34,8 +34,31 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-37 build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
       - name: Create one-run preview signing identity
         shell: bash
         run: |
@@ -104,8 +127,31 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "emulator platform-tools platforms;android-30 platforms;android-34 platforms;android-37 build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
       - name: Build debug APK
         run: |
           chmod +x ./gradlew
