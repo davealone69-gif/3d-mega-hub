@@ -501,3 +501,51 @@ The required test exists in source as `GeneratedAvatarRuntimeTest#generatedAvata
 **NOT READY:** the required production test has no exact-head run/pass, and the Android CI renderer smoke job failed. All ordinary build jobs passed and fresh exact-head APK artifacts exist, but neither fact overrides the missing/failed render gate. Do not distribute either artifact as the first READY APK. No APK signing identity or APK digest has been independently inspected for this head.
 
 This monitor update is documentation-only. It does not modify application source, merge PR #9, or modify `main`. The README commit itself will create a new branch head and invalidates all evidence above as proof for that new head; the next check must fetch the new exact PR/branch SHA and inspect only its associated workflow runs and artifacts.
+
+
+## Exact-head Android test APK readiness monitor (2026-11-18)
+
+**Decision: NOT READY.** PR #9 remains open and unmerged. At inspection, both PR #9 and `integration/avatarforge-renderer-port` pointed to `4ce9e803f839f36e69fa4bfdd927caf5cb44e1a3`.
+
+### Exact-head Actions
+
+- [Android CI run 44029670654 (run 662)](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44029670654): **FAILURE**.
+  - Unit tests, job `133858290397`: PASS.
+  - Debug APK build, job `133858290360`: PASS.
+  - Native C++ sampling regression, job `133858290350`: PASS.
+  - Android lint, job `133858290619`: PASS.
+  - R8/minification, job `133858290505`: PASS.
+  - AvatarForge GLES GLB render smoke, job `133858289938`: **FAIL**.
+- [Release preview and Android emulator smoke run 44029670636 (run 460)](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44029670636): SUCCESS. Emulator install/launch and ephemeral-key preview are not the production render gate.
+
+### Production render test is not being invoked
+
+The required test exists at `app/src/androidTest/java/com/davemega/hub/avatarforge/GeneratedAvatarRuntimeTest.kt` as `GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView`. It generates a GLB and requires the production `AvatarForgeSurfaceView` to show visible pixels, submit draw calls, present multiple frames and save a screenshot.
+
+However, `.github/scripts/avatarforge-render-smoke.sh` currently invokes only `com.davemega.hub.AvatarForgeRendererSmokeTest`. The exact-head instrumentation log confirms the executed test was `AvatarForgeRendererSmokeTest#generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels`; it does not show the required `GeneratedAvatarRuntimeTest` method running. Therefore the mandatory production generated-GLB-to-GLES SurfaceView test has **NO PASSING RESULT on this SHA**.
+
+The executed imported-GLB test failed. Its uploaded [renderer evidence artifact 14305007547](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44029670654/artifacts/14305007547) contains logcat showing Filament aborting while reading the selected GLB:
+
+```text
+utils::PreconditionPanic
+reason: uniform named "sheenColorIndex" not found
+Fatal signal 6 (SIGABRT)
+```
+
+This is the observed failure in the imported-GLB preview path. It does not prove the production generated-avatar path has been exercised.
+
+### Exact-head APK artifact
+
+A fresh debug APK artifact exists for this exact source SHA:
+
+- [Debug APK artifact 14304801634](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44029670654/artifacts/14304801634), from the Debug APK build job on this SHA.
+- Renderer evidence artifact: [14305007547](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44029670654/artifacts/14305007547).
+- Signed preview artifact: [14305430345](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/44029670636/artifacts/14305430345), signed with an ephemeral CI key.
+
+The debug APK binary has **not** been downloaded and inspected in this check for package ID, signing certificate/signature and APK SHA-256. Those fields remain **UNVERIFIED**. Artifact existence and a successful emulator install/launch do not override the failed renderer job or missing production test execution.
+
+### Decision and next check
+
+**NOT READY.** Required next work is to wire the exact `GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView` into the CI instrumentation command, fix the observed Filament `sheenColorIndex` abort in the separate imported-GLB preview path, then rerun on one exact current head. Only after the production test passes and all required Android build jobs pass should the fresh same-SHA APK be downloaded and its package, signature and SHA-256 verified.
+
+This entry is documentation-only. It does not change application source, modify `main`, or merge PR #9. Its README commit creates a new branch head, so the run and artifact evidence above applies only to `4ce9e803f839f36e69fa4bfdd927caf5cb44e1a3`; fresh exact-head Actions evidence is required for the new head.
