@@ -94,8 +94,39 @@ GitHub caps annotations at **10 per level per run**. That cap is a real constrai
 listed every testcase element and spent the whole error budget on tests that had passed before
 reporting a single failure. Spend it on failures first, log context second.
 
-**`AvatarForge GLES GLB render smoke (instrumented)` is red on the base branch too.** It is
-pre-existing and unrelated to animation work; do not chase it, and do not claim it as a new failure.
+**`AvatarForge GLES GLB render smoke (instrumented)` was red for weeks and is now green.** It used to
+carry a note here saying it was pre-existing, unrelated to animation work, and not to be chased. That
+note is the reason it stayed broken: "pre-existing, ignore it" turned a real defect into background
+noise. Do not write that kind of note about a failing job. Make the job explain itself instead.
+
+What it actually was, in the order the evidence arrived:
+
+1. The job collected real evidence — logcat, `renderer_diagnostics.json`, PixelCopy PNGs — but only as
+   an artifact, and artifacts and raw logs are served from blob hosts a sandbox cannot reach. Check-run
+   annotations and `$GITHUB_STEP_SUMMARY` are the only readable output, so `tools/ci_report_test_failures.py`
+   is wired into the job and an `if: always()` step covers the case where the script itself dies.
+2. Its gate grepped logcat for a literal `run finished: 3 tests`, which cannot tell "all three passed"
+   from "one silently stopped running". Gates come from JUnit XML totals now.
+3. It selected only `AvatarForgeRendererSmokeTest`, so a green job never proved anything about
+   `GeneratedAvatarRuntimeTest` — the production generated-GLB-to-SurfaceView route. Both are selected.
+4. The first readable failure was `OutOfMemoryError: Failed to allocate a 134217744 byte allocation`
+   in `FilamentPreviewView.readBounded`: a `ByteArrayOutputStream` doubling past 64 MiB while reading a
+   **79.77 MiB** generated avatar into a **192 MiB** heap, under a `MAX_MODEL_BYTES` of 128 MiB that the
+   heap could never have satisfied. A bound the consumer cannot honour is not a bound.
+5. The next failure was a process crash with no message, because the reason is in the dedicated logcat
+   **crash buffer** and the tombstone's abort message wraps across lines. Merging the wrap gave:
+   `utils::PreconditionPanic ... uniform named "sheenColorIndex" not found`. Our writer emits
+   `KHR_materials_sheen` on 10 of 13 materials and pinned Filament 1.71.6 has no such uniform, so gltfio
+   aborts the process — an uncaught C++ exception, which `runCatching` cannot catch.
+6. gltfio only saw the file because a **stale comment had become the architecture**:
+   `useFilamentAnimationPreview` defaulted to true for any file URI, justified by "the native AvatarForge
+   GLES renderer currently does not skin imported GLBs" — untrue since the import path began adopting a
+   file's own skeleton. Files now default to the native GLES route, which implements that sheen lobe.
+
+Two habits this cost me and that are worth keeping: a comment stating why code is the way it is must be
+re-checked when the reason stops holding, and **never guess at a truncated error message**. Step 5's
+crash looked like a heap-`ByteBuffer` problem and I fixed that first; it was correct practice and fixed
+nothing. Get the full message before choosing the fix.
 
 ## Tools
 
