@@ -19,7 +19,20 @@
 # a gate that hard-codes a count cannot tell "all three passed" from "one never ran".
 set -uo pipefail
 
-EVIDENCE="avatarforge-render-smoke-evidence"
+# Reused by three workflows, so what it runs and where it writes are configurable:
+#   AF_TEST_TARGET            class list or Class#method for -Pandroid.testInstrumentationRunnerArguments.class
+#   AF_EVIDENCE_DIR           where the logcat/JUnit/diagnostic evidence is collected
+#   AF_REQUIRE_SMOKE_EVIDENCE 1 gates on AvatarForgeRendererSmokeTest's own exports; 0 skips those gates
+# The reporting and the XML-derived gate are identical everywhere, because the whole reason this script
+# exists is that three separate jobs all failed for weeks with the only reachable signal being
+# "The process '/usr/bin/sh' failed with exit code 1". avatarforge-diagnostic-apk.yml and
+# avatarforge-generated-runtime.yml were still in that state: both ran the production SurfaceView test,
+# both failed on head 6a32184 (steps of 8m43s and 13m08s, so neither was a job timeout), and neither
+# emitted a single test annotation. Reusing this script rather than copying it means a fix to the
+# reporter reaches all three jobs at once.
+AF_TEST_TARGET="${AF_TEST_TARGET:-com.davemega.hub.AvatarForgeRendererSmokeTest,com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest}"
+AF_REQUIRE_SMOKE_EVIDENCE="${AF_REQUIRE_SMOKE_EVIDENCE:-1}"
+EVIDENCE="${AF_EVIDENCE_DIR:-avatarforge-render-smoke-evidence}"
 GRADLE_LOG="$EVIDENCE/gradle-connected.log"
 mkdir -p "$EVIDENCE"
 chmod +x ./gradlew
@@ -39,7 +52,7 @@ chmod +x ./gradlew
 # job stand for less than it appeared to. The worst case is now 15 min + 45 min of timeouts, so the
 # job's timeout-minutes is raised to 75 to match; a job that times out reports nothing at all, which is
 # the one outcome worse than a slow one.
-TEST_CLASSES="com.davemega.hub.AvatarForgeRendererSmokeTest,com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest"
+TEST_CLASSES="$AF_TEST_TARGET"
 
 TEST_STATUS=0
 ./gradlew --no-daemon :app:connectedDebugAndroidTest \
@@ -130,6 +143,17 @@ fi
 
 # Presentation evidence. These are the claims the tests themselves cannot make after teardown, so they
 # are checked from what the app exported while it was still installed.
+#
+# Gated on AF_REQUIRE_SMOKE_EVIDENCE because they are specific to AvatarForgeRendererSmokeTest: it is
+# what exports imported_glb_diagnostic.png, what reaches PIXELS_VERIFIED, and what emits those logcat
+# markers. A job running only GeneratedAvatarRuntimeTest would fail all four of these checks while its
+# own test passed, which would be this script inventing a failure. The evidence is still COLLECTED and
+# uploaded either way; only the gates are conditional.
+if [[ "$AF_REQUIRE_SMOKE_EVIDENCE" != "1" ]]; then
+  echo "PASS: instrumented tests passed. Smoke-suite presentation gates skipped (AF_REQUIRE_SMOKE_EVIDENCE=$AF_REQUIRE_SMOKE_EVIDENCE); evidence was still collected in $EVIDENCE/."
+  echo "instrumented results: $COUNTS"
+  exit 0
+fi
 if ! grep -q '"status"[[:space:]]*:[[:space:]]*"PIXELS_VERIFIED"' "$EVIDENCE/renderer_diagnostics.json" 2>/dev/null; then
   echo "FAIL: persisted renderer JSON does not prove PIXELS_VERIFIED."
   echo "::error title=instrumented-renderer::renderer_diagnostics.json is missing or does not say PIXELS_VERIFIED"

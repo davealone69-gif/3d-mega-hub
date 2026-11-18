@@ -19,7 +19,11 @@ jobs:
   generated-avatar-runtime:
     name: Generate, render and inspect real avatar pixels
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45 -> 60. The shared script runs Gradle with --no-daemon and now also collects logcat, the crash
+    # buffer, dropbox and tombstones, and this job boots a cold wiped emulator before running four tests
+    # whose own @Test timeouts total 45 minutes worst case. A job that exceeds its timeout reports
+    # nothing at all, which is the one outcome worse than a slow one.
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -49,6 +53,9 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run generated-avatar instrumentation test
+        # Same reporting path as the other two instrumented jobs. This one failed on head 6a32184 after
+        # 13m08s with no annotation at all, which is the exact blind spot the shared script exists to
+        # close: without it the only reachable signal is "sh failed with exit code 1".
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 30
@@ -60,7 +67,15 @@ jobs:
           disable-animations: true
           script: |
             set +e
-            ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace
+            # Runs the whole GeneratedAvatarRuntimeTest class through the shared instrumented script, so
+            # this job gets the same annotations, job summary and XML-derived gate as the other two
+            # instead of only "sh failed with exit code 1". The captures below are kept because they
+            # collect things that script does not: the emulator display, and the app's own diagnostics
+            # directory via run-as with a SHA-256 manifest.
+            export AF_TEST_TARGET=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest
+            export AF_EVIDENCE_DIR=avatarforge-generated-runtime-evidence
+            export AF_REQUIRE_SMOKE_EVIDENCE=0
+            bash .github/scripts/avatarforge-render-smoke.sh
             test_status=$?
             mkdir -p artifacts/avatarforge/runtime-captures
             # Capture the emulator display independently of app storage as a fallback.
@@ -88,4 +103,5 @@ jobs:
             app/build/reports/androidTests/connected/
             app/build/outputs/androidTest-results/connected/
             artifacts/avatarforge/
+            avatarforge-generated-runtime-evidence/
 
