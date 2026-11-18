@@ -51,16 +51,20 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
     private var pendingAsset: FilamentAsset? = null
     private var pendingAssetUri: Uri? = null
     private var lastReportedLoadProgress = -1
+    private data class RestTransform(val entity: Int, val localMatrix: FloatArray)
+
     private var animator: Animator? = null
+    private var animationClips: List<AnimationClip>? = null
+    private var restTransforms = emptyList<RestTransform>()
     private var animationCount = 0
     private var selectedAnimation = 0
     private var animationPositionSeconds = 0f
-    private var animationPlaying = true
+    private var animationPlaying = false
     private var animationLoop = true
     private var animationSpeed = 1.0f
     private var lastAnimationTickNanos = 0L
     private var animationFrameCounter = 0
-    private var animationInfoListener: ((Int, Int, Boolean, Boolean, Float, Float, Float) -> Unit)? = null
+    private var animationInfoListener: ((AnimationPlaybackState) -> Unit)? = null
 
     private var running = false
     private var statusListener: ((String) -> Unit)? = null
@@ -91,27 +95,27 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                 try {
                     updatePendingAssetLoad()
                     val activeAnimator = animator
-                    if (activeAnimator != null && animationCount > 0) {
-                        val index = selectedAnimation.coerceIn(0, animationCount - 1)
-                        val duration = activeAnimator.getAnimationDuration(index)
-                        if (duration.isFinite() && duration > 0f) {
-                            val elapsedSeconds = if (lastAnimationTickNanos == 0L) 0f else
-                                ((frameTimeNanos - lastAnimationTickNanos).coerceAtLeast(0L)) / 1_000_000_000f
-                            lastAnimationTickNanos = frameTimeNanos
-                            if (animationPlaying) {
-                                animationPositionSeconds += elapsedSeconds * animationSpeed
-                                if (animationLoop) {
-                                    animationPositionSeconds %= duration
-                                } else if (animationPositionSeconds >= duration) {
-                                    animationPositionSeconds = duration
-                                    animationPlaying = false
-                                }
+                    val clip = currentPlayableClip()
+                    if (activeAnimator != null && clip != null) {
+                        val duration = clip.durationSeconds
+                        val elapsedSeconds = if (lastAnimationTickNanos == 0L) 0f else
+                            ((frameTimeNanos - lastAnimationTickNanos).coerceAtLeast(0L)) / 1_000_000_000f
+                        lastAnimationTickNanos = frameTimeNanos
+                        var stoppedAtEnd = false
+                        if (animationPlaying) {
+                            animationPositionSeconds += elapsedSeconds * animationSpeed
+                            if (animationLoop) {
+                                animationPositionSeconds %= duration
+                            } else if (animationPositionSeconds >= duration) {
+                                animationPositionSeconds = duration
+                                animationPlaying = false
+                                stoppedAtEnd = true
                             }
-                            activeAnimator.applyAnimation(index, animationPositionSeconds.coerceIn(0f, duration))
-                            activeAnimator.updateBoneMatrices()
-                            animationFrameCounter++
-                            if (animationFrameCounter % 15 == 0) publishAnimationInfo()
                         }
+                        activeAnimator.applyAnimation(clip.index, animationPositionSeconds.coerceIn(0f, duration))
+                        activeAnimator.updateBoneMatrices()
+                        animationFrameCounter++
+                        if (stoppedAtEnd || animationFrameCounter % 15 == 0) publishAnimationInfo()
                     }
                     if (activeRenderer.beginFrame(activeSwapChain, frameTimeNanos)) {
                         activeRenderer.render(activeView)
@@ -148,37 +152,64 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         listener(lastStatus)
     }
 
-    fun setAnimationInfoListener(listener: (Int, Int, Boolean, Boolean, Float, Float, Float) -> Unit) {
+    internal fun setAnimationInfoListener(listener: (AnimationPlaybackState) -> Unit) {
         animationInfoListener = listener
         publishAnimationInfo()
     }
 
     private fun publishAnimationInfo() {
-        val activeAnimator = animator
-        val duration = if (activeAnimator != null && animationCount > 0) {
-            activeAnimator.getAnimationDuration(selectedAnimation.coerceIn(0, animationCount - 1)).takeIf { it.isFinite() } ?: 0f
-        } else 0f
         animationInfoListener?.invoke(
-            animationCount, selectedAnimation, animationPlaying, animationLoop,
-            animationSpeed, duration, animationPositionSeconds
+            AnimationPlaybackState(
+                clips = animationClips,
+                selectedIndex = selectedAnimation,
+                playing = animationPlaying,
+                looping = animationLoop,
+                speed = animationSpeed,
+                positionSeconds = animationPositionSeconds,
+            )
         )
     }
 
+    private fun currentPlayableClip(): AnimationClip? =
+        animationClips?.firstOrNull { it.index == selectedAnimation && it.isPlayable }
+
+    // Different clips may animate different joints. Restoring local transforms prevents nodes
+    // omitted by the next clip from being left frozen in the previous clip's pose. Filament still
+    // owns the individual TRS and morph-weight channels on nodes touched by the new clip.
+    private fun restoreRestTransforms() {
+        val transforms = engine?.transformManager ?: return
+        transforms.openLocalTransformTransaction()
+        try {
+            restTransforms.forEach { rest ->
+                if (transforms.hasComponent(rest.entity)) {
+                    transforms.setTransform(transforms.getInstance(rest.entity), rest.localMatrix)
+                }
+            }
+        } finally {
+            transforms.commitLocalTransformTransaction()
+        }
+    }
+
     fun selectAnimation(index: Int) {
-        if (animationCount <= 0) return
-        selectedAnimation = index.coerceIn(0, animationCount - 1)
+        val clip = animationClips?.firstOrNull { it.index == index && it.isPlayable } ?: return
+        val activeAnimator = animator ?: return
+        selectedAnimation = clip.index
         animationPositionSeconds = 0f
         animationPlaying = true
         lastAnimationTickNanos = 0L
-        animator?.let {
-            it.applyAnimation(selectedAnimation, 0f)
-            it.updateBoneMatrices()
-        }
+        restoreRestTransforms()
+        activeAnimator.applyAnimation(selectedAnimation, 0f)
+        activeAnimator.updateBoneMatrices()
         publishAnimationInfo()
     }
 
     fun setAnimationPlaying(playing: Boolean) {
-        animationPlaying = playing && animationCount > 0
+        val clip = currentPlayableClip()
+        animationPlaying = playing && clip != null && animator != null
+        // Play after a non-looping clip has finished should restart rather than immediately stop.
+        if (animationPlaying && clip != null && animationPositionSeconds >= clip.durationSeconds) {
+            animationPositionSeconds = 0f
+        }
         lastAnimationTickNanos = 0L
         publishAnimationInfo()
     }
@@ -187,8 +218,8 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         animationPlaying = false
         animationPositionSeconds = 0f
         lastAnimationTickNanos = 0L
-        if (animationCount > 0) {
-            animator?.applyAnimation(selectedAnimation.coerceIn(0, animationCount - 1), 0f)
+        if (currentPlayableClip() != null) {
+            animator?.applyAnimation(selectedAnimation, 0f)
             animator?.updateBoneMatrices()
         }
         publishAnimationInfo()
@@ -206,9 +237,8 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     fun seekAnimation(positionSeconds: Float) {
         val activeAnimator = animator ?: return
-        if (animationCount <= 0) return
-        val duration = activeAnimator.getAnimationDuration(selectedAnimation.coerceIn(0, animationCount - 1))
-        if (!duration.isFinite() || duration <= 0f) return
+        val duration = currentPlayableClip()?.durationSeconds ?: return
+        if (!positionSeconds.isFinite()) return
         animationPositionSeconds = positionSeconds.coerceIn(0f, duration)
         activeAnimator.applyAnimation(selectedAnimation, animationPositionSeconds)
         activeAnimator.updateBoneMatrices()
@@ -393,6 +423,9 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
 
     private fun loadModelAsync(uri: Uri?, token: Int) {
         val activeEngine = engine ?: return
+        // A superseded resource load must not publish its clip list for the newly selected model.
+        destroyPendingAsset()
+        clearAnimationPlayback()
         reportStatus(if (uri == null) "Reading bundled sample GLB" else "Reading selected GLB")
         thread(name = "MegaHubGlbReader") {
             var bytes: ByteArray? = null
@@ -483,16 +516,34 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             val activeScene = checkNotNull(scene) { "Filament scene is unavailable" }
             activeScene.addEntities(pending.entities)
             animator = pending.instance.animator
-            animationCount = animator?.animationCount ?: 0
-            selectedAnimation = 0
+            val loadedAnimator = animator
+            animationCount = loadedAnimator?.animationCount ?: 0
+            val clips = (0 until animationCount).map { index ->
+                AnimationClip(
+                    index = index,
+                    name = loadedAnimator?.getAnimationName(index).orEmpty(),
+                    durationSeconds = loadedAnimator?.getAnimationDuration(index) ?: 0f,
+                )
+            }
+            animationClips = clips
+            val firstPlayable = clips.firstOrNull { it.isPlayable }
+            val transforms = checkNotNull(engine).transformManager
+            restTransforms = if (firstPlayable == null) emptyList() else buildList {
+                for (entity in pending.entities) {
+                    if (transforms.hasComponent(entity)) {
+                        add(RestTransform(entity, transforms.getTransform(transforms.getInstance(entity), FloatArray(16))))
+                    }
+                }
+            }
+            selectedAnimation = firstPlayable?.index ?: 0
             animationPositionSeconds = 0f
-            animationPlaying = animationCount > 0
+            animationPlaying = firstPlayable != null
             animationLoop = true
             lastAnimationTickNanos = 0L
             animationFrameCounter = 0
-            animator?.takeIf { animationCount > 0 }?.let {
-                it.applyAnimation(0, 0f)
-                it.updateBoneMatrices()
+            if (firstPlayable != null && loadedAnimator != null) {
+                loadedAnimator.applyAnimation(firstPlayable.index, 0f)
+                loadedAnimator.updateBoneMatrices()
             }
             publishAnimationInfo()
             frameCamera(pending.boundingBox)
@@ -504,10 +555,14 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
             reportStatus("GLB loaded and GPU resources submitted: $label · ${pending.entities.size} nodes · $animationCount animation(s)")
         } catch (failure: Exception) {
             Log.e(TAG, "Asynchronous GLB resource load failed", failure)
+            safelyDestroy("incomplete glTF scene entities") { scene?.removeEntities(pending.entities) }
+            clearAnimationPlayback()
             destroyPendingAsset()
             reportStatus("GLB resource load failed: ${failure.message ?: failure.javaClass.simpleName}")
         } catch (failure: LinkageError) {
             Log.e(TAG, "Asynchronous GLB native resource load failed", failure)
+            safelyDestroy("incomplete glTF scene entities") { scene?.removeEntities(pending.entities) }
+            clearAnimationPlayback()
             destroyPendingAsset()
             reportStatus("GLB native resource load failed: ${failure.message ?: failure.javaClass.simpleName}")
         }
@@ -542,19 +597,28 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         )
     }
 
-    private fun destroyCurrentAsset() {
-        destroyPendingAsset()
-        val current = filamentAsset ?: return
-        scene?.removeEntities(current.entities)
-        assetLoader?.let { loader -> safelyDestroy("glTF asset") { loader.destroyAsset(current) } }
-        filamentAsset = null
+    private fun clearAnimationPlayback() {
         animator = null
+        animationClips = null
+        restTransforms = emptyList()
         animationCount = 0
         selectedAnimation = 0
         animationPositionSeconds = 0f
         animationPlaying = false
         lastAnimationTickNanos = 0L
+        animationFrameCounter = 0
         publishAnimationInfo()
+    }
+
+    private fun destroyCurrentAsset() {
+        destroyPendingAsset()
+        val current = filamentAsset
+        if (current != null) {
+            scene?.removeEntities(current.entities)
+            assetLoader?.let { loader -> safelyDestroy("glTF asset") { loader.destroyAsset(current) } }
+        }
+        filamentAsset = null
+        clearAnimationPlayback()
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {

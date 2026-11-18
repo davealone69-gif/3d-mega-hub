@@ -126,7 +126,11 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swangle -memory 4096 -cores 2 -no-snapshot -wipe-data
           emulator-boot-timeout: 900
           disable-animations: true
-          script: bash .github/scripts/avatarforge-render-smoke.sh
+          script: >-
+            bash .github/scripts/avatarforge-render-smoke.sh &&
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest
+            -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.CharacterMenuSmokeTest,com.davemega.hub.CharacterAnimationSmokeTest
+            --stacktrace
       - name: Upload AvatarForge renderer evidence
         if: always()
         uses: actions/upload-artifact@v7

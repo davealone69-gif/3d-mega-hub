@@ -79,6 +79,10 @@ class AvatarForgeRendererSmokeTest {
         val diagnosticButton = device.findObject(button)
         assertNotNull("Generated-avatar diagnostic button disappeared", diagnosticButton)
         diagnosticButton!!.click()
+        // Keep the viewport at least partly visible while native generation runs, so the
+        // newly selected GLES SurfaceView can receive a surface when the GLB is ready.
+        device.swipe(device.displayWidth / 2, (device.displayHeight * 0.80f).toInt(),
+            device.displayWidth / 2, (device.displayHeight * 0.35f).toInt(), 18)
 
         // This exercises the complete native generation -> validated GLB export -> GLES import
         // path. On software-rendered CI emulators native generation can take substantially longer
@@ -248,9 +252,23 @@ class AvatarForgeRendererSmokeTest {
             return null
         }
 
-        // The viewport is below the import and generation controls in a vertically scrolling
-        // Compose screen. Bring it on-screen so SurfaceView receives surfaceCreated; merely
-        // launching the Avatar tab does not guarantee that an off-screen SurfaceView has a surface.
+        // Imported files normally open in the animation-capable Filament viewer. Explicitly
+        // switch to the native route before verifying the GLES SurfaceView and its pixels.
+        val switchDeadline = SystemClock.elapsedRealtime() + 30_000L
+        val switchSelector = By.text("Use AvatarForge GLES preview")
+        var switchButton = device.findObject(switchSelector)
+        while (switchButton == null && SystemClock.elapsedRealtime() < switchDeadline) {
+            val width = device.displayWidth
+            val height = device.displayHeight
+            device.swipe(width / 2, (height * 0.80f).toInt(), width / 2, (height * 0.40f).toInt(), 18)
+            SystemClock.sleep(400L)
+            switchButton = device.findObject(switchSelector)
+        }
+        assertNotNull("The AvatarForge GLES preview switch was not found", switchButton)
+        switchButton!!.click()
+
+        // Bring the viewport on-screen so SurfaceView receives surfaceCreated; merely launching
+        // the Avatar tab does not guarantee that an off-screen SurfaceView has a surface.
         val scrollDeadline = SystemClock.elapsedRealtime() + 30_000L
         var viewport = findAvatarForgeSurface(activity.window.decorView)
         while ((viewport == null || !viewport.isShown || !viewport.isAttachedToWindow) &&

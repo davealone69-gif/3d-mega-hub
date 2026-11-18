@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -259,6 +260,18 @@ int main(int argc, char** argv) {
               static_cast<int32_t>(sizeof(animationValidation))) == AF_OK,
           "animated generated mesh passes finite-position, skin-weight, joint and bounds validation");
 
+    // Exercise the other named studio shortcuts on real skinned geometry, not just clip metadata.
+    for (const auto& clip : std::vector<std::pair<int32_t, const char*>>{
+             {AF_CLIP_IDLE, "idle"}, {AF_CLIP_RUN, "run"}, {AF_CLIP_WAVE, "wave"}}) {
+        const float duration = af_engine_clip_duration(engine, clip.first);
+        const bool canSample = std::isfinite(duration) && duration > 0.0f &&
+            af_engine_apply_clip(engine, clip.first, duration * 0.25f) == AF_OK;
+        const std::string sampleMessage = std::string("generated avatar samples ") + clip.second;
+        check(canSample, sampleMessage.c_str());
+        const std::string motionMessage = std::string(clip.second) + " changes generated vertex positions";
+        check(canSample && positionsDiffer(restPositions, capturePositions(engine)), motionMessage.c_str());
+    }
+
     check(af_engine_apply_clip(engine, AF_CLIP_REST, 0.0f) == AF_OK,
           "generated avatar returns to its rest pose before GLB export");
     uint8_t* generatedGlbBytes = nullptr;
@@ -283,6 +296,20 @@ int main(int argc, char** argv) {
                 }
             }
             check(hasAnimationChannels, "generated GLB animation clips contain playable transform channels");
+            // The character studio exposes these shortcuts by name rather than assuming a clip
+            // order. Verify they are real, playable channels in the exported GLB.
+            for (const char* name : {"idle", "walk", "run", "wave"}) {
+                bool found = false;
+                for (const auto& animation : exportedAsset.animations) {
+                    if (animation.name == name && std::isfinite(animation.duration) &&
+                        animation.duration > 0.0f && !animation.channels.empty()) {
+                        found = true;
+                        break;
+                    }
+                }
+                const std::string message = std::string("generated GLB contains playable ") + name + " clip";
+                check(found, message.c_str());
+            }
         }
 
         // Foreign GLB import is intentionally static today. Prove that a rigged export is not
