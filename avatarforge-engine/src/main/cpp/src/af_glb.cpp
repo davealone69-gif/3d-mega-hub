@@ -652,8 +652,34 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
         for (size_t mi = 0; mi < names.size(); ++mi) {
             const int materialRegion = representativeRegion(static_cast<int>(mi));
             const MaterialDef& md = materialForRegion(materialRegion);
-            const Vec3 baseColor = materialRegion == REGION_HAIR
-                ? hairBaseColorForSpec(spec) : md.baseColor;
+            /* Effective PBR factors mirror the live af_material assembly in af_engine.cpp EXACTLY, so an
+               exported avatar carries the SAME customisation the on-device renderer shows. Previously this
+               path wrote each region's DEFAULT MaterialDef, silently dropping every spec override -- garment
+               and gear recolour plus fabric roughness/metalness -- from exported/shared GLB files (eye colour
+               survived only because it is baked into the base-colour TEXTURE). Every branch below fires only
+               when its tone/scalar is actually set, so a default spec exports byte-identically to before. */
+            Vec3 baseColor = md.baseColor;
+            if (materialRegion == REGION_HAIR) {
+                baseColor = hairBaseColorForSpec(spec);
+            } else if ((materialRegion == REGION_CLOTH_UPPER || materialRegion == REGION_CLOTH_LOWER) &&
+                       (spec.cloth_tone[0] > 0.0f || spec.cloth_tone[1] > 0.0f || spec.cloth_tone[2] > 0.0f)) {
+                baseColor = Vec3(spec.cloth_tone[0], spec.cloth_tone[1], spec.cloth_tone[2]);
+            } else if ((materialRegion == REGION_GEAR || materialRegion == REGION_SHOE) &&
+                       (spec.gear_tone[0] > 0.0f || spec.gear_tone[1] > 0.0f || spec.gear_tone[2] > 0.0f)) {
+                baseColor = Vec3(spec.gear_tone[0], spec.gear_tone[1], spec.gear_tone[2]);
+            }
+            float metallic = md.metallic;
+            if ((materialRegion == REGION_GEAR || materialRegion == REGION_SHOE) && spec.gear_metalness >= 0.0f) {
+                metallic = spec.gear_metalness;
+            } else if ((materialRegion == REGION_CLOTH_UPPER || materialRegion == REGION_CLOTH_LOWER) &&
+                       spec.cloth_metalness >= 0.0f) {
+                metallic = spec.cloth_metalness;
+            }
+            float roughness = md.roughness;
+            if ((materialRegion == REGION_CLOTH_UPPER || materialRegion == REGION_CLOTH_LOWER) &&
+                spec.cloth_roughness >= 0.0f) {
+                roughness = spec.cloth_roughness;
+            }
             if (mi) j += ',';
             j += "{\"name\":\"";
             jsonEscape(j, names[mi]);
@@ -662,9 +688,9 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             jsonNum(j, baseColor.y); j += ',';
             jsonNum(j, baseColor.z);
             j += ",1],\"metallicFactor\":";
-            jsonNum(j, md.metallic);
+            jsonNum(j, metallic);
             j += ",\"roughnessFactor\":";
-            jsonNum(j, md.roughness);
+            jsonNum(j, roughness);
             if (texBaseColor >= 0) {
                 j += ",\"baseColorTexture\":{\"index\":";
                 j += std::to_string(texBaseColor);

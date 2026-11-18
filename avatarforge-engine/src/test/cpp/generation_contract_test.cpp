@@ -38,10 +38,11 @@
  *   Part E verifies objectively that each fabric maps to the donor's measured roughness/metalness; that no
  *   fabric phrase leaves both scalars AUTO; that a fabric touches ONLY the material response; that two
  *   identical specs still export byte-identical GLBs (determinism); and that each fabric lands its own
- *   values on a live af_material (read back from the engine, not inferred). NOTE: the GLB exporter currently
- *   serialises each region's DEFAULT material factors, not the spec overrides, so these scalars apply to live
- *   on-device rendering but not yet to exported files -- a separate pre-existing defect (it also hides garment
- *   recolour from exports) documented in-test and queued for a careful, baseline-aware fix.
+ *   values on a live af_material (read back from the engine, not inferred); and -- since the GLB exporter now
+ *   writes the spec-override-adjusted factors rather than each region's defaults -- that an exported GLB
+ *   re-imports with the chosen fabric intact (a real export -> import round-trip), so customisation survives
+ *   sharing/export. That same exporter fix makes garment/gear recolour persist into files too, which previously
+ *   it did not (eye colour always survived because it is baked into the base-colour texture).
  *
  * Nothing is mocked and nothing is synthesised to pass; every assertion reads real generated data.
  * COST NOTE: it runs the full pipeline up to three times (two identical seeds for the equality check,
@@ -655,33 +656,36 @@ int main(void) {
               eqf(silk.cloth_roughness, 0.32f) && eqf(silk.cloth_metalness, 0.02f),
               "\"silk\" changes only roughness/metalness; the pinned cloth/gear/hair tones are untouched");
 
-        /* (e) DETERMINISM via bytes: two identical satin specs must export byte-identical GLBs.
-           SCOPE NOTE: this part deliberately does NOT assert that DIFFERENT fabrics yield different BYTES.
-           af_glb.cpp serialises each region's DEFAULT MaterialDef (materialForRegion(...).{metallic,roughness}
-           and md.baseColor), not the spec-override-adjusted af_material table; so scalar overrides (cloth/gear
-           tones and roughness/metalness) drive the LIVE material used for on-device generation rendering --
-           proven objectively by the read-back below -- but are not yet written into exported GLB factors. That
-           export-serialisation gap is a separate, pre-existing defect (it hides garment recolour from exports
-           too), queued for a careful fix because changing it alters every export's bytes and needs baseline
-           re-pinning. Eye colour behaves differently only because it is painted into the exported base-colour
-           TEXTURE rather than stored as a material factor. */
+        /* (e) END-TO-END BYTES. As of the exporter fix (af_glb.cpp now writes the spec-override-adjusted
+           factors instead of each region's defaults), scalar overrides DO reach the exported file, so two
+           things must hold and are both checked: identical satin specs export byte-identical GLBs
+           (determinism), and satin vs denim export DIFFERENT bytes because their metallicFactor /
+           roughnessFactor differ -- a positive control guarding that the exporter really serialises the
+           overrides. (Eye colour also differs across presets, but for a different reason: it is baked into
+           the base-colour TEXTURE rather than stored as a material factor.) */
         af_spec base;
         fillSpec(&base, 1337);
-        af_spec fs = base, fs2 = base;
+        af_spec fs = base, fs2 = base, fdn = base;
         fs.cloth_roughness = 0.22f;   fs.cloth_metalness = 0.05f;    /* satin */
         fs2 = fs;                                                    /* again  */
+        fdn.cloth_roughness = 0.84f;  fdn.cloth_metalness = 0.00f;   /* denim */
         const char* P1 = "/tmp/af_fabric_satin_1.glb";
         const char* P2 = "/tmp/af_fabric_satin_2.glb";
+        const char* P3 = "/tmp/af_fabric_denim.glb";
         const bool o1 = generateAndExportSpec(&fs,  P1, /*inspect=*/false, nullptr);
         const bool o2 = generateAndExportSpec(&fs2, P2, /*inspect=*/false, nullptr);
-        check(o1 && o2, "satin exports succeeded");
+        const bool o3 = generateAndExportSpec(&fdn, P3, /*inspect=*/false, nullptr);
+        check(o1 && o2 && o3, "satin (x2) and denim exports all succeeded");
         long sz1 = 0, sz2 = 0, fdSame = -2;
         check(o1 && o2 && filesIdentical(P1, P2, &sz1, &sz2, &fdSame),
               "DETERMINISM holds with an explicit fabric: same fabric+seed => byte-identical GLB");
+        long sz3 = 0, fdDiff = -2;
+        check(o1 && o3 && !filesIdentical(P1, P3, &sz1, &sz3, &fdDiff),
+              "CONTROL: a different fabric yields a different GLB (exporter serialises the override factors)");
 
-        /* (f) MATERIAL EFFECT + DISTINCTNESS via live read-back: each fabric lands its own roughness/metalness
-           on at least one real af_material, and the two fabrics differ -- i.e. the override is not inert at
-           the layer rendering actually consumes. */
+        /* (f) MATERIAL EFFECT at THREE layers: the live table for each fabric, and the bytes after a real
+           export -> re-import round-trip -- proving customisation survives sharing/export, not just the live
+           render. */
         auto countMatches = [](const af_engine* e, float rough, float metal) {
             const int32_t mc = af_engine_material_count(e);
             const af_material* mats = af_engine_materials(e);
@@ -692,10 +696,8 @@ int main(void) {
             }
             return hits;
         };
-        af_spec fdn = base;
-        fdn.cloth_roughness = 0.84f;  fdn.cloth_metalness = 0.00f;   /* denim */
-        af_engine* es = nullptr;   /* satin */
-        af_engine* ed = nullptr;   /* denim */
+        af_engine* es = nullptr;   /* satin, live */
+        af_engine* ed = nullptr;   /* denim, live */
         const bool rsOk = af_engine_create(&fs,  nullptr, &es) == AF_OK && es != nullptr &&
                           af_engine_run_all(es) == AF_OK;
         const bool rdOk = af_engine_create(&fdn, nullptr, &ed) == AF_OK && ed != nullptr &&
@@ -714,9 +716,26 @@ int main(void) {
         }
         if (es) af_engine_destroy(es);
         if (ed) af_engine_destroy(ed);
-        std::printf("DETAIL  fabric override: satin GLB reproducible (%.0f B); cross-fabric distinctness proven at the material layer\n",
-                    (double)sz1);
-        std::remove(P1); std::remove(P2);
+
+        /* ROUND-TRIP: the EXPORTED satin GLB itself must re-import still carrying r0.22/m0.05. Before the
+           exporter fix this was zero (each region's defaults were written); now it is the permanent guard
+           for that fix -- the file a user shares keeps the customisation. */
+        std::vector<uint8_t> satinBytes;
+        int rtHits = -1;
+        if (o1 && readFile(P1, &satinBytes)) {
+            af_engine* re = nullptr;
+            if (af_engine_create(&fs, nullptr, &re) == AF_OK && re != nullptr &&
+                af_engine_import_glb_from_memory(re, satinBytes.data(),
+                                                 (int32_t)satinBytes.size()) == AF_OK) {
+                rtHits = countMatches(re, 0.22f, 0.05f);
+            }
+            if (re) af_engine_destroy(re);
+        }
+        check(rtHits >= 1,
+              "EXPORTED GLB round-trips the fabric: re-imported material still carries r0.22 / m0.05");
+        std::printf("DETAIL  fabric override: satin=%.0f B reproducible | satin!=denim first diff @ %ld | export round-trips values\n",
+                    (double)sz1, fdDiff);
+        std::remove(P1); std::remove(P2); std::remove(P3);
     }
 
     /* Best-effort cleanup of the temporary artifacts. */
