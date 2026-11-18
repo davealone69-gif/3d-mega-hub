@@ -162,6 +162,15 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           script: bash .github/scripts/avatarforge-render-smoke.sh
+      # Runs even if the emulator action timed out or the script died before its own reporting, which is
+      # exactly when a diagnosis is most needed. Reads the tee'd Gradle log and whatever JUnit XML exists.
+      - name: Report instrumented renderer failures
+        if: always()
+        run: |
+          LOG=avatarforge-render-smoke-evidence/gradle-connected.log
+          python3 tools/ci_report_test_failures.py "$LOG" --root . >> "$GITHUB_STEP_SUMMARY" || true
+          python3 tools/ci_report_test_failures.py "$LOG" --root . --commands || true
+          python3 tools/ci_report_test_failures.py "$LOG" --root . --counts || true
       - name: Upload AvatarForge renderer evidence
         if: always()
         uses: actions/upload-artifact@v7
