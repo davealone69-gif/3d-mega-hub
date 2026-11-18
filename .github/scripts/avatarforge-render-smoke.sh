@@ -55,6 +55,11 @@ adb pull "$DIAGNOSTICS_DIR/failed_render.png" "$EVIDENCE/failed_render.png" >/de
 python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . --commands || true
 
+# Tells the workflow's own if:always() reporting step that this already happened. Without it both
+# report the same failure, and GitHub caps annotations at 10 per level per run - the duplicate halves
+# how much of the diagnosis survives.
+touch "$EVIDENCE/.reported" 2>/dev/null || true
+
 COUNTS="$(python3 tools/ci_report_test_failures.py "$GRADLE_LOG" --root . --counts 2>/dev/null)"
 COUNTS_STATUS=$?
 echo "instrumented results: ${COUNTS:-<none>}"

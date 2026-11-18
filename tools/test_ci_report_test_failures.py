@@ -77,6 +77,36 @@ def counts_exit(root: Path) -> int:
     return proc.returncode
 
 
+GRADLE_LOG = """> Task :app:connectedDebugAndroidTest
+Starting 3 tests on Pixel_2_API_30(AVD) - 11
+Tests on Pixel_2_API_30(AVD) - 11: Failed
+Process crashed: com.davemega.hub.test
+java.lang.OutOfMemoryError: Failed to allocate 33554432 byte allocation
+\tat org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:209)
+\tat org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
+BUILD FAILED in 11m 42s
+"""
+
+
+def commands(root: Path, log: str) -> list[str]:
+    """Runs the tool in --commands mode and returns the annotation lines it emits."""
+    log_path = root / "gradle.log"
+    log_path.write_text(log, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(MODULE_PATH), str(log_path), "--root", str(root), "--commands"],
+        capture_output=True, text=True,
+    )
+    return proc.stdout.splitlines()
+
+
+def titles(lines: list[str]) -> list[str]:
+    out = []
+    for line in lines:
+        if "title=" in line:
+            out.append(line.split("title=", 1)[1].split("::", 1)[0])
+    return out
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -132,7 +162,51 @@ def main() -> None:
         # A file that cannot be parsed yields no totals, so the gate must say "never ran".
         assert counts_exit(root) == 2, "unparseable results must not pass the gate"
 
-    print("PASS: connected + JVM discovery, failure detail, totals, and the 0/1/2 gate exit statuses")
+    # ---- 8. totals are always annotated, so "never ran" cannot look like "passed" ----
+    # This is the exact blind spot a real run exposed: Gradle failed, no JUnit XML was discoverable,
+    # and the annotations said nothing about it.
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        lines = commands(root, GRADLE_LOG)
+        assert titles(lines)[0] == "test-totals", titles(lines)
+        assert lines[0].startswith("::error"), lines[0]
+        assert "no JUnit XML was found" in lines[0], lines[0]
+        assert "tests=0" in lines[0], lines[0]
+        # A dead process is the reason there is no XML, so it must be reported too.
+        assert "process-crash" in titles(lines), titles(lines)
+        crashed = [ln for ln in lines if "title=process-crash" in ln]
+        assert any("Process crashed" in ln for ln in crashed), crashed
+        assert any("OutOfMemoryError" in ln for ln in crashed), crashed
+        # Gradle's own internal frames say nothing about our failure and there are only 10 annotation
+        # slots per level per run, so they must not crowd out the ones that do.
+        assert not any("DefaultBuildOperationRunner" in ln for ln in lines), lines
+        assert "BUILD FAILED in 11m 42s" in "\n".join(lines), lines
+
+    # ---- 9. with results present, the totals annotation reports them instead ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write(root, CONNECTED, PASSING_SUITE)
+        lines = commands(root, GRADLE_LOG)
+        assert lines[0].startswith("::notice"), lines[0]
+        assert "tests=3 failures=0" in lines[0], lines[0]
+        write(root, CONNECTED, FAILING_SUITE)
+        lines = commands(root, GRADLE_LOG)
+        assert lines[0].startswith("::error"), lines[0]
+        assert "tests=3 failures=1" in lines[0], lines[0]
+        # ...and the failing test still gets its own annotation with its own message.
+        named = [ln for ln in lines if "generatedAvatarDebugDiagnostic" in ln]
+        assert named and "fewer than three successful EGL swaps" in named[0], named
+
+    # ---- 10. a clean log must not invent a crash ----
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        write(root, CONNECTED, PASSING_SUITE)
+        lines = commands(root, "> Task :app:connectedDebugAndroidTest\nBUILD SUCCESSFUL in 4m 1s\n")
+        assert not any("process-crash" in ln for ln in lines), lines
+        assert not any("no JUnit XML" in ln for ln in lines), lines
+
+    print("PASS: connected + JVM discovery, failure detail, totals, the 0/1/2 gate statuses, "
+          "always-annotated totals, crash detection, and Gradle-frame deprioritisation")
 
 
 if __name__ == "__main__":

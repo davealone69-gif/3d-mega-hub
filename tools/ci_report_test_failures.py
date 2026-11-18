@@ -38,6 +38,36 @@ INTERESTING = re.compile(
 )
 
 
+# Markers that mean the instrumentation itself died. These matter most when no JUnit XML exists at
+# all, because a crashed app process writes no results and "no failures found" would otherwise read as
+# a pass. Each is reported with the line that carried it.
+CRASH_MARKERS = re.compile(
+    r"|".join([
+        r"Process crashed", r"am_crash", r"SIGSEGV", r"SIGABRT", r"Fatal signal",
+        r"OutOfMemoryError", r"Test run failed to complete", r"Instrumentation run failed",
+        r"failed to complete", r"Killed", r"app_process died", r"ANR in",
+    ])
+)
+
+# Gradle's own internal frames carry no information about our failure and, at up to 10 annotations per
+# level per run, crowd out the ones that do. They are sorted last rather than dropped.
+GRADLE_INTERNAL_FRAME = re.compile(r"^\s*(at|Caused by:)?\s*org\.gradle\.")
+
+
+def collect_crash_lines(log_path: str) -> list[str]:
+    """Lines showing the instrumentation or app process dying, rather than a test assertion failing."""
+    if not os.path.isfile(log_path):
+        return []
+    with open(log_path, "r", errors="replace") as handle:
+        found, seen = [], set()
+        for line in handle:
+            line = line.strip()
+            if line and CRASH_MARKERS.search(line) and line[:160] not in seen:
+                seen.add(line[:160])
+                found.append(line)
+    return found
+
+
 def escape_command(text: str) -> str:
     """Escape a value for a workflow command. Unescaped % and newlines silently corrupt annotations."""
     return (
@@ -178,7 +208,23 @@ def main() -> int:
     failures = collect_test_failures(args.root)
     log_lines, tail = collect_log_lines(args.gradle_log)
 
+    crashes = collect_crash_lines(args.gradle_log)
+
     if args.commands:
+        # Totals go out FIRST and always. Without this a run that wrote no XML, and a run whose tests
+        # all passed, produce identical annotations - and the second is how a suite that stopped running
+        # hides behind a green-looking report.
+        ran, failed_total, errored, skipped_total, classes = collect_test_totals(args.root)
+        totals = ("tests=%d failures=%d errors=%d skipped=%d classes=%s"
+                  % (ran, failed_total, errored, skipped_total, ",".join(classes)))
+        if ran == 0:
+            print("::error title=test-totals::no JUnit XML was found under %s, so nothing proves any "
+                  "test ran (%s)" % (escape_command(args.root), escape_command(totals)))
+        elif failed_total or errored:
+            print("::error title=test-totals::%s" % escape_command(totals))
+        else:
+            print("::notice title=test-totals::%s" % escape_command(totals))
+
         errors = 0
         for kind, classname, name, detail in failures:
             if errors >= MAX_ERROR_COMMANDS:
@@ -186,15 +232,22 @@ def main() -> int:
             title = escape_command(f"{kind}: {classname}.{name}")
             print(f"::error title={title}::{escape_command(detail)}")
             errors += 1
-        for line in log_lines:
+        # A dead process explains an empty XML, so it outranks generic Gradle output.
+        for line in crashes:
+            if errors >= MAX_ERROR_COMMANDS:
+                break
+            print(f"::error title=process-crash::{escape_command(line[:900])}")
+            errors += 1
+        # Our own frames and messages before Gradle's internal plumbing, which says nothing about us.
+        for line in sorted(log_lines, key=lambda item: bool(GRADLE_INTERNAL_FRAME.match(item))):
             if errors >= MAX_ERROR_COMMANDS:
                 break
             print(f"::error title=gradle::{escape_command(line[:900])}")
             errors += 1
-        if not failures and not log_lines:
-            print("::error::no test failures and no recognisable Gradle error were found")
+        if ran == 0 and not failures and not crashes and not log_lines:
+            print("::error::no test results, no crash marker and no recognisable Gradle error were found")
         notices = 0
-        for line in tail:
+        for line in [item for item in tail if not GRADLE_INTERNAL_FRAME.match(item)]:
             if notices >= MAX_NOTICE_COMMANDS:
                 break
             print(f"::notice title=log-tail::{escape_command(line[:900])}")
@@ -205,6 +258,23 @@ def main() -> int:
     print()
     print(f"Log: `{args.gradle_log}`")
     print()
+    ran, failed_total, errored, skipped_total, classes = collect_test_totals(args.root)
+    print("### Result totals")
+    print()
+    print("```")
+    print("tests=%d failures=%d errors=%d skipped=%d" % (ran, failed_total, errored, skipped_total))
+    print("classes=%s" % (", ".join(classes) or "<none found>"))
+    print("```")
+    print()
+    if ran == 0:
+        print("> **No JUnit XML was found.** Nothing proves any test ran.")
+        print()
+    if crashes:
+        print("### Process or instrumentation died")
+        print()
+        for line in crashes[:MAX_ERROR_COMMANDS]:
+            print(f"- `{line[:900]}`")
+        print()
     if failures:
         print(f"### {len(failures)} failed test(s)")
         print()

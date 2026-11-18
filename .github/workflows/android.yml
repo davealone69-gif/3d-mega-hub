@@ -168,6 +168,13 @@ jobs:
         if: always()
         run: |
           LOG=avatarforge-render-smoke-evidence/gradle-connected.log
+          # The script reports before its own gates. This step only has to cover the case where it died
+          # or the emulator action timed out first, so it stands down when the script already reported -
+          # a duplicate would consume half of the 10-per-level annotation budget for nothing.
+          if [[ -e avatarforge-render-smoke-evidence/.reported ]]; then
+            echo "renderer script already reported; standing down to avoid duplicate annotations"
+            exit 0
+          fi
           python3 tools/ci_report_test_failures.py "$LOG" --root . >> "$GITHUB_STEP_SUMMARY" || true
           python3 tools/ci_report_test_failures.py "$LOG" --root . --commands || true
           python3 tools/ci_report_test_failures.py "$LOG" --root . --counts || true
