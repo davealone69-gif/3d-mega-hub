@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -42,3 +42,29 @@ jobs:
           name: 3D-Mega-Hub-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Prepare stable debug APK release asset
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          APK_PATH="$(find app/build/outputs/apk/debug -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$APK_PATH"
+          mkdir -p release-assets
+          cp "$APK_PATH" release-assets/3D-Mega-Hub-debug.apk
+
+      - name: Publish latest debug APK release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: debug-${{ github.run_number }}-${{ github.run_attempt }}
+          name: Latest Android debug build #${{ github.run_number }}
+          body: |
+            Automatically published from a successful push to `main`.
+
+            Commit: ${{ github.sha }}
+
+            **Debug/test APK. Not production-signed.**
+          files: release-assets/3D-Mega-Hub-debug.apk
+          make_latest: true
+          prerelease: false
+          fail_on_unmatched_files: true
