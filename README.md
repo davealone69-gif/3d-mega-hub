@@ -1,5 +1,12 @@
 # 3D Mega Hub
 
+## Download the latest Android APK
+
+[**⬇ Download latest debug APK**](https://github.com/davealone69-gif/3d-mega-hub/releases/latest/download/3D-Mega-Hub-debug.apk)
+
+This link downloads the APK directly. It is refreshed automatically after each successful Android build on `main`. No Actions/workflow navigation is needed. Debug builds are for testing and are not production-signed.
+
+
 **Current handover: 2026-11-18.** Integration is active on review branches; `main` is intentionally still the stable baseline. This is not a release-ready or Samsung-verified build.
 
 ## Current handover — 2026-11-18
