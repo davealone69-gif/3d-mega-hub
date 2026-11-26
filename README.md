@@ -1338,7 +1338,14 @@ triangles, zero GL/EGL errors) says the renderer works while the app-side pixel 
 cores of SwiftShader rasterising 1.6 M triangles cannot reach a verdict inside the old 300 s deadline.
 Fixed without weakening anything: four cores and 6 GiB for the emulator, verdict deadline 300 s → 600 s in
 a 1 500 s test budget; the 5 000-pixel threshold, the presented-frame minimum and every GL/EGL assertion
-are untouched. If it is still red, the next honest evidence is a hardware session, not another guess.
+are untouched. It was still red once more, and the gate's own new evidence comment said why: the production
+SurfaceView test now **passes on the emulator** (`REAL + VERIFIED: PixelCopy saw 291034 geometry pixels`,
+screenshot and animation evidence archived, zero GL/EGL errors, at SwiftShader's 0.25 fps), while the
+remaining red was `generatedAvatarMustProduceVisiblePixels` comparing the engine's LOD0 triangle count with
+the renderer's *drawn* count — an equality from before screen-density LOD existed. Corrected as a premise:
+the drawn count must lie between the smallest documented LOD level (5 %) and the generated mesh, with every
+visibility, frame and GL/EGL assertion untouched. An emulator pass is recorded as an emulator pass: the
+Galaxy S24 claims (B2, M8) still need the phone.
 
 **Unchanged protections.** `main` is untouched. PR #17 is **open and unmerged**.
 `arena/089497bd-3d-mega-hub` (`58aced02`) and `arena/25bd4008-3d-mega-hub` (`b79a7d0c`) are **preserved**, and

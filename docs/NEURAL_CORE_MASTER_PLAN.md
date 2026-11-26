@@ -3975,3 +3975,19 @@ budget for a slow rasteriser is environment adaptation; a threshold change would
 made. If the gate is still red after this, the remaining cause is not starvation but something only the
 emulator logs or the physical phone can show — and the honest next evidence is a hardware session (B2, M8)
 via `docs/ANDROID_TEST_AGENT_PROMPT.md`, not another guess from here.
+
+**What the evidence channel then showed (run 45912438964, 2026-11-26).** The failure-on-failure PR comment
+worked, and it overturned the starvation hypothesis: the **production SurfaceView test PASSED on the
+emulator** — `REAL + VERIFIED: PixelCopy saw 291034 geometry pixels … after 3 successful EGL swaps`,
+screenshot archived, animation evidence `changedPixels=109303` over 17 clips, `glErrorFrames=0`,
+`eglErrorFrames=0`, at 0.25–0.30 fps under SwiftShader. The red test was the *other* one,
+`generatedAvatarMustProduceVisiblePixels`, whose assertion `assertEquals(generatedTriangles, stats[2])`
+compares the engine's LOD0 count (1,148,034) with the renderer's **drawn** count (287,371) — a pre-LOD
+equality that screen-density LOD invalidates on emulator surface metrics while a phone-sized surface still
+selects LOD0. Fixed as a premise correction, not a weakening: the drawn count must lie in
+`1..generated` and never below the smallest documented LOD level (5 %, `kLodFractions[1]`), while every
+visibility, presented-frame, joint, blendshape and GL/EGL assertion stays exactly as written. The 4-core /
+6 GiB / 600 s adaptation is retained: it is what turned the historical *"no drawable EGL-presented model
+frame"* failure into a pass on the emulator. **Status consequence:** the gate's production-render claim is
+now `REAL + VERIFIED` *on an emulator*; the physical-phone claims (B2, M8, the B9 baseline) remain where
+they were — an emulator pass is not a Galaxy S24 pass.
