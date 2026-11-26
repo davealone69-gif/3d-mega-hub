@@ -70,6 +70,34 @@ grep -E "FATAL EXCEPTION|Fatal signal|ANR in com\.davemega\.hub|Process: com\.da
   || echo "none found in logcat"
 echo "::endgroup::"
 
+# Job logs and artifacts are hosted where some reviewers (and some sandboxes) cannot follow, so the
+# decisive evidence also goes into the step summary: the manifest, the renderer telemetry tail, the
+# crash tail and the exact JUnit failure messages. Summary first, verdict after.
+{
+  echo "## Runtime gate evidence"
+  echo
+  echo '```'
+  echo "--- evidence manifest ---"
+  cat "$OUT/evidence-manifest.txt" 2>/dev/null | head -n 30
+  echo "--- renderer telemetry / verdict lines (logcat tag AvatarForge) ---"
+  grep -E "TELEMETRY |EVIDENCE|PixelCopy attempt|FRAME_PRESENTED|Renderer failed|REAL \+ VERIFIED|FAILED:|SLOW_START|STALL " "$OUT/avatarforge-logcat.txt" 2>/dev/null | tail -n 30
+  echo "--- crashes / ANRs ---"
+  grep -E "FATAL EXCEPTION|Fatal signal|ANR in|Process: com\.davemega\.hub" "$OUT/logcat.txt" 2>/dev/null | tail -n 10 || echo "none"
+  echo "--- JUnit failure messages ---"
+  python3 - "$OUT" <<'EOF'
+import glob, sys, xml.etree.ElementTree as ET
+for x in glob.glob(sys.argv[1] + "/../reports/androidTests/connected/**/*.xml", recursive=True) or glob.glob("app/build/outputs/androidTest-results/connected/**/*.xml", recursive=True):
+    try: r = ET.parse(x).getroot()
+    except Exception: continue
+    for tc in r.iter("testcase"):
+        for f in list(tc.iter("failure")) + list(tc.iter("error")):
+            print(f"TEST {tc.get('classname')}.{tc.get('name')}")
+            print((f.get("message") or "")[:600])
+            print((f.text or "")[:400])
+EOF
+  echo '```'
+} >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
 if [[ "$TEST_STATUS" -ne 0 ]]; then
   echo "FAIL: instrumentation exited with status $TEST_STATUS for ${TEST_FILTER}. Evidence was collected above."
   exit "$TEST_STATUS"
