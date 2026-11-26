@@ -1,6 +1,10 @@
-# Gradle state and generated build outputs
 .gradle/
 **/build/
-
-# Local Android SDK configuration
+**/.cxx/
 local.properties
+.idea/
+*.iml
+.DS_Store
+/captures/
+*.jks
+*.keystore

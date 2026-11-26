@@ -7,3 +7,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "3D Mega Hub"
 include(":app")
+include(":avatarforge-engine")

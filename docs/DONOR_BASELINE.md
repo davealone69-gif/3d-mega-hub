@@ -1,6 +1,6 @@
 # Donor Baseline Snapshot
 
-Checked against GitHub repository metadata, source files and workflow results on 2026-10-30. This is a targeted source audit, not a full line-by-line audit or local build.
+Historical snapshot checked against GitHub repository metadata, source files and workflow results on 2026-10-30. It is not a description of the current 2026-11-10 integration branch; see the current branch handover in README.md and BUILD_AND_VERIFY.md.
 
 ## 3DDD
 
