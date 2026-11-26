@@ -1,6 +1,8 @@
 package com.davemega.hub
 
+import android.content.ClipData
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.compose.ui.viewinterop.AndroidView
 import com.davemega.hub.avatarforge.AvatarForgeEngine
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
@@ -56,6 +59,7 @@ fun AvatarStudioScreen(
     val engineHealth = remember { AvatarForgeEngine.health() }
     val isDebuggable = remember { (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0 }
     var pixelDiagnosticPath by remember { mutableStateOf<String?>(null) }
+    var diagnosticScreenshot by remember { mutableStateOf<File?>(null) }
     var remoteGlbUrl by remember { mutableStateOf("") }
     var generationPrompt by remember {
         mutableStateOf("Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans")
@@ -129,6 +133,9 @@ fun AvatarStudioScreen(
                                 AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = pixelDiagnosticPath == importedGlb.absolutePath) { status ->
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                                         rendererStatus = status
+                                        val savedPath = context.getSharedPreferences("avatarforge_renderer_smoke", Context.MODE_PRIVATE)
+                                            .getString("screenshot_path", null)
+                                        diagnosticScreenshot = savedPath?.let(::File)?.takeIf { it.isFile }
                                     }
                                 }
                             },
@@ -153,6 +160,40 @@ fun AvatarStudioScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
+                diagnosticScreenshot?.takeIf { it.isFile }?.let { screenshot ->
+                    OutlinedButton(
+                        onClick = {
+                            runCatching {
+                                val appFilesRoot = requireNotNull(context.getExternalFilesDir(null)) {
+                                    "App-specific external files directory is unavailable."
+                                }.canonicalFile
+                                val safeFile = screenshot.canonicalFile
+                                require(safeFile.isFile && safeFile.parentFile == appFilesRoot) {
+                                    "Diagnostic capture is missing or outside the app-private files directory."
+                                }
+                                val uri = FileProvider.getUriForFile(
+                                    context,
+                                    "${context.packageName}.fileprovider",
+                                    safeFile
+                                )
+                                val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "image/png"
+                                    putExtra(Intent.EXTRA_STREAM, uri)
+                                    clipData = ClipData.newUri(context.contentResolver, safeFile.name, uri)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                context.startActivity(
+                                    Intent.createChooser(shareIntent, "Save or share renderer capture")
+                                )
+                            }.onFailure { failure ->
+                                rendererStatus = "BLOCKED: could not share renderer capture: ${failure.message ?: failure.javaClass.simpleName}"
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (screenshot.name == "failed_render.png") "Save / Share failed_render.png" else "Save / Share renderer capture")
+                    }
+                }
                 Text("Selected asset: $avatarName", style = MaterialTheme.typography.bodySmall)
                 if (importStatus.isNotBlank()) {
                     Text(importStatus, style = MaterialTheme.typography.bodySmall)

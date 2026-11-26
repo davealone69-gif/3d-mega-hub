@@ -6,15 +6,15 @@
 
 - Branch: [`integration/avatarforge-renderer-port`](https://github.com/davealone69-gif/3d-mega-hub/tree/integration/avatarforge-renderer-port)
 - Review PR: [#9](https://github.com/davealone69-gif/3d-mega-hub/pull/9)
-- Integration base before current hardening: `f45c15a73c42b9240b6b6f325fe18d4df61fb630`
-- `main` remains unchanged. Earlier candidate PR #7 is left open and untouched.
+- Consolidation source: `work/samsung-s24-photoreal-patch`, three commits beyond the integration base, including the WebP/GLES renderer fixes. The final source is being fast-forwarded into this single working branch.
+- `main` remains unchanged. PR #8 is an older, superseded Filament-only candidate and is not the integration target.
 
 ## What is wired in source
 
 - **AvatarForge generation:** isolated `:avatarforge-engine` Android library, JNI bridge and C++ generation kernel. Avatar Studio exposes prompt generation, cancellation, resource/thermal checks, native-result validation and atomic publication of validated GLBs.
 - **3D viewer:** the bundled sample uses the separate Filament preview. Imported and generated self-contained GLBs use `AvatarForgeSurfaceView` and the integrated native AvatarForge renderer.
 - **Graphics backend:** the imported/generated avatar path explicitly forces native GLES. Skinned GLBs apply the initial rest pose and refresh bounds before camera framing; Vulkan code is not selected for this phone-first route.
-- **Debug verification:** debuggable builds include a seed-1337 generated-avatar diagnostic that validates the deformed mesh, imports the exported GLB through the real GLES route, waits for successful EGL swaps and verifies background-subtracted PixelCopy geometry; it saves a PNG result.
+- **Debug verification:** debuggable builds include a seed-1337 generated-avatar diagnostic that validates the deformed mesh, imports the exported GLB through the real GLES route, waits for successful EGL swaps and verifies background-subtracted PixelCopy geometry; it saves a PNG result. A scoped AndroidX FileProvider exposes only app-private external-files captures for sharing, including `failed_render.png`.
 - **Avatar imports:** selected GLBs are copied into app-private storage, size-limited and structurally validated before use. The viewer rejects external-resource `.gltf` files.
 - **Local AI:** Ollama remains an external service, not an embedded LLM. Plain HTTP is restricted to loopback; remote endpoints require HTTPS.
 - **Voice:** Android TextToSpeech output is connected. Viseme extraction and avatar lip-sync are not connected.
@@ -38,7 +38,7 @@ The fixture is byte-identical to the file at 3DDD revision `be5bf17d8afe46247646
 
 - Parent integration commit `f45c15a73c42b9240b6b6f325fe18d4df61fb630`: unit tests, lint, native sampling regression, debug APK build and R8/minification passed. The GLES emulator smoke timed out while booting the `swangle` emulator; the generated-runtime workflow stopped before tests because it attempted to install the invalid SDK package `tools`.
 - The current integration update restores Android WebP decoding, resolves the actual `EXT_texture_webp` image source with core-source fallback, checks/retries GLES geometry uploads, and registers host GLB-extension regression tests.
-- CI for the updated source is pending. Samsung SM-S921B visible-pixel/runtime verification remains **UNVERIFIED**.
+- CI for the consolidated source is pending. Samsung SM-S921B visible-pixel/runtime verification remains **UNVERIFIED**. FileProvider sharing and the launcher icon are source changes, not yet build-verified.
 - Production release signing is **BLOCKED** until a user-owned production keystore is configured through protected CI secrets. Never substitute the debug key or a one-run preview key.
 
 ## Existing older debug build
