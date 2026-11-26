@@ -32,9 +32,25 @@ this work into 3D-Mega-Hub and not to build a chatbot in a 3D application: the c
 > | 5 | Preserve the historical **SM-S921B** measurements as a **baseline**; never as current runtime verification | **§3.L.1** carries a standing warning banner; §7 item **14** prohibits quoting them as current |
 > | 6 | Ensure the **morph-target importer gap** is assigned to the correct engine mission | **ASSIGNED TO M5** as deliverable **(f)** — §5.7, §4.1 register, §3.D item 6, §8.1 **B5** |
 > | 7 | Preserve `arena/089497bd` and all unique work | **§8.4** — nine items of unique work listed with recovery commands; §7 item **10** |
-> | 8 | Keep all **ten missions** and their acceptance criteria intact | Unchanged: ten prompts, execution order `M0 → M8 → M1 → M2 → M3 → M4 → M5 → M6 → M7 → M9`, all eight required fields machine-verified present in each. M5 gained deliverable (f); its acceptance criteria (a)–(e) are untouched |
+> | 8 | Keep all **ten missions** and their acceptance criteria intact | Unchanged: ten prompts, execution order `M0 → M8 → M1 → M2 → M3 → M4 → M5 → M6 → M7 → M9`, all required fields machine-verified present in each — **now ten fields per brief** under the 2026-11-26 brief, including new field 5 (detailed implementation instructions) and field 8 (runtime verification requirements). M5 gained deliverable (f) and is now **staged S0→S-E**; its acceptance criteria (a)–(e) are untouched |
 >
 > **No implementation, destructive Git operation, or merge has been performed under this document.**
+>
+> ### Owner brief of 2026-11-26 (second) — the GOKU handover requirements
+>
+> | Requirement | Where honoured |
+> |---|---|
+> | Mission briefs carry **ten** fields, not eight | §5 intro lists all ten; every brief machine-verified to contain fields 1–10 **in order** |
+> | **Detailed implementation instructions** per mission | Field **5** of each brief — files, existing patterns to copy, traps, order of work |
+> | **Runtime verification requirements** separated from build evidence | Field **8** of each brief; field **7** is now tests and build evidence only |
+> | 3D-Mega-Hub = final integrated app; AvatarForge = separate standalone engine/SDK; 3DDD = separate donor; Cue-Next entirely separate | **§1.0** — evidenced table plus four boundary rules. Cue-Next: `grep` finds **zero** references in this repository outside this plan |
+> | Do **not** assume Anny's `[0,1]` maps to the engine's 45 fields | **§3.O.1** (six kinds of quantity, sentinels, the 45/45 coincidence debunked) and the withdrawn implication in **§6.4.3** |
+> | Define validated units, semantic mappings and calibration | **§3.O** — §3.O.1 unit table, §3.O.2 the eleven-field **calibration record**, §3.O.3 what is honestly known today (no record exists; status `MISSING`) |
+> | Separate local preview from redistribution and training permissions | **§3.I.2** — three independent permissions, `unknown` behaves as deny, seven rules |
+> | Stage M5: skeletons, retargeting, playback, morph targets, facial animation | **§5.7 field 5** — stages **S0 → S-A → S-B → S-C → S-D → S-E**, each with entry condition and exit evidence |
+> | Preserve provenance and licence restrictions; invent no ownership or training rights | **§3.I.1** D9 recommendation **withdrawn**; **D11** added for the engine's own undeclared licence; M6 field 5(h) and M9 field 5(f) gate training on D9+D11 |
+> | Protect existing work: no competing app, no duplicate APIs, no unnecessary deps, no destructive cleanup, no PR #17 merge, no `main` change, preserve both `arena` branches, keep D1/D2 visible | §7 items 1, 3, 8, 10, 13; §8.4; §1.0 rule 3; M7 field 5(g) declines new C++ deps (D8); D1/D2 flagged **OPEN** at the top of §8.3 |
+> | Resolve architectural contradictions | §3.J.1 said "all **seven**" metric families where §3.E.2 defines **eight** — corrected in both places |
 
 **How this document is committed.** It was originally intended for its own branch and its own
 documents-only PR, to avoid combining unrelated objectives with PR #17. That intent is **superseded** by two
@@ -68,6 +84,37 @@ document** and must be re-issued. Recorded as an open item in §8.
 Rule applied throughout, from `AGENTS.md` §2.1: **REAL + VERIFIED**, **IMPLEMENTED IN SOURCE**,
 **PARTIAL**, **UNVERIFIED**, **MISSING**, **BLOCKED**, and *where* it was verified. A class, interface or
 button existing is not evidence that a feature works.
+
+### 1.0 The project family, and where Neural Core may and may not live
+
+Owner instruction, 2026-11-26: keep 3D-Mega-Hub as the final integrated Android application, AvatarForge as
+its separate standalone engine/SDK project, 3DDD as a separate donor project, and Cue-Next entirely separate.
+These boundaries are **evidenced from this repository's own documents**, not assumed.
+
+| Project | What it actually is — with evidence | Neural Core's relationship to it |
+|---|---|---|
+| **3D-Mega-Hub** (`davealone69-gif/3d-mega-hub`) | **The final integrated Android application and canonical host.** `settings.gradle.kts` sets `rootProject.name = "3D Mega Hub"` and includes exactly two modules, `:app` and `:avatarforge-engine`. `docs/AVATARFORGE_INTEGRATION.md`: *"`3d-mega-hub` remains the canonical Android app."* `docs/MASTER_BLUEPRINT.md`: *"Canonical host app, architecture, integration records and release evidence."* | The **product**. `:app` is the shipping surface; Neural Core is never a competing app inside it (§7 item 8) |
+| **AvatarForge** (`davealone69-gif/AvatarForge`) | **A separate standalone engine/SDK repository — the donor.** Pinned at branch `work/android-engine-dev`, commit `9e36197ace3b18faa6c566d93f8fce89b185c45d`. `docs/MASTER_BLUEPRINT.md` describes it as *"Native avatar kernel, C ABI, Kotlin SDK, rigging/blendshapes and diagnostics"*. Its renderer, JNI, app UI and prebuilt AAR/APKs were **deliberately excluded** from the port | The **upstream**. Neural Core does not modify that repository; it extends the **in-repo port** |
+| **`:avatarforge-engine`** (this repository) | **The AvatarForge engine/SDK as ported into the host** — *"a deliberate port of the useful engine boundary—not a wholesale copy of the donor app or its renderer."* 39 copied native files match the pinned donor byte-for-byte (except trailing spaces removed from one blank line in `af_math.h`); the two Kotlin models differ only in package declaration | **Neural Core's home**: `src/neural/` + `afneural.h` in C++, `java/com/davemega/hub/avatarforge/neural/{procedural,generated}` in Kotlin, behind `AF_ENABLE_NEURAL` (default OFF). This is what "keep everything exclusively within AvatarForge" means in practice |
+| **3DDD** (`davealone69-gif/3DDD`) | **A separate donor project — the Filament viewer.** Its renderer was **not imported**: *"The 3DDD Filament viewer remains separate; its inspected Android CI run 40981986126 failed, so its renderer was not imported."* Its `main` CI failed at `Assemble release APK (unsigned)` (release-lint `backup_rules.xml` / `data_extraction_rules.xml` conflicts) and its audit failed at `kspDebugKotlin` with Room KSP `IllegalStateException: Empty schema file`. Only `ExportManager.exportMp4`'s encoder-drain and container-validation logic was adapted, into `app/.../export/AvatarMp4Exporter.kt` | **Read-only reference.** No Neural Core code lives here; its Room/KSP failure is the recorded reason M6 avoids Room (§5.8 field 5(a)) |
+| **Cue-Next** | **Entirely separate.** `grep -rIn "Cue-Next\|CueNext\|cue-next"` over this repository's `*.md`, `*.kt` and `*.kts` returns **zero hits outside this plan**. There is no code, configuration, dependency or CI relationship to it here | **Out of scope. Do not modify, reference, import or combine.** Status: `REAL` as a project the owner names, `UNVERIFIED` as to its contents — nothing in this repository evidences it |
+| Others in the family | `docs/MASTER_BLUEPRINT.md` also lists **Aaa** (SDK/provider contracts), **Grok-Girls** and **Aura-Studio-Avatar** as candidate donors, each *"reuse only after source/build/licence inspection"* | Not used by Neural Core. Any future use needs the same inspection plus a `THIRD_PARTY_NOTICES.md` entry **before** first use |
+
+**Four boundary rules that follow, and that every mission obeys:**
+
+1. **The engine is a module here and a repository there.** `:avatarforge-engine` is *this* repository's port of
+   AvatarForge. Changes to Neural Core land in the port. Nothing in this plan authorises a change to
+   `davealone69-gif/AvatarForge` itself, and no mission may clone, vendor or re-pin it.
+2. **`:app` consumes the engine; the engine never consumes `:app`.** M1 therefore puts the gateway in the
+   engine module and demotes `:app`'s Ollama page to a console over it — the dependency arrow keeps its
+   direction (§3.0).
+3. **No competing app, no second renderer, no duplicate API.** §7 items 1, 3 and 8, and
+   `docs/MASTER_BLUEPRINT.md`: *"Do not run two renderer stacks in parallel without an explicit, tested need."*
+4. **Licence status of the port is itself undeclared.** `docs/AVATARFORGE_INTEGRATION.md`: *"No
+   repository-level `LICENSE` file was present at the pinned AvatarForge branch… that does not establish
+   third-party redistribution rights."* `docs/MASTER_BLUEPRINT.md`: *"A dependency's licence does not
+   automatically license the host app or generated assets."* This is decision **D11**, and it is **prior** to
+   D9 — the output's licence cannot be settled while the engine's own is not.
 
 ### 1.1 Shape of the repository
 
@@ -541,7 +588,10 @@ can still require restricted model files and restricted training data, and **`Er
 proved example** — an MIT repository whose own README says the data comes from AMASS and may not be
 redistributed, and instructs the reader to download the non-commercial SMPL+H and DMPL body models.
 MakeHuman's **assets** are **CC0 1.0 Universal** (its code is AGPL — assets only, never code), which is what
-makes the Anny route and the "engine's own output is free data" argument in §3.F.6 licence-clean.
+makes the **Anny route** licence-clean for its `data/mpfb2` component. **It does not make the "engine's own
+output is free data" argument licence-clean** — that argument is `BLOCKED` on **D9** and **D11** and its
+earlier "decisive licence finding" framing is withdrawn in §3.F.6. MakeHuman's §D statement is about
+MakeHuman's output; it says nothing about this engine's.
 
 **Techniques worth adopting, independent of any model choice:**
 
@@ -779,12 +829,24 @@ Datasets are the highest licence-risk item in the whole initiative (§6). Rules:
 
 - **No external dataset in the repository or the APK.** Rule 5 of `AGENTS.md` already forbids private model
   binaries; the same mechanism keeps multi-gigabyte data out of a shipping artifact.
-- **The engine's own output is the primary free dataset.** This is the decisive licence finding: a
-  deterministic solver whose outputs it owns can generate unlimited training data with no third-party terms
-  at all. MakeHuman's licence makes the same point for its own outputs — *"no output from MakeHuman contains
-  any trace of program logic… there is no limitation on what you can do with this combined output"* (§6.3).
-  Anny's authors did exactly this at scale, generating the `Anny-One` synthetic set from their own model.
-  Self-generated data, labelled by human approval (3.F.2), is both **free** and **auditable**.
+- **The engine's own output is the most promising dataset path — and today it is `BLOCKED`, not free.**
+  *Corrected 2026-11-26.* An earlier revision of this document called self-generated output "the decisive
+  licence finding" on the reasoning that a deterministic solver **owns** its outputs. **That reasoning is
+  withdrawn: it assumed an ownership nobody has established.** Two verified facts contradict it. First,
+  `docs/AVATARFORGE_INTEGRATION.md` records *"No repository-level `LICENSE` file was present at the pinned
+  AvatarForge branch"* and that copying between the owner's own repositories *"does not establish third-party
+  redistribution rights"* — the **engine's own licence is undeclared** (**D11**). Second, this engine states
+  nothing anywhere about the licence of what it produces (**D9**). `docs/MASTER_BLUEPRINT.md` already fixed the
+  rule: *"A dependency's licence does not automatically license the host app or generated assets."*
+  The precedents that looked supportive do not transfer: MakeHuman's *"no output from MakeHuman contains any
+  trace of program logic… there is no limitation on what you can do with this combined output"* is a statement
+  **by MakeHuman's authors about MakeHuman's output** (§6.3), and Anny's authors generating the `Anny-One`
+  synthetic set were exercising rights over **their own** model. Neither says anything about this engine.
+  **So: the path stays designed, the eligibility set stays empty.** Until the owner declares D11 and then D9,
+  every generated asset is `preview = allow, redistribute = unknown, train = unknown` (§3.I.2) and M6 records
+  it as `NOT_ELIGIBLE_FOR_TRAINING`. Once declared, self-generated data labelled by human approval (3.F.2)
+  would indeed be both auditable and free of third-party terms — that is the reason to settle D11 and D9 early,
+  and it is an argument for a decision, not a substitute for one.
 - Any external dataset requires: licence of the data, licence of anything it was derived from, licence of
   any model trained on it, and a `THIRD_PARTY_NOTICES.md` entry — all four verified from primary sources
   before use. HumanML3D fails this test (§6.3).
@@ -1041,15 +1103,71 @@ Five rules that apply across all three classes:
    (*do not treat secondary-source licence claims as verified*) expressed as a field in the data.
 
 **D9 itself — the decision the owner still owes:** declare the licence terms of this engine's own generated
-output. Recommended: an explicit statement in the README and `AGENTS.md` that avatars generated by
-`af_engine_run_all` are the user's own data, on the reasoning that the engine's inputs are its own code plus
-constants whose provenance is already recorded in `THIRD_PARTY_NOTICES.md`. That reasoning must be **stated
-by the owner**, because it is a legal position about their project, not an engineering inference. Until it
-is, M2 fills the field with `UNDECLARED-OWNER-DECISION-PENDING` and every generated asset is quarantined
-from training and distribution — which is safe, honest, and mildly inconvenient, in that order.
+output. **This document deliberately makes no recommendation about what that licence should be**, and asserts
+no ownership and no training rights for generated assets. Earlier drafts suggested declaring the output "the
+user's own data" by analogy with MakeHuman's §D; that suggestion is **withdrawn**, because it would have the
+plan inventing a legal position: MakeHuman's statement is about MakeHuman's output, and nothing in this
+repository establishes who owns an avatar this engine produces, or whether it may be trained on.
+
+Two verified facts make the gap concrete, and both point *away* from an easy answer:
+
+- **The engine's own licence is undeclared.** `docs/AVATARFORGE_INTEGRATION.md` records that *"No
+  repository-level `LICENSE` file was present at the pinned AvatarForge branch"*, that the source *"was copied
+  between the user's own repositories at their explicit direction"*, and that this *"does not establish
+  third-party redistribution rights"*. That is decision **D11**, and it is **prior** to D9: an output's licence
+  cannot be settled while the licence of the code that produces it is not.
+- **`docs/MASTER_BLUEPRINT.md` already states the rule:** *"A dependency's licence does not automatically
+  license the host app or generated assets."*
+
+Until D11 and then D9 are declared by the owner, M2 fills the field with
+`UNDECLARED-OWNER-DECISION-PENDING`, `licence_verified = 0`, and §3.I.2's permissions default to
+`preview = allow, redistribute = unknown, train = unknown` — so every generated asset stays usable on its
+owner's device while being barred from distribution and from training. That is safe, honest, and mildly
+inconvenient, in that order. **No mission may resolve D9 or D11 by inference.**
 
 **Status today: MISSING.** No provenance of any kind is recorded for generated or imported assets, and D9 is
 undeclared.
+
+#### 3.I.2 Local preview is not redistribution, and redistribution is not training
+
+Owner instruction, 2026-11-26: *separate local asset preview from redistribution and training permissions.*
+One licence answer is not enough, because one asset can be lawfully viewable, unlawfully shareable, and
+separately unlawful to train on. **Three permissions are recorded independently**, and each defaults to
+**denied** until something positive is known.
+
+| Permission | Question it answers | Granted when | Recorded as |
+|---|---|---|---|
+| **`may_preview_locally`** | May this asset be loaded, inspected and rendered **on the user's own device, for the user's own eyes**? | Almost always — including for quarantined assets. A user's own file must stay usable, and blocking preview would punish honesty about licence state | `preview = allow` plus the reason |
+| **`may_redistribute`** | May this asset be **exported, shared, published, or packed into a distributed APK**? | Only where a licence read from a **primary source** permits redistribution, and `licence_verified = 1` | `redistribute = allow / deny / unknown` |
+| **`may_train_on`** | May this asset be used as **training, fine-tuning or evaluation-fitting data**? | Only where **both** hold: the asset's licence permits derivative computational use, **and** — for engine-generated assets — **D9** (output licence) and **D11** (engine licence) are declared | `train = allow / deny / unknown` |
+
+Rules that make the separation real rather than decorative:
+
+1. **The three are independent, and the strictest wins per action.** `preview=allow, redistribute=deny,
+   train=deny` is the correct and common state for a quarantined asset — it stays useful to its owner without
+   becoming shippable or trainable.
+2. **`unknown` is not `allow`.** Every permission defaults to `unknown`, and `unknown` behaves as `deny` for
+   redistribution and training while still permitting local preview. A default of "allow unless proven
+   otherwise" is how a non-commercial model's output ends up in a published APK.
+3. **Training is the strictest gate in the system.** §3.I.1 rule 3 already bars AI-generated assets from
+   training unless the provider's output terms expressly permit it — the verified example being Hunyuan3D 2.1's
+   clause defining *"Model Derivatives"* to include *"methods based on the generation of synthetic data
+   Outputs… for training that model"* (§6.3.3). Note that clause's shape: a licence can permit **use** while
+   forbidding **training**, which is exactly why `may_redistribute` and `may_train_on` are separate fields.
+4. **Evaluation data is not a loophole.** Fitting a critic's thresholds or a calibration record (§3.O.2) to a
+   dataset is a derivative computational use of it, so `may_train_on` governs it. Evaluation-only licences must
+   be read as such, not as "fine for our purposes".
+5. **The owner's own material is denied all three by policy, not by licence.** Dropbox material and
+   `mylove*.glb`: `preview = allow` at runtime on the owner's device, `redistribute = deny`, `train = deny`,
+   never committed, never packed, identified in evidence by SHA-256 rather than path (`AGENTS.md` rule 5).
+6. **The APK question is a redistribution question.** The donor's five CC BY 4.0 fixtures (~596 KB) are
+   recorded in the donor's own `THIRD_PARTY_NOTICES.md` as *"packaged into the distributed APK"* with *"two
+   separate rights holders with two separate licences on one file"* for `Fox.glb`. CC BY 4.0 permits
+   redistribution **with attribution**, so `redistribute` may be `allow` **only if** the attribution ships —
+   and `train` remains a separate question. That is decision **D12**.
+7. **Provenance carries the permissions.** `af_asset_provenance` gains the three flags beside `licence` and
+   `licence_verified`, so an asset that travels into a GLB `extras` block carries its permission state with it
+   and a later import does not have to re-derive — or re-guess — it.
 
 ### 3.J Learning verification benchmarks
 
@@ -1065,7 +1183,7 @@ records, an adapter manifest, or a critic's thresholds. Each revision must pass 
 |---|---|---|
 | **Subjects** | A frozen set of specs and seeds, including the deterministic **seed 1337** already used in this repository's evidence, plus one subject per gender, one per fabric in `kFabrics`, one per iris colour in `kEyeColours`, one minimal and one maximal-complexity spec | Covers every constant table a revision could touch |
 | **Assets** | `app/src/androidTest/assets/rigged_test_figure.glb` and `humanoid_motion_pack.glb`, plus the bundled `female.glb` | Already in the repository, already licensed, already used by CI |
-| **Metric families** | All seven from §3.E.2 | A revision must not improve one family by regressing another |
+| **Metric families** | **All eight** from §3.E.2 — Geometry; Topology/UV; Material/texture; Deformation; Render performance; Render correctness; Resource state; Identity/provenance | A revision must not improve one family by regressing another |
 | **Device contexts** | **host** and **CI emulator** as a minimum; **SM-S921B** for any revision touching rendering or performance (§3.L) | An emulator pass is never a phone pass |
 | **Baseline** | The golden records for the revision being replaced | Comparison is against a record, not a memory |
 
@@ -1329,6 +1447,88 @@ mechanism, not just an audit one.
 **Status today: MISSING**, except that Git history and the recorded deleted-branch SHAs already provide
 level 2 and level 3 for everything committed, and `DiagnosticDownloads.kt` already provides the export path.
 
+### 3.O Validated units, semantic mappings and calibration
+
+Owner instruction, 2026-11-26: *do not assume Anny's `[0,1]` parameters map directly to the engine's 45
+fields; define validated units, semantic mappings and calibration.* This section is the answer, and it is the
+single most likely place for a future agent to invent a correspondence that does not exist.
+
+#### 3.O.1 What the engine's fields actually are — read from `afcore.h`, not from a summary
+
+`af_spec` is **not** a vector of 45 numbers in one unit. It is a heterogeneous struct whose 45-float JNI wire
+form (`33 + 1 + 3 + AF_FACE_PARAM_COUNT`, with `AF_FACE_PARAM_COUNT = 8` at `afcore.h:114`) packs **six
+different kinds of quantity**, each with its own unit, range and sentinel:
+
+| Kind | Fields | Unit | Declared range | Sentinel — the trap |
+|---|---|---|---|---|
+| Enumerated | `sex`, `build`, `hair_style`, `outfit`, `footwear` | enum (`af_sex`, `af_build`, …) | the enum's values | an out-of-enum int is not a "default", it is undefined |
+| Integer control | `seed`, `struct_size` | count / bytes | any / `sizeof(af_spec)` | — |
+| **Dimensional** | `height_m` | **metres** | **1.40 … 2.20** (`af_spec_init` ⇒ 1.75) | none — a real unit with real bounds |
+| **Dimensional** | `age_years` | **years** | **16 … 70** | drives the adults-only invariant: below 18 the engine **ignores** `bust` and `glute` |
+| **Dimensional (tape)** | `neck_cm`, `chest_cm`, `underbust_cm`, `waist_cm`, `hip_cm`, `thigh_cm`, `calf_cm`, `bicep_cm`, `forearm_cm`, `wrist_cm`, `shoulder_width_cm`, `inseam_cm`, `head_circumference_cm` | **centimetres** | honoured exactly; perimeter preserved to **<0.5%** per the header's own claim | **`0` means "derive from height/build"** — `0` is *not* zero centimetres |
+| Unitless index | `muscle` (lean mass index), `body_fat`, `bust`, `skin_melanin` | none | `0..1` | anchors are documented, not linear: `body_fat` **0.10 = shredded, 0.45 = heavy** |
+| Signed index | `glute` | none | **`-1..+1`** | `0` ⇒ the build's default |
+| Material override | `cloth_roughness`, `cloth_metalness`, `gear_metalness` | none | `0..1` | **`<0` ⇒ AUTO / material default** |
+| **Colour** | `skin_tone[3]`, `hair_tone[3]`, `cloth_tone[3]`, `gear_tone[3]`, `eye_tone[3]` | **linear-sRGB** triplets | — | **`0` ⇒ derived/auto** — writing `0` to mean black silently requests "derive" instead |
+| Face | `face[8]` | see `af_face_param` | — | `0` ⇒ the default face |
+| Text | `prompt[512]` | UTF-8 chars | informational; stored as GLB metadata | — |
+
+Three consequences, each of which has already broken a mapping attempt elsewhere in this project's history:
+
+- **`[0,1]` is not a unit.** Two parameters both spanning `[0,1]` may mean entirely different things — one may
+  be a lean-mass index, another a melanin fraction, another a normalised latent coordinate with no physical
+  meaning at all. Range agreement is not semantic agreement.
+- **The sentinels are load-bearing.** `0` means "derive" for every tape field and every colour triplet, `<0`
+  means AUTO for the material overrides, and `0` means "default face". Any bridge that writes a genuine zero
+  into those fields does not set zero — it **requests derivation**, and the result will differ from the
+  intention without any error being raised.
+- **The 45/45 coincidence is not compatibility.** MHR has **45 `identity_coeffs`** sampled as
+  `0.8 * torch.randn(batch, 45)`; this engine has **45 wire floats** that are named, bounded and heterogeneous.
+  The two numbers match. **Nothing else does.** Treating that as a mapping is precisely the invented
+  equivalence `AGENTS.md` §2.2 forbids.
+
+#### 3.O.2 The calibration record — the only licence to bridge two parameter spaces
+
+No external model's parameter may be written into an `af_spec` field, and no `af_spec` field read out of one,
+except through a committed **calibration record**. Its fields are mandatory:
+
+| Field | Meaning | Why it cannot be omitted |
+|---|---|---|
+| `engine_field` | the exact `af_spec` field name | a mapping to "the body shape" is not a mapping |
+| `engine_unit` | metres / years / centimetres / unitless / linear-sRGB / enum | from §3.O.1, copied not guessed |
+| `engine_range` | the declared bounds | the validator enforces them |
+| `engine_anchors` | documented anchor points (e.g. `body_fat` 0.10 shredded, 0.45 heavy) | anchors are what make a unitless index interpretable |
+| `external_model`, `external_param` | named model and named parameter | MHR's are latent; Anny's are `phenotype_labels` |
+| `external_unit`, `external_range` | **read from the model's own documentation** | UNVERIFIED if the documentation does not say |
+| `mapping` | the function, in one direction or both, with its inverse where one exists | "roughly linear" is not a function |
+| `sentinel_handling` | exactly how `0`, `<0` and out-of-range values are treated | §3.O.1's traps, answered explicitly |
+| `validation` | the **measurement** that established the mapping: sample N points, measure the resulting engine output through the engine's own path, report the error | without this the record is a hypothesis, and must be labelled one |
+| `status` | `CALIBRATED` / `HYPOTHESIS` / `UNVERIFIED` / `REJECTED` | honest statuses, per §2.1 |
+| `source_commit`, `verified_on`, `verified_by` | provenance of the record itself | a calibration nobody can date is a rumour |
+
+**Rules.** *(1)* A record whose `status` is not `CALIBRATED` may not drive generated output; it may only be
+reported. *(2)* Records are **data**, versioned and reviewed like golden records, never code comments. *(3)*
+Every unmapped external parameter stays unmapped — partial mappings are normal, and padding them out with
+plausible guesses is how a body model's "hand size" ends up driving this engine's `wrist_cm`. *(4)* Colour
+mappings must state their colour space on both sides; linear-sRGB and sRGB are not interchangeable, and the
+engine's `0 ⇒ derive` sentinel makes a naive "0 = black" mapping actively wrong. *(5)* The adults-only
+invariant is not calibratable: any external parameter that would produce a body shaped like a minor is
+**rejected at the boundary**, not scaled.
+
+#### 3.O.3 What is known today, honestly
+
+- **No calibration record exists for any external model.** Status: `MISSING`.
+- **Anny's parameter names are readable** (`model.phenotype_labels`, `model.facial_action_labels`,
+  `model.bone_labels`, all documented as being in `[0,1]`) but their **semantics and units are not documented
+  in the README**, and the paper (arXiv 2511.03589) was unreachable from this workspace. So even Anny — whose
+  design is closest to this engine's — is `UNVERIFIED` as a mapping source until each label is read and
+  matched **one at a time, by meaning**.
+- **MHR's identity space is latent**, so a mapping would have to be **fitted or learned** from paired samples,
+  not read from a table. That is a project of its own, with its own validation burden, and it is **not**
+  implied by any recommendation in this document.
+- Therefore **M4's critics must run against internal references** (§5.6 field 5(e)) until a calibration record
+  reaches `CALIBRATED`, and any external percentile or z-score they emit before then is an invented number.
+
 ## 4. Dependency graph, interface freezes and agent execution order
 
 ### 4.1 Mission register
@@ -1435,6 +1635,19 @@ care, even though it is the least visually interesting mission.
 repository's `IMPLEMENTED IN SOURCE` claims into `REAL + VERIFIED`, and §1.5(a) — the failing
 generated-avatar runtime gate — stays unresolved without it. Run it from wave 0 and continuously.
 
+**M5 is now the longest chain *inside* a single mission, and the map above does not show it.** Staging M5
+(§5.7 field 5) exposes an internal sequence `S0 → S-A → S-B → S-C → S-D → S-E`, where **S-D** (morph-target
+application on import) needs both S-A and S-C, and **S-E** (facial animation on an imported face) needs S-D.
+Two consequences for scheduling:
+
+- The two chains above are still the longest **inter-mission** paths, but M5's internal path is longer than
+  any single mission previously appeared. If the owner wants facial animation on imported models, the honest
+  lead time is six sequential stages, not one mission — and **S-E is unreachable without S-D**, which was
+  deferred and unowned until 2026-11-26.
+- **S0 gates the rest and produces no code.** The API decision (freeze **F-3**, decision **D4**) must be
+  committed and reviewed before S-A starts; implementing before deciding is how this repository acquired two
+  animation systems (§7 item 3). M5 may therefore run in parallel with M4 and M6 **only from S-A onwards**.
+
 ### 4.6 What must not be parallelised
 
 1. **M5's API decision (F-3) before M5's implementation.** Deciding and building at once is how two
@@ -1466,11 +1679,24 @@ wave 0 are M0 and **M8**, not M0 and M1.
 | 9 | 5.9 | **M7** Optimisation and asset intelligence | 4 | F-1, F-2, M8 device data | — |
 | 10 | 5.10 | **M9** Versioned models, optional fine-tuning, rollback | 4 | F-4, F-5 — **optional** | — |
 
-Each prompt carries the eight required fields — exact mission, repository and branch, files and interfaces
-involved, dependencies, acceptance criteria, required build and runtime evidence, README handover
-requirements, explicit exclusions — plus, where applicable, the four additions from the owner's approval:
-asset provenance (§3.I), the learning-revision benchmark gate (§3.J), Android-first placement (§3.K) and the
-SM-S921B resource budget (§3.L).
+**Each prompt carries the ten required fields**, in this order, exactly as the owner specified on
+2026-11-26: **1** exact objective · **2** repository and correct working branch · **3** files and modules to
+inspect or change · **4** required interfaces and dependencies · **5** **detailed implementation
+instructions** · **6** acceptance criteria · **7** required tests and build evidence · **8** **runtime
+verification requirements** · **9** README handover requirements · **10** explicit exclusions and blockers.
+All ten are machine-verified present and correctly ordered in all ten briefs. Field **5** is written so that
+the implementing agent does not have to redesign anything: it names the files, the existing patterns to copy,
+the traps to avoid and the order of work. Field **8** is separated from field **7** deliberately — *build and
+test evidence* proves the code compiles and its tests pass, while *runtime verification* proves it behaves on
+a device, and this repository's history (§1.5) is a record of confusing the two.
+
+The four additions from the owner's earlier approval are folded into the relevant briefs: asset provenance
+(§3.I), the learning-revision benchmark gate (§3.J), Android-first placement (§3.K) and the SM-S921B resource
+budget (§3.L).
+
+**M5 is staged** (S0 → S-A → S-B → S-C → S-D → S-E) because "animation" covers five distinct capabilities —
+skeletons, retargeting, playback, morph targets and facial animation — that were previously conflated under
+one mission and one deferred exclusion. Each stage has an entry condition and its own exit evidence.
 
 Paste §5.0 first, then the mission block. §5.0 is repeated into every agent deliberately so no prompt
 depends on another document having been read.
@@ -1508,7 +1734,30 @@ depends on another document having been read.
 >     sources were wrong and the primary licence was not.
 > 11. **This initiative is exclusively inside AvatarForge** (`avatarforge-engine/`). Do not merge Neural
 >     Core work into 3D-Mega-Hub, do not modify Cue-Next, and do not combine unrelated repositories,
->     branches or development objectives in one pull request.
+>     branches or development objectives in one pull request. §1.0 defines the four projects and their
+>     boundaries: 3D-Mega-Hub is the final integrated app, AvatarForge is the separate standalone
+>     engine/SDK (here as the ported `:avatarforge-engine` module), 3DDD is a separate donor whose renderer
+>     was never imported, and Cue-Next is entirely separate — `grep` finds zero references to it in this
+>     repository.
+> 12. **Never bridge two parameter spaces by resemblance.** No external model's parameter may be written
+>     into an `af_spec` field except through a committed **calibration record** at status `CALIBRATED`
+>     (§3.O.2). `[0,1]` is not a unit; the engine's fields are metres, years, centimetres, unitless indices
+>     with non-linear anchors, signed indices and **linear-sRGB** triplets, and their sentinels are
+>     load-bearing — `0` means *derive* for every `*_cm` field and every colour triplet, `<0` means AUTO for
+>     the material overrides. MHR's 45 `identity_coeffs` and the engine's 45 wire floats are **not** the same
+>     45 (§3.O.1).
+> 13. **Three permissions, not one.** Every asset records `may_preview_locally`, `may_redistribute` and
+>     `may_train_on` separately; each defaults to `unknown`, and `unknown` behaves as **deny** for
+>     redistribution and training while still permitting local preview (§3.I.2). Fitting a threshold or a
+>     calibration to a dataset is training. The owner's own material is denied redistribution and training by
+>     policy, not by licence.
+> 14. **Invent no ownership and no training rights.** The engine port has **no declared licence** (D11) and
+>     the engine's **output** has none either (D9). Until the owner declares both, the set of assets eligible
+>     for training is **empty** and any claim that generated avatars are "free data" or "licence-clean" is a
+>     violation of rule 2, not a simplification.
+> 15. **Each mission brief has ten fields**, and field 8 (runtime verification) is not field 7 (tests and
+>     build evidence). A green `ctest` and a green Gradle build are not runtime verification; only a named
+>     device produces `REAL + VERIFIED`.
 >
 > **Read §6 before choosing any model, dataset or library.** Verified-free shortlist: TripoSR (MIT covering
 > weights), FLUX.1 [schnell] and Qwen-Image (Apache 2.0), TRELLIS (MIT), InstantMesh (Apache-2.0), Anny
@@ -1543,26 +1792,88 @@ depends on another document having been read.
 
 ### 5.1 M0 — Foundation and module boundary
 
-> **1. Exact mission.** Create the Neural Core boundary without changing any runtime behaviour. Publish
+> **1. Exact objective.** Create the Neural Core boundary without changing any runtime behaviour. Publish
 > freeze **F-0**: the `afneural.h` C ABI skeleton, the `procedural/` versus `generated/` package split, the
 > `AF_ENABLE_NEURAL` CMake option, the **protected-component declaration** (§3.M.1), the **Android-first
 > placement declaration** (§3.K) and `docs/NEURAL_CORE_BOUNDARY.md`.
 >
-> **2. Repository and branch.** `davealone69-gif/3d-mega-hub`, a new branch cut from
+> **2. Repository and correct working branch.** `davealone69-gif/3d-mega-hub`, a new branch cut from
 > `integration/avatarforge-renderer-port` **after PR #17 lands**. Target: a pull request into that trunk,
 > merge commit, no squash.
 >
-> **3. Files and interfaces involved.** New: `avatarforge-engine/src/main/cpp/include/afneural.h`;
+> **3. Files and modules to inspect or change.** New: `avatarforge-engine/src/main/cpp/include/afneural.h`;
 > `avatarforge-engine/src/main/java/com/davemega/hub/avatarforge/neural/procedural/` and `.../neural/generated/`
 > (each with a `package-info` or README stating its rule); `docs/NEURAL_CORE_BOUNDARY.md`. Modified:
 > `avatarforge-engine/src/main/cpp/CMakeLists.txt` (add `AF_ENABLE_NEURAL`, **default OFF**),
 > `avatarforge-engine/build.gradle.kts` only if the option needs surfacing. **Not modified:**
 > `include/afcore.h`, `avatarforge_jni.cpp`, `AvatarSpec.kt`.
 >
-> **4. Dependencies.** None. Wave 0, parallel with M8. Read §3.0 (placement) and §3.H.1 (separation rules)
+> **4. Required interfaces and dependencies.** None. Wave 0, parallel with M8. Read §3.0 (placement) and §3.H.1 (separation rules)
 > first.
 >
-> **5. Acceptance criteria.** `afcore.h` untouched; the 45-float JNI contract untouched; the
+> **5. Detailed implementation instructions.** Work in this order; each step is checkable before the next.
+>
+> **(a) The CMake option — copy the precedent, do not invent one.** `CMakeLists.txt:51` already contains
+> `option(AF_ENABLE_VULKAN "Build the Vulkan backend into libafrender (the Hub never selects it)" OFF)`.
+> Add `option(AF_ENABLE_NEURAL "Build the Neural Core subsystem into libafcore (off by default)" OFF)`
+> immediately below it, and mirror the same three-part shape the Vulkan option uses: a guarded
+> `list(APPEND ...)` of sources, a guarded `target_compile_definitions(afcore PRIVATE AF_ENABLE_NEURAL=1)`,
+> and nothing else. Neural sources attach to **`afcore`**, not to `afrender` — `afrender` is built only
+> `if(ANDROID)` (`CMakeLists.txt:52-71`) and Neural Core must also build for host `ctest`.
+>
+> **(b) `include/afneural.h` — declarations only.** Include guard `AF_NEURAL_H`, one `extern "C"` block,
+> `#define AF_NEURAL_ABI_VERSION 1`, and every public struct beginning with `int32_t struct_size;` plus a
+> matching `af_*_init()` that sets it to `sizeof(...)` — the exact versioning pattern `af_spec` uses
+> (`afcore.h`'s `struct_size` comment: *"forwards-compatible struct growth"*). **No definitions, no
+> provider headers, no `#include <string>`.** The only function with a body in this mission is
+> `int32_t af_neural_abi_version(void);` declared here and defined in the stub below.
+>
+> **(c) One translation unit, compiled only when the option is ON.** `src/neural/af_neural_abi.cpp`
+> containing just `#include "afneural.h"` and the `af_neural_abi_version` definition returning the constant.
+> Do **not** add it to `AF_RENDER_SOURCES`.
+>
+> **(d) The two Kotlin packages.** Under
+> `avatarforge-engine/src/main/java/com/davemega/hub/avatarforge/neural/`, create `procedural/` and
+> `generated/`. Kotlin has no `package-info.java`, so each gets a marker object carrying its rule as a
+> compile-time constant, e.g. `internal object ProceduralBoundary { const val RULE = "Deterministic engine code. Must not import from ..neural.generated (§3.H.1)." }`,
+> plus a `README.md` in each directory stating the same rule in prose. No other Kotlin in this mission.
+>
+> **(e) The import-isolation test — a source scanner, because a host C++ test cannot see Kotlin imports.**
+> Add `src/test/cpp/neural_boundary_test.cpp` and register it exactly like the existing pairs at
+> `CMakeLists.txt:88-136` (`if(BUILD_TESTING AND NOT ANDROID)` → `add_executable` →
+> `target_link_libraries(... PRIVATE afcore)` → `add_test(NAME neural_boundary_regression COMMAND ...)`).
+> Pass the source root in with
+> `target_compile_definitions(neural_boundary_test PRIVATE AF_SOURCE_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")`,
+> then have the test walk `neural/procedural/**/*.kt` and fail on any line matching
+> `import\s+.*\.neural\.generated`, printing `file:line`. Also assert `neural/generated/**/*.kt` never
+> re-exports a procedural type by `typedef`/`actual` aliasing. **The test must fail loudly if the directories
+> are missing** — a scanner that silently finds nothing is a false green.
+>
+> **(f) The protected-component declaration as data, not prose.** Write
+> `docs/NEURAL_CORE_PROTECTED.json`: an array of objects `{"path": "...", "reason": "...", "since": "..."}`
+> covering every entry of §3.M.1 verbatim. Add a second host test that reads it and asserts each `path`
+> exists in the tree at `AF_SOURCE_ROOT`, so a rename breaks the build instead of silently un-protecting a
+> component. Enforcement of *"no change without a human-authored commit"* belongs in CI, not in ctest: add
+> `.github/scripts/protected-path-gate.sh` that reads the same JSON, diffs
+> `git diff --name-only "$BASE".."$HEAD"`, and exits non-zero if any protected path changed without
+> `Human-authored:` in a commit message in that range. Wire it into `android.yml` as its own step. **Do not
+> make it delete, revert or rewrite anything** — it reports and fails.
+>
+> **(g) The placement matrix as data.** `docs/NEURAL_CORE_PLACEMENT.csv` with header
+> `capability,phone,workstation,ci,evidence` and one row per capability of the §3.K matrix, using only the
+> values `yes`, `no`, `blocked-licence`, `blocked-hardware`, `n/a` and a citation for `evidence`. A third
+> host test asserts the CSV parses, has no empty `evidence` cell, and that no row claims `phone=yes` for a
+> capability whose §3.K row says otherwise.
+>
+> **(h) Prove zero behaviour change.** Build twice from a clean tree — `-DAF_ENABLE_NEURAL=OFF` and `=ON` —
+> and `sha256sum` `libafcore.so` (and `libafrender.so` where an Android build produced one). The OFF build's
+> hashes must equal a pre-mission build's. Commit both hash lists into the PR description, with the exact
+> `cmake` command lines used, so a reviewer can reproduce them.
+>
+> **(i) Do not touch** `include/afcore.h`, `src/android/af_jni.cpp`, `AvatarSpec.kt`, `:app`, or any
+> existing test. If a step above seems to require it, stop and report instead.
+>
+> **6. Acceptance criteria.** `afcore.h` untouched; the 45-float JNI contract untouched; the
 > **protected-component list of §3.M.1 is committed as machine-readable data** (not prose) with a test that
 > fails if a future change touches a protected path without a human-authored commit; the **§3.K placement
 > matrix is committed** stating, per capability, whether it runs on the phone, on a workstation, or in CI;
@@ -1571,17 +1882,31 @@ depends on another document having been read.
 > `AF_ENABLE_NEURAL=OFF` the built libraries are **byte-identical** to the pre-mission build; a test asserts
 > that nothing in `procedural/` imports from `generated/`; no existing test changes.
 >
-> **6. Required build and runtime evidence.** Host `ctest` **11 of 11** with
+> **7. Required tests and build evidence.** Host `ctest` **11 of 11** with
 > `generation_contract_regression` reported *Not Run (Disabled)*, exit status 0. Two builds — option OFF and
 > ON — with SHA-256 of `libafcore.so` and `libafrender.so` from the OFF build matching the pre-mission
 > build. `gh workflow run android.yml --ref <branch>` fully green; quote the run id and the per-job
 > conclusions. The import-isolation test's output.
 >
-> **7. README handover requirements.** Add a short *Neural Core* subsection under the current handover:
+> **8. Runtime verification requirements.** M0 changes no runtime behaviour, so runtime verification is a
+> **negative** proof, and it must be performed, not assumed:
+> *(a)* Install the debug APK produced by CI on the **SM-S921B** if one is available to the agent; otherwise
+> on the CI emulator and labelled `CI_EMULATOR`, never `DEVICE`. *(b)* Run the existing
+> `Run generated-avatar GLES diagnostic` path (**keep that label exactly**) and record triangle count,
+> draw calls, native heap and first-frame time; each must match the values already recorded for the base
+> head within the tolerances that head's own record states — a mismatch is a regression, not noise.
+> *(c)* Prove the option is off in the shipped binary:
+> `unzip -p app-debug.apk lib/arm64-v8a/libafcore.so | strings | grep -c af_neural` must print **0**.
+> *(d)* Confirm the app's cold start emits **no new log tag** containing `afneural` or `NeuralCore`.
+> *(e)* Every figure carries commit SHA, date, device model and build variant. Anything not measured on a
+> named device is reported `UNVERIFIED` — and **no part of M0 may be reported `REAL + VERIFIED` on the
+> strength of an emulator run** (§7 item 7).
+>
+> **9. README handover requirements.** Add a short *Neural Core* subsection under the current handover:
 > what the boundary is, that `AF_ENABLE_NEURAL` defaults OFF, that no behaviour changed, the exact head
 > SHA, and the CI run id. State explicitly that results belong to that head only.
 >
-> **8. Explicit exclusions.** No provider code, no inference, no network, no asset inspection, no metrics,
+> **10. Explicit exclusions and blockers.** No provider code, no inference, no network, no asset inspection, no metrics,
 > no models, no datasets, no third-party dependency of any kind. **No model weights may ever be loadable
 > into the app process** (§3.K consequence 1) — declare that constraint in the boundary document now, while
 > it is free to declare. Do not implement any later mission's
@@ -1589,25 +1914,73 @@ depends on another document having been read.
 
 ### 5.2 M8 — Device verification and CI gate repair
 
-> **1. Exact mission.** Convert this repository's `IMPLEMENTED IN SOURCE` claims into `REAL + VERIFIED`, and
+> **1. Exact objective.** Convert this repository's `IMPLEMENTED IN SOURCE` claims into `REAL + VERIFIED`, and
 > attribute, fix or obtain a waiver for the failing generated-avatar runtime gate. **Runs from wave 0 and
 > continuously — it is on no critical path but gates the credibility of every other mission.**
 >
-> **2. Repository and branch.** As §5.0. This mission needs a **real Android toolchain**: a device or
+> **2. Repository and correct working branch.** As §5.0. This mission needs a **real Android toolchain**: a device or
 > emulator with JDK, Android SDK, NDK and (for the emulator) KVM. A host-only workspace cannot complete it.
 >
-> **3. Files and interfaces involved.** Start from `docs/ANDROID_TEST_AGENT_PROMPT.md` — the standing brief,
+> **3. Files and modules to inspect or change.** Start from `docs/ANDROID_TEST_AGENT_PROMPT.md` — the standing brief,
 > with toolchain values, ordered commands, the verbatim `Avatar LOD selected:` log format and the pass
 > criteria. Also: `.github/workflows/android.yml`, `avatarforge-generated-runtime.yml`,
 > `publish-phone-test-apk.yml`; `app/src/androidTest/.../GeneratedAvatarRuntimeTest.kt`;
 > `FilamentPreviewView.kt`; `src/render/af_lod_select.h`; and `kotlin-compile-gate.yml`, which exists on
 > **`arena/25bd4008-3d-mega-hub` only**.
 >
-> **4. Dependencies.** None — start immediately. **M3 needs at least one device record from this mission**,
+> **4. Required interfaces and dependencies.** None — start immediately. **M3 needs at least one device record from this mission**,
 > and M7 needs its device measurements, so produce those early and publish them even before the gate is
 > resolved.
 >
-> **5. Acceptance criteria.** Four jobs, in order:
+> **5. Detailed implementation instructions.**
+>
+> **(a) Establish what actually fails, on hardware the agent controls.** The gate
+> *"Generate, render and inspect real avatar pixels"* fails at **step 8, `Run generated-avatar
+> instrumentation test`**. Its last recorded failure on a **documents-only** head (`281806e7`, run
+> `45813704590`) proves the failure is not caused by the code delta between that head and its parent — a
+> markdown file cannot fail an instrumentation test. The GitHub API yields no test name for it (annotations
+> give only *"The process '/usr/bin/sh' failed with exit code 1"*) because logs and artifacts are served from
+> hosts outside a restricted workspace. **So do not diagnose from the API.** Check out the head, build the
+> APK, and run the instrumentation test yourself with
+> `./gradlew :app:connectedDebugAndroidTest --tests '*GeneratedAvatarRuntimeTest*'` (or the module's
+> equivalent), capturing the full stack trace and the test's own diagnostic lines.
+>
+> **(b) Separate flake from fault by repetition, not by reading.** Run the same head **at least five times**
+> on the same device/emulator, recording per run: pass/fail, `frames`, `draws`, `triangles`, wall-clock to
+> first presented frame, and the failure message if any. The known failure text is *"no drawable EGL-presented
+> model frame within 15 seconds"* with `frames=2`, `draws=29`, `triangles=1626176` (= LOD0), and the same
+> test has previously flipped pass/fail on a single commit via a PixelCopy timeout. Five identical failures
+> ⇒ fault. A mix ⇒ flake, and then the *variance* is the finding.
+>
+> **(c) Fix the cause; never the assertion.** §7 item 5 forbids weakening a failing test to go green. The
+> legitimate outcomes are: fix the renderer/lifecycle defect; or, if the measurement shows the emulator
+> genuinely needs longer than the hard-coded 15 s for a 1.6 M-triangle first frame, replace the magic number
+> with a **named, measured** constant whose comment cites the five-run table from (b) — and say so in the PR.
+> Raising a timeout without that table is weakening the test.
+>
+> **(d) Recover the compile gate from the branch that owns it.** `arena/25bd4008-3d-mega-hub`
+> (`b79a7d0c362d8e25df21238d5085f47aa5b71084`) is the **sole owner** of `.github/workflows/kotlin-compile-gate.yml`.
+> Recover it read-only with
+> `git show b79a7d0c:.github/workflows/kotlin-compile-gate.yml`, review it, and land it as its own commit.
+> **Do not delete or force-push that branch** (§8.4 rule 3).
+>
+> **(e) Make `arena/**` testable.** `.github/workflows/android.yml` fires on
+> `branches: [main, "work/**", "fix/**", "integration/**"]` for `push` and `[main, "work/**", "fix/**"]` for
+> `pull_request` — so it never runs on an `arena/**` push, and `workflow_dispatch` refuses a bare SHA
+> (`422 No ref found`). Document the two working invocations in `docs/ANDROID_TEST_AGENT_PROMPT.md`:
+> `gh workflow run android.yml --ref <branch-name>` and a PR-triggered run. Do not add `arena/**` to the
+> trigger list without an owner decision — that would run the full matrix on every agent branch.
+>
+> **(f) Produce the device evidence table** required by field 8 and append it to `AGENTS.md` beside the
+> existing real-device results table (line ~180) **as a new dated row**, never by editing the historical one.
+>
+> **(g) Leave the P1 stale-session defect diagnosed even if unfixed.** `docs/PHONE_TEST_2026-11-15.md`
+> records a stale session overwriting the current session's record after returning from the file picker and
+> re-importing an 83 MB file for nothing, with a `FAILED` record citing *"Surface was released while the
+> renderer was starting or drawing: … eglCreateWindowSurface failed"*. Reproduce it or disprove it, with the
+> log lines. If unfixed, it stays an open blocker with evidence — not a rumour.
+>
+> **6. Acceptance criteria.** Four jobs, in order:
 > *(a) Attribute and resolve the runtime gate.* It fails on trunk head `9baf7c67` (run 45779175991) and on
 > the merged line (`bdaef4b5` run 45777317839, `ba38d996` run 45789457244), always at step 8 *Run
 > generated-avatar instrumentation test*, and passes on lead head `758bcfb4` (run 45779172779). Note that
@@ -1641,12 +2014,27 @@ depends on another document having been read.
 > gate that would have caught a real compile break automatically: a merge once deleted a helper while
 > keeping its call site and reported **no conflict**.
 >
-> **6. Required build and runtime evidence.** For every result: the exact commit SHA, the device model,
+> **7. Required tests and build evidence.** For every result: the exact commit SHA, the device model,
 > Android version and GPU. Raw log lines, not summaries. Repeated-run counts wherever flake is a
 > possibility. The workflow run ids. Whether the same-SHA APK was inspected, and its SHA-256. If a job could
 > not be run, say which and why — an absent measurement is `not measured`, never an inferred pass.
 >
-> **7. README handover requirements.** Update the exact-head evidence record with the new head's results,
+> **8. Runtime verification requirements.** This mission **is** runtime verification, so its bar is the
+> highest in the plan:
+> *(a)* **≥5 repeated instrumented runs on one named head**, tabled per run as in 5(b), with the device model,
+> Android version, build variant and APK SHA-256 above the table. *(b)* **One real SM-S921B session** through
+> the existing diagnostic path, recording: FPS over the last 240 frames, frame-time median/p95/p99/max,
+> native heap at start and end, GPU request totals (textures / geometry / render targets), quality-level
+> transitions with the frame-time evidence that caused each, generated-avatar import ms, first-frame ms,
+> and GL/EGL error codes. *(c)* **Carry the honest gaps forward verbatim**: heat, battery and sessions longer
+> than 38 s remain `NOT MEASURED`; level-2 frame times remain `PARTIAL` unless actually captured. *(d)* Every
+> number tagged `REAL + VERIFIED` **only** with a named physical device; emulator results are tagged
+> `CI_EMULATOR` and may never be described as phone results. *(e)* The historical baseline in §3.L.1 belongs
+> to the APK of `797d156` (2026-11-15) and must be presented beside the new figures **as a baseline to beat**,
+> never merged into them or quoted as current (§7 item 14). *(f)* Results belong to the head that produced
+> them; if any later commit lands on the branch, the table is re-run or explicitly marked stale (§7 item 6).
+>
+> **9. README handover requirements.** Update the exact-head evidence record with the new head's results,
 > and **state which earlier results are now superseded** — a result never transfers to a different commit.
 > Record the runtime-gate verdict and its attribution, the observed LOD behaviour with device identity, and
 > that `kotlin-compile-gate.yml` now runs on the trunk. Keep the standing rules visible: an emulator pass is
@@ -1654,7 +2042,7 @@ depends on another document having been read.
 > SurfaceView test passes on one exact head with all required Android jobs green and the same-SHA APK
 > inspected.
 >
-> **8. Explicit exclusions.** Do not fix the gate by weakening, skipping or disabling the test, or by
+> **10. Explicit exclusions and blockers.** Do not fix the gate by weakening, skipping or disabling the test, or by
 > widening a timeout to make it pass — that hides the defect this mission exists to find. Do not "resolve"
 > the Filament `sheenColorIndex` `PreconditionPanic` by suppressing it. Do not publish an ungated APK
 > (`publish-phone-test-apk.yml` requires `commit` and `expected_apk_sha256`, and its readiness gate must
@@ -1663,12 +2051,12 @@ depends on another document having been read.
 
 ### 5.3 M1 — Neural Gateway and the zero-provider guarantee
 
-> **1. Exact mission.** Build the provider-independent intelligence interface (§3.A, §3.A.1) **and prove the
+> **1. Exact objective.** Build the provider-independent intelligence interface (§3.A, §3.A.1) **and prove the
 > zero-provider guarantee** (§3.G). Publish freeze **F-5**.
 >
-> **2. Repository and branch.** As §5.0. One branch, one PR into the trunk.
+> **2. Repository and correct working branch.** As §5.0. One branch, one PR into the trunk.
 >
-> **3. Files and interfaces involved.** New, under `avatarforge-engine/.../neural/`: `NeuralProvider`,
+> **3. Files and modules to inspect or change.** New, under `avatarforge-engine/.../neural/`: `NeuralProvider`,
 > `ArtifactProvider` (**separate interface** — artifacts are binary, not text), `NeuralCapability`,
 > `ArtifactCapability`, `ArtifactReceipt`, `NeuralRequest` / `NeuralResult` with the five task kinds
 > (`SPEC_FROM_PROMPT`, `ASSET_DIAGNOSIS`, `ANIMATION_CRITIQUE`, `TEXTURE_CRITIQUE`, `MOTION_EVALUATION`),
@@ -1680,10 +2068,69 @@ depends on another document having been read.
 > `POST {base}/api/chat`, defaults `http://localhost:11434` / `llama3.2:1b`) and `OllamaEndpoint.kt`, and
 > report exactly what exists before changing it.
 >
-> **4. Dependencies.** **F-0** (M0). Reuses `DeviceResourceGovernor` for thermal back-off — do not write a
+> **4. Required interfaces and dependencies.** **F-0** (M0). Reuses `DeviceResourceGovernor` for thermal back-off — do not write a
 > second resource sampler. No dependency on M2 or M3.
 >
-> **5. Acceptance criteria.** Two or more providers behind one interface; a new provider needs no engine
+> **5. Detailed implementation instructions.**
+>
+> **(a) Put the gateway in the engine module, not in `:app`.** AvatarForge is the standalone engine/SDK
+> (§1.0), so its intelligence boundary lives at
+> `avatarforge-engine/src/main/java/com/davemega/hub/avatarforge/neural/gateway/`. `:app` may call it; it may
+> never be required by it. Freeze **F-5** is exactly this surface: `NeuralGateway`, `CapabilityProbe`,
+> `ProviderTransport`, `ProviderDescriptor(tier, id, baseUrl, costModel, licence)`, and the `CapabilityStatus`
+> enum with the §3.G values (`NO_PROVIDER`, `PROVIDER_UNREACHABLE`, `TIMEOUT`, `THERMAL_BACKOFF`,
+> `BUDGET_EXCEEDED`, `OUTPUT_REJECTED_BY_VALIDATOR`, `LICENCE_BLOCKED`). Publish F-5 in
+> `docs/NEURAL_CORE_CONTRACTS.md` with a version number before implementing against it.
+>
+> **(b) Tier 0 is a real code path, not a null object.** Implement `ProceduralOnlyTransport`: it answers
+> every generative capability with `NO_PROVIDER` and routes everything else to the deterministic engine. Tier
+> resolution is ordered 0 → 1 (local Ollama) → 2 (local free weights on the user's GPU) → 3 (paid,
+> user-funded, user-configured, disclosed opt-in) and **stops at the first tier that is both configured and
+> reachable**. A tier is never selected implicitly: tier 3 requires an explicit user setting plus a visible
+> cost/licence disclosure at the moment of the call.
+>
+> **(c) One result type, no partial success.** `sealed class CapabilityResult` with
+> `Ok(spec: AvatarSpec, receipt: ArtifactReceipt)` and `Unavailable(status: CapabilityStatus, detail: String)`.
+> **No nullable spec, no half-filled spec, no `Ok` without a receipt.** A caller that cannot distinguish
+> "no provider" from "provider refused" will eventually render a default avatar and call it a result.
+>
+> **(d) The validation boundary is total, and it never clamps.** Provider output is parsed into `AvatarSpec`
+> through the validation that already exists in `AvatarSpec.kt`. If **any** field is out of range, the whole
+> proposal is rejected with `OUTPUT_REJECTED_BY_VALIDATOR` and the offending field named in `detail`. Silent
+> clamping is how a model's hallucinated `height_m = 47.0` becomes a 47-metre avatar with a green test. Note
+> the sentinel traps while validating: `0` means *"derive from height/build"* for every `*_cm` tape field,
+> `<0` means AUTO for `cloth_roughness`/`cloth_metalness`/`gear_metalness`, and `0` means auto for the colour
+> triplets — so a provider that legitimately means "zero" cannot express it, and the gateway must not
+> reinterpret those values (§3.O).
+>
+> **(e) Reuse the engine's existing execution discipline.** `docs/AVATARFORGE_INTEGRATION.md` records that
+> the facade already *"runs native work on an interruptible background dispatcher, checks
+> memory/storage/thermal state, caps the engine budget at 1.5 GiB and at half measured free RAM"*. Route
+> gateway calls through that same path; do not build a second scheduler, a second thermal check or a second
+> budget. One named timeout constant per transport, all cancellable.
+>
+> **(f) Demote the chat page; do not delete it.** `app/src/main/java/com/davemega/hub/MainActivity.kt` and
+> `OllamaEndpoint.kt` today form a dead end whose output reaches nothing (§1.5). Retarget them into a console
+> **over the gateway**: the page shows the resolved tier, the `CapabilityStatus` of each capability, and the
+> receipt of the last call. Keep the UI label `Run generated-avatar GLES diagnostic` byte-for-byte. Do not add
+> a second chat surface.
+>
+> **(g) Receipts field-for-field.** Every provider call emits an `ArtifactReceipt` mapping one-to-one onto
+> `af_asset_provenance` (§3.I), including `licence_verified`, which may only be `1` where the licence text was
+> read from a primary source (§6.3 method).
+>
+> **(h) The exit gate is a CI job that proves the negative.** Add
+> `.github/workflows/neural-tier0-gate.yml`: it runs the entire Tier-0 path with the provider URL set to an
+> unreachable address (`http://127.0.0.1:1/`), then asserts (i) the generated GLB's SHA-256 equals the
+> committed golden, (ii) every generative capability reports `NO_PROVIDER`, (iii) no test exceeds a bounded
+> wall-clock — a hang is a failure, not a timeout to be tolerated. **This job is M1's exit gate**: M2 and
+> later may not start until it is green on the M1 head.
+>
+> **(i) Licence hygiene.** No model weights enter the repository or the APK. Any new third-party library is
+> recorded in `THIRD_PARTY_NOTICES.md` **before** first use, per `AGENTS.md`. Ollama is the user's own local
+> server; the gateway must work when it is absent.
+>
+> **6. Acceptance criteria.** Two or more providers behind one interface; a new provider needs no engine
 > change. With **zero providers configured**: generation is **byte-identical** to the pre-mission golden
 > SHA-256, asset inspection verdicts unchanged, and **no network call is attempted** — proven by pointing
 > the HTTP layer at an unreachable host and still succeeding. Fallback order ends at
@@ -1693,14 +2140,28 @@ depends on another document having been read.
 > `AvatarSpec`. No inference on the render thread. No key in the repository, any log, or any diagnostic
 > report. `LICENCE_BLOCKED` is a working degradation reason.
 >
-> **6. Required build and runtime evidence.** The **Tier-0 CI job** (§3.G.4) added to `android.yml` and
+> **7. Required tests and build evidence.** The **Tier-0 CI job** (§3.G.4) added to `android.yml` and
 > green, with all four assertions visible in its output. JVM unit tests for routing, fallback, validation,
 > thermal back-off and degradation reasons — a fake provider is legitimate here as a *test* double, not a
 > shipped mock. Both golden SHA-256 values (before and after) quoted. `ctest` 11 of 11 on host. CI
 > `android.yml` fully green including lint and R8; run id quoted. Live-model behaviour is **UNVERIFIED**
 > unless you ran a real Ollama — then name the model, its version and the host.
 >
-> **7. README handover requirements.** Record: the provider interface and how to add one; the tier table
+> **8. Runtime verification requirements.**
+> *(a)* **Airplane mode, nothing configured:** generate an avatar on the device and compare its SHA-256 to the
+> host golden — it must be **byte-identical**. The UI must name `NO_PROVIDER`, not spin, not show a generic
+> error. *(b)* **Provider present but stopped:** expect `PROVIDER_UNREACHABLE` within the named timeout;
+> record the measured elapsed time against the constant. *(c)* **Provider running with a free local model:**
+> one end-to-end proposal → validated `AvatarSpec` → generated avatar; record the receipt and output SHA-256;
+> then feed a deliberately out-of-range proposal and confirm `OUTPUT_REJECTED_BY_VALIDATOR` names the field
+> **and** that the procedural fallback still yields the byte-identical golden. *(d)* **Cost of the gateway:**
+> measure added latency and native-heap delta against the pre-M1 head; both must sit inside §3.L.2's budget
+> (**≤8 MB added RAM, zero for weights**) or the mission has failed its own constraint. *(e)* **Thermal:**
+> if elevated `PowerManager.currentThermalStatus` can be induced, show `THERMAL_BACKOFF`; if it cannot, report
+> `UNVERIFIED` — do not assert the behaviour. *(f)* No ANR, no crashed process, GL/EGL error count `0x0`, and
+> every figure tagged with commit SHA, date, device and build variant.
+>
+> **9. README handover requirements.** Record: the provider interface and how to add one; the tier table
 > from §3.G.1; the Tier-0 guarantee **with the CI job name and run id**; what changed in the AI page; that
 > paid providers are opt-in and never required; and every status word, including that no live model was
 > exercised unless it was.
@@ -1710,7 +2171,7 @@ depends on another document having been read.
 > attached rather than needing it reconstructed. Set `licence_verified=1` **only** for a licence read from a
 > primary source per §6.3.
 >
-> **8. Explicit exclusions.** No image or 3D generation *implementation* — only the `ArtifactProvider`
+> **10. Explicit exclusions and blockers.** No image or 3D generation *implementation* — only the `ArtifactProvider`
 > interface and one fake for tests. **No model weights may be loaded into the app process** — on-device text
 > inference means a localhost server the user runs, whose weights live in its own memory (§3.K consequence
 > 1). No model download, no weights in the repository or APK. No on-device
@@ -1719,12 +2180,12 @@ depends on another document having been read.
 
 ### 5.4 M2 — 3D Intelligence: asset inspection and provenance
 
-> **1. Exact mission.** Promote the four existing Python probes into an in-engine asset diagnostic API
+> **1. Exact objective.** Promote the four existing Python probes into an in-engine asset diagnostic API
 > (§3.B), **and implement asset provenance** (§3.I). Publish freeze **F-1**.
 >
-> **2. Repository and branch.** As §5.0.
+> **2. Repository and correct working branch.** As §5.0.
 >
-> **3. Files and interfaces involved.** Read first: `tools/glb_anatomy_probe.py` (338 lines),
+> **3. Files and modules to inspect or change.** Read first: `tools/glb_anatomy_probe.py` (338 lines),
 > `tools/glb_animation_probe.py` (352), `tools/glb_quality_targets_probe.py` (531),
 > `tools/glb_symmetry_sections.py` (190), and `avatarforge-engine/src/main/cpp/src/af_mesh.h`, which already
 > provides `Bvh::build(mesh, leafSize=8)`, `Bvh::raycast`, `Bvh::signedDistance` and a 13-value `Region`
@@ -1732,9 +2193,54 @@ depends on another document having been read.
 > `af_asset_report` **and `af_asset_provenance`** in `afneural.h`; implementation under `cpp/src/neural/`; host test
 > `cpp/src/test/cpp/asset_inspect_test.cpp` registered in CMake. Reuses `af_glb_read` for parsing.
 >
-> **4. Dependencies.** **F-0**. Parallel with M1. No dependency on M3.
+> **4. Required interfaces and dependencies.** **F-0**. Parallel with M1. No dependency on M3.
 >
-> **5. Acceptance criteria.** `af_asset_inspect` **reproduces `glb_quality_targets_probe.py`'s numbers on
+> **5. Detailed implementation instructions.**
+>
+> **(a) Append, never reorder.** New declarations go at the **end** of `afcore.h` in a clearly marked block.
+> `af_spec`'s field order, the 45-float JNI wire contract, `kSpecFloatCount` and the
+> `static_assert(33 + 1 + 3 + AF_FACE_PARAM_COUNT == kSpecFloatCount, ...)` (with `AF_FACE_PARAM_COUNT = 8`
+> at `afcore.h:114`) must all still compile unchanged. Reordering one field silently corrupts every existing
+> caller.
+>
+> **(b) Reuse the readers that already exist.** `BoundedGlbReader` (128 MiB ceiling), the sparse-accessor
+> handling at `af_glb_read.cpp:427-467`, `GlbValidator.kt` and `GlbTextureBudget.kt` (448 MiB decoded-texture
+> budget). **P8 applies: this mission is mostly aggregation of facts the engine already extracts.** Write new
+> parsing only where a fact is genuinely not available — and say which in the PR.
+>
+> **(c) Inspection is read-only and non-throwing.** `af_asset_inspect(path_or_memory, af_asset_report* out)`
+> returns a code and fills a versioned struct. It never mutates the file, never allocates the whole file when
+> the ceiling is exceeded, and never throws across the C ABI.
+>
+> **(d) Codes compose, because a file can fail two ways at once.** Return
+> `AF_ASSET_OK`, `AF_ASSET_FOREIGN_SKELETON_STATIC`, `AF_ASSET_TEXTURE_OVER_BUDGET`,
+> `AF_ASSET_EXTENSION_UNSUPPORTED`, `AF_ASSET_NO_ANIMATION` and `AF_MORPH_NOT_READ_ON_IMPORT` as a
+> **fixed-size array plus count** in the report, with `AF_ASSET_OK` only when the array is empty. A single
+> scalar code would force the inspector to pick one truth and hide the other.
+>
+> **(e) Detect morph targets; do not drive them.** Count `mesh.primitives[*].targets` entries and whether
+> their accessors are sparse, report the count, and set `AF_MORPH_NOT_READ_ON_IMPORT`. `grep -ci morph
+> af_glb_read.cpp` is **0** today; after this mission it must be **non-zero** — but only for counting.
+> **Driving** morph targets is M5 deliverable (f), and this mission must not pre-empt it (§7 item 4).
+>
+> **(f) Provenance rides inside the GLB.** Implement `af_asset_provenance` exactly as §3.I and §3.I.1 define
+> it, including `derived_from_sha256` so an imported asset re-exported by the engine **chains** instead of
+> inheriting the engine's licence. Write it into the existing GLB `extras` block (the exporter already writes
+> morph targets there — `afcore.h:390`) and read it back on import. **No sidecar format**: a `.json` next to a
+> `.glb` gets separated the first time a user shares the file.
+>
+> **(g) Quarantine is a state, not an error.** Where `licence` or `generation_method` cannot be stated, set the
+> quarantine flag; the asset remains inspectable and reportable but is barred from distribution, APK packing
+> and training data (§3.I.1 rules 1 and 3). **Never guess a licence from a filename, a URL, an extension or a
+> user's assertion.**
+>
+> **(h) Tests.** Host `ctest` `asset_inspect_test.cpp` over the three repository assets
+> (`rigged_test_figure.glb`, `humanoid_motion_pack.glb`, `female.glb`) asserting the **exact** code arrays;
+> an `extras` round-trip test (export → import → compare every provenance field); a negative test with a
+> truncated file and one over the 128 MiB ceiling; and an extension of M0's boundary scanner covering the new
+> files (§3.H.1's import-parsing rule).
+>
+> **6. Acceptance criteria.** `af_asset_inspect` **reproduces `glb_quality_targets_probe.py`'s numbers on
 > the same file**. Verdicts are codes, not sentences: `AF_ASSET_OK`, `AF_ASSET_FOREIGN_SKELETON_STATIC`,
 > `AF_ASSET_TEXTURE_OVER_BUDGET`, `AF_ASSET_EXTENSION_UNSUPPORTED`, `AF_ASSET_NO_ANIMATION`. Morph targets
 > report `AF_MORPH_NOT_READ_ON_IMPORT` — verified 2026-11-26: the importer contains zero occurrences of
@@ -1751,7 +2257,7 @@ depends on another document having been read.
 > mirroring the probes' existing `unsupportedMeasurements`. No new part taxonomy beside `Region`; no
 > re-implementation of a measurement the probes already make.
 >
-> **6. Required build and runtime evidence.** Run the Python probe yourself against
+> **7. Required tests and build evidence.** Run the Python probe yourself against
 > `app/src/androidTest/assets/rigged_test_figure.glb` and **quote your own output** — do not trust the
 > reference values below blindly. Reference from the run that rescued this probe: glTF 2.0, 240 vertices,
 > 120 triangles, 4 primitives, 4 materials, 1 skin, 7 joints, max joint depth 3, root `Hips`, clips Wave
@@ -1759,25 +2265,39 @@ depends on another document having been read.
 > Then the C++ test's output asserting the same values. `ctest` **12 of 12** (the new test added), with
 > `generation_contract_regression` still Disabled. CI green; run id quoted.
 >
-> **7. README handover requirements.** Document `af_asset_inspect`, the verdict codes, which measurements
+> **8. Runtime verification requirements.**
+> *(a)* On the device, inspect three real inputs — a generated avatar, a foreign-rig import, and an
+> over-budget file — and show the diagnostic export naming the exact code array for each. **No foreign-rig
+> file may be presented as animatable.** *(b)* Prove the ceiling rejects before allocating: record peak native
+> heap while inspecting a large file; it must not approach the process limit or OOM. *(c)* Measure inspection
+> wall-clock milliseconds for a file in the 144,073-triangle class; the historical baseline for importing that
+> class was **312 ms on the APK of `797d156`** — quote it as a baseline, never as a current result
+> (§7 item 14). *(d)* Prove provenance survives the device round trip: export a generated avatar on the phone,
+> re-import it, read back `licence`, `generation_method` and `output_sha256`, and compare. *(e)* The owner's
+> Dropbox material and `mylove.glb` are inspected **at runtime only** — never committed, never packed, and
+> identified in evidence by SHA-256 rather than by path (`AGENTS.md` rule 5). *(f)* Every measurement tagged
+> with commit, date, device and build variant; anything not measured on a named device is `CI_EMULATOR` or
+> `UNVERIFIED`.
+>
+> **9. README handover requirements.** Document `af_asset_inspect`, the verdict codes, which measurements
 > are implemented and which report `not measured`, the probe-equivalence evidence with both outputs quoted,
 > and the exact head.
 >
-> **8. Explicit exclusions.** No AI, no provider, no network. Do not add Draco, meshopt, KTX2, assimp or
+> **10. Explicit exclusions and blockers.** No AI, no provider, no network. Do not add Draco, meshopt, KTX2, assimp or
 > Eigen — zlib is the engine's only third-party C++ dependency and adding one is an owner decision. Do not
 > implement morph-target *application* on import (that is a separate capability, currently MISSING). Do not
 > modify `af_glb_read.cpp`'s extension policy.
 
 ### 5.5 M3 — Evaluation harness, golden records and the benchmark suite
 
-> **1. Exact mission.** Build §3.E: one `EvaluationRecord` type with provenance, reconciling measurements
+> **1. Exact objective.** Build §3.E: one `EvaluationRecord` type with provenance, reconciling measurements
 > the repository already takes — **plus the §3.J benchmark suite and its two controls**, which are what make
 > every later "no regression" claim meaningful. Publish freeze **F-2**. **This is the pivot mission — five missions wait on
 > it (§4.5).**
 >
-> **2. Repository and branch.** As §5.0. **One owner, not split across agents** (§4.6 rule 2).
+> **2. Repository and correct working branch.** As §5.0. **One owner, not split across agents** (§4.6 rule 2).
 >
-> **3. Files and interfaces involved.** Read first: `RendererTelemetry.kt` (≥20 fields including fps and
+> **3. Files and modules to inspect or change.** Read first: `RendererTelemetry.kt` (≥20 fields including fps and
 > frame-interval p50/p95/p99, frames presented / not presented / without valid content, stall events, EGL
 > shutdown error), `EvidenceIdentity.kt`, `DiagnosticDownloads.kt`, `DeviceResourceGovernor.kt`,
 > `avatar_lod_select_test.cpp`, `animation_roundtrip_test.cpp` (already compares imported playback to the
@@ -1785,13 +2305,63 @@ depends on another document having been read.
 > `EvaluationRecord`, `Measurement`, `Verdict`, `MetricKey` registry, `Provenance`, the tolerance table, and
 > golden-record storage under `.../neural/procedural/`.
 >
-> **4. Dependencies.** **F-1** (M2) for the geometry and material metric families, plus **at least one
+> **4. Required interfaces and dependencies.** **F-1** (M2) for the geometry and material metric families, plus **at least one
 > device record from M8**. Depends on nothing in M4–M6.
 >
-> **5. Acceptance criteria.** The **§3.J.1 benchmark suite exists**: a frozen subject set (the
+> **5. Detailed implementation instructions.**
+>
+> **(a) Two types, and they refuse to be built incomplete.** `Measurement(value, unit, method, source)` with
+> `source ∈ {HOST_CTEST, CI_EMULATOR, DEVICE, PROBE, MANUAL}`, and
+> `EvaluationRecord(subject, commit, device, metrics, verdicts, provenance)`. Make `commit` and `device`
+> non-nullable **and** rejected when blank at construction, so a record without provenance cannot exist. A
+> record that cannot say where it came from is the exact defect §1.5 records.
+>
+> **(b) `UNMEASURED` is never zero.** The verdict set is `AF_EVAL_PASS`, `AF_EVAL_REGRESSION`,
+> `AF_EVAL_IMPROVED`, `AF_EVAL_UNMEASURED`, `AF_EVAL_INCOMPARABLE`. Emitting `0` for a metric that was not
+> taken is prohibited by `MASTER_BLUEPRINT.md` (*"no telemetry that reports missing measurements as zero"*)
+> and by §2.1. `INCOMPARABLE` exists for the case that will actually happen: a metric measured on an emulator
+> compared against a device baseline.
+>
+> **(c) Aggregate; do not re-measure.** Each of the **eight** families in §3.E.2 already has a source — the
+> `Region` enum and `Bvh` in `af_mesh.h`, `glb_anatomy_probe.py`, `glb_symmetry_sections.py`, `af_uv.cpp`,
+> `GlbTextureBudget.kt`, `GlbValidator.kt`, `generation_contract_test.cpp` Part E,
+> `af_engine_evaluate_animation`, `animation_roundtrip_test.cpp`, `RendererTelemetry.kt`, the
+> `Avatar LOD selected:` / `Avatar LOD ready:` log lines from `07610b5`, the three instrumented suites,
+> `DeviceResourceGovernor.kt` and `EvidenceIdentity.kt`. M3's job is the record type, the tolerances and the
+> comparison logic. Re-implementing a measurement here creates a second source of truth for the same number.
+>
+> **(d) Golden records are files, with identities.** Store them as JSON under
+> `avatarforge-engine/src/test/golden/`, named `<subject>_<commit>.json`, each carrying the GLB SHA-256, the
+> full metric vector with units and sources, and the tolerances used. Commit the goldens for the seed-1337
+> subjects. A golden record is the **baseline**, so comparison is against a record, not against a memory or a
+> README claim.
+>
+> **(e) Build the §3.J.1 frozen suite exactly as specified** — subjects (deterministic **seed 1337**, one per
+> gender, one per fabric in `kFabrics`, one per iris colour in `kEyeColours`, one minimal and one maximal
+> complexity), the three repository assets, **all eight** metric families, and the device contexts (host and
+> CI emulator as a minimum; SM-S921B for any revision touching rendering or performance). Freeze it: the suite
+> definition is data, versioned, and changing it is itself a reviewed change.
+>
+> **(f) Tolerances are cited, not chosen.** Symmetry deviation **0.004 model units**, animation round trip
+> **0.2 mm** (already enforced by `animation_roundtrip_test.cpp`), visible pixels **≥5,000** (already enforced
+> by the instrumented suites). Any new tolerance must arrive with the measurement that justifies it.
+>
+> **(g) The four assertions, then both controls.** No metric beyond tolerance; **at least one named measured
+> improvement**; byte-identity where claimed; complete provenance. Then the **null control** — an unchanged
+> revision must produce a zero diff — and the **negative control** — a deliberately worsened constant must be
+> **detected and named**. Run both; a gate that has never been shown to fail is not a gate.
+>
+> **(h) Reproduce the byte-identity precedent, do not cite it.** `42fa78a` produced
+> `male = 73,399,512 B` and `female = 72,076,316 B` byte-identical across a change. Re-run that comparison on
+> the M3 head and record the actual sizes; if they differ, that is a finding, not an error in the plan.
+>
+> **(i) Wire the gate into CI** as a job that fails on `AF_EVAL_REGRESSION` and prints the family, metric,
+> baseline value, new value, tolerance and source tag for every failing row.
+>
+> **6. Acceptance criteria.** The **§3.J.1 benchmark suite exists**: a frozen subject set (the
 > deterministic **seed 1337** already used in this repository's evidence, one subject per gender, one per
 > fabric in `kFabrics`, one per iris colour in `kEyeColours`, one minimal and one maximal-complexity spec),
-> the three repository assets, all seven metric families, and host + CI-emulator contexts. **Both controls
+> the three repository assets, **all eight** metric families of §3.E.2, and host + CI-emulator contexts. **Both controls
 > run in CI and both pass: the null control** (an unchanged revision produces **zero** metric differences and
 > byte-identical outputs — any non-zero result means the harness is noisy and must be fixed before any
 > verdict is trusted) **and the negative control** (a deliberately worsened constant **is detected and
@@ -1805,29 +2375,40 @@ depends on another document having been read.
 > sourceTriangles=%d lod1Triangles=%d lod2Triangles=%d`. The magenta debug-shader path deliberately disables
 > LOD, so it is recorded as *not* LOD evidence.
 >
-> **6. Required build and runtime evidence.** A golden record for the deterministic **seed 1337** generated
+> **7. Required tests and build evidence.** A golden record for the deterministic **seed 1337** generated
 > avatar on **host**, and one from the **CI emulator**, with both `commit` and `device` populated and
 > **different** — quote both records. A demonstration that changing one `af_spec` field produces a
 > measurable diff against the golden record, with the metric, both values and the tolerance. A written
 > statement of which metrics are host-only, which need a device, and which are `not measured` today. `ctest`
 > green; CI green including the emulator suites; run ids quoted.
 >
-> **7. README handover requirements.** Document the record schema, the metric registry, the tolerance table
+> **8. Runtime verification requirements.**
+> *(a)* Run the frozen suite in **both** minimum contexts — host `ctest` and the CI emulator — and table the
+> eight families per context with their source tags. *(b)* Any revision touching rendering or performance must
+> additionally run on the **SM-S921B**; until it does, its device families are `UNMEASURED`, not zero.
+> *(c)* Show the **null control** passing (zero diff) and the **negative control** failing with the worsened
+> constant named in the report — both outputs committed as evidence. *(d)* Emulator results are labelled
+> `CI_EMULATOR` and may never be reported as phone results (§7 item 7); a device figure without a device model,
+> commit and date is rejected by the record type itself. *(e)* Where a family cannot be measured in a given
+> context, the report prints `UNMEASURED` and the reason — the absence of a number is a result, and it is
+> recorded as one.
+>
+> **9. README handover requirements.** Document the record schema, the metric registry, the tolerance table
 > with each tolerance's source, where golden records live, and the rule that a record never transfers to a
 > different commit or device. Include both example records verbatim.
 >
-> **8. Explicit exclusions.** No AI grading of AI output — evaluation is procedural only (§3.H.2). No new
+> **10. Explicit exclusions and blockers.** No AI grading of AI output — evaluation is procedural only (§3.H.2). No new
 > telemetry sampling where `RendererTelemetry` already reports it. No device claims from emulator data. No
 > change to the solver or the renderer. Do not weaken an existing assertion to make a metric pass.
 
 ### 5.6 M4 — Human Intelligence critics
 
-> **1. Exact mission.** Build proportion, face and skin critics that **measure** rather than describe
+> **1. Exact objective.** Build proportion, face and skin critics that **measure** rather than describe
 > (§3.C), emitting into M3's records.
 >
-> **2. Repository and branch.** As §5.0.
+> **2. Repository and correct working branch.** As §5.0.
 >
-> **3. Files and interfaces involved.** Read first: `af_anatomy.cpp/.h` (spec → `BodyMetrics`: landmark
+> **3. Files and modules to inspect or change.** Read first: `af_anatomy.cpp/.h` (spec → `BodyMetrics`: landmark
 > heights and girths; a tape measurement in the spec is met exactly), `af_field.cpp/.h` (the single SDF for
 > body, head, face, hands, feet, `hairShape`, `clothUpper`, `clothLower`, `upperShell`, `skirtShell`,
 > `shoeShape`, `gearField`), `af_rig.cpp` (71 joints, 52 ARKit blendshapes as analytic displacements),
@@ -1836,27 +2417,86 @@ depends on another document having been read.
 > `docs/AVATAR_QUALITY_PLAN.md`, `docs/DONOR_BASELINE.md`. New: critics under `.../neural/procedural/`,
 > reference constants as data, host tests.
 >
-> **4. Dependencies.** **F-2** (M3). Parallel with M5 and M6. No dependency on M1 — critics are procedural
+> **4. Required interfaces and dependencies.** **F-2** (M3). Parallel with M5 and M6. No dependency on M1 — critics are procedural
 > and must work at Tier 0 (§3.G.2).
 >
-> **5. Acceptance criteria.** Three critics (proportions, face, skin) each emitting **≥5 measurements** with
+> **5. Detailed implementation instructions.**
+>
+> **(a) Critics are procedural, so they live in `neural/procedural/`** (§3.H.1) and must work at **Tier 0** —
+> no provider, no network, no weights. A critic that needs a model is not a critic, it is a guess.
+>
+> **(b) One critic per existing artifact; do not build new measurement.** The proportion critic reads
+> `BodyMetrics` from `af_anatomy.cpp/.h` (landmark heights and girths — the header states a tape measurement
+> in the spec is met exactly, perimeter preserved to **<0.5%**). The face critic reads the 52 ARKit blendshape
+> analytic displacements in `af_rig.cpp` and the `face[AF_FACE_PARAM_COUNT]` parameters. The skin critic reads
+> `af_texture.cpp`'s outputs (subsurface, sheen, sheen tint, anisotropy, IOR). Each critic is a **pure
+> function** from that artifact to a list of `Measurement`s — no global state, no clock, no RNG.
+>
+> **(c) Measurement discipline is enforced by the type, not by review.** Every measurement carries value,
+> unit, method and source (M3's `Measurement`); ≥5 per critic; **no adjectives anywhere in a measurement**. A
+> test asserts each unit string is non-empty and each value finite. "Good proportions" is not a measurement;
+> "shoulder-to-hip width ratio 1.42, unitless, method `BodyMetrics`, source `HOST_CTEST`" is.
+>
+> **(d) The external reference is a calibration problem, not a lookup — see §3.O.** WHO growth standards via
+> Anny's anthropometry remain the researched recommendation for a *reference population*, but **no mapping is
+> assumed**. Anny's parameters are named labels in `[0,1]`; this engine's fields are metres (`height_m`,
+> 1.40–2.20), years (`age_years`, 16–70), centimetres (thirteen `*_cm` tape fields), unitless indices with
+> documented anchors (`body_fat`: 0.10 shredded, 0.45 heavy), signed indices (`glute`: −1..+1), and
+> **linear-sRGB** triplets. **"`[0,1]`" is not a unit**, and a shared numeric range proves nothing about
+> meaning. Any bridge must be a committed **calibration record** (§3.O.2) naming the unit, the semantic, the
+> valid range, the anchors, the mapping function and the measurement that validated it.
+>
+> **(e) Until a calibration record exists, use internal references and say so.** Score against what this
+> repository already proves: `af_anatomy`'s landmark heights and girths, the tape-measurement exactness
+> property, the `kFabrics` and `kEyeColours` constants in `af_prompt.cpp`, and the existing **0.004
+> model-unit** symmetry tolerance with `glb_symmetry_sections.py`. Tag the reference `ENGINE_INTERNAL` and
+> mark any external comparison `UNVERIFIED`. **Do not emit a WHO-percentile number you have not calibrated.**
+>
+> **(f) The adults-only invariant is a critic, not a footnote.** Assert the age-30 default and that `bust` and
+> `glute` are ignored for `age_years < 18` (the `af_spec` comment states this explicitly). A critic that
+> scores a minor-shaped body is a policy failure; a test must fail if that invariant is weakened.
+>
+> **(g) Reference constants are data.** Put any anthropometric table in a versioned data file with a citation
+> per row, not in C++ literals — so a reviewer can check the source and a future mission can replace it
+> without touching code (§3.F's "improvement output is always data plus a test").
+>
+> **(h) Tests.** One host `ctest` per critic; a golden-record comparison against M3's frozen subjects; and a
+> **negative control** that deliberately distorts one landmark and requires the proportion critic to name it.
+> A gate never shown to fail is not a gate.
+>
+> **(i) No new dependency, dataset, model or weight** enters the repository or the APK in this mission.
+>
+> **6. Acceptance criteria.** Three critics (proportions, face, skin) each emitting **≥5 measurements** with
 > units into an `EvaluationRecord`. No adjectives in a measurement. The reference population is **named and
-> cited** — WHO growth standards via Anny's calibration are the researched recommendation (§6.3.2) — not an
-> invented ideal. Known reference points already in this repository's documents: symmetry tolerance **0.004
+> cited**, not an invented ideal — and **no external mapping is assumed**: WHO growth standards via Anny's
+> anthropometry remain the researched recommendation (§6.3.2), but any bridge from Anny's `[0,1]` phenotype
+> labels to this engine's metres/years/centimetres/unitless-index/linear-sRGB fields requires a committed
+> **calibration record** at status `CALIBRATED` (§3.O.2). Until one exists, critics score against
+> `ENGINE_INTERNAL` references and every external comparison is reported `UNVERIFIED` (§5.6 field 5(d),(e)). Known reference points already in this repository's documents: symmetry tolerance **0.004
 > model units**; a generated body is **1,148,034 triangles** where a Daz Genesis 8 body skin is **27,292**;
 > textures are **one shared 2048² atlas** against **four 4096² maps**. Generated bytes must not change
 > unless a golden-record diff is approved by the owner. The adults-only invariant still passes.
 >
-> **6. Required build and runtime evidence.** A baseline `EvaluationRecord` for the deterministic seed with
+> **7. Required tests and build evidence.** A baseline `EvaluationRecord` for the deterministic seed with
 > all critic measurements populated, quoted verbatim. `ctest` green including the new critic tests. CI
 > green; run id quoted. For any external reference: the licence read from its **own repository**, recorded in
 > `THIRD_PARTY_NOTICES.md` before use, with the four-question report required by §5.0 rule 10.
 >
-> **7. README handover requirements.** Document each critic, its measurements and units, its reference
+> **8. Runtime verification requirements.**
+> *(a)* Run all three critics at **Tier 0** on the device — airplane mode on, no provider configured — over the
+> frozen subject set, and confirm **zero network egress** (no provider call, no DNS) while records are still
+> produced. *(b)* **Determinism:** the same subject twice must produce byte-identical record JSON; hash both and
+> compare. *(c)* **Cost:** measure added wall-clock per avatar and native-heap delta against the pre-M4 head;
+> both must sit inside §3.L.2 (**≤8 MB added RAM, zero for weights**). *(d)* Critics are geometric, so host and
+> device values should agree — assert equality per measurement and report `AF_EVAL_INCOMPARABLE` with the delta
+> if they do not, rather than averaging them. *(e)* Every figure tagged with commit, date, device and build
+> variant; unmeasured families reported `UNMEASURED`, never zero.
+>
+> **9. README handover requirements.** Document each critic, its measurements and units, its reference
 > population with citation and verification date, the baseline values, and what each measurement does and
 > does **not** prove.
 >
-> **8. Explicit exclusions.** **Do not change the solver** in this mission (P1). Do not integrate Anny's
+> **10. Explicit exclusions and blockers.** **Do not change the solver** in this mission (P1). Do not integrate Anny's
 > Python/PyTorch code into the engine — it is authoring/CI-time only and cannot run on `minSdk 26`. Do not
 > use the SMPL family, or any HMR model that outputs SMPL parameters (§6.3.3). Do not vendor MakeHuman
 > **code** — its source is AGPL-3.0; only its **assets** are CC0 (§6.3.2). Do not relax the adults-only rule
@@ -1865,14 +2505,14 @@ depends on another document having been read.
 
 ### 5.7 M5 — Animation Intelligence
 
-> **1. Exact mission.** Third-party skeleton adoption, foot-contact and slide detection, IK (§3.D), **and
+> **1. Exact objective.** Third-party skeleton adoption, foot-contact and slide detection, IK (§3.D), **and
 > morph-target application on import** (owner instruction 6, 2026-11-26 — see acceptance criterion **(f)**) —
 > **beginning with a written API decision, not code.** Publish freeze **F-3**.
 >
-> **2. Repository and branch.** As §5.0. The decision document and the implementation may be one PR, but the
+> **2. Repository and correct working branch.** As §5.0. The decision document and the implementation may be one PR, but the
 > decision must be committed and reviewed **before** implementation starts.
 >
-> **3. Files and interfaces involved.** Read first: `afcore.h`'s import contract, which currently states a
+> **3. Files and modules to inspect or change.** Read first: `afcore.h`'s import contract, which currently states a
 > skeleton that is not this engine's rig is shown **static** with joint count 0 and its animation channels
 > **not applied**, warned via `AF_LOG_WARN`; `af_rig.cpp` (71 joints, clip library); `af_anim_player.cpp`;
 > `af_retarget.cpp`; `af_engine_evaluate_animation` (writes one column-major 4×4 skin matrix per joint; the
@@ -1885,10 +2525,36 @@ depends on another document having been read.
 > `git show 58aced02:avatarforge-engine/src/test/cpp/imported_animation_test.cpp` (949 lines, 94 checks, 85
 > of which call the absent API).
 >
-> **4. Dependencies.** **F-1** (M2) for skeleton, joint-depth and skin-weight inspection, and **F-2** (M3)
+> **4. Required interfaces and dependencies.** **F-1** (M2) for skeleton, joint-depth and skin-weight inspection, and **F-2** (M3)
 > for the contact and slide metrics. Parallel with M4 and M6.
 >
-> **5. Acceptance criteria.**
+> **5. Detailed implementation instructions.** **M5 is staged, because five different capabilities are
+> routinely conflated under one name.** Each stage has an entry condition and an exit evidence requirement. **A stage may
+> not begin before its entry condition is met, and no stage may be reported complete on the strength of a
+> later stage's evidence.**
+>
+> | Stage | Capability | Entry condition | Exit evidence |
+> |---|---|---|---|
+> | **S0** | The **API decision** (freeze **F-3**) | Both APIs read: this line's `af_engine_animation_{count,name,duration,info}` (`afcore.h:447-463`) and `af_engine_import_motions[_from_memory]` (`:524-525`), against the donor's nine `af_engine_imported_*` (`58aced02`, `afcore.h:271-286`) plus its 949-line, 94-check test | A committed decision naming the chosen API, the rejected alternative, **and what the rejected one would have cost**. No code before this is committed |
+> | **S-A** | **Skeleton adoption and inspection** | **F-1** (M2) reports skeleton, joint-depth and skin-weight facts | A foreign-rig file is either adopted through an explicit mapping or reported `AF_ASSET_FOREIGN_SKELETON_STATIC` with joint count 0 — the behaviour `afcore.h:413-414` already documents. Host test with a foreign-rig fixture |
+> | **S-B** | **Retargeting** | S-A | Normalise **both** rigs to a canonical T-pose **before** computing the mapping matrix (rest-pose offsets corrupt results silently), smooth per channel with an EMA or one-euro filter **after** pose lifting, then report measured joint-angle error, end-effector drift and penetration into an M3 record. No NaN transforms |
+> | **S-C** | **Playback** | S-B | One playback path through `af_engine_evaluate_animation` (one column-major 4×4 skin matrix per joint) driven by `AnimationLibrary` / `AnimationPlayback`; play/pause/resume/seek semantics defined and tested; BVH round trip within **1e-4**; `animation_roundtrip_test` still passing at **0.2 mm** |
+> | **S-D** | **Morph targets on import** — deliverable **(f)** | S-A and S-C | `grep -ci morph af_glb_read.cpp` returns **non-zero** (it is **0** today); sparse morph targets read and drivable; `afcore.h:413-414` amended to match reality; host test round-tripping a generated avatar's blendshapes export → import → evaluate, with a stated tolerance. Reuse the sparse-accessor precedent already at `af_glb_read.cpp:427-467` |
+> | **S-E** | **Facial animation on imported faces** | **S-D only** — never before | The 52 ARKit channels driven on an imported face through its morph targets, via `FaceAnimation.kt`; per-channel displacement magnitude measured; **no channel silently zero** |
+>
+> **Rules across the stages.** *(i)* S-A → S-B → S-C is strictly ordered; S-D needs S-A and S-C; S-E needs S-D.
+> *(ii)* **Learned motion generation is not a stage** — it is `BLOCKED` on licence (§3.D item 8) and must be
+> reported as blocked, not deferred silently. *(iii)* Do not implement both animation APIs (§7 item 3); S0
+> exists to prevent that. *(iv)* The donor branch is read-only reference material: recover its specification
+> with `git show 58aced02:avatarforge-engine/src/test/cpp/imported_animation_test.cpp` and **do not delete or
+> force-push `arena/089497bd-3d-mega-hub`** (§8.4). *(v)* Contact and slide metrics need **no new engine
+> capability**: skin the rest mesh with `af_engine_evaluate_animation`, track ankle and toe landmarks from
+> `BodyMetrics`, represent contact as a per-frame **F×4 binary array** (left heel, left toe, right heel, right
+> toe), and report slide **in millimetres** into an M3 record. Reimplement independently — the published
+> reference is under the non-commercial Adobe Research License (§6.3.3). *(vi)* Validate contact **after**
+> retargeting, not before; foot-skating is mean foot velocity during contact frames.
+>
+> **6. Acceptance criteria.**
 > *(a) The decision, first.* Two incompatible imported-animation APIs exist: this line's
 > `af_engine_animation_count/name/duration/info`, `af_engine_import_motions`,
 > `af_engine_import_motions_from_memory` with `af_motion_import_report`; and `arena/089497bd`'s nine
@@ -1917,7 +2583,7 @@ depends on another document having been read.
 > generated avatar's blendshapes through export → import → evaluate. **This is an addition to M5; acceptance
 > criteria (a)–(e) are unchanged** (owner instruction 8).
 >
-> **6. Required build and runtime evidence.** The decision document, committed. For **(f)**: the new
+> **7. Required tests and build evidence.** The decision document, committed. For **(f)**: the new
 > export → import → evaluate morph round-trip test passing on the host, with its measured tolerance quoted,
 > plus the corrected line in `afcore.h`'s import contract, plus `grep -ci morph af_glb_read.cpp` returning a
 > **non-zero** count (it is **0** today — that single number is the proof the gap closed). Foot-slide reported in
@@ -1928,12 +2594,23 @@ depends on another document having been read.
 > after retargeting. `ctest` green including the new tests; CI green including the emulator animation
 > suites; run ids quoted.
 >
-> **7. README handover requirements.** Record the chosen API and the rejected alternative with its reason;
+> **8. Runtime verification requirements.**
+> *(a)* On the device, play the repository's `humanoid_motion_pack.glb` on **both** a generated avatar and an
+> imported rigged figure; record frames presented, draw calls, triangle count, native heap and FPS over the
+> last 240 frames for each. *(b)* Report **foot-slide in millimetres on a named clip**, with contact intervals,
+> inside an `EvaluationRecord` carrying `commit` and `device`. *(c)* For **S-E**, show per-channel displacement
+> magnitudes for the 52 ARKit channels on an imported face and prove none is silently zero. *(d)* No animation
+> may be reported as working without a measured presented-frame count at or above the existing instrumented
+> floor; "it played" is not evidence. *(e)* Heat, battery and sessions beyond the measured window remain
+> `NOT MEASURED` unless actually measured (§3.L.1's banner applies to this mission's numbers too). *(f)*
+> Emulator playback is `CI_EMULATOR`; only a named physical device yields `REAL + VERIFIED`.
+>
+> **9. README handover requirements.** Record the chosen API and the rejected alternative with its reason;
 > the contact and slide metric definitions with units; the measured baseline; the status of third-party
 > skeleton adoption (it moves from MISSING only when a test proves it); and the standing note that
 > `arena/089497bd-3d-mega-hub` **must not be deleted** until the fixture and licence questions are settled.
 >
-> **8. Explicit exclusions.** **No motion foundation model — MotionGPT, MDM or similar. This is BLOCKED on
+> **10. Explicit exclusions and blockers.** **No motion foundation model — MotionGPT, MDM or similar. This is BLOCKED on
 > licence, not deferred** (§3.D item 8): their code is MIT but they train and evaluate on **HumanML3D**,
 > whose own README states the data comes from AMASS and may not be redistributed, and which requires the
 > non-commercial **SMPL+H and DMPL** body models. Generate motion **procedurally** from the engine's own
@@ -1952,13 +2629,13 @@ depends on another document having been read.
 
 ### 5.8 M6 — Learning memory, revision gate and recovery
 
-> **1. Exact mission.** Build §3.F.1–F.6 (experience memory, approved feedback, experiment history, golden
+> **1. Exact objective.** Build §3.F.1–F.6 (experience memory, approved feedback, experiment history, golden
 > quality measurements, regression detection, dataset management), **the §3.J revision gate, the §3.M
 > autonomous-improvement guards, and §3.N recovery**. Publish freeze **F-4**.
 >
-> **2. Repository and branch.** As §5.0.
+> **2. Repository and correct working branch.** As §5.0.
 >
-> **3. Files and interfaces involved.** Read first: `af_prompt.cpp`'s `kFabrics[]` and `kEyeColours[]`;
+> **3. Files and modules to inspect or change.** Read first: `af_prompt.cpp`'s `kFabrics[]` and `kEyeColours[]`;
 > `generation_contract_test.cpp` **Part E**, which asserts a fabric through the parser, the live material
 > table, the exported GLB bytes and the re-import round trip; and the `THIRD_PARTY_NOTICES.md` entry
 > *"Clothing-fabric PBR values and iris swatches (3D4ME-derived constants)"*. **That is the pattern to
@@ -1966,10 +2643,62 @@ depends on another document having been read.
 > promotion and comparison, the dataset manifest, all under `.../neural/procedural/`. Storage: app-private
 > on device, exported JSON off device, reusing `DiagnosticDownloads.kt`'s existing path.
 >
-> **4. Dependencies.** **F-2** (M3) — golden records and regression detection are meaningless without the
+> **4. Required interfaces and dependencies.** **F-2** (M3) — golden records and regression detection are meaningless without the
 > evaluation schema. Parallel with M4 and M5. **M9 depends on this mission's F-4.**
 >
-> **5. Acceptance criteria.** Experience memory is append-only, content-addressed by subject hash, bounded
+> **5. Detailed implementation instructions.**
+>
+> **(a) Storage: append-only JSONL plus a manifest — deliberately not a database.** Room is the obvious choice
+> and is deliberately rejected here with evidence: `docs/DONOR_BASELINE.md` records that the 3DDD donor's
+> `main` audit failed at Gradle `kspDebugKotlin` with Room KSP reporting `IllegalStateException: Empty schema
+> file`. Adding Room adds a KSP build step, a schema-export obligation and a dependency to
+> `THIRD_PARTY_NOTICES.md`, in exchange for queries this subsystem does not need. Store experience memory,
+> approved feedback, experiment history and decision logs as **append-only JSONL** under app-private storage
+> (`filesDir`), with a versioned manifest naming each file, its schema version and its SHA-256.
+>
+> **(b) Freeze F-4 is the memory schema.** Publish it in `docs/NEURAL_CORE_CONTRACTS.md` before writing a
+> record: field names, types, units, the schema version, and the rule that a record with an unknown schema
+> version is **refused, not migrated silently**.
+>
+> **(c) The protected set is data, and the learning system has no write access to it.** Read
+> `docs/NEURAL_CORE_PROTECTED.json` (created in M0) at runtime and assert that every write the learning system
+> performs targets the **writable** set only: new constant-table rows, golden records on human approval,
+> memory / decision / experiment files, adapter manifests, and new files under `neural/`. A test must fail if a
+> proposal names a protected path.
+>
+> **(d) propose → shadow → compare → report → HUMAN decides.** There is **no automatic apply path** and no
+> code branch that could become one. A proposal is a diff of *data* plus a *test*, landed as a PR (§3.F). One
+> kill switch — a single persisted setting, default **off** — that stops proposal generation entirely; flipping
+> it must be provable from logs.
+>
+> **(e) Shadow mode must not perturb the deterministic path.** While shadow-running, generated output must stay
+> **byte-identical** to the Tier-0 golden. A test asserts this: run the frozen subject set with learning
+> enabled in shadow and compare SHA-256 against M3's goldens. Any difference means the learning system touched
+> the solver, which §7 item 2 forbids.
+>
+> **(f) The revision gate is §3.J, invoked not reimplemented.** On every proposed revision: run the frozen
+> suite, evaluate the four assertions, and run **both** controls (null: unchanged revision ⇒ zero diff;
+> negative: a deliberately worsened constant must be detected **and named**).
+>
+> **(g) Recovery is §3.N, and it reuses the existing export path.** Export the bundle through
+> `DiagnosticDownloads.kt` to `Downloads/3D Mega Hub Diagnostics` with SHA-256, commit and device recorded.
+> Implement the three rollback levels (manifest repoint / `git revert` with a merge commit / restore from a
+> recorded SHA). **Restore is validated, never trusted:** check schema version, verify the hash, dry-run against
+> the §3.J.1 suite, and **refuse to overwrite a newer record silently** — report and stop instead.
+>
+> **(h) Training rights are not assumed.** No external dataset enters the repository or the APK. The engine's
+> own output may become a usable dataset **only once D11 (the engine port's own licence, undeclared at the
+> pinned donor SHA) and then D9 (the licence of the engine's output) are declared by the owner**; until
+> then generated assets are **quarantined from training** (§3.I.1 rules 1 and 3) and `dataset management`
+> records them as `NOT_ELIGIBLE_FOR_TRAINING`. Note the prior gap: `docs/AVATARFORGE_INTEGRATION.md` records
+> that the donor had **no repository-level `LICENSE`**, so the engine's own licence is undeclared too (**D11**).
+> **Invent no ownership and no training rights** — the honest value is "undeclared, owner decision pending".
+>
+> **(i) Tests.** Memory append/read round trip; schema-version refusal; the regression detector firing on a
+> known-bad revision; the kill switch stopping proposals; shadow-mode byte-identity; restore refusing a newer
+> record; backup bundle hash verification.
+>
+> **6. Acceptance criteria.** Experience memory is append-only, content-addressed by subject hash, bounded
 > by a ring buffer whose eviction **keeps every regression and every human decision**. Approved feedback
 > stores **rejections with the same weight as approvals**, each with a reason and the measurements visible
 > at the time. Experiment history answers *"has this been tried?"* for a given hypothesis. Regression
@@ -2008,7 +2737,7 @@ depends on another document having been read.
 > native heap within the **≤8 MB** allowance against the phone's measured 304–306 MB and the engine's
 > 1,536 MB default budget. Assert the cap in a host test.
 >
-> **6. Required build and runtime evidence.** A demonstration that changing one constant is caught by
+> **7. Required tests and build evidence.** A demonstration that changing one constant is caught by
 > regression detection against the golden record, with the report quoted. **A full §3.J.4 revision report**
 > for one real revision: revision id, baseline, subjects and devices, per-family before/after with units, the
 > named improvement, the null-control result, and the negative-control result **including which metric caught
@@ -2019,12 +2748,27 @@ depends on another document having been read.
 > table → exported bytes → re-import, with the test output quoted. `ctest` green; CI green; run ids quoted.
 > Both golden SHA-256 values before and after, proving no unintended change.
 >
-> **7. README handover requirements.** Document the three stores and where they live; how an improvement is
-> proposed, approved and landed; how a regression is reported; the eviction rule; the dataset rules
-> including that **the engine's own output is the primary free dataset** and why that is licence-clean
-> (§3.F.6, §6.3.2); the accepted improvement and the recorded rejection, both with their measurements.
+> **8. Runtime verification requirements.**
+> *(a)* On the device, enable learning in **shadow mode**, generate the frozen subject set, and confirm
+> **byte-identical** output SHA-256 against the host goldens — shadow learning that changes output has failed.
+> *(b)* Record memory growth (file count and bytes) over that run against a stated bound; unbounded growth is a
+> defect even when nothing else breaks. *(c)* Flip the **kill switch** and show from logs that no proposals are
+> produced afterwards. *(d)* Export a recovery bundle on the device, verify its SHA-256, restore it into a
+> **fresh install**, and confirm the §3.J.1 dry run passes; then attempt to restore an **older** bundle over a
+> newer record and confirm it is **refused** with a reported reason. *(e)* Inspect the built APK and prove no
+> dataset, weights file or adapter is packaged, reporting the APK size delta against the pre-M6 build.
+> *(f)* Battery and heat remain `NOT MEASURED` unless actually measured; a long shadow run is exactly the place
+> where an unmeasured thermal claim would be tempting, and it must not appear.
 >
-> **8. Explicit exclusions.** **No write access to any §3.M.1 protected component, ever** — not by code
+> **9. README handover requirements.** Document the three stores and where they live; how an improvement is
+> proposed, approved and landed; how a regression is reported; the eviction rule; the dataset rules —
+> including that the engine's own output is the **most promising** dataset path but is **`BLOCKED` on D9 and
+> D11** today, so the eligible set is empty and generated assets are recorded
+> `NOT_ELIGIBLE_FOR_TRAINING` (§3.F.6, §3.I.2); the accepted improvement and the recorded rejection, both with
+> their measurements. **Do not write "licence-clean" into the README** — that claim was withdrawn from §3.F.6
+> on 2026-11-26 because it assumed an ownership nobody has established.
+>
+> **10. Explicit exclusions and blockers.** **No write access to any §3.M.1 protected component, ever** — not by code
 > path, not by configuration, not by "temporary" experiment. No automatic apply. **No fine-tuning, no
 > adapters, no model versioning — that is M9.** No online
 > learning inside the app. No telemetry leaving the device. No self-modifying shaders, fields or prompts. No
@@ -2034,23 +2778,67 @@ depends on another document having been read.
 
 ### 5.9 M7 — Optimisation and asset intelligence
 
-> **1. Exact mission.** Reduce what a frame and an asset cost, **measured on a named device** (§1.3 row 18,
+> **1. Exact objective.** Reduce what a frame and an asset cost, **measured on a named device** (§1.3 row 18,
 > `docs/PHOTOREAL_UPGRADE_PLAN.md` repairs R4–R8).
 >
-> **2. Repository and branch.** As §5.0. Each optimisation is its own commit with its own before/after, so a
+> **2. Repository and correct working branch.** As §5.0. Each optimisation is its own commit with its own before/after, so a
 > regression can be attributed to one change.
 >
-> **3. Files and interfaces involved.** Read first: `afcore.h:318-327` — `af_vertex` is **88 bytes**
+> **3. Files and modules to inspect or change.** Read first: `afcore.h:318-327` — `af_vertex` is **88 bytes**
 > (pos 12 + normal 12 + tangent 16 + uv 8 + color 16 + joints 8 + weights 16) against a 32-byte target;
 > `src/render/af_avatar_lod.cpp/.h` (three index-only levels, `kAvatarLodLevels = 3`,
 > `kLodFractions = {0.12f, 0.05f}`); `src/render/af_lod_select.h` (`kAvatarLodPixelEdgeTarget = 4.0f`,
 > `kAvatarLodHysteresis = 1.25f`); `src/render/af_render.cpp`'s `BudgetRenderer` tiers; `af_uv.cpp` (one
 > shared 2048² atlas); `af_texture.cpp`.
 >
-> **4. Dependencies.** **F-1** (M2) for asset cost reporting and **F-2** (M3) for measurement. Also
+> **4. Required interfaces and dependencies.** **F-1** (M2) for asset cost reporting and **F-2** (M3) for measurement. Also
 > consumes M8's device evidence. Wave 4, parallel with M9.
 >
-> **5. Acceptance criteria.** A measured before/after for drawn triangles, frame-interval p50/p95/p99, and
+> **5. Detailed implementation instructions.**
+>
+> **(a) Start from the measured gap, not from an optimisation idea.** The recorded photoreal comparison is
+> **1,148,034 triangles** for a generated body against **27,292** for a Daz Genesis 8 skin, and **one shared
+> 2048² atlas** here against **four 4096² maps** there. The polygon count is the problem; the atlas is already
+> the better design and must be **preserved, not "modernised"** into four maps.
+>
+> **(b) Extend the LOD system that already exists — do not add a second one.** `07610b5` added
+> screen-density-aware selection with `kAvatarLodPixelEdgeTarget = 4.0f`, `kAvatarLodHysteresis = 1.25f`,
+> `kAvatarLodLevels = 3` and `kLodFractions = {0.12f, 0.05f}`, plus the `Avatar LOD selected:` /
+> `Avatar LOD ready:` log lines and `avatar_lod_test` / `avatar_lod_select_test` in host `ctest`. M7 tunes and
+> extends **those** constants and levels, keeping the hysteresis behaviour, and must not introduce a parallel
+> LOD path (§7 item 1).
+>
+> **(c) Index-only decimation preserves the vertex contract.** The existing levels are index-only, which is
+> why `af_vertex` stays **88 bytes** (`afcore.h:318-327`) and why the renderer's skinning path is untouched.
+> Keep it that way: any change to `af_vertex`'s layout breaks the 45-float JNI contract's neighbours and the
+> renderer's stride assumptions. If a level genuinely needs a different vertex format, that is an owner
+> decision, not an implementation detail.
+>
+> **(d) `af_gl.cpp` compiles only under `if(ANDROID)`** (`CMakeLists.txt:52-71`), so its changes cannot be
+> validated by host `ctest`. Use the documented syntax check —
+> `g++ -std=c++17 -fsyntax-only -Wall -Wextra -D__ANDROID__ -DANDROID -I<...> src/render/af_gl.cpp` — and
+> note that a **pre-existing `-Wunused-variable` warning at `af_gl.cpp:1647` is not yours**; do not "fix"
+> unrelated warnings in an optimisation PR.
+>
+> **(e) Forward-pass bounds must use `elementBound`.** `maxf`/`minf` are unreachable in `af_gl.cpp`, and
+> `scene_.modelMin/Max` are **skinning-padded**, so they over-report. Using the padded bounds for culling or
+> LOD selection silently disables the optimisation.
+>
+> **(f) Every claimed win is a measured delta against a named baseline.** Report triangles drawn, draw calls,
+> frame-time p50/p95/p99, selected LOD level, native heap and GPU request totals — before and after, same head
+> pair, same device. **FID must not regress by more than 5%** and no §3.J metric may move beyond tolerance:
+> an optimisation that fails the revision gate is not an optimisation.
+>
+> **(g) No new third-party C++ dependency.** Draco, meshopt, KTX2, Eigen and assimp are all **declined for
+> now** (**D8**); zlib is the only dependency today (`af_png.cpp` needs `compress2`) and M7 must proceed
+> without adding another. If a compression library looks essential, stop and raise it as an owner decision.
+>
+> **(h) This mission is gated by B2, not by code.** The LOD system has **never run on a real GPU**: the phone
+> reports `ANGLE ((Samsung Xclipse 940) on Vulkan 1.3.304)`, so every GLES assumption on the target device
+> rests on a translation layer, and the stale `af_vk.cpp` is not a shortcut around it. M7 may implement, but
+> **may not claim a performance win** until it has device measurements.
+>
+> **6. Acceptance criteria.** A measured before/after for drawn triangles, frame-interval p50/p95/p99, and
 > bytes per vertex, each recorded in an M3 `EvaluationRecord` with `commit` and `device`. **LOD indices are
 > original vertex indices**, so skinning and morphs must be untouched: any crack, detached hair or scalp, or
 > broken deformation at a coarser level is a **defect, not a saving**, and fails the mission.
@@ -2058,18 +2846,32 @@ depends on another document having been read.
 > why LOD selection is logged. **Every new `Renderer` virtual must be forwarded in `af_render.cpp`** or the
 > app silently gets the base-class default. No regression in any golden record.
 >
-> **6. Required build and runtime evidence.** Device measurements on a **named device** (model, Android
+> **7. Required tests and build evidence.** Device measurements on a **named device** (model, Android
 > version, GPU) — a host-only number must be labelled host-only, and no phone result may be claimed from an
 > emulator. The `Avatar LOD selected:` and `Avatar LOD ready:` lines verbatim. `ctest` green; CI green
 > including the instrumented GLES smoke and the generated-avatar runtime gate, with the gate's status stated
 > honestly whether it passes or fails; run ids quoted. Visual evidence that no crack or detachment was
 > introduced, from the existing evidence-only screenshot jobs.
 >
-> **7. README handover requirements.** Record each optimisation, its before/after numbers with units and
+> **8. Runtime verification requirements.** **This mission cannot be completed on an emulator.**
+> *(a)* A real **SM-S921B** session per optimisation, recording: FPS over the last 240 frames, frame-time
+> median/p95/p99/max, drawn triangles, draw calls, **selected LOD level with the transitions and the frame-time
+> evidence that caused each**, native heap start/end, and GPU request totals (textures / geometry / render
+> targets). *(b)* The historical baseline in §3.L.1 (**53.8 FPS at 1,100,168 triangles**, APK of `797d156`,
+> 2026-11-15) is quoted **beside** the new figures as the baseline to beat — never merged into them, never
+> presented as current (§7 item 14). *(c)* The known measurement gap must be closed or carried honestly:
+> quality level **2** frame times were never recorded because the renderer steps down only after >30
+> consecutive frames slower than 30 FPS, so level-2 data is `PARTIAL` unless actually captured. *(d)* Heat,
+> battery and sessions longer than the measured window remain `NOT MEASURED` unless measured. *(e)* Confirm
+> `ANGLE …on Vulkan 1.3.304` in the device log for every run, so the translation layer is on the record rather
+> than assumed away. *(f)* Results belong to the head that produced them (§7 item 6); re-run after any further
+> commit or mark the table stale.
+>
+> **9. README handover requirements.** Record each optimisation, its before/after numbers with units and
 > device, what it cost in quality if anything, and which `PHOTOREAL_UPGRADE_PLAN` repair it corresponds to.
 > Update the plan's repair table rather than leaving a parallel record.
 >
-> **8. Explicit exclusions.** **Adding Draco, meshopt, KTX2, ASTC tooling, Eigen or assimp is an owner
+> **10. Explicit exclusions and blockers.** **Adding Draco, meshopt, KTX2, ASTC tooling, Eigen or assimp is an owner
 > decision, not an agent's** — zlib is currently the engine's only third-party C++ dependency, and the
 > repository has deliberately declined compression dependencies. Do not touch the Vulkan path
 > (`af_vk.cpp` / `af_shaders_vk.h` are stale and not compiled). Do not change the deterministic pipeline's
@@ -2077,24 +2879,60 @@ depends on another document having been read.
 
 ### 5.10 M9 — Versioned models, optional local fine-tuning and rollback
 
-> **1. Exact mission.** Build §3.F.7–F.8: optional local fine-tuning, adapter versioning, activation
+> **1. Exact objective.** Build §3.F.7–F.8: optional local fine-tuning, adapter versioning, activation
 > pinning and rollback. **This is the only optional mission** — the owner may cancel it without stranding
 > any other.
 >
-> **2. Repository and branch.** As §5.0, plus a separate branch for any training harness, which lives
+> **2. Repository and correct working branch.** As §5.0, plus a separate branch for any training harness, which lives
 > outside the Android build entirely.
 >
-> **3. Files and interfaces involved.** Read first: §3.F.6 (dataset management), §3.F.8 (versioning rules),
+> **3. Files and modules to inspect or change.** Read first: §3.F.6 (dataset management), §3.F.8 (versioning rules),
 > §6.3.2 (the verified free base-model list), and M6's `Experience` / `Decision` / `ExperimentRecord`
 > schemas. New: adapter manifest format, activation pinning per task kind, rollback, and the validation gate
 > that runs an adapter against golden records before it may be activated. Training harness: a **separate**
 > tool, not part of `:app` or the engine build.
 >
-> **4. Dependencies.** **F-4** (M6) and **F-5** (M1) — an adapter improves a *proposer*, so the gateway and
+> **4. Required interfaces and dependencies.** **F-4** (M6) and **F-5** (M1) — an adapter improves a *proposer*, so the gateway and
 > the validation boundary must exist. Also needs M3's golden records to validate against. Wave 4, parallel
 > with M7.
 >
-> **5. Acceptance criteria.** Base models restricted to the §6.3.2 verified-free list, each with its licence
+> **5. Detailed implementation instructions.**
+>
+> **(a) Confirm the mission is authorised before writing anything.** M9 is the **only optional mission** and
+> **D6** decides whether it proceeds at all. Cancellation is free of consequence **by design**: every other
+> mission is Tier-0 (§3.G), so nothing depends on M9. If D6 is unresolved, stop and report — do not build a
+> speculative fine-tuning path.
+>
+> **(b) Workstation-only, and provably so.** Fine-tuning runs on the owner's workstation, never on the phone
+> and never in the app process (§3.K consequence 1: **no model weights may ever load into the app process**).
+> The engine module must contain **no** training code path; the deliverable that ships is an **adapter
+> manifest**, not an adapter.
+>
+> **(c) LoRA-class or smaller, inert until approved.** A fine-tuned adapter is inert on disk until a human
+> approves it. Approval is a recorded decision (who, when, which evaluation record justified it), not a flag
+> flipped by a script.
+>
+> **(d) Weights never enter Git or the APK.** Git holds the **manifest**: adapter id, base model id and
+> version, SHA-256 of the weight file, its provenance, and the `EvaluationRecord` that justified it. A CI check
+> asserts the APK contains no weight file and that no file above a stated size was added to the repository.
+>
+> **(e) Versioned models with rollback = §3.N applied to adapters.** Each adapter version is immutable and
+> addressable by SHA-256; the manifest points at exactly one active version; rollback is a **manifest repoint**
+> (level 1 of §3.N.2), which is why the manifest is data and not code. Record the honest limit from §3.N.4:
+> **a lost adapter weight file is not recoverable by this project** — the manifest can name it, but cannot
+> regenerate it.
+>
+> **(f) The licence gate is absolute.** Only assets eligible under §3.I.1 may be used as training data, and
+> today that set is **empty**: generated assets are quarantined from training until **D9** declares the licence
+> of the engine's own output, and **D11** records that the donor engine had **no repository-level `LICENSE`**
+> at all. Until both are declared, M9 must report `LICENCE_BLOCKED` and **train on nothing**. Do not invent
+> ownership or training rights (§3.I.1 rule 3, owner instruction of 2026-11-26).
+>
+> **(g) Prove inertness with a test, not a promise.** With an adapter present but unapproved, generated output
+> must be **byte-identical** to the Tier-0 golden. With it approved, output changes and the change is recorded
+> in an `EvaluationRecord` that passed the §3.J gate.
+>
+> **6. Acceptance criteria.** Base models restricted to the §6.3.2 verified-free list, each with its licence
 > read from its own repository and recorded. Training data restricted to §3.F.6 — **the engine's own outputs
 > plus human-approved labels**. Output is a **LoRA-class adapter**, not a full model. Training runs on the
 > owner's workstation, never on device. An adapter is **inert until a human approves it against golden
@@ -2107,18 +2945,29 @@ depends on another document having been read.
 > handover rather than implying a backup exists. **With fine-tuning entirely disabled, nothing
 > degrades** — the deterministic parser and curated constant tables remain the floor.
 >
-> **6. Required build and runtime evidence.** A before/after `EvaluationRecord` pair for at least one task
+> **7. Required tests and build evidence.** A before/after `EvaluationRecord` pair for at least one task
 > kind, showing whether the adapter improved or regressed it, with `commit` and `device`. The manifest for
 > the activated version and for the version rolled back to, both quoted. The approval decision and its
 > reason. Proof that no weight file entered Git (`git log --stat` over the branch) or the APK (an APK
 > listing). Proof that the zero-adapter configuration still passes M1's Tier-0 CI job.
 >
-> **7. README handover requirements.** Document the adapter lifecycle end to end: propose → train → validate
+> **8. Runtime verification requirements.**
+> *(a)* On the device, with an adapter **present but unapproved**: generate the frozen subject set and confirm
+> **byte-identical** SHA-256 against the Tier-0 goldens — proof the adapter is inert. *(b)* With an approved
+> adapter and **D9/D11 resolved**: one end-to-end run showing the measured improvement that justified approval,
+> inside §3.J tolerances, tagged with commit, date and device. *(c)* Inspect the shipped APK and prove **no
+> weight file** is packaged, reporting the size delta against the pre-M9 build. *(d)* Demonstrate **rollback**
+> on the device: repoint the manifest to the previous adapter version and show output returning to the previous
+> golden SHA-256. *(e)* If **D6**, **D9** or **D11** is unresolved, the correct runtime evidence is a report
+> stating `BLOCKED` with the decision names — **not** a demonstration on synthetic data, and not a claim that
+> the path "would work". *(f)* Nothing in this mission may be reported `REAL + VERIFIED` from an emulator run.
+>
+> **9. README handover requirements.** Document the adapter lifecycle end to end: propose → train → validate
 > against golden records → human approve → activate → monitor → roll back. State plainly that fine-tuning is
 > **optional** and that disabling it changes nothing. Record which base models are permitted and their
 > verified licences, and the rule that a new base model requires the four-question licence report first.
 >
-> **8. Explicit exclusions.** **No fine-tuning of the solver, the field, the mesh, the UV, the texture or
+> **10. Explicit exclusions and blockers.** **No fine-tuning of the solver, the field, the mesh, the UV, the texture or
 > the rig** — those are procedural and stay procedural (P1, §3.H.2). No training on any external dataset
 > (§6.3.3 excludes every candidate found). No paid training service, no paid base model, no
 > non-commercial-only weights. No automatic activation. No weights in the repository or the APK. No
@@ -2293,16 +3142,25 @@ incomplete: it had not read how each model is *parameterised*, which is the prop
   against linear blend skinning only, and a `.glb` export tool against a `.ply` example. Those map onto
   **M7** (optimisation) and **§3.D item 9** (deformation).
 - **Anny is stronger on the property this engine's architecture depends on**: **interpretable, labelled,
-  bounded parameters in `[0,1]`**, which is what `af_spec`, `af_anatomy` and the adults-only invariant
-  already are — and what **P2** (validated boundary) and **P6** (auditable learning) require. Latent
-  Gaussian coefficients cannot be bounds-checked field by field, cannot be unit-tested against a named
-  anthropometric reference, and cannot be audited by a human reading a decision log.
+  bounded parameters**, which is the *style* of `af_spec`, `af_anatomy` and the adults-only invariant — and
+  what **P2** (validated boundary) and **P6** (auditable learning) require. Latent Gaussian coefficients
+  cannot be bounds-checked field by field, cannot be unit-tested against a named anthropometric reference,
+  and cannot be audited by a human reading a decision log.
+- **But stylistic similarity is not a mapping, and this document previously implied one.** Anny's labels are
+  in `[0,1]`; `af_spec`'s fields are metres (`height_m` 1.40–2.20), years (`age_years` 16–70), centimetres
+  (thirteen `*_cm` tape fields where **`0` means "derive"**), unitless indices with non-linear anchors
+  (`body_fat` 0.10 shredded / 0.45 heavy), signed indices (`glute` −1..+1), material overrides where
+  **`<0` means AUTO**, and **linear-sRGB** triplets where **`0` means "derive"**. **"`[0,1]`" is not a unit.**
+  Anny's label *semantics* are not documented in its README and its paper was unreachable from this
+  workspace, so its parameters are `UNVERIFIED` as a mapping source. **No direct mapping is assumed for
+  either candidate**: every bridge requires a committed calibration record at status `CALIBRATED` (§3.O.2),
+  and until one exists M4's critics must run on `ENGINE_INTERNAL` references (§3.O.3).
 
 So the honest recommendation is **not "pick one"**:
 
 | Use | Candidate | Why |
 |---|---|---|
-| Anthropometric and proportion reference for M4's critics | **Anny** | Labelled phenotypes in `[0,1]`, WHO-calibrated, CC0 assets — auditable per **P3** and **P6** |
+| Anthropometric and proportion reference for M4's critics | **Anny** *(candidate only)* | Labelled phenotypes, WHO-calibrated anthropometry, CC0 assets — auditable in principle per **P3** and **P6**. **Not usable as a mapping until a §3.O.2 calibration record reaches `CALIBRATED`**; its label semantics are `UNVERIFIED` today |
 | LOD strategy and corrective-deformation reference for M7 and §3.D | **MHR** | 7 LODs and NN pose correctives are exactly what this engine lacks; useful as a *reference*, and its `.glb` export is a ready-made import test oracle for M2 and M5 |
 | Anything shipped in the APK | **Neither** | Python/PyTorch; `minSdk 26`; §6.5 forbids weights in the APK |
 
@@ -2444,7 +3302,10 @@ Each was checked against a primary source and could not be confirmed. None may b
 | D6 | Whether **M9** (optional fine-tuning) proceeds at all | proceed / cancel | Cancel is free of consequence by design — every other mission is Tier-0 (§3.G) |
 | D7 | **Deformation scope** (B8) | as designed (measurement) / broader | Re-issue the remainder of section D if broader |
 | D8 | Adding any third-party C++ dependency (Draco, meshopt, KTX2, Eigen, assimp) | allow / decline | **Decline for now** — zlib is the only one today, and M7 can proceed without them |
-| D9 | **The licence terms of this engine's own output** (§3.I rule 3, §3.F.6) | declare output unrestricted / declare a licence / leave undeclared | **Declare it.** The whole free-dataset argument in §3.F.6 rests on the engine's generated avatars being the project's own data. MakeHuman's licence makes that claim explicitly for its own output; this engine makes no such statement anywhere. Until it does, `af_asset_provenance.licence` for generated assets has no honest value to carry, and M2 cannot fill a required field |
+| D9 | **The licence terms of this engine's own output** (§3.I.1, §3.I.2, §3.F.6) | declare a licence / declare output unrestricted / leave undeclared | **No recommendation is made, deliberately.** An earlier draft suggested declaring generated avatars "the user's own data" by analogy with MakeHuman's §D; that is **withdrawn** — it would have the plan inventing ownership and training rights nobody has verified (§3.I.1). **D9 is also gated behind D11**: an output's licence cannot be settled while the licence of the code producing it is undeclared. Until both are declared, generated assets carry `UNDECLARED-OWNER-DECISION-PENDING`, `licence_verified=0`, `redistribute=unknown`, `train=unknown` — usable locally, barred from distribution and training |
+| **D11** | **NEW, and prior to D9: the licence of the AvatarForge engine port itself.** `docs/AVATARFORGE_INTEGRATION.md` records *"No repository-level `LICENSE` file was present at the pinned AvatarForge branch"* (donor `work/android-engine-dev` @ `9e36197ace3b18faa6c566d93f8fce89b185c45d`) and that copying between the owner's own repositories *"does not establish third-party redistribution rights"*. `docs/MASTER_BLUEPRINT.md`: *"A dependency's licence does not automatically license the host app or generated assets."* | declare a project licence for `:avatarforge-engine` / keep the app internal-only and never distribute / obtain clarification from the donor repository's owner (the owner) | **Declare it before D9, and before any external distribution of the app.** This is the owner's own repository, so it may be a one-line decision — but it must be *made*, because every downstream licence statement (D9, §3.I.2's `redistribute`, M6's training eligibility, M9's dataset gate) inherits it. Until then the honest status of the engine's licence is `MISSING`, not "presumably fine" |
+| **D12** | **The donor's five animation fixtures** (~596 KB, Khronos `CesiumMan` and `Fox`, CC BY 4.0) as M5 test assets. The donor's own `THIRD_PARTY_NOTICES.md` records that they *"ARE packaged into the distributed APK"* and that `Fox.glb` has *"two separate rights holders with two separate licences on one file"* | vendor them with attribution shipped in the APK / use only in host tests, never in the APK / generate equivalent fixtures procedurally | **Host tests only; never in the APK.** CC BY 4.0 permits redistribution *with attribution*, so `redistribute` could be `allow` only if the attribution actually ships — and `Fox.glb`'s second rights holder makes that a two-licence obligation for one file (§3.I.2 rule 6). M5's stages S-A and S-C need fixtures either way; procedural ones avoid the question entirely |
+| **D13** | **Anny's `anny-full` topology disables its nudity-related mesh edits**, which intersects `AGENTS.md` §2.6's adults-only content policy — and M4 may want Anny as an anthropometric reference (D10) | permit `anny-full` for authoring/CI reference use only / restrict to the default `anny` topology / do not use Anny at all | **Reference use only, on the default `anny` topology, never generating assets that ship.** This is a content-policy decision about the owner's product, not an engineering preference, so it is the owner's. Anny's `smplx`/`smpl` topologies remain excluded outright (non-commercial) |
 | D10 | **Reference body model: MHR or Anny** — full comparison now in **§6.4**; supersedes D5 | MHR for everything / Anny for everything / **split use as §6.4.3 recommends** / neither / defer until M3 exists | **Split use, neither adopted as the engine's body model.** MHR for **LOD strategy and corrective-deformation reference** (7 LODs vs this engine's 3; NN pose correctives vs linear blend skinning) and as a **`.glb` import oracle** for M2/M5. Anny for **anthropometric reference** in M4's critics — labelled phenotypes in `[0,1]` match `af_spec`'s named bounded fields, which MHR's latent Gaussian `identity_coeffs` (45 latent dims, **not** the same as `kSpecFloatCount = 45`) cannot. Both Apache-2.0 code, both ungated downloads, both Python/PyTorch ⇒ **authoring and CI only, never in the APK**. **Exclude Anny's `smplx`/`smpl` topologies** (non-commercial). **Three residual checks first:** MHR's release-bundle licence, `trimesh`'s licence, and a guarantee no script fetches the non-commercial bundle |
 
 ### 8.4 Standing prohibition: preserve `arena/089497bd-3d-mega-hub` and all unique work
@@ -2527,7 +3388,23 @@ licence files and repository headers directly rather than relying on secondary s
 open (B1 partially, B2, B8) — all three requiring either hardware or the owner. Of the ten unverified
 research items, **six are closed**, one is closed-as-excluded-withdrawn, and three remain open but
 **non-load-bearing**: nothing in the ten missions depends on AIST++, Chroma, HiDream-O1, the SD 3.5 weights
-licence, or Anny's blendshape count. No mission is blocked by an open licence question.
+licence, or Anny's blendshape count.
+
+**Correction to an earlier claim in this paragraph.** A previous revision stated that *"no mission is blocked
+by an open licence question."* **That is false and is withdrawn.** Two missions are licence-blocked today:
+
+- **M9** is `BLOCKED` on **D9** (the licence of the engine's own output) **and D11** (the licence of the
+  engine port itself, undeclared at the pinned donor SHA). Until both are declared, the set of assets eligible
+  for training is **empty**, and M9's correct output is a `BLOCKED` report — not a demonstration on synthetic
+  data (§5.10 fields 5(f) and 8(e)).
+- **M6**'s *dataset management* component is `PARTIAL` for the same reason: it can classify, quarantine and
+  record eligibility, and it must, but it can admit nothing to training (§5.8 field 5(h)).
+
+Everything else holds: no mission's **core** deliverable waits on an external licence, because the excluded
+dependencies (§6.3.3) were excluded rather than substituted, and the accepted ones (§6.3.2) were verified from
+primary sources. M4's *external* anthropometric reference additionally waits on a **calibration record**
+(§3.O.2), which is a measurement gap rather than a licence one — until it exists, M4 scores against
+`ENGINE_INTERNAL` references and that is a complete, useful deliverable.
 
 **Two gates stop everything regardless:** **D1** (merge PR #17) and **D2** (reconcile PR #16 with PR #9).
 Until those are settled there is no stable base to branch from, and releasing an agent now would reproduce

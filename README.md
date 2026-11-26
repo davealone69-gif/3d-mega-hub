@@ -1212,3 +1212,72 @@ For context, the failure this gate has historically reported is documented above
 Work on the trunk once the convergence pull request has landed, and branch from it. Do not branch from `main`, from `arena/1a5b3043-3d-mega-hub`, or from any branch this plan records as deleted. Before writing a feature, grep for it: the launcher icon was built four times, the GLES diagnostics and FileProvider path four times, bounded GLB reading twice, and the animation system twice.
 
 Device work that still needs a real toolchain is written up as a paste-ready brief in [`docs/ANDROID_TEST_AGENT_PROMPT.md`](docs/ANDROID_TEST_AGENT_PROMPT.md). It names the exact commit, the toolchain values read from this repository, the commands in order, the verbatim `Avatar LOD selected:` log format to capture, and what counts as a pass — including that the magenta debug-shader path deliberately disables LOD, so that suite is not LOD evidence.
+
+## Neural Core planning handover — 2026-11-26
+
+[`docs/NEURAL_CORE_MASTER_PLAN.md`](docs/NEURAL_CORE_MASTER_PLAN.md) is the master architecture, repository
+intelligence and mission command for **AvatarForge Neural Core**. It is a **planning document: it contains no
+implementation**, and nothing in it authorises a merge. Its statements about the existing repository were
+measured at `ba38d996` and `281806e7`; results belong to the head that produced them.
+
+**What Neural Core is, and is not.** An integrated subsystem **inside** AvatarForge — never a replacement
+engine, never a competing app, never a second avatar editor, never a chatbot. It lives in
+`avatarforge-engine/` as `src/neural/` + `include/afneural.h` in C++ and
+`java/com/davemega/hub/avatarforge/neural/{procedural,generated}` in Kotlin, behind a CMake
+`AF_ENABLE_NEURAL` option that **defaults OFF**, so with the option off the built libraries are byte-identical
+to today's. The existing Ollama chat page in `:app` is demoted to a console over the engine gateway; the
+dependency arrow keeps its direction — `:app` consumes the engine, never the reverse.
+
+**Project boundaries** (§1.0). 3D-Mega-Hub is the final integrated Android app; AvatarForge is the separate
+standalone engine/SDK, present here as the ported `:avatarforge-engine` module (donor pinned at
+`work/android-engine-dev` @ `9e36197a`); 3DDD is a separate donor whose Filament renderer was never imported;
+Cue-Next is entirely separate and has **zero** references in this repository.
+
+**The ten missions, in execution order.** Each brief carries **ten fields** — objective, repository and
+branch, files and modules, interfaces and dependencies, **detailed implementation instructions**, acceptance
+criteria, tests and build evidence, **runtime verification requirements**, README handover, exclusions and
+blockers.
+
+| Seq | Mission | Wave | Starts when |
+|---|---|---|---|
+| 1 | **M0** Foundation and module boundary (freeze F-0) | 0 | PR #17 landed |
+| 2 | **M8** Device verification and CI gate repair | 0 | immediately — needs a real Android toolchain |
+| 3 | **M1** Neural Gateway and the zero-provider guarantee (F-5) | 1 | F-0 |
+| 4 | **M2** Asset inspection and provenance (F-1) | 1 | F-0 |
+| 5 | **M3** Evaluation harness, golden records, benchmark suite (F-2) | 2 | F-1 + one device record |
+| 6 | **M4** Human Intelligence critics | 3 | F-2 |
+| 7 | **M5** Animation Intelligence — **staged S0→S-A→S-B→S-C→S-D→S-E** (F-3) | 3 | F-1, F-2 |
+| 8 | **M6** Learning memory, revision gate, recovery (F-4) | 3 | F-2 |
+| 9 | **M7** Optimisation and asset intelligence | 4 | F-1, F-2, M8 device data |
+| 10 | **M9** Versioned models, optional fine-tuning, rollback — **optional** | 4 | F-4, F-5 |
+
+M5 is staged because "animation" covers five distinct capabilities — skeleton adoption, retargeting,
+playback, **morph-target application on import** and facial animation on imported faces — which were
+previously conflated and partly deferred. The morph-target gap is now assigned to M5 stage **S-D**:
+`af_glb_read.cpp` contains **zero** occurrences of `morph` while the exporter writes them (`afcore.h:390`),
+and facial animation on an imported face is impossible until that is closed.
+
+**Four things that are not settled, and are the owner's to settle.**
+
+- **D1** — merge PR #17, with a **merge commit, never a squash**. **D2** — reconcile PR #16 with PR #9 as the
+  path into `main`. Until both are resolved there is no stable base to branch from, and **no implementation
+  branch may be created** (§7 item 13).
+- **D11** — the AvatarForge port has **no declared licence**: `docs/AVATARFORGE_INTEGRATION.md` records that no
+  repository-level `LICENSE` existed at the pinned donor branch. **D9** — the engine states nothing about the
+  licence of its **own output**. Until both are declared, the set of assets eligible for training is **empty**,
+  generated assets are `preview = allow, redistribute = unknown, train = unknown`, and **M9 is `BLOCKED`**.
+  The earlier claim that the engine's output is "free data" is **withdrawn** — it assumed an ownership nobody
+  has established (§3.F.6).
+- **D10** — reference body model. §6.4 compares MHR against Anny in full and **adopts neither**. MHR's 45
+  `identity_coeffs` are latent Gaussian dimensions and are **not** the same as this engine's 45 wire floats;
+  Anny's `[0,1]` labels are not a unit and their semantics are undocumented. **No parameter mapping is
+  assumed for either**: any bridge needs a committed calibration record (§3.O.2), and M4's critics score
+  against internal references until one exists.
+- **D12/D13** — the donor's CC BY 4.0 fixtures as M5 test assets, and Anny's `anny-full` topology against the
+  adults-only content policy.
+
+**Unchanged protections.** `main` is untouched. PR #17 is **open and unmerged**.
+`arena/089497bd-3d-mega-hub` (`58aced02`) and `arena/25bd4008-3d-mega-hub` (`b79a7d0c`) are **preserved**, and
+§8.4 of the plan lists the donor branch's nine items of unique work with a `git show` recovery command for
+each. No destructive Git operation has been performed. The SM-S921B figures in §3.L.1 belong to the APK of
+`797d156`, measured 2026-11-15, and are a **historical baseline to beat — not current runtime verification**.
