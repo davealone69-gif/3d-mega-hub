@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: avatarforge-generated-runtime-pr-${{ github.event.pull_request.number || github.run_id }}
@@ -63,6 +64,13 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           script: bash .github/scripts/generated-runtime.sh com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest
+
+      - name: Post the decisive evidence to the pull request
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_EVIDENCE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash .github/scripts/post-evidence-comment.sh
 
       - name: Upload instrumentation reports and screenshots
         if: always()
