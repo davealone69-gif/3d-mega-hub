@@ -1301,6 +1301,22 @@ owner-asserted depiction of `mylove.glb`, the sheet becomes `redistribute = deny
 is the new open decision **D16**. Nothing was committed: only hashes and written observations enter the
 repository.
 
+**The "latest upgrade" question, answered by catalogue.** The owner's pointer *"Lastest 3d-mega-hub
+upgrade"* named no link, so Dropbox, Google Drive and GitHub were swept (§8.6.6 of the plan). The honest
+answer: **no new 3d-mega-hub upgrade has landed in the repository** — this branch is documents-only and
+`main` has not moved. The chain is owner-side: a **v0.10.1 Android update bundle** (2026-10-21: APKs, AAR,
+build evidence — native 464/464, Kotlin JVM 20/20, parity 72/72, no-INTERNET APK audit — and a warning that
+its debug signing certificate changed, so in-place updates may be refused); a *"fixed"* source snapshot at
+`3b98600` that is provably **27 commits behind the pin already in use**, i.e. redundant; the **latest
+build** = AvatarForge release `debug-411-1`'s debug-signed, ungated `latest-debug.apk` (2026-11-20,
+record-only); and the genuinely new material — an **owner-side 3d-mega-hub snapshot** (2026-11-16) whose
+README adds three things GitHub lacks: a preserved **pre-integration baseline APK** (11,026,696 B,
+historical 5/5 + 43/43), an interim **non-monolithic architecture rule**, and an **adult-mode handoff** in
+which the owner authorises **Grok-Girls** for reuse while AvatarForge's anatomy controls remain
+`BLOCKED_ENGINE_GEOMETRY` — a contract, not a mesh. Two register entries follow: **D17** (which artifact,
+if any, becomes the integration baseline — recommendation: keep the pin) and **D18** (whether adult-mode
+integration enters scope — recommendation: record and defer). No cloud byte entered the repository.
+
 **Unchanged protections.** `main` is untouched. PR #17 is **open and unmerged**.
 `arena/089497bd-3d-mega-hub` (`58aced02`) and `arena/25bd4008-3d-mega-hub` (`b79a7d0c`) are **preserved**, and
 §8.4 of the plan lists the donor branch's nine items of unique work with a `git show` recovery command for

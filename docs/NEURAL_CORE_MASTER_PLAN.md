@@ -77,6 +77,21 @@ this work into 3D-Mega-Hub and not to build a chatbot in a 3D application: the c
 > becomes `redistribute = deny, train = deny`. The new open question — may the bar ever be enforced by
 > automated calibration rather than human judgement — is **D16**.
 >
+> ### Owner input of 2026-11-26 (sixth) — *"Lastest 3d-mega-hub upgrade"*: the upgrade chain, catalogued
+>
+> A two-word pointer, so both connected clouds and GitHub were swept for what an "upgrade" could mean
+> (§8.6.6). The honest headline: **no new 3d-mega-hub upgrade has landed in the repository** — this branch is
+> documents-only and `main` is untouched. What exists is a chain of owner-side drops: a **v0.10.1 Android
+> update bundle** (2026-10-21, APKs + AAR + build evidence + a signing-certificate warning), a **"fixed"
+> source snapshot at `3b98600`** (2026-10-24) that is provably **27 commits behind the pin this plan already
+> uses**, the **latest build** = AvatarForge release `debug-411-1`'s `latest-debug.apk` (2026-11-20,
+> debug-signed, ungated, record-only), and — the genuinely new material — an **owner-side 3d-mega-hub
+> snapshot** (2026-11-10→16) whose README carries two 2026-11-15 handover sections absent from GitHub:
+> the preserved pre-integration APK baseline, the interim non-monolithic architecture rule, and the
+> adult-mode handoff that owner-authorises **Grok-Girls** for reuse. Recorded with statuses in **§8.6.6**;
+> the two questions it opens — which artifact, if any, becomes the integration baseline (**D17**) and
+> whether adult-mode integration enters scope (**D18**) — are in the register.
+>
 > ### Owner brief of 2026-11-26 (second) — the GOKU handover requirements
 >
 > | Requirement | Where honoured |
@@ -3518,6 +3533,8 @@ Each was checked against a primary source and could not be confirmed. None may b
 | **D15** | **RESOLVED BY THE OWNER 2026-11-26 — "Definitely 1 and 2".** Recorded as: **tiers 1 and 2 of §3.D item 10 are authorised; tier 3 is not; `af_vertex` does not change.** So the engine keeps its 4-influence, 88-byte skinning ABI, fixes webbing through **weight quality first** and **dual-quaternion skinning second if measurement still shows the fault**, and does **not** pursue pose correctives now. *Interpretation note, recorded for honesty: the owner's answer was two characters long and the plan contained two numbered lists that day — the three remedy tiers of §3.D item 10, and the webbing-location options. It is read as the **tiers**, because that is the list the plan presented as numbered and because it answers D15, which was open. If the intent was the **locations** (armpit and hip), nothing changes: §3.D item 10's metric already instruments the **axilla and inguinal fold first**. Either way no re-work follows.* Original question: **may the 88-byte `af_vertex` skinning ABI change to allow more than 4 influences?** The owner reported *"webing on movement"* (§3.D item 10, **B9**). `af_vertex` carries `uint16_t joints[4]; float weights[4]` (`afcore.h:318-327`), the renderer's vertex stride depends on that layout, and it sits in §3.M.1's **protected set** — so no mission may change it unilaterally | keep 4 influences and fix weight quality + consider dual-quaternion skinning (tiers 1–2) / raise the influence count and accept an ABI + renderer change / raise it only for a new optional vertex format beside the existing one | **Keep 4 influences; do tiers 1 and 2 first.** Tier 1 (weight quality: region-gate the 1 % prune at `af_rig.cpp:436`, widen the three-joint sharing rule at `:369`, remove the single-joint fallbacks at `:408-409`/`:442`, smooth by distance or heat diffusion) is procedural, needs no ABI change, no dependency and no licence — and the repository's own note at `af_rig.cpp:807` says weight faults have already masked visual faults here, so the weights are the first thing to measure. Tier 2 (dual-quaternion skinning) removes linear-interpolation collapse without more influences but touches `af_gl.cpp`, which cannot be host-tested. Only if both are measured and still insufficient should the ABI be reopened — and tier 3 (pose correctives) needs **D9/D11** settled first, because corrective data or a trained model cannot be produced or shipped while the training-eligible set is empty |
 | D10 | **Reference body model: MHR or Anny** — full comparison now in **§6.4**; supersedes D5 | MHR for everything / Anny for everything / **split use as §6.4.3 recommends** / neither / defer until M3 exists | **Split use, neither adopted as the engine's body model.** MHR for **LOD strategy and corrective-deformation reference** (7 LODs vs this engine's 3; NN pose correctives vs linear blend skinning) and as a **`.glb` import oracle** for M2/M5. Anny for **anthropometric reference** in M4's critics — labelled phenotypes in `[0,1]` match `af_spec`'s named bounded fields, which MHR's latent Gaussian `identity_coeffs` (45 latent dims, **not** the same as `kSpecFloatCount = 45`) cannot. Both Apache-2.0 code, both ungated downloads, both Python/PyTorch ⇒ **authoring and CI only, never in the APK**. **Exclude Anny's `smplx`/`smpl` topologies** (non-commercial). **Three residual checks first:** MHR's release-bundle licence, `trimesh`'s licence, and a guarantee no script fetches the non-commercial bundle |
 | **D16** | **NEW (second owner event of 2026-11-26): may the quality bar ever be enforced by automated calibration against `mylove.glb` or the `/goal/` sheet?** The owner attached the sheet and said *"This quality of mylove.glb"*, naming mylove.glb's quality as the bar (§8.6.5). Standing rules forbid it today: §3.I.2 rule 4 makes fitting a critic to an asset *training*, and `mylove.glb` is `train = deny` with its provenance and licence undeclared; the sheet is now `redistribute = deny, train = deny` as an owner-asserted depiction of mylove's likeness | keep the bar human-judged plus procedural metrics (recommended) / grant a one-off calibration exception / declare mylove.glb's provenance and licence first, then revisit | **Keep the bar human-judged plus procedural metrics.** The owner's sentence *defines* the bar in words and by example; it does not grant a training right, and nothing in §3.I.2 lets a decision by implication override an explicit `deny`. If the owner later wants critics calibrated to mylove.glb, that is a licence declaration first — provenance, rights holder, scope — and an explicit reversal of `train = deny`, recorded here so it cannot happen by drift. **OPEN — awaiting owner** |
+| **D17** | **NEW: which artifact, if any, becomes the integration baseline?** §8.6.6 catalogues four candidates: the in-repo port at pin `9e36197a`; the v0.10.1 bundle's APK/AAR (2026-10-21); release `debug-411-1`'s `latest-debug.apk` (2026-11-20); and the owner-side diagnostics snapshot (2026-11-16). The cloud binaries are ungated, debug-signed under a certificate that changed between artifact sets, and sit behind an undeclared licence (D11) | keep the in-repo port at the pin (recommended) / adopt a cloud APK/AAR as a binary dependency / re-pin AvatarForge to `78ffeda7` / treat the diagnostics snapshot as the authoritative copy | **Keep the in-repo port at pin `9e36197a`.** The cloud artifacts are evidence and immutable recovery baselines — the owner's own README says exactly that of the pre-integration APK — not dependencies: adopting them would import an ungated, debug-signed binary whose licence is undeclared, and re-pinning would discard 27 commits of hardening the pin already contains. Re-pin or adopt only by owner decision with A/B build evidence and a D11 declaration first |
+| **D18** | **NEW: does adult-mode integration (Grok-Girls port, adult anatomy, render-video) enter Neural Core scope?** The owner-side 2026-11-16 doc defines a port scope and the owner authorises Grok-Girls reuse; AvatarForge's anatomy controls are `BLOCKED_ENGINE_GEOMETRY` — a contract with no mesh behind it — and owner-side status is `PARTIAL` | record and defer (recommended) / add an eleventh mission now / fold pieces into existing missions | **Record and defer.** The ten missions stay intact; adult mode is recorded in §8.6.6 with its owner authorisation and its gates (default-off, 18+ confirmation, minors rejected, fictional adults only, consent on references, no anatomy UI before geometry, real rendered frames not Ken-Burns). Scheduling it before D1/D2 land and before M3's harness exists would put an ungated capability ahead of the credibility gate (M8) — and `AGENTS.md` §2.6's adults-only rules apply unchanged whenever it is scheduled |
 
 ### 8.4 Standing prohibition: preserve `arena/089497bd-3d-mega-hub` and all unique work
 
@@ -3722,6 +3739,67 @@ baseline. The copy examined here lives outside the repository (owner attachment,
 
 Whether the bar may ever be enforced by **automated calibration** against mylove.glb or this sheet, rather than
 by human judgement plus procedural metrics, is decision **D16**.
+
+#### 8.6.6 *"Lastest 3d-mega-hub upgrade"* — the upgrade chain, catalogued (owner pointer of 2026-11-26)
+
+The owner's pointer named no link, so both connected clouds and GitHub were swept: the Dropbox root and
+eight folders beneath it, Google Drive's most-recently-modified list, the AvatarForge release and commit
+history, and every 3d-mega-hub branch. **The headline, stated plainly: no new 3d-mega-hub upgrade has landed
+in the repository.** This working branch is documents-only, `main` has not moved, and no new branch or PR
+appeared. What "the latest upgrade" can mean is therefore a chain of owner-side artifacts, each recorded
+below with what is verified about it and what is not.
+
+| # | Artifact | Date | What it is | Status |
+|---|---|---|---|---|
+| 1 | `/AAvatarForge-Android-updates (1)/AvatarForge-Android-updates/` — `README.txt`, `SHA256SUMS.txt`, `docs/{STATUS,DEVICE,BUILD,README}.md`, `artifacts/{BUILD-0.10.1.txt, avatarforge-sdk-arm64.aar 1,324,508 B, avatarforge-release-arm64.apk 7,190,802 B, avatarforge-debug-arm64.apk 10,163,456 B}` | 2026-10-21 | **The last packaged update bundle**, version **0.10.1**, branch `work/android-engine-dev`: distribution bundle of Android artifacts and update docs, explicitly *not* a source checkout | Manifests and build record **read**; artifact bytes **not fetched** (no need, and APKs are record-only). Build evidence `REAL + VERIFIED` *as a record of AvatarForge's own builds*; device acceptance **BLOCKED/UNVERIFIED** by its own text |
+| 2 | `/Update/AvatarForge-fixed-3b98600/AvatarForge/` — 13 top-level dirs, 13 root files, `ARCHIVE_INFO.txt` | 2026-10-24 | Source snapshot of `work/android-engine-dev` @ `3b986001` *"Harden GLB and PNG import and renderer safety"*; artifacts intentionally omitted as pre-fix; no `.git` | **Proven redundant**: `compare/9e36197a...3b98600` = ahead 0 / behind 27, i.e. the snapshot is an **ancestor of the pin this plan already uses** — the "fix" is already inside the pin. No `LICENSE` at the snapshot root, so **D11** stands |
+| 3 | GitHub `davealone69-gif/AvatarForge` release `debug-411-1`, asset `latest-debug.apk` 9,824,564 B, from commit `78ffeda7` | 2026-11-20 | **The latest build in the lineage** — "Latest Android debug build", "not a production-signed release", 1 download; preceded by the 2026-10-22 launcher rename to *Grok Faces* | Metadata `REAL + VERIFIED` via API. **Ungated and debug-signed ⇒ record-only**: `AGENTS.md` forbids publishing ungated APKs, and this is an AvatarForge-app artifact, not a 3d-mega-hub one |
+| 4 | `/3d-mega-hub-diagnostics/3d-mega-hub/` — full repo snapshot *with `.git`*, `README.md` 10,662 B, `docs/{DONOR_BASELINE, INTEGRATION_PLAN, MASTER_BLUEPRINT, ADULT_MODEL_RENDER_VIDEO_INTEGRATION}.md`, `mylove_rig_prepared.glb` 13,221,520 B at root | 2026-11-10→16 | **The latest owner-side 3d-mega-hub state and guidance.** Its README carries two 2026-11-15 handover sections and one 2026-11-16 doc link that are **absent from the GitHub README** (grep-verified: *Non-monolithic*, *fixed-3b98600*, *pre-integration*, *BLOCKED_ENGINE_GEOMETRY*, *AdultSafetyTest* = 0 hits in repo) | README and adult-mode doc **read**; snapshot's `.git` **not examined** (binary). Status: **owner-side, UNVERIFIED against GitHub** — a parallel working copy, not a supersession |
+| 5 | `/3d finally kind of/avatar-1337.glb` — 34,558,456 B | 2026-10-17 | A generated avatar the owner judges *"finally kind of"* acceptable; name echoes the frozen suite seed 1337 | Metadata only; contents unreadable here. A **quality datapoint**, not a measurement |
+| 6 | `/3d-mega-hub-avatarforge-fix/` — `mylove_gles31_render.png`, `mylove_avatarforge_proof_of_fix.png`, `samsung_s24_mylove_photoreal.png` | 2026-11-10 | Device captures backing the already-tracked `patches/avatarforge-mylove-gles-fix.patch` | Metadata only; ties an existing repo patch to owner evidence |
+| 7 | `/fault/` — 3 × `Screenshot_2026101{7,8}_*_{AvatarForge,Gallery}.jpg` + 4 × `not made on my engine but.loaded online-*.jpg` | 2026-10-17 | An **earlier** fault-evidence set, predating the `/3d/` webbing captures | The four *"not made on my engine"* images are **external renders used as comparison**, never engine output — recorded so no future reader mistakes them for evidence |
+| 8 | Google Drive: `Extracting Android App Packages` (AI Studio prompt, 73,378 B), `Avatar_Engine_2.0_Upgrade_Audit.pdf` ×2, `Hard_completion_matrix.pdf` ×2, `Aaa_Final_Zero-Trust_Gap_Audit.pdf` ×2 (all 2026-10-04), `mylove_rig_prepared` + copy, `Easy_Pose_v1.6.10_MOD (1).apk` | 2026-10-04→20 | The Drive side of the same history | Nothing on Drive is newer than the Dropbox chain; the "Upgrade Audit" PDFs **predate** bundle 1 and are superseded by it |
+
+**What each candidate "latest upgrade" would require to become a real one.** The v0.10.1 bundle and the
+`debug-411-1` APK are **AvatarForge-app** artifacts: adopting either into 3d-mega-hub means D1/D2 resolved,
+the device gate (B2) passed on hardware, D11's licence declared, and a signing story — the bundle's own
+`README.txt` warns its APKs carry debug certificate SHA-256 `960c75a9648a74dc189f3510a6c7f80e7029a63680b5dbdea0a2d87b244e5514`,
+*different from the preceding artifact set*, so Android may refuse an in-place update and uninstalling can
+erase app-private data. The `3b98600` snapshot requires nothing: it is already inside the pin. The
+diagnostics snapshot requires a reconciliation decision, not a merge: it is a parallel copy whose extra
+guidance is valuable but whose `.git` and divergence are unexamined.
+
+**New facts extracted, with their statuses.** From `BUILD-0.10.1.txt` (a record of AvatarForge's own builds,
+local only — *"No remote GitHub Actions run is recorded"*): native host harness **464/464**, focused codec
+**16/16**, Kotlin SDK JVM **20/20**, Rust **37** passed + 2 ignored-then-run, C++/Rust prompt parity
+**72/72**, customization contracts **2/2**, **13** shader stages compiled, `verify.sh --quick` PASS, and an
+APK audit reporting **no INTERNET permission, 47/47 C ABI exports, 51/51 JNI exports**, zip-aligned,
+v2-signed. Thermal policy (compiled and JVM-tested, **not hardware-verified**): menu → *Live device report*
+refreshes every second without USB/ADB or network; generation permitted through **Severe (3)**, blocked at
+**Critical (4)+** with cooperative cancellation of an active job; renderer drops to LOW at Severe+; API
+26–28 explicitly report thermal telemetry unavailable. From the diagnostics README: a preserved
+**pre-integration baseline APK** `/AvatarForge/3d engine/AvatarForge-pre-integration-debug-f12a35acefd1 (1).apk`,
+**11,026,696 B**, with historical handoff evidence of **5/5 app tests and 43/43 SDK tests** — historical,
+like the SM-S921B record (§3.L.1), never a claim about today; an **interim architecture rule** (keep one
+coherent product for now, clean seams, revisit splitting only on measured grounds); and the **adult-mode
+handoff**: AvatarForge carries `config/customization/adult-anatomy.inputs.json`,
+`requirements/custom-inputs/adult-anatomy.user.json` and `sdk/.../AdultSafetyTest.kt` on
+`work/android-engine-dev`, where the anatomy config marks detailed geometry controls
+**`BLOCKED_ENGINE_GEOMETRY`** — *a contract, not a mesh* — so adult-mode status owner-side is `PARTIAL`;
+**Grok-Girls** is owner-authorised for reuse (*authored for this project by Grok*), with integration
+direction: disabled by default, explicit 18+ confirmation, minors and ambiguous-age prompts rejected,
+fictional adult subjects only, consent/ownership on reference material, adult assets private by default,
+provider policy enforced with no silent fallback, anatomy controls hidden while geometry is missing, and
+video from **real rendered engine frames** — its current recorder is a 2D-canvas Ken-Burns effect, *not* 3D
+character video. Every one of those gates is already this plan's language (§7's no-mock rule, §3.I.2,
+`AGENTS.md` §2.6); none of it is in the ten missions today.
+
+**What changes and what does not.** Changes: this section, **D17** (which artifact, if any, becomes the
+integration baseline) and **D18** (whether adult-mode/Grok-Girls enters scope). Does not change: the pin
+stays `9e36197a`; the ten missions and their acceptance criteria stay intact; no APK, AAR, GLB or snapshot
+byte enters this repository; the owner-side artifacts remain **evidence and immutable baselines**, exactly as
+the owner's own README instructs for the pre-integration APK. B2's status is untouched: Galaxy S24 acceptance
+remains **BLOCKED/UNVERIFIED** by the bundle's own words.
 
 ### 8.7 Verification ledger — what must be verified before each mission may begin
 
