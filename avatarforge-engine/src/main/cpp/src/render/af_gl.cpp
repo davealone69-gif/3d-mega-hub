@@ -29,6 +29,7 @@
 #include "af_shaders.h"
 #include "../af_scene_bridge.h"
 #include "af_avatar_lod.h"
+#include "af_lod_select.h"
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>            /* EGL_OPENGL_ES3_BIT_KHR */
@@ -261,6 +262,14 @@ private:
     const af_submesh* lodSubmeshes_ = nullptr;
     int32_t lodVertexCount_ = -1, lodIndexCount_ = -1, lodSubmeshCount_ = -1;
     bool lodReady_ = false;
+    /* Screen-space LOD selection state (af_lod_select.h). lodSelection_ is recomputed every frame
+       in drawForwardPass; lastLodLevel_ carries the level drawn last frame so the selection can
+       apply hysteresis, and is reset to -1 whenever the topology changes so a stale level cannot
+       lower the bar for the first frame of a new mesh. */
+    AvatarLodSelection lodSelection_{};
+    int lastLodLevel_ = -1;
+    bool lodSelectionLogged_ = false;
+    int lodSelectionLoggedLevel_ = -1;
     std::vector<af_scene_draw> visibility_;
     bool visibilityReady_ = false;
     EnvironmentParams env_{};
@@ -1085,6 +1094,12 @@ void GlRenderer::ensureGeometryBuffers() {
     if (lodTopologyChanged) {
         lodReady_ = false;
         avatarLods_.clear();
+        /* A new topology has no previous level; start hysteresis and the change log fresh so the
+           first frame of the new mesh is selected on its measurements alone. */
+        lastLodLevel_ = -1;
+        lodSelection_ = AvatarLodSelection{};
+        lodSelectionLogged_ = false;
+        lodSelectionLoggedLevel_ = -1;
         if (lodIndexIbo_) { glDeleteBuffers(1, &lodIndexIbo_); lodIndexIbo_ = 0; }
         lodIndexBytes_ = 0;
         lodEngine_ = engine_; lodVertices_ = verts; lodSourceIndices_ = indices;
@@ -1626,7 +1641,8 @@ void GlRenderer::drawShadowPass() {
        needlessly doubles the cost of very dense generated avatars. Use the coarsest validated
        index-only LOD for shadows. It addresses the original vertex stream, preserving the exact
        live/skinned vertex attributes and leaving the forward colour pass free to choose its own
-       camera-distance LOD. Fall back to the full source IBO when LOD data is unavailable. */
+       screen-density LOD (af_lod_select.h). Fall back to the full source IBO when LOD data is
+       unavailable. */
     if (lodReady_ && lodIndexIbo_ != 0 && avatarLods_.levelCount() > 2) {
         const auto& shadowRanges = avatarLods_.level(2).submeshes;
         const af_submesh* submeshes = af_engine_submeshes(engine_);
@@ -1706,9 +1722,6 @@ void GlRenderer::drawForwardPass() {
         }
         glBindVertexArray(avatarVao_);
         glBindBuffer(GL_ARRAY_BUFFER, vertexVbo_);
-        /* Shadow depth keeps the full source IBO; only forward colour uses camera-distance LOD. */
-        const bool useLodIndices = lodReady_ && lodIndexIbo_ != 0 && !debugMagenta;
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, useLodIndices ? lodIndexIbo_ : indexIbo_);
 
         if (!debugMagenta) {
             for (int slot = 0; slot < AF_TEX_COUNT; ++slot) {
@@ -1722,6 +1735,66 @@ void GlRenderer::drawForwardPass() {
 
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
+
+        /* ---- choose this frame's LOD level once, for the whole avatar ---- */
+        lodSelection_ = AvatarLodSelection{};
+        if (lodReady_ && lodIndexIbo_ != 0 && !debugMagenta && avatarLods_.levelCount() > 1 &&
+            avatarLods_.areasValid() && submeshes != nullptr && n > 0) {
+            /* The REST bounds, not scene_.modelMin/modelMax: those are widened by 0.60 m on X and Z
+               when skinning is active to keep posed limbs inside the frustum test, which would
+               move the measured centre and shorten the view distance. modelBounds() is the same
+               helper that fills the scene, called again here so the number is the union it really
+               is and not the inflated copy. */
+            float restMin[3], restMax[3];
+            bool hasRestBounds = false;
+            modelBounds(engine_, restMin, restMax, &hasRestBounds);
+            /* std::max, not af_math.h's maxf: this translation unit does not include af_math.h.
+               std::max is NaN-safe for this guard -- a NaN extent fails the > 1e-3f test below and
+               the frame falls back to the exact source mesh. */
+            const float extent = hasRestBounds
+                ? std::max(restMax[0] - restMin[0], std::max(restMax[1] - restMin[1], restMax[2] - restMin[2]))
+                : 0.0f;
+            /* Below a millimetre the bounds describe nothing an avatar could be, and the centre
+               would be noise; leave the selection unmeasured and draw the source mesh. */
+            if (hasRestBounds && extent > 1e-3f) {
+                const float cx = 0.5f * (restMin[0] + restMax[0]);
+                const float cy = 0.5f * (restMin[1] + restMax[1]);
+                const float cz = 0.5f * (restMin[2] + restMax[2]);
+                const float dx = cx - scene_.eye.x, dy = cy - scene_.eye.y, dz = cz - scene_.eye.z;
+                const float viewDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
+                if (std::isfinite(viewDistance) && viewDistance > 0.0f) {
+                    AvatarLodScreenMetrics metrics[kAvatarLodLevels];
+                    const int levels = avatarLods_.levelCount();
+                    bool allMeasured = true;
+                    for (int level = 0; level < levels && level < kAvatarLodLevels; ++level) {
+                        metrics[level].viewportHeightPx = static_cast<float>(surfaceHeight_);
+                        metrics[level].fovDeg = camera_.fovDeg;
+                        metrics[level].viewDistanceM = viewDistance;
+                        metrics[level].meanTriAreaM2 = avatarLods_.meanTriangleAreaM2(level);
+                        if (!(metrics[level].meanTriAreaM2 > 0.0f)) allMeasured = false;
+                    }
+                    if (allMeasured && levels > 0 && levels <= kAvatarLodLevels) {
+                        lodSelection_ = selectAvatarLodByScreenDensity(
+                            metrics, levels, lastLodLevel_, kAvatarLodPixelEdgeTarget, kAvatarLodHysteresis);
+                    }
+                }
+            }
+        }
+        /* Only a level that was actually measured may replace the source index stream. Anything
+           else keeps the previous behaviour exactly: draw every source triangle. */
+        const bool useLodIndices = lodReady_ && lodIndexIbo_ != 0 && !debugMagenta && lodSelection_.measured;
+        if (useLodIndices) lastLodLevel_ = lodSelection_.level;
+        if (useLodIndices != lodSelectionLogged_ || lodSelection_.level != lodSelectionLoggedLevel_) {
+            AF_GL_LOGI("Avatar LOD selected: level=%d of %d sourceTriangles=%d drawnTriangles=%d "
+                       "pixelEdge=%.3f target=%.3f distance=%.3fm viewportH=%d fov=%.1f measured=%d",
+                       lodSelection_.level, avatarLods_.levelCount(), indexCount_ / 3,
+                       avatarLods_.triangleCount(lodSelection_.level), lodSelection_.pixelEdge,
+                       lodSelection_.pixelEdgeTarget, camera_.distance, surfaceHeight_, camera_.fovDeg,
+                       lodSelection_.measured ? 1 : 0);
+            lodSelectionLogged_ = useLodIndices;
+            lodSelectionLoggedLevel_ = lodSelection_.level;
+        }
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, useLodIndices ? lodIndexIbo_ : indexIbo_);
         const int drawCount = visibilityReady_ ? static_cast<int>(visibility_.size()) : n;
         for (int draw = 0; draw < drawCount; ++draw) {
             const af_scene_draw* visibleItem = visibilityReady_ ? &visibility_[static_cast<size_t>(draw)] : nullptr;
@@ -1734,23 +1807,31 @@ void GlRenderer::drawForwardPass() {
                                                 : static_cast<size_t>(sm.index_count < 0 ? 0 : sm.index_count);
             if (useLodIndices && avatarLods_.levelCount() > 1 &&
                 static_cast<size_t>(i) < avatarLods_.level(0).submeshes.size() && sm.index_count >= 768) {
-                const float cx = 0.5f * (sm.bounds_min[0] + sm.bounds_max[0]);
-                const float cy = 0.5f * (sm.bounds_min[1] + sm.bounds_max[1]);
-                const float cz = 0.5f * (sm.bounds_min[2] + sm.bounds_max[2]);
-                const float dx = cx - scene_.eye.x, dy = cy - scene_.eye.y, dz = cz - scene_.eye.z;
-                const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-                const int selectedLod = distance >= 16.0f && avatarLods_.levelCount() > 2 ? 2
-                                       : distance >= 8.0f ? 1 : 0;
-                const auto& ranges = avatarLods_.level(selectedLod).submeshes;
+                /* The level was chosen once for the whole avatar above, from the size its triangles
+                   land on the viewport. Choosing per submesh instead lets the hair sit at a coarser
+                   level than the scalp it grows from, and the seam shows as a crack in the
+                   silhouette; per-metre thresholds also never triggered at all inside Avatar
+                   Studio's 3 m orbit. See af_lod_select.h. */
+                const auto& ranges = avatarLods_.level(lodSelection_.level).submeshes;
                 if (static_cast<size_t>(i) < ranges.size() && ranges[static_cast<size_t>(i)].indexCount > 0) {
                     drawIndexOffset = ranges[static_cast<size_t>(i)].firstIndex;
                     drawIndexCount = ranges[static_cast<size_t>(i)].indexCount;
                 }
             }
-            /* Re-check immediately before converting the element offset to a byte pointer. */
+            /* Re-check immediately before converting the element offset to a byte pointer.
+               The bound element buffer is lodIndexIbo_ when useLodIndices is set, and that buffer is
+               LOD0 (a byte-for-byte copy of the source indices) followed by the appended LOD1/LOD2
+               streams. A coarser level's range therefore starts AT OR AFTER indexCount_, so the
+               offset must be validated against the whole LOD buffer, not the source count --
+               otherwise every LOD1/LOD2 draw is wrongly rejected and geometryValid_ is cleared.
+               When LOD indices are not in use the bound buffer is indexIbo_ and the source count is
+               the right bound. (The shadow pass validates against avatarLods_.indices().size() for
+               the same reason.) */
+            const size_t elementBound = useLodIndices ? avatarLods_.indices().size()
+                                                      : static_cast<size_t>(indexCount_);
             if (sm.index_offset < 0 || sm.index_count < 0 ||
-                drawIndexOffset > static_cast<size_t>(indexCount_) ||
-                drawIndexCount > static_cast<size_t>(indexCount_) - drawIndexOffset) {
+                drawIndexOffset > elementBound ||
+                drawIndexCount > elementBound - drawIndexOffset) {
                 geometryValid_ = false;
                 std::fprintf(stderr, "[AvatarForge] skipped invalid submesh draw range %d\n", i);
                 continue;
@@ -1804,7 +1885,11 @@ void GlRenderer::drawForwardPass() {
             }
             lastDrawError_ = GL_NO_ERROR;
             ++drawCalls_;
-            triangles_ += sm.index_count / 3;
+            /* Report the triangles actually submitted, which is drawIndexCount once the colour pass
+               selects a LOD level, not the source submesh's sm.index_count. Over-reporting here
+               would put a number in the diagnostics that the GPU never drew (rule: no invented
+               numbers). Both are exact counts of what this call did. */
+            triangles_ += static_cast<int>(drawIndexCount / 3);
         }
         if (cullingWasEnabled) glEnable(GL_CULL_FACE);
     }

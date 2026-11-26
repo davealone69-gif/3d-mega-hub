@@ -6,6 +6,10 @@
  * keep uploading the kernel's live vertex buffer unchanged while the renderer switches index
  * ranges. Simplification is chart-, submesh-, and skin-influence-local; unsupported input falls
  * back to the exact source indices.
+ *
+ * The set also measures each level's rest-pose surface area, which is what lets the renderer pick
+ * a level from the size its triangles actually land on the screen (af_lod_select.h) instead of from
+ * a camera distance in metres.
  */
 #ifndef AF_AVATAR_LOD_H
 #define AF_AVATAR_LOD_H
@@ -50,9 +54,25 @@ public:
     const std::vector<uint32_t>& indices() const { return indices_; }
     int triangleCount(int level) const;
 
+    /*
+     * Rest-pose surface area in square metres, MEASURED by summing the triangles of that level,
+     * and the mean triangle area that follows from it. Both are computed once per build from the
+     * rest vertices, not estimated from a bounding box and not recomputed per frame.
+     *
+     * The screen-space LOD selection in af_lod_select.h needs the mean triangle area of each level
+     * to work out how large that level's triangles land on the viewport. Returning 0 means "this
+     * level has no measured area" (an empty level, or a build that failed), and callers treat 0 as
+     * unmeasurable rather than as free.
+     */
+    float surfaceAreaM2(int level) const;
+    float meanTriangleAreaM2(int level) const;
+    bool  areasValid() const { return areasValid_; }
+
 private:
     std::vector<uint32_t> indices_;
     std::vector<AvatarLodLevel> levels_;
+    std::vector<float> levelAreaM2_;   /* per level, measured from the rest pose; parallels levels_ */
+    bool areasValid_ = false;
 };
 
 } /* namespace af */

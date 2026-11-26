@@ -1,5 +1,6 @@
 /*
- * af_avatar_lod.cpp -- deterministic index-only clustering for the single-avatar render path.
+ * Deterministic index-only clustering for the single-avatar render path, plus the rest-pose
+ * surface-area measurement each level needs for screen-space LOD selection (af_lod_select.h).
  */
 #include "af_avatar_lod.h"
 
@@ -12,6 +13,49 @@
 
 namespace af {
 namespace {
+
+/*
+ * Sums the areas of the triangles an index range selects, from the rest-pose positions.
+ *
+ * This is a measurement of the level as built, not an estimate from its bounding box: a bbox says
+ * nothing about how much surface is folded inside it, and the whole point of the number is to
+ * relate triangle size to pixel size. Returns false -- and leaves *outAreaM2 untouched -- when an
+ * index is out of range or a coordinate is not finite, so a caller can never report an area it did
+ * not actually measure.
+ */
+bool measureIndexRangeAreaM2(const af_vertex* vertices, size_t vertexCount,
+                             const uint32_t* indices, size_t first, size_t count,
+                             float* outAreaM2) {
+    if (!vertices || !indices || !outAreaM2) return false;
+    if (count % 3 != 0) return false;
+    if (first > std::numeric_limits<size_t>::max() - count) return false;
+    double area = 0.0;
+    for (size_t t = first; t + 2 < first + count; t += 3) {
+        const uint32_t i0 = indices[t], i1 = indices[t + 1], i2 = indices[t + 2];
+        if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) return false;
+        const float* a = vertices[i0].pos;
+        const float* b = vertices[i1].pos;
+        const float* c = vertices[i2].pos;
+        for (int axis = 0; axis < 3; ++axis) {
+            if (!std::isfinite(a[axis]) || !std::isfinite(b[axis]) || !std::isfinite(c[axis])) {
+                return false;
+            }
+        }
+        const double ux = double(b[0]) - double(a[0]);
+        const double uy = double(b[1]) - double(a[1]);
+        const double uz = double(b[2]) - double(a[2]);
+        const double vx = double(c[0]) - double(a[0]);
+        const double vy = double(c[1]) - double(a[1]);
+        const double vz = double(c[2]) - double(a[2]);
+        const double cx = uy * vz - uz * vy;
+        const double cy = uz * vx - ux * vz;
+        const double cz = ux * vy - uy * vx;
+        area += 0.5 * std::sqrt(cx * cx + cy * cy + cz * cz);
+    }
+    if (!std::isfinite(area) || area < 0.0) return false;
+    *outAreaM2 = static_cast<float>(area);
+    return true;
+}
 
 /* Mobile-first simplification targets: approximately 12% and 5% of source triangles.
    These are targets, not guarantees: topology, UV seams and skin-weight boundaries can
@@ -218,6 +262,8 @@ std::vector<uint32_t> simplifySubmesh(const af_vertex* vertices, size_t vertexCo
 void AvatarLodSet::clear() {
     indices_.clear();
     levels_.clear();
+    levelAreaM2_.clear();
+    areasValid_ = false;
 }
 
 const AvatarLodLevel& AvatarLodSet::level(int index) const {
@@ -228,6 +274,19 @@ const AvatarLodLevel& AvatarLodSet::level(int index) const {
 
 int AvatarLodSet::triangleCount(int index) const {
     return static_cast<int>(level(index).indexCount / 3);
+}
+
+float AvatarLodSet::surfaceAreaM2(int index) const {
+    if (!areasValid_ || index < 0 || static_cast<size_t>(index) >= levelAreaM2_.size()) return 0.0f;
+    return levelAreaM2_[static_cast<size_t>(index)];
+}
+
+float AvatarLodSet::meanTriangleAreaM2(int index) const {
+    const int triangles = triangleCount(index);
+    if (!areasValid_ || triangles <= 0) return 0.0f;
+    const float area = surfaceAreaM2(index);
+    if (!(area > 0.0f)) return 0.0f;
+    return area / static_cast<float>(triangles);
 }
 
 bool AvatarLodSet::build(const af_vertex* restVertices, size_t vertexCount,
@@ -304,6 +363,28 @@ bool AvatarLodSet::build(const af_vertex* restVertices, size_t vertexCount,
             }
             candidate.indexCount = static_cast<uint32_t>(candidateCount);
             levels_.push_back(std::move(candidate));
+        }
+
+        /* Measure every level's rest-pose surface area while the source geometry is still in hand.
+           The renderer uses these to pick a level from the size its triangles land on the screen
+           (af_lod_select.h). A level whose area cannot be measured makes the whole set unusable for
+           screen-space selection: the renderer would have to compare a measured level against an
+           unmeasured one, so it is told "no areas" instead and keeps its existing behaviour. */
+        std::vector<float> areas;
+        areas.reserve(levels_.size());
+        bool measured = true;
+        for (const AvatarLodLevel& item : levels_) {
+            float area = 0.0f;
+            if (!measureIndexRangeAreaM2(restVertices, vertexCount, indices_.data(),
+                                         item.firstIndex, item.indexCount, &area)) {
+                measured = false;
+                break;
+            }
+            areas.push_back(area);
+        }
+        if (measured) {
+            levelAreaM2_ = std::move(areas);
+            areasValid_ = true;
         }
         return true;
     } catch (...) {
