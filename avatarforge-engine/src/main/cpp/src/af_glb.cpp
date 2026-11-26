@@ -673,6 +673,23 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             const MaterialDef& md = materialForRegion(materialRegion);
             const Vec3 baseColor = materialRegion == REGION_HAIR
                 ? hairBaseColorForSpec(spec) : md.baseColor;
+            /* The spec's PBR scalar overrides are serialised here as well as applied to the live material
+               table, so a customised fabric survives export -> share -> re-import instead of reverting to
+               the region default. A negative scalar means "keep the authored value", and both Kotlin
+               defaults are -1f, so an avatar that names no fabric exports byte-identically to before.
+               baseColor keeps this branch's texture-first behaviour (white factor when a texture exists). */
+            float metallic = md.metallic;
+            if ((materialRegion == REGION_GEAR || materialRegion == REGION_SHOE) && spec.gear_metalness >= 0.0f) {
+                metallic = spec.gear_metalness;
+            } else if ((materialRegion == REGION_CLOTH_UPPER || materialRegion == REGION_CLOTH_LOWER) &&
+                       spec.cloth_metalness >= 0.0f) {
+                metallic = spec.cloth_metalness;
+            }
+            float roughness = md.roughness;
+            if ((materialRegion == REGION_CLOTH_UPPER || materialRegion == REGION_CLOTH_LOWER) &&
+                spec.cloth_roughness >= 0.0f) {
+                roughness = spec.cloth_roughness;
+            }
             if (mi) j += ',';
             j += "{\"name\":\"";
             jsonEscape(j, names[mi]);
@@ -684,9 +701,9 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             jsonNum(j, texBaseColor >= 0 ? 1.0f : baseColor.y); j += ',';
             jsonNum(j, texBaseColor >= 0 ? 1.0f : baseColor.z);
             j += ",1],\"metallicFactor\":";
-            jsonNum(j, md.metallic);
+            jsonNum(j, metallic);
             j += ",\"roughnessFactor\":";
-            jsonNum(j, md.roughness);
+            jsonNum(j, roughness);
             if (texBaseColor >= 0) {
                 j += ",\"baseColorTexture\":{\"index\":";
                 j += std::to_string(texBaseColor);

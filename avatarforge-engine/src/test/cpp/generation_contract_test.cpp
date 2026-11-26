@@ -1,0 +1,847 @@
+/*
+ * generation_contract_test.cpp -- host regression for the GENERATION side of AvatarForge.
+ *
+ * Sibling tests already prove a generated avatar imports, deforms and exports (imported_glb_pbr_test
+ * runs af_engine_create -> run_all -> deformation -> export). What nothing tested is the contract the
+ * public header itself makes and that "generation works correctly" actually means:
+ *
+ *   DETERMINISM.  afcore.h: "identical af_spec + identical seed => byte-identical geometry."
+ *     This test generates the SAME spec+seed twice and requires the two exported GLBs to be
+ *     byte-identical, then generates a DIFFERENT seed and requires the output to differ - so the
+ *     equality check cannot pass vacuously on constant output. Nondeterminism here (thread-reduction
+ *     order, uninitialised memory leaking into the file, RNG not seeded from the spec) would surface
+ *     as a named failure with the first divergent byte offset, instead of silently shipping avatars
+ *     that differ run-to-run for the same prompt.
+ *
+ *   COMPLETENESS.  A generated avatar must carry the production rig and face exactly: 71 named joints
+ *     (including the twist bones), all 52 ARKit-compatible blendshapes, every one of the five PBR
+ *     texture slots populated, a non-empty validated mesh and materials, and a working authored clip
+ *     library. These are asserted against the engine's OWN read-back (af_stats, af_engine_joint_info,
+ *     af_engine_blendshape_names, af_engine_texture, af_engine_clip_duration), so a future change that
+ *     quietly drops a joint set, a morph channel or a texture map fails here.
+ *
+ *   ROUND-TRIP.  The exported bytes must re-import through the engine's hardened reader
+ *     (af_engine_import_glb_from_memory) with rc==AF_OK and an empty af_engine_last_error, adopting a
+ *     71-joint skeleton - i.e. the file the app receives is one the app can read back.
+ *
+ * EXPLICIT IRIS COLOUR. The owner asked for selectable eye colour (harvested from the 3D4ME donor's
+ *   named swatches -- see docs/REFERENCE_3d4me_options.md). It rides af_spec.eye_tone[3], where all-zero
+ *   means AUTO, so every pre-existing avatar keeps the unchanged melanin-derived iris and stays
+ *   byte-identical. Part D proves objectively that a "<colour> eyes" phrase routes ONLY to the iris while
+ *   a separate garment colour still lands on cloth_tone (no cross-talk); that distinct curated presets are
+ *   mutually distinct; and end-to-end that a chosen iris changes the exported GLB while two identical
+ *   iris+seed generations remain byte-for-byte equal (the new branch did not break determinism).
+ *
+ * CLOTHING FABRICS. The second harvested parameter (after iris colour) lets a prompt name a fabric --
+ *   cotton/silk/satin/denim/latex -- which sets the garment's PBR response via cloth_roughness and a new
+ *   cloth_metalness scalar (both <0 => material default, so unnamed-fabric avatars stay byte-identical).
+ *   Part E verifies objectively that each fabric maps to the donor's measured roughness/metalness; that no
+ *   fabric phrase leaves both scalars AUTO; that a fabric touches ONLY the material response; that two
+ *   identical specs still export byte-identical GLBs (determinism); and that each fabric lands its own
+ *   values on a live af_material (read back from the engine, not inferred); and -- since the GLB exporter now
+ *   writes the spec-override-adjusted factors rather than each region's defaults -- that an exported GLB
+ *   re-imports with the chosen fabric intact (a real export -> import round-trip), so customisation survives
+ *   sharing/export. That same exporter fix makes garment/gear recolour persist into files too, which previously
+ *   it did not (eye colour always survived because it is baked into the base-colour texture).
+ *
+ * MALE PATH. The owner explicitly asked for male avatars. af_spec.sex selects an ANSUR-based male build that no
+ *   test had ever exercised. Part F proves it end-to-end on the host: a canonical male avatar completes the full
+ *   pipeline, carries the production rig and face (71 joints / 52 ARKit blendshapes / all five PBR slots),
+ *   validates at rest, exports and re-imports cleanly, stays byte-deterministic across two identical seeds while a
+ *   different seed differs, and yields measurably different geometry/bytes than the female avatar from the same
+ *   prompt. (Visual masculine proportion/quality is deliberately out of scope -- the sandbox cannot render or view
+ *   images; what is locked here is pipeline correctness, rig completeness and determinism.)
+ *
+ * Nothing is mocked and nothing is synthesised to pass; every assertion reads real generated data.
+ * COST NOTE: it runs the full pipeline up to three times (two identical seeds for the equality check,
+ * one different seed for the inequality control), so it is the slowest host test and carries its own
+ * generous ctest timeout. That cost is deliberate: determinism cannot be proven from a single sample.
+ */
+#include "afcore.h"
+
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace {
+
+int g_checks = 0;
+int g_failures = 0;
+
+void check(bool cond, const char* msg) {
+    ++g_checks;
+    if (cond) {
+        std::printf("PASS  %s\n", msg);
+    } else {
+        std::fprintf(stderr, "FAIL  %s\n", msg);
+        ++g_failures;
+    }
+}
+
+void checkf(bool cond, const char* fmt, double a, double b) {
+    ++g_checks;
+    if (cond) {
+        std::printf("PASS  ");
+        std::printf(fmt, a, b);
+        std::printf("\n");
+    } else {
+        std::fprintf(stderr, "FAIL  ");
+        std::fprintf(stderr, fmt, a, b);
+        std::fprintf(stderr, "\n");
+        ++g_failures;
+    }
+}
+
+/* Deterministic spec: the canonical seed-1337 female/athletic/medium/jeans-jacket avatar, with every
+   field pinned so two calls cannot drift. af_spec_init fills defaults (and struct_size); we then
+   override. Tone arrays left at their documented sentinels except where pinning removes ambiguity. */
+void fillSpec(af_spec* s, int32_t seed, af_sex sex = AF_SEX_FEMALE) {
+    *s = af_spec{};
+    af_spec_init(s);
+    s->sex        = sex;   /* defaults to female; the male path is exercised explicitly by Part F */
+    s->build      = AF_BUILD_ATHLETIC;
+    s->hair_style = AF_HAIR_MEDIUM;
+    s->outfit     = AF_OUTFIT_JEANS_JACKET;
+    s->footwear   = AF_FOOTWEAR_SNEAKER;
+    s->seed       = seed;
+    s->height_m   = 1.75f;
+    s->age_years  = 28.0f;
+    s->muscle     = 0.50f;
+    s->body_fat   = 0.25f;
+    s->bust       = 0.50f;
+    s->skin_melanin = 0.30f;
+    /* Explicit hair/cloth/gear tones so the result does not depend on any auto-derivation path. */
+    s->hair_tone[0] = 0.10f; s->hair_tone[1] = 0.07f; s->hair_tone[2] = 0.05f;
+    s->cloth_tone[0] = 0.20f; s->cloth_tone[1] = 0.30f; s->cloth_tone[2] = 0.55f;
+    s->gear_tone[0] = 0.55f; s->gear_tone[1] = 0.55f; s->gear_tone[2] = 0.60f;
+    s->cloth_roughness = -1.0f;   /* <0 => material default */
+    s->gear_metalness  = -1.0f;
+    std::snprintf(s->prompt, sizeof(s->prompt),
+                  "athletic woman, medium hair, jeans jacket, sneaker");
+}
+
+double nowMs() {
+    using namespace std::chrono;
+    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
+/* Forward declarations: the objective texture-quality metrics are defined further down (beside the
+   other file helpers) but are needed earlier, inside generateAndExport's inspection pass. */
+double channelMean(const uint8_t* px, int w, int h, int ch, int c);
+double channelStdDev(const uint8_t* px, int w, int h, int ch, int c, double mean);
+double luminanceStdDev(const uint8_t* px, int w, int h, int ch);
+void   decodedNormalStats(const uint8_t* px, int w, int h, int ch,
+                          double* sdNx, double* sdNy, double* meanNz);
+
+/* Runs the full pipeline for `seed` and writes the resulting GLB to `outPath`. When `inspect` is set,
+   asserts the live-engine structural contract (Part B) before export. Returns true iff every stage
+   succeeded; records wall-clock generation time into *elapsedMs when provided. */
+/* Spec-driven generation: runs the full pipeline for a caller-supplied, already-filled spec. This lets
+   one overridden field -- here, an explicit iris colour -- be exercised end-to-end without disturbing
+   the pinned canonical spec used by the determinism and completeness parts above. */
+bool generateAndExportSpec(const af_spec* s, const char* outPath, bool inspect, double* elapsedMs) {
+    const double t0 = nowMs();
+    const af_spec spec = *s;
+    af_engine* engine = nullptr;
+    if (af_engine_create(&spec, nullptr, &engine) != AF_OK || engine == nullptr) {
+        std::fprintf(stderr, "FAIL  af_engine_create (seed=%d)\n", (int)s->seed);
+        ++g_failures; ++g_checks;
+        return false;
+    }
+
+    const int32_t runRc = af_engine_run_all(engine);
+    check(runRc == AF_OK, "af_engine_run_all completes the full generation pipeline");
+    if (runRc != AF_OK) {
+        std::fprintf(stderr, "      run_all rc=%d last_error=\"%s\"\n", (int)runRc,
+                     af_engine_last_error(engine) ? af_engine_last_error(engine) : "");
+        af_engine_destroy(engine);
+        return false;
+    }
+
+    if (inspect) {
+        /* ---- Part B: structural completeness, read back from the engine itself ---- */
+        af_stats st{};
+        check(af_engine_stats(engine, &st) == AF_OK, "af_engine_stats reports the generated avatar");
+        check(st.vertex_count > 0 && st.triangle_count > 0 && st.index_count > 0,
+              "generated mesh has vertices, indices and triangles");
+        check(st.submesh_count >= 1, "generated mesh has at least one submesh");
+        checkf(st.joint_count == 71,
+               "generated rig has exactly 71 joints (got %.0f, expected 71)", (double)st.joint_count, 71.0);
+        checkf(st.blendshape_count == 52,
+               "generated face has all 52 ARKit blendshapes (got %.0f, expected 52)",
+               (double)st.blendshape_count, 52.0);
+        checkf(af_engine_joint_count(engine) == st.joint_count,
+               "joint accessor agrees with af_stats (%.0f vs %.0f)",
+               (double)af_engine_joint_count(engine), (double)st.joint_count);
+        check(af_engine_material_count(engine) >= 1, "generated avatar has at least one material");
+
+        /* Joint NAMES, including the twist bones whose absence would silently soften deformations. */
+        std::string allJoints;
+        bool jointReadOk = true;
+        for (int32_t j = 0; j < st.joint_count; ++j) {
+            af_joint_info ji{};
+            if (af_engine_joint_info(engine, j, &ji) != AF_OK) { jointReadOk = false; break; }
+            allJoints += ji.name;
+            allJoints += ",";
+        }
+        check(jointReadOk, "every joint exposes readable info");
+        const char* requiredJoints[] = {"hips", "head", "hand_L", "hand_R",
+                                        "toe_L", "toe_R", "upperarm_twist_L", "thigh_twist_R"};
+        bool missingJoint = false;
+        for (const char* rj : requiredJoints) {
+            if (allJoints.find(rj) == std::string::npos) {
+                std::fprintf(stderr, "      missing expected joint name: %s\n", rj);
+                missingJoint = true;
+            }
+        }
+        check(!missingJoint, "rig contains hips/head/hands/toes and the twist bones by name");
+
+        /* Blendshape NAMES: the 52 ARKit targets must actually be named, not just counted. */
+        char bs[64][64];
+        const int32_t bsCount = af_engine_blendshape_names(bs, 64);
+        checkf(bsCount == 52, "af_engine_blendshape_names returns 52 (got %.0f)", (double)bsCount, 0.0);
+        std::string allBs;
+        for (int32_t i = 0; i < bsCount && i < 64; ++i) { allBs += bs[i]; allBs += ","; }
+        const char* requiredBs[] = {"eyeBlinkLeft", "eyeLookUpLeft", "browDownLeft", "cheekPuff"};
+        bool missingBs = false;
+        for (const char* rb : requiredBs) {
+            if (allBs.find(rb) == std::string::npos) {
+                std::fprintf(stderr, "      missing expected ARKit blendshape: %s\n", rb);
+                missingBs = true;
+            }
+        }
+        check(!missingBs, "blendshapes include canonical ARKit names (blink/look/brow/cheek)");
+
+        /* Every PBR slot populated by the bake. While verifying population we also extract OBJECTIVE
+           quality metrics from the live pixels (Part B-QUALITY), so "the avatar looks flat/wrong" is a
+           number each CI run records and a fix must measurably move -- not an opinion. */
+        const int32_t slots[] = {AF_TEX_BASE_COLOR, AF_TEX_NORMAL, AF_TEX_METALLIC_ROUGHNESS,
+                                 AF_TEX_OCCLUSION, AF_TEX_SUBSURFACE};
+        const char* slotName[] = {"BASE_COLOR", "NORMAL", "METALLIC_ROUGHNESS", "OCCLUSION", "SUBSURFACE"};
+        bool allTexturesOk = true;
+        double baseLumSd = 0.0;                     /* tonal spread of the base-colour map          */
+        double normalRawSdR = 0.0, normalRawSdG = 0.0; /* tangent-plane detail in the normal map    */
+        double normalSdNx = 0.0, normalSdNy = 0.0, normalMeanNz = 0.0; /* decoded deviation + flatness */
+        double ssScatterMean = 0.0, ssScatterSd = 0.0, ssThickMean = 0.0; /* subsurface-map R/G channels */
+        for (int i = 0; i < 5; ++i) {
+            const int32_t slot = slots[i];
+            af_texture t{};
+            const int32_t trc = af_engine_texture(engine, slot, &t);
+            if (trc != AF_OK || t.data == nullptr || t.width <= 0 || t.height <= 0 || t.channels <= 0) {
+                std::fprintf(stderr, "      texture slot %s not populated (rc=%d w=%d h=%d ch=%d data=%p)\n",
+                             slotName[i], (int)trc, t.width, t.height, t.channels, (const void*)t.data);
+                allTexturesOk = false;
+                continue;
+            }
+            const size_t level0Bytes = (size_t)t.width * (size_t)t.height * (size_t)t.channels;
+            if ((uint64_t)level0Bytes > t.byte_size) {
+                std::fprintf(stderr, "      texture slot %s: level0 bytes %zu exceed byte_size %llu; skipping metrics\n",
+                             slotName[i], level0Bytes, (unsigned long long)t.byte_size);
+                continue; /* populated but cannot be read safely; report, do not crash */
+            }
+            const int nCh = t.channels < 8 ? t.channels : 8;
+            double mean[8] = {}, sd[8] = {};
+            for (int c = 0; c < nCh; ++c) {
+                mean[c] = channelMean(t.data, t.width, t.height, t.channels, c);
+                sd[c]   = channelStdDev(t.data, t.width, t.height, t.channels, c, mean[c]);
+            }
+            std::printf("QUALITY %-18s %dx%dx%d ", slotName[i], t.width, t.height, t.channels);
+            for (int c = 0; c < nCh; ++c) std::printf("c%d(mean=%.1f sd=%.2f) ", c, mean[c], sd[c]);
+            std::printf("\n");
+            if (slot == AF_TEX_BASE_COLOR && nCh >= 3) {
+                baseLumSd = luminanceStdDev(t.data, t.width, t.height, t.channels);
+            } else if (slot == AF_TEX_NORMAL && nCh >= 3) {
+                normalRawSdR = sd[0];
+                normalRawSdG = sd[1];
+                decodedNormalStats(t.data, t.width, t.height, t.channels,
+                                   &normalSdNx, &normalSdNy, &normalMeanNz);
+            } else if (slot == AF_TEX_SUBSURFACE && nCh >= 2) {
+                ssThickMean   = mean[0];   /* R = geometric thickness                */
+                ssScatterMean = mean[1];   /* G = scatter radius (drives red translucency) */
+                ssScatterSd   = sd[1];     /* spread = how strongly skin stands out from cloth/hair */
+            }
+        }
+        check(allTexturesOk, "all five procedural PBR texture slots are populated with real pixels");
+        /* RATCHETED APPEARANCE BASELINES. These are regression floors, not aspirational targets: each
+           sits safely below the magnitudes measured after commit f5fdcea (garments gained real woven +
+           stitched relief), so any future change that flattens the surface back toward the old painted
+           regime fails here loudly. They are stable because the spec+seed above is pinned, which makes
+           the baked pixels -- and therefore these statistics -- byte-reproducible run to run.
+             measured @ f5fdcea : rawSdR 9.56, rawSdG 5.39, sdNx 0.075, sdNy 0.042, meanNz 0.996
+             previous (flat)    : rawSdR 4.14, rawSdG 2.14, sdNx 0.032, sdNy 0.017, meanNz ~0.999   */
+        check(baseLumSd > 1.0,
+              "base-colour map has tonal spread (not one flat tone): luminance stddev > 1.0 on 0-255");
+        check(normalRawSdR > 6.0 && normalRawSdG > 4.0,
+              "normal map keeps garment weave/stitch relief: R/G channel stddev > 6.0 / > 4.0");
+        check(normalSdNx > 0.05 && normalSdNy > 0.03,
+              "normal map deviates from flat in tangent space: decoded sdNx > 0.05 and sdNy > 0.03");
+        check(normalMeanNz < 0.9988,
+              "surface is not globally flat: normal mean Z < 0.9988 (relief present somewhere)");
+        /* Subsurface-scattering floors, ratcheted after commit 95a5390 fixed the inverted bake.
+           Pre-fix the scatter channel averaged ~7.3 with stddev ~27.4; post-fix 13.9 / 47.0. The
+           floors below reject the old regime while clearing the new one with margin; pinned spec+seed
+           keeps them byte-stable. */
+        check(ssScatterMean > 11.0,
+              "skin keeps strong subsurface SCATTER across the atlas: channel-G mean > 11 on 0-255");
+        check(ssScatterSd > 35.0,
+              "subsurface scatter separates skin from cloth/hair: channel-G stddev > 35");
+        std::printf("DETAIL  baseColour lumSd=%.2f | normal raw(sdR=%.2f sdG=%.2f) decoded(sdNx=%.3f sdNy=%.3f meanNz=%.3f)\n",
+                    baseLumSd, normalRawSdR, normalRawSdG, normalSdNx, normalSdNy, normalMeanNz);
+        std::printf("DETAIL  subsurface thickness(R) mean=%.1f | scatter(G) mean=%.1f sd=%.2f\n",
+                    ssThickMean, ssScatterMean, ssScatterSd);
+
+        /* Authored clip library responds with finite, positive durations (REST excluded: it is 0). */
+        const int32_t clips[] = {AF_CLIP_IDLE, AF_CLIP_WALK, AF_CLIP_JUMP, AF_CLIP_TURN_360, AF_CLIP_DANCE};
+        bool clipsOk = true;
+        for (int32_t c : clips) {
+            const float d = af_engine_clip_duration(engine, c);
+            if (!(std::isfinite(d) && d > 0.0f)) {
+                std::fprintf(stderr, "      clip %d has bad duration %f\n", (int)c, (double)d);
+                clipsOk = false;
+            }
+        }
+        check(clipsOk, "idle/walk/jump/turn_360/dance clips have finite positive durations");
+
+        /* Geometry sanity at rest: finite positions, valid weights/joints, bounds pass. */
+        char report[2048] = {};
+        check(af_engine_validate_deformed_mesh(engine, report, (int32_t)sizeof(report)) == AF_OK,
+              "generated rest mesh passes finite-position / weight / joint / bounds validation");
+
+        std::printf("STATS verts=%d tris=%d submeshes=%d joints=%d blendshapes=%d mats=%d "
+                    "tex=%.2fMiB geo=%.2fMiB peakField=%.2fMiB\n",
+                    st.vertex_count, st.triangle_count, st.submesh_count, st.joint_count,
+                    st.blendshape_count, af_engine_material_count(engine),
+                    (double)st.texture_bytes / 1048576.0, (double)st.geometry_bytes / 1048576.0,
+                    (double)st.peak_field_bytes / 1048576.0);
+    }
+
+    /* Export at the canonical rest pose so the file does not encode a transient deformation. */
+    check(af_engine_apply_clip(engine, AF_CLIP_REST, 0.0f) == AF_OK,
+          "generated avatar returns to its rest pose before export");
+    const int32_t expRc = af_engine_export_glb(engine, outPath);
+    check(expRc == AF_OK, "generated avatar exports a self-contained GLB to disk");
+    if (expRc != AF_OK) {
+        std::fprintf(stderr, "      export_glb rc=%d last_error=\"%s\"\n", (int)expRc,
+                     af_engine_last_error(engine) ? af_engine_last_error(engine) : "");
+    }
+    af_engine_destroy(engine);
+    if (elapsedMs) *elapsedMs = nowMs() - t0;
+    return expRc == AF_OK;
+}
+
+/* Convenience wrapper used by the determinism / completeness parts: build the canonical pinned spec for
+   `seed` and delegate to the spec-driven generator above. */
+bool generateAndExport(int32_t seed, const char* outPath, bool inspect, double* elapsedMs) {
+    af_spec spec;
+    fillSpec(&spec, seed);
+    return generateAndExportSpec(&spec, outPath, inspect, elapsedMs);
+}
+
+/* Compares two files byte-for-byte without holding them both in memory. Reports sizes and the first
+   divergent offset so a determinism failure is diagnosable rather than mysterious. */
+bool filesIdentical(const char* a, const char* b, long* sizeA, long* sizeB, long* firstDiff) {
+    std::FILE* fa = std::fopen(a, "rb");
+    std::FILE* fb = std::fopen(b, "rb");
+    if (!fa || !fb) { if (fa) std::fclose(fa); if (fb) std::fclose(fb); return false; }
+    std::fseek(fa, 0, SEEK_END); *sizeA = std::ftell(fa); std::fseek(fa, 0, SEEK_SET);
+    std::fseek(fb, 0, SEEK_END); *sizeB = std::ftell(fb); std::fseek(fb, 0, SEEK_SET);
+    if (*sizeA != *sizeB) { *firstDiff = -1; std::fclose(fa); std::fclose(fb); return false; }
+    const size_t CHUNK = 1u << 20;
+    std::vector<uint8_t> ba(CHUNK), bb(CHUNK);
+    long offset = 0;
+    bool same = true;
+    for (;;) {
+        const size_t na = std::fread(ba.data(), 1, CHUNK, fa);
+        const size_t nb = std::fread(bb.data(), 1, CHUNK, fb);
+        if (na != nb) { same = false; *firstDiff = offset + (long)(na < nb ? na : nb); break; }
+        if (na == 0) break;
+        if (std::memcmp(ba.data(), bb.data(), na) != 0) {
+            for (size_t i = 0; i < na; ++i) {
+                if (ba[i] != bb[i]) { *firstDiff = offset + (long)i; break; }
+            }
+            same = false;
+            break;
+        }
+        offset += (long)na;
+    }
+    std::fclose(fa); std::fclose(fb);
+    return same;
+}
+
+/* Reads an entire file into memory (used for the self-import round-trip). */
+bool readFile(const char* path, std::vector<uint8_t>* out) {
+    std::FILE* fp = std::fopen(path, "rb");
+    if (!fp) return false;
+    std::fseek(fp, 0, SEEK_END);
+    const long sz = std::ftell(fp);
+    std::fseek(fp, 0, SEEK_SET);
+    if (sz <= 0) { std::fclose(fp); return false; }
+    out->resize((size_t)sz);
+    const size_t got = std::fread(out->data(), 1, out->size(), fp);
+    std::fclose(fp);
+    return got == out->size();
+}
+
+/* ------------------------------------------------------------------------------------------
+ * Objective texture-quality metrics over a LEVEL-0 8-bit image (width*height*channels bytes).
+ * These exist so "the avatar looks flat/wrong" becomes a number every CI run records and a
+ * future fix must measurably move -- the qualitative analogue of the byte-determinism check.
+ * Nothing here renders; it reads the same engine-owned buffers af_engine_texture hands back.
+ * -------------------------------------------------------------------------------------------- */
+double channelMean(const uint8_t* px, int w, int h, int ch, int c) {
+    if (!px || w <= 0 || h <= 0 || ch <= 0 || c < 0 || c >= ch) return 0.0;
+    const size_t n = (size_t)w * (size_t)h;
+    double s = 0.0;
+    for (size_t i = 0; i < n; ++i) s += (double)px[i * (size_t)ch + c];
+    return s / (double)n;
+}
+
+double channelStdDev(const uint8_t* px, int w, int h, int ch, int c, double mean) {
+    if (!px || w <= 0 || h <= 0 || ch <= 0 || c < 0 || c >= ch) return 0.0;
+    const size_t n = (size_t)w * (size_t)h;
+    double v = 0.0;
+    for (size_t i = 0; i < n; ++i) { const double d = (double)px[i * (size_t)ch + c] - mean; v += d * d; }
+    return std::sqrt(v / (double)n);
+}
+
+/* Luminance standard deviation (Rec.709 weights) on a >=3-channel map: a measure of tonal spread. */
+double luminanceStdDev(const uint8_t* px, int w, int h, int ch) {
+    if (!px || w <= 0 || h <= 0 || ch < 3) return 0.0;
+    const size_t n = (size_t)w * (size_t)h;
+    std::vector<double> l(n);
+    double m = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t* p = px + i * (size_t)ch;
+        l[i] = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+        m += l[i];
+    }
+    m /= (double)n;
+    double v = 0.0;
+    for (size_t i = 0; i < n; ++i) { const double d = l[i] - m; v += d * d; }
+    return std::sqrt(v / (double)n);
+}
+
+/* Tangent-space normal maps encode xyz in [0,255]->[-1,+1]. A perfectly flat surface is uniform
+   (128,128,255): its decoded x/y standard deviation is ~0. Reporting that deviation quantifies how
+   much real micro-relief the bake actually produced (skin pores, cloth weave, seams), independent
+   of which tangent convention the map uses, because we measure spread rather than sign. */
+void decodedNormalStats(const uint8_t* px, int w, int h, int ch,
+                        double* sdNx, double* sdNy, double* meanNz) {
+    *sdNx = 0.0; *sdNy = 0.0; *meanNz = 0.0;
+    if (!px || w <= 0 || h <= 0 || ch < 3) return;
+    const size_t n = (size_t)w * (size_t)h;
+    std::vector<double> vx(n), vy(n);
+    double sx = 0.0, sy = 0.0, sz = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint8_t* p = px + i * (size_t)ch;
+        const double dx = (double)p[0] / 255.0 * 2.0 - 1.0;
+        const double dy = (double)p[1] / 255.0 * 2.0 - 1.0;
+        const double dz = (double)p[2] / 255.0 * 2.0 - 1.0;
+        vx[i] = dx; vy[i] = dy;
+        sx += dx; sy += dy; sz += dz;
+    }
+    const double mx = sx / (double)n, my = sy / (double)n;
+    double ex = 0.0, ey = 0.0;
+    for (size_t i = 0; i < n; ++i) { ex += (vx[i] - mx) * (vx[i] - mx); ey += (vy[i] - my) * (vy[i] - my); }
+    *sdNx = std::sqrt(ex / (double)n);
+    *sdNy = std::sqrt(ey / (double)n);
+    *meanNz = sz / (double)n;
+}
+
+} // namespace
+
+int main(void) {
+    const char* PATH_A = "/tmp/af_generation_contract_A.glb";
+    const char* PATH_B = "/tmp/af_generation_contract_B.glb";
+    const char* PATH_C = "/tmp/af_generation_contract_C.glb";
+
+    std::printf("=== Generation contract: determinism + completeness + round-trip ===\n");
+
+    /* ---- Part A: determinism ---- */
+    double msA = 0, msB = 0, msC = 0;
+    const bool okA = generateAndExport(1337, PATH_A, /*inspect=*/true, &msA);
+    const bool okB = generateAndExport(1337, PATH_B, /*inspect=*/false, &msB);
+    std::printf("TIMING  gen(seed=1337) #1 = %.0f ms, #2 = %.0f ms\n", msA, msB);
+    check(okA && okB, "both identical-seed generations exported");
+
+    long sizeA = 0, sizeB = 0, firstDiff = -2;
+    const bool identical = okA && okB && filesIdentical(PATH_A, PATH_B, &sizeA, &sizeB, &firstDiff);
+    checkf(identical,
+           "DETERMINISM: identical spec+seed => byte-identical GLB (%.0f bytes vs %.0f bytes)",
+           (double)sizeA, (double)sizeB);
+    if (!identical) {
+        std::fprintf(stderr, "      sizes %ld vs %ld, first divergent byte offset %ld\n",
+                     sizeA, sizeB, firstDiff);
+    }
+
+    /* Negative control: a different seed must NOT reproduce the same bytes, or the equality check
+       above could pass vacuously on constant output. */
+    const bool okC = generateAndExport(1338, PATH_C, /*inspect=*/false, &msC);
+    std::printf("TIMING  gen(seed=1338) control = %.0f ms\n", msC);
+    long sizeC = 0, dummyFirst = -2;
+    const bool cDiffersFromA = okA && okC && !filesIdentical(PATH_A, PATH_C, &sizeA, &sizeC, &dummyFirst);
+    check(cDiffersFromA, "CONTROL: a different seed produces a different GLB (equality check is not vacuous)");
+
+    /* ---- Round-trip: the exported file must re-import through the engine's own hardened reader ---- */
+    std::vector<uint8_t> exportedBytes;
+    if (okA && readFile(PATH_A, &exportedBytes)) {
+        af_spec rs;
+        fillSpec(&rs, 1); /* contents irrelevant; the importer adopts the FILE's rig */
+        af_engine* reimport = nullptr;
+        check(af_engine_create(&rs, nullptr, &reimport) == AF_OK && reimport != nullptr,
+              "round-trip: fresh engine created to re-read the export");
+        if (reimport) {
+            const int32_t rc = af_engine_import_glb_from_memory(
+                reimport, exportedBytes.data(), (int32_t)exportedBytes.size());
+            const char* why = af_engine_last_error(reimport);
+            const bool silent = (why == nullptr) || (*why == '\0');
+            check(rc == AF_OK && silent,
+                  "round-trip: our exported GLB re-imports with rc==AF_OK and an empty last_error");
+            if (rc != AF_OK || !silent) {
+                std::fprintf(stderr, "      re-import rc=%d last_error=\"%s\"\n", (int)rc,
+                             silent ? "<none>" : why);
+            }
+            checkf(af_engine_joint_count(reimport) == 71,
+                   "round-trip: imported skeleton adopts 71 joints (got %.0f)",
+                   (double)af_engine_joint_count(reimport), 0.0);
+            af_engine_destroy(reimport);
+        }
+    } else {
+        check(false, "round-trip: could not read back the exported GLB for re-import");
+    }
+
+    /* ---- Part C: prompt parsing is deterministic (front door of generation) ---- */
+    {
+        af_spec defSpec;
+        fillSpec(&defSpec, 1);
+        af_engine* pe = nullptr;
+        if (af_engine_create(&defSpec, nullptr, &pe) == AF_OK && pe) {
+            const char* prompt = "tall athletic woman, braids, jeans jacket";
+            af_spec o1{}, o2{};
+            const int32_t r1 = af_engine_analyze_prompt(pe, prompt, &o1);
+            const int32_t r2 = af_engine_analyze_prompt(pe, prompt, &o2);
+            checkf(r1 == r2 && r1 >= 1,
+                   "analyze_prompt is deterministic and recognises attributes (%.0f attributes)",
+                   (double)r1, (double)r2);
+            /* Curated field comparison (raw memcmp is unsafe because of struct padding). */
+            const bool sameFields =
+                o1.sex == o2.sex && o1.build == o2.build && o1.hair_style == o2.hair_style &&
+                o1.outfit == o2.outfit && o1.footwear == o2.footwear &&
+                o1.height_m == o2.height_m && o1.age_years == o2.age_years &&
+                o1.muscle == o2.muscle && o1.body_fat == o2.body_fat && o1.bust == o2.bust;
+            check(sameFields, "analyze_prompt yields identical spec fields for the same prompt");
+            /* Transparency (not a hard gate): show how the prompt mapped, so parser behaviour is visible. */
+            std::printf("PARSE   \"%s\" -> attrs=%d sex=%d build=%d hair=%d outfit=%d height=%.3f\n",
+                        prompt, (int)r1, o1.sex, o1.build, o1.hair_style, o1.outfit, (double)o1.height_m);
+            af_engine_destroy(pe);
+        } else {
+            check(false, "prompt-parse engine could not be created");
+        }
+    }
+
+    /* ---- Part D: an explicit iris colour (eye_tone) -- routing, palette, effect, determinism ---- */
+    {
+        /* analyze_prompt mutates the ENGINE's spec, so each parse gets its OWN fresh engine built from
+           the canonical default spec (whose eye_tone is all-zero). Starting from the documented default
+           is exactly how the app creates an AvatarSpec, so an exact match against a curated value proves
+           the parser SET the field, and a remaining zero proves it deliberately left AUTO untouched. */
+        auto runParse = [&](const char* prompt, af_spec* dst) -> int {
+            af_spec seedSpec;
+            fillSpec(&seedSpec, 7);
+            af_engine* e = nullptr;
+            if (af_engine_create(&seedSpec, nullptr, &e) != AF_OK || e == nullptr) return -1;
+            const int r = af_engine_analyze_prompt(e, prompt, dst);
+            af_engine_destroy(e);
+            return r;
+        };
+        auto eq3 = [](const float* v, float r, float g, float b) {
+            return std::fabs(v[0] - r) < 1e-4f && std::fabs(v[1] - g) < 1e-4f && std::fabs(v[2] - b) < 1e-4f;
+        };
+
+        /* (a) "<colour> eyes" drives ONLY the iris; a separate garment colour still reaches cloth_tone. */
+        af_spec mix{};
+        const int rMix = runParse("green jacket, blue eyes", &mix);
+        check(rMix >= 1, "prompt carrying a garment colour AND an eye colour parses");
+        check(eq3(mix.eye_tone, 0.095f, 0.205f, 0.372f),
+              "\"blue eyes\" selects the curated BLUE iris base (linearised 3D4ME swatch)");
+        check(eq3(mix.cloth_tone, 0.075f, 0.230f, 0.080f),
+              "the garment keeps generic GREEN -- the eye branch did not steal its colour");
+
+        /* (b) the hyphenated form resolves identically (tokeniser strips the hyphen to "eyed"). */
+        af_spec hyp{};
+        const int rHyp = runParse("green-eyed woman", &hyp);
+        check(rHyp >= 1 && eq3(hyp.eye_tone, 0.070f, 0.216f, 0.115f),
+              "\"green-eyed\" maps to the curated GREEN iris base");
+
+        /* (c) with no eye phrase, eye_tone stays at the AUTO sentinel: existing avatars are untouched. */
+        af_spec none{};
+        runParse("athletic woman, jeans jacket", &none);
+        check(none.eye_tone[0] == 0.0f && none.eye_tone[1] == 0.0f && none.eye_tone[2] == 0.0f,
+              "no eye phrase => eye_tone remains all-zero (AUTO preserved)");
+
+        /* (d) curated presets are genuinely distinct, so different eyes really differ. */
+        const double dBG = std::fabs((double)mix.eye_tone[0] - hyp.eye_tone[0])
+                         + std::fabs((double)mix.eye_tone[1] - hyp.eye_tone[1])
+                         + std::fabs((double)mix.eye_tone[2] - hyp.eye_tone[2]);
+        checkf(dBG > 0.2, "blue vs green iris bases are distinct (L1 distance %.3f > 0.2)", dBG, 0.0);
+
+        /* (e) END-TO-END: the iris choice changes the exported bytes, yet determinism survives the new
+               branch -- identical iris+seed twice must be byte-identical, blue vs green must differ. */
+        af_spec base;
+        fillSpec(&base, 1337);
+        af_spec eb = base, eb2 = base, eg = base;
+        eb.eye_tone[0] = 0.095f;  eb.eye_tone[1] = 0.205f;  eb.eye_tone[2] = 0.372f;   /* blue  */
+        eb2 = eb;                                                                     /* again  */
+        eg.eye_tone[0] = 0.070f;  eg.eye_tone[1] = 0.216f;  eg.eye_tone[2] = 0.115f;   /* green */
+        const char* P1 = "/tmp/af_iris_blue_1.glb";
+        const char* P2 = "/tmp/af_iris_blue_2.glb";
+        const char* P3 = "/tmp/af_iris_green.glb";
+        const bool o1 = generateAndExportSpec(&eb,  P1, /*inspect=*/false, nullptr);
+        const bool o2 = generateAndExportSpec(&eb2, P2, /*inspect=*/false, nullptr);
+        const bool o3 = generateAndExportSpec(&eg,  P3, /*inspect=*/false, nullptr);
+        check(o1 && o2 && o3, "iris-blue (x2) and iris-green exports all succeeded");
+        long sz1 = 0, sz2 = 0, fdSame = -2;
+        const bool detIris = o1 && o2 && filesIdentical(P1, P2, &sz1, &sz2, &fdSame);
+        check(detIris, "DETERMINISM holds with an explicit iris: same eye_tone+seed => identical GLB");
+        long sz3 = 0, fdDiff = -2;
+        const bool irisEffect = o1 && o3 && !filesIdentical(P1, P3, &sz1, &sz3, &fdDiff);
+        check(irisEffect, "CONTROL: a different iris colour produces a different GLB (eye_tone reaches pixels)");
+        std::printf("DETAIL  iris override: blue=%.0f B reproducible | blue!=green first diff @ %ld\n",
+                    (double)sz1, fdDiff);
+        std::remove(P1); std::remove(P2); std::remove(P3);
+    }
+
+    /* ---- Part E: clothing fabrics (cloth_roughness/cloth_metalness) -- values, AUTO, routing, pixels ---- */
+    {
+        /* Same isolation as Part D: analyze_prompt mutates the engine's spec, so each parse gets its own
+           fresh engine built from the canonical default (roughness/metalness both <0 = AUTO). Starting from
+           defaults mirrors how the app creates an AvatarSpec, so an exact match proves the parser SET the
+           field and a remaining negative proves it left AUTO alone. */
+        auto runParse = [&](const char* prompt, af_spec* dst) -> int {
+            af_spec seedSpec;
+            fillSpec(&seedSpec, 7);
+            af_engine* e = nullptr;
+            if (af_engine_create(&seedSpec, nullptr, &e) != AF_OK || e == nullptr) return -1;
+            const int r = af_engine_analyze_prompt(e, prompt, dst);
+            af_engine_destroy(e);
+            return r;
+        };
+        auto eqf = [](float v, float t) { return std::fabs(v - t) < 1e-4f; };
+        auto eq3 = [](const float* v, float r, float g, float b) {
+            return std::fabs(v[0] - r) < 1e-4f && std::fabs(v[1] - g) < 1e-4f && std::fabs(v[2] - b) < 1e-4f;
+        };
+
+        /* (a)/(b) fabric words select the donor's measured roughness/metalness, distinctly per fabric. */
+        af_spec satin{}, denim{};
+        const int rS = runParse("satin dress", &satin);
+        const int rD = runParse("denim trousers", &denim);
+        check(rS >= 1 && rD >= 1, "fabric prompts parse");
+        check(eqf(satin.cloth_roughness, 0.22f) && eqf(satin.cloth_metalness, 0.05f),
+              "\"satin\" selects roughness 0.22 / metalness 0.05 (3D4ME measured values)");
+        check(eqf(denim.cloth_roughness, 0.84f) && eqf(denim.cloth_metalness, 0.00f),
+              "\"denim\" selects roughness 0.84 / metalness 0.00 (distinct from satin)");
+
+        /* (c) no fabric phrase => both scalars stay AUTO (<0): pre-existing avatars are untouched. */
+        af_spec none{};
+        runParse("athletic woman, jeans jacket", &none);
+        check(none.cloth_roughness < 0.0f && none.cloth_metalness < 0.0f,
+              "no fabric phrase => roughness/metalness remain AUTO (negative sentinels)");
+
+        /* (d) a fabric touches ONLY the material response. runParse builds each engine from the canonical
+           fillSpec defaults, which deliberately PIN cloth/gear/hair tones to fixed non-zero values; the
+           correct "untouched" check is therefore equality with those pins, proving silk altered nothing but
+           the two material scalars. */
+        af_spec silk{};
+        runParse("silk dress", &silk);
+        check(eq3(silk.cloth_tone, 0.20f, 0.30f, 0.55f) &&
+              eq3(silk.gear_tone, 0.55f, 0.55f, 0.60f) &&
+              eq3(silk.hair_tone, 0.10f, 0.07f, 0.05f) &&
+              eqf(silk.cloth_roughness, 0.32f) && eqf(silk.cloth_metalness, 0.02f),
+              "\"silk\" changes only roughness/metalness; the pinned cloth/gear/hair tones are untouched");
+
+        /* (e) END-TO-END BYTES. As of the exporter fix (af_glb.cpp now writes the spec-override-adjusted
+           factors instead of each region's defaults), scalar overrides DO reach the exported file, so two
+           things must hold and are both checked: identical satin specs export byte-identical GLBs
+           (determinism), and satin vs denim export DIFFERENT bytes because their metallicFactor /
+           roughnessFactor differ -- a positive control guarding that the exporter really serialises the
+           overrides. (Eye colour also differs across presets, but for a different reason: it is baked into
+           the base-colour TEXTURE rather than stored as a material factor.) */
+        af_spec base;
+        fillSpec(&base, 1337);
+        af_spec fs = base, fs2 = base, fdn = base;
+        fs.cloth_roughness = 0.22f;   fs.cloth_metalness = 0.05f;    /* satin */
+        fs2 = fs;                                                    /* again  */
+        fdn.cloth_roughness = 0.84f;  fdn.cloth_metalness = 0.00f;   /* denim */
+        const char* P1 = "/tmp/af_fabric_satin_1.glb";
+        const char* P2 = "/tmp/af_fabric_satin_2.glb";
+        const char* P3 = "/tmp/af_fabric_denim.glb";
+        const bool o1 = generateAndExportSpec(&fs,  P1, /*inspect=*/false, nullptr);
+        const bool o2 = generateAndExportSpec(&fs2, P2, /*inspect=*/false, nullptr);
+        const bool o3 = generateAndExportSpec(&fdn, P3, /*inspect=*/false, nullptr);
+        check(o1 && o2 && o3, "satin (x2) and denim exports all succeeded");
+        long sz1 = 0, sz2 = 0, fdSame = -2;
+        check(o1 && o2 && filesIdentical(P1, P2, &sz1, &sz2, &fdSame),
+              "DETERMINISM holds with an explicit fabric: same fabric+seed => byte-identical GLB");
+        long sz3 = 0, fdDiff = -2;
+        check(o1 && o3 && !filesIdentical(P1, P3, &sz1, &sz3, &fdDiff),
+              "CONTROL: a different fabric yields a different GLB (exporter serialises the override factors)");
+
+        /* (f) MATERIAL EFFECT at THREE layers: the live table for each fabric, and the bytes after a real
+           export -> re-import round-trip -- proving customisation survives sharing/export, not just the live
+           render. */
+        auto countMatches = [](const af_engine* e, float rough, float metal) {
+            const int32_t mc = af_engine_material_count(e);
+            const af_material* mats = af_engine_materials(e);
+            int hits = 0;
+            for (int32_t i = 0; i < mc && mats != nullptr; ++i) {
+                if (std::fabs(mats[i].roughness - rough) < 1e-3f &&
+                    std::fabs(mats[i].metallic  - metal) < 1e-3f) ++hits;
+            }
+            return hits;
+        };
+        af_engine* es = nullptr;   /* satin, live */
+        af_engine* ed = nullptr;   /* denim, live */
+        const bool rsOk = af_engine_create(&fs,  nullptr, &es) == AF_OK && es != nullptr &&
+                          af_engine_run_all(es) == AF_OK;
+        const bool rdOk = af_engine_create(&fdn, nullptr, &ed) == AF_OK && ed != nullptr &&
+                          af_engine_run_all(ed) == AF_OK;
+        if (rsOk && rdOk) {
+            const int hs = countMatches(es, 0.22f, 0.05f);
+            const int hd = countMatches(ed, 0.84f, 0.00f);
+            checkf(hs >= 1, "satin's roughness 0.22 / metalness 0.05 land on a live material (%.0f matches)",
+                   (double)hs, 0.0);
+            checkf(hd >= 1, "denim's roughness 0.84 / metalness 0.00 land on a live material (%.0f matches)",
+                   (double)hd, 0.0);
+            check(hs >= 1 && hd >= 1,
+                  "different fabrics resolve to different live materials (the effect is real, not inert)");
+        } else {
+            check(false, "fabric material read-back: satin/denim engines could not be created/run");
+        }
+        if (es) af_engine_destroy(es);
+        if (ed) af_engine_destroy(ed);
+
+        /* ROUND-TRIP: the EXPORTED satin GLB itself must re-import still carrying r0.22/m0.05. Before the
+           exporter fix this was zero (each region's defaults were written); now it is the permanent guard
+           for that fix -- the file a user shares keeps the customisation. */
+        std::vector<uint8_t> satinBytes;
+        int rtHits = -1;
+        if (o1 && readFile(P1, &satinBytes)) {
+            af_engine* re = nullptr;
+            if (af_engine_create(&fs, nullptr, &re) == AF_OK && re != nullptr &&
+                af_engine_import_glb_from_memory(re, satinBytes.data(),
+                                                 (int32_t)satinBytes.size()) == AF_OK) {
+                rtHits = countMatches(re, 0.22f, 0.05f);
+            }
+            if (re) af_engine_destroy(re);
+        }
+        check(rtHits >= 1,
+              "EXPORTED GLB round-trips the fabric: re-imported material still carries r0.22 / m0.05");
+        std::printf("DETAIL  fabric override: satin=%.0f B reproducible | satin!=denim first diff @ %ld | export round-trips values\n",
+                    (double)sz1, fdDiff);
+        std::remove(P1); std::remove(P2); std::remove(P3);
+    }
+
+    /* ---- Part F: the MALE generation path (owner-requested) -- completeness, determinism, sex effect, round-trip ---- */
+    {
+        const char* PATH_M1 = "/tmp/af_male_1.glb";
+        const char* PATH_M2 = "/tmp/af_male_2.glb";
+        const char* PATH_M3 = "/tmp/af_male_seed1338.glb";
+        af_spec male, male2, maleOther;
+        fillSpec(&male, 1337, AF_SEX_MALE);
+        male2 = male;                                 /* identical spec+seed for determinism */
+        fillSpec(&maleOther, 1338, AF_SEX_MALE);
+        const bool mo1 = generateAndExportSpec(&male,      PATH_M1, /*inspect=*/false, nullptr);
+        const bool mo2 = generateAndExportSpec(&male2,     PATH_M2, /*inspect=*/false, nullptr);
+        const bool mo3 = generateAndExportSpec(&maleOther, PATH_M3, /*inspect=*/false, nullptr);
+        check(mo1 && mo2 && mo3, "MALE: full pipeline + export succeeds across three runs");
+
+        long mz1 = 0, mz2 = 0, mfd = -2;
+        check(mo1 && mo2 && filesIdentical(PATH_M1, PATH_M2, &mz1, &mz2, &mfd),
+              "MALE DETERMINISM: identical male spec+seed => byte-identical GLB");
+        long mz3 = 0, mfd3 = -2;
+        check(mo1 && mo3 && !filesIdentical(PATH_M1, PATH_M3, &mz1, &mz3, &mfd3),
+              "MALE CONTROL: a different seed produces a different GLB");
+        /* PATH_A is the female canonical avatar (seed 1337) written in Part A, still on disk until final cleanup. */
+        long fz = 0, sfd = -2;
+        check(mo1 && !filesIdentical(PATH_A, PATH_M1, &fz, &mz1, &sfd),
+              "SEX EFFECT: same prompt, male vs female => different geometry/bytes");
+
+        /* Live read-back: rig/face completeness, texture population, rest-mesh validation, generic quality floor. */
+        af_engine* me = nullptr;
+        if (mo1 && af_engine_create(&male, nullptr, &me) == AF_OK && me != nullptr &&
+            af_engine_run_all(me) == AF_OK) {
+            af_stats st{};
+            check(af_engine_stats(me, &st) == AF_OK && st.vertex_count > 0 && st.triangle_count > 0,
+                  "MALE: generated mesh has vertices and triangles");
+            checkf(st.joint_count == 71, "MALE: rig has exactly 71 joints (got %.0f)", (double)st.joint_count, 0.0);
+            checkf(st.blendshape_count == 52, "MALE: face has all 52 ARKit blendshapes (got %.0f)",
+                   (double)st.blendshape_count, 0.0);
+            char bsNames[64][64];
+            const int32_t bsc = af_engine_blendshape_names(bsNames, 64);
+            std::string allBs;
+            for (int32_t i = 0; i < bsc && i < 64; ++i) { allBs += bsNames[i]; allBs += ","; }
+            check(allBs.find("eyeBlinkLeft") != std::string::npos &&
+                  allBs.find("cheekPuff") != std::string::npos,
+                  "MALE: blendshape names include canonical ARKit targets");
+            /* All five PBR slots populated + a loose, sex-agnostic surface-detail floor (NOT the female-tuned ratchet). */
+            const int32_t slots[] = {AF_TEX_BASE_COLOR, AF_TEX_NORMAL, AF_TEX_METALLIC_ROUGHNESS,
+                                     AF_TEX_OCCLUSION, AF_TEX_SUBSURFACE};
+            bool texOk = true; double baseLumSd = 0.0, nrmSdR = 0.0;
+            for (int i = 0; i < 5; ++i) {
+                af_texture t{};
+                if (af_engine_texture(me, slots[i], &t) != AF_OK || t.data == nullptr ||
+                    t.width <= 0 || t.height <= 0 || t.channels <= 0) { texOk = false; continue; }
+                if (slots[i] == AF_TEX_BASE_COLOR && t.channels >= 3)
+                    baseLumSd = luminanceStdDev(t.data, t.width, t.height, t.channels);
+                if (slots[i] == AF_TEX_NORMAL && t.channels >= 3)
+                    nrmSdR = channelStdDev(t.data, t.width, t.height, t.channels, 0,
+                                           channelMean(t.data, t.width, t.height, t.channels, 0));
+            }
+            check(texOk, "MALE: all five procedural PBR texture slots are populated");
+            check(baseLumSd > 1.0 && nrmSdR > 3.0,
+                  "MALE: base colour has tonal spread and normal map has surface detail (not flat)");
+            char report[2048] = {};
+            check(af_engine_validate_deformed_mesh(me, report, (int32_t)sizeof(report)) == AF_OK,
+                  "MALE: rest mesh passes finite-position / weight / joint / bounds validation");
+            af_engine_destroy(me);
+        } else {
+            check(false, "MALE: live read-back engine could not be created/run");
+            if (me) af_engine_destroy(me);
+        }
+
+        /* Round-trip: the exported male GLB re-imports through the hardened reader, adopting 71 joints. */
+        std::vector<uint8_t> maleBytes;
+        if (mo1 && readFile(PATH_M1, &maleBytes)) {
+            af_spec rs; fillSpec(&rs, 1);
+            af_engine* re = nullptr;
+            if (af_engine_create(&rs, nullptr, &re) == AF_OK && re != nullptr) {
+                const int32_t irc = af_engine_import_glb_from_memory(re, maleBytes.data(), (int32_t)maleBytes.size());
+                const char* why = af_engine_last_error(re);
+                const bool silent = (why == nullptr) || (*why == '\0');
+                check(irc == AF_OK && silent, "MALE ROUND-TRIP: exported GLB re-imports rc==AF_OK, empty error");
+                checkf(af_engine_joint_count(re) == 71,
+                       "MALE ROUND-TRIP: imported skeleton adopts 71 joints (got %.0f)",
+                       (double)af_engine_joint_count(re), 0.0);
+                af_engine_destroy(re);
+            } else {
+                check(false, "MALE ROUND-TRIP: re-import engine could not be created");
+            }
+        } else {
+            check(false, "MALE ROUND-TRIP: could not read back the exported GLB");
+        }
+        std::printf("DETAIL  male path: male=%.0f B deterministic | female=%ld B | sex effect locked\n",
+                    (double)mz1, fz);
+        std::remove(PATH_M1); std::remove(PATH_M2); std::remove(PATH_M3);
+    }
+
+    /* Best-effort cleanup of the temporary artifacts. */
+    std::remove(PATH_A); std::remove(PATH_B); std::remove(PATH_C);
+
+    std::printf("=== GENERATION CONTRACT: %d checks, %d failure(s) ===\n", g_checks, g_failures);
+    return g_failures == 0 ? 0 : 1;
+}

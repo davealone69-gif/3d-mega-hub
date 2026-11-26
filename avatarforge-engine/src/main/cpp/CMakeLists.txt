@@ -211,6 +211,36 @@ if(BUILD_TESTING AND NOT ANDROID)
     target_link_libraries(af_prompt_preset_words_test PRIVATE afcore)
     add_test(NAME prompt_preset_words COMMAND af_prompt_preset_words_test)
 
+    # Generation contract: determinism + structural completeness + self export/import round-trip,
+    # including the 3D4ME clothing-fabric presets (cloth_roughness / cloth_metalness) and the rule
+    # that a prompt naming no fabric leaves the exported bytes untouched. It runs the full pipeline
+    # up to three times (two identical seeds to prove byte-identical output, one different seed as a
+    # non-vacuity control), so it is deliberately the slowest host test and carries its own timeout.
+    # Needs no external assets: it generates everything itself.
+    add_executable(af_generation_contract_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/generation_contract_test.cpp)
+    target_include_directories(af_generation_contract_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(af_generation_contract_test PRIVATE afcore)
+    add_test(NAME generation_contract_regression COMMAND af_generation_contract_test)
+    set_tests_properties(generation_contract_regression PROPERTIES TIMEOUT 1200)
+    # DISABLED, not deleted, and the reason is measured: rescued verbatim from arena/089497bd
+    # (58aced02). On this line it reports 98 checks with 96 passing, including every check for the
+    # two features ported alongside it -- the 3D4ME clothing-fabric presets (cloth_roughness /
+    # cloth_metalness, live material + exported bytes + re-import round trip) and the curated iris
+    # swatches. The 2 failures are checks for a third donor feature that was NOT ported: the
+    # deepened two-layer garment normal-map relief in the donor's af_texture.cpp (6.5 mm twill taken
+    # from 0.10 mm to 0.22 mm plus 18 mm raised stitch/panel rows). This branch's af_texture.cpp has
+    # diverged the other way (1,057 lines against the donor's 793), so that relief is a separate
+    # texture-generator reconciliation, not a cherry-pick. Registering it red would fail the
+    # "Native C++ sampling regression" CI job for a feature that is documented MISSING here, so the
+    # target stays built and runnable by hand -- ./af_generation_contract_test -- and is re-enabled
+    # by deleting the two lines below once that relief lands.
+    #   FAIL  normal map keeps garment weave/stitch relief: R/G channel stddev > 6.0 / > 4.0
+    #   FAIL  normal map deviates from flat in tangent space: decoded sdNx > 0.05 and sdNy > 0.03
+    set_tests_properties(generation_contract_regression PROPERTIES DISABLED TRUE)
+
     # Evidence probe: generates an avatar through the same sequence as the Android JNI layer and
     # measures orientation, mirror symmetry and the export/import round trip. It takes about a
     # minute, so it is built with the host tests but deliberately not registered with CTest.

@@ -20,3 +20,30 @@
 - The source repository README at that exact revision states that its generated base rigs are original work released under CC0.
 - Structural inspection of the bundled file: one mesh, one node, seven morph targets, zero skins, zero animations and zero embedded images.
 - This file is a renderer fixture with the source's mesh data and a rewritten JSON header. It is not evidence of a complete rigged/animated avatar, and the CC0 statement applies to this asset, not to the 3DDD application source.
+
+## Clothing-fabric PBR values and iris swatches (3D4ME-derived constants)
+
+- What entered this repository: numeric constants only, in
+  `avatarforge-engine/src/main/cpp/src/af_prompt.cpp` — `kFabrics[]` (cotton, silk, satin, denim,
+  latex as roughness/metalness pairs) and `kEyeColours[]` (nine curated iris base reflectances) —
+  together with the `af_spec::cloth_metalness` field they ride.
+- Immediate source: this repository's own branch `arena/089497bd-3d-mega-hub` at
+  `58aced02b52a632814ad29dc714a19b577298ff0`, which harvested the values into
+  `docs/REFERENCE_3d4me_options.md` (also rescued here, unmodified).
+- Original donor: `davealone69-gif/3d4me` (display name **3D4ME**). That reference document records
+  the donor as "cloned depth-1 for this audit; not modified" and records **no revision**, so no
+  revision is claimed here.
+- Licence obligation carried by that document, quoted: "Licence to preserve when redistributing
+  derived code: **Three.js (MIT)** and **expo-three (MIT)**. No third-party human models are bundled
+  by that project; its avatar is original procedural geometry. Preserve those notices if any of its
+  constants are ported." This entry discharges it. What was ported is numeric material constants; no
+  Three.js or expo-three source was copied into this repository, and neither library is linked,
+  bundled or distributed by it. If either is ever vendored, its MIT notice must be recorded here
+  before that use.
+- No binary asset from that donor is in this repository, and none is packed into the APK.
+- Verification: `avatarforge-engine/src/test/cpp/generation_contract_test.cpp` (rescued from the same
+  donor commit) asserts these constants against the prompt parser, the live material table, the
+  exported GLB bytes and the re-import round trip. Measured on the host at this commit: 98 checks,
+  96 pass. The 2 failures are checks for a donor normal-map relief that was deliberately not ported
+  and are unrelated to these constants; the test target is registered in CMake but marked `DISABLED`
+  with that reason recorded beside it.

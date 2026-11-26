@@ -158,6 +158,7 @@ typedef struct af_spec {
     float     cloth_tone[3];    /* primary garment colour,     0 => neutral grey            */
     float     gear_tone[3];     /* armour / equipment colour,  0 => steel                   */
     float     cloth_roughness;  /* 0..1 override,  <0 => material default                   */
+    float     cloth_metalness;  /* 0..1 garment metalness override, <0 => material default  */
     float     gear_metalness;   /* 0..1 override,  <0 => material default                   */
 
     /* Text prompt that produced this spec (informational; stored in the GLB as metadata). */

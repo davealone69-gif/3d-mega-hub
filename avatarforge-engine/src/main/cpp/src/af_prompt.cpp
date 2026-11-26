@@ -139,6 +139,65 @@ bool isHairWord(const std::string& w) {
     return anyOf(w, k, static_cast<int>(sizeof(k) / sizeof(k[0])));
 }
 
+bool isEyeWord(const std::string& w) {
+    return w == "eye" || w == "eyes" || w.rfind("eyed", 0) == 0;
+}
+
+/* Curated IRIS base reflectances (linear-sRGB) for the canonical eye-colour words, converted from
+   the 3D4ME display swatches (see docs/REFERENCE_3d4me_options.md). Used when a prompt names an eye
+   colour ("<colour> eyes"); any other colour word falls back to a lifted generic value at the call
+   site so unusual iris colours still resolve to something plausible. */
+struct NamedEyeColour { const char* word; float rgb[3]; };
+const NamedEyeColour kEyeColours[] = {
+    {"brown",  {0.125f, 0.060f, 0.029f}},
+    {"hazel",  {0.235f, 0.168f, 0.048f}},
+    {"green",  {0.070f, 0.216f, 0.115f}},
+    {"blue",   {0.095f, 0.205f, 0.372f}},
+    {"grey",   {0.242f, 0.278f, 0.333f}},
+    {"gray",   {0.242f, 0.278f, 0.333f}},
+    {"amber",  {0.450f, 0.240f, 0.020f}},
+    {"violet", {0.130f, 0.075f, 0.340f}},
+    {"black",  {0.030f, 0.020f, 0.015f}},
+};
+const int kEyeColourCount = static_cast<int>(sizeof(kEyeColours) / sizeof(kEyeColours[0]));
+bool eyeColourFor(const std::string& w, float rgb[3]) {
+    for (int i = 0; i < kEyeColourCount; ++i) {
+        if (w == kEyeColours[i].word) {
+            rgb[0] = kEyeColours[i].rgb[0];
+            rgb[1] = kEyeColours[i].rgb[1];
+            rgb[2] = kEyeColours[i].rgb[2];
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Clothing-fabric presets harvested from the 3D4ME donor (docs/REFERENCE_3d4me_options.md): each names a
+   garment surface finish as a roughness/metalness pair. They ride the existing cloth_roughness /
+   cloth_metalness spec scalars (<0 => material default), so a prompt that names no fabric keeps today's
+   bytes exactly. NOTE: "leather" is intentionally absent here -- it already drives the leather-armour
+   outfit path, and overloading it would change existing deterministic prompts. Leather garments still
+   read correctly through that outfit. */
+struct NamedFabric { const char* word; float roughness; float metalness; };
+const NamedFabric kFabrics[] = {
+    {"cotton", 0.90f, 0.00f},
+    {"silk",   0.32f, 0.02f},
+    {"satin",  0.22f, 0.05f},
+    {"denim",  0.84f, 0.00f},
+    {"latex",  0.12f, 0.08f},
+};
+const int kFabricCount = static_cast<int>(sizeof(kFabrics) / sizeof(kFabrics[0]));
+bool fabricValuesFor(const std::string& w, float* roughness, float* metalness) {
+    for (int i = 0; i < kFabricCount; ++i) {
+        if (w == kFabrics[i].word) {
+            *roughness = kFabrics[i].roughness;
+            *metalness = kFabrics[i].metalness;
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Maps a body noun onto the af_spec field it names, writing `value` (centimetres). One table, so
    the noun-before-number and number-before-noun paths cannot drift apart. */
 const char* setBodyCm(af_spec* spec, const std::string& noun, float value) {
@@ -202,6 +261,24 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
     for (size_t i = 0; i < words.size(); ++i) {
         const std::string& w = words[i].text;
         float rgb[3];
+
+        /* ---- fabrics (checked first) ----
+           A clothing-fabric word sets the garment's PBR response (roughness/metalness) from the donor's
+           measured values, independent of colour or outfit. It is detected at the TOP of the loop so a
+           same-word noun rule below cannot shadow it: "denim" is also the jeans keyword, so for it we set
+           the material but do NOT consume the token -- letting it flow on to take its jeans-outfit role too
+           ("denim trousers" reads as denim-finished jeans). Every other fabric is purely a material word and
+           is consumed here. Moving this ahead of the noun rules changes nothing for cotton/silk/satin/latex
+           (they have no competing meaning) and only ADDS the correct denim material where it was missing. */
+        {
+            float fr = 0.0f, fm = 0.0f;
+            if (fabricValuesFor(w, &fr, &fm)) {
+                spec->cloth_roughness = fr;
+                spec->cloth_metalness = fm;
+                record(out, w, "fabric", &matched);
+                if (w != "denim") continue;   /* denim keeps its jeans-outfit role further down */
+            }
+        }
 
         /* ---- measurements: "<number> cm | m | mm | inch | ft" and "5 foot 9" ---- */
         if (isNumber(w)) {
@@ -454,7 +531,49 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
         if (anyOf(w, kSabatons, 3)) { spec->footwear = AF_FOOTWEAR_SABATON; record(out, w, "footwear", &matched); continue; }
 
         /* ---- colours ---- */
+        /* Hyphenated eye adjectives reach this loop as ONE token ("green-eyed"), because isWordChar
+           keeps internal hyphens (it must, to recognise "t-shirt"). Catch "<colour>-eyed" up front and
+           route the colour straight to the iris; the space-separated "<colour> eye(s)" form is handled
+           inside the colour branch below. */
+        if (w.size() > 5 && w.compare(w.size() - 5, 5, "-eyed") == 0) {
+            const std::string stem = w.substr(0, w.size() - 5);
+            float hrgb[3];
+            if (colourFor(stem, hrgb)) {
+                float iris[3];
+                if (!eyeColourFor(stem, iris)) {
+                    iris[0] = std::fmin(0.85f, hrgb[0] * 1.15f + 0.04f);
+                    iris[1] = std::fmin(0.85f, hrgb[1] * 1.15f + 0.04f);
+                    iris[2] = std::fmin(0.85f, hrgb[2] * 1.15f + 0.04f);
+                }
+                spec->eye_tone[0] = iris[0];
+                spec->eye_tone[1] = iris[1];
+                spec->eye_tone[2] = iris[2];
+                record(out, w, "eye_tone", &matched);
+                continue;
+            }
+        }
+
+        /* ---- colours ---- */
         if (colourFor(w, rgb)) {
+            /* "<colour> eye(s)" / "<colour>-eyed" sets the IRIS colour, never the garment. Handled
+               here (not by the pending-colour noun mechanism) because eyes are not a wardrobe slot.
+               Without this branch "blue eyes" dyed the clothing blue and left eye_tone at zero. */
+            const std::string eyeNext = (i + 1 < words.size()) ? words[i + 1].text : std::string();
+            if (isEyeWord(eyeNext)) {
+                float iris[3];
+                if (!eyeColourFor(w, iris)) {
+                    /* Arbitrary colour word: lift the generic paint reflectance into a plausible iris
+                       range so e.g. "teal eyes" still yields a believable result. */
+                    iris[0] = std::fmin(0.85f, rgb[0] * 1.15f + 0.04f);
+                    iris[1] = std::fmin(0.85f, rgb[1] * 1.15f + 0.04f);
+                    iris[2] = std::fmin(0.85f, rgb[2] * 1.15f + 0.04f);
+                }
+                spec->eye_tone[0] = iris[0];
+                spec->eye_tone[1] = iris[1];
+                spec->eye_tone[2] = iris[2];
+                record(out, w + " eyes", "eye_tone", &matched);
+                continue;   /* the following 'eye(s)' token is intentionally left unmatched */
+            }
             pendingColour[0] = rgb[0];
             pendingColour[1] = rgb[1];
             pendingColour[2] = rgb[2];
