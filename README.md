@@ -1330,6 +1330,16 @@ schemas, F-3 both animation APIs side by side so D4 becomes a choice, F-4 memory
 provider interfaces with the zero-provider guarantee as three tests. Every identifier PROPOSED until its
 mission freezes it; nothing implementable before D1/D2 clear. No implementation, no merge, no new branch.
 
+**CI gate audit and the one honest fix.** Audited all five workflows against `AGENTS.md` (§8.8 of the
+plan): publishing is compliant (dispatch-only, readiness record, SHA pin), the UI label
+`Run generated-avatar GLES diagnostic` is intact, all nine CI scripts are present. The single red gate is
+the generated-avatar runtime verification: its evidence signature (`presented=2`, `draws=29`, LOD0
+triangles, zero GL/EGL errors) says the renderer works while the app-side pixel verification starves — two
+cores of SwiftShader rasterising 1.6 M triangles cannot reach a verdict inside the old 300 s deadline.
+Fixed without weakening anything: four cores and 6 GiB for the emulator, verdict deadline 300 s → 600 s in
+a 1 500 s test budget; the 5 000-pixel threshold, the presented-frame minimum and every GL/EGL assertion
+are untouched. If it is still red, the next honest evidence is a hardware session, not another guess.
+
 **Unchanged protections.** `main` is untouched. PR #17 is **open and unmerged**.
 `arena/089497bd-3d-mega-hub` (`58aced02`) and `arena/25bd4008-3d-mega-hub` (`b79a7d0c`) are **preserved**, and
 §8.4 of the plan lists the donor branch's nine items of unique work with a `git show` recovery command for

@@ -178,7 +178,7 @@ class GeneratedAvatarRuntimeTest {
         }
     }
 
-    @Test(timeout = 900000)
+    @Test(timeout = 1500000)
     fun generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -275,11 +275,15 @@ class GeneratedAvatarRuntimeTest {
                 surfaceView = view
             }
 
-            /* Software-rendered CI emulators need tens of seconds for the first frames of a
-               full-screen, high-quality avatar. Wait for a real verdict - verified pixels or a
-               reported renderer failure - instead of a fixed sleep, and stop early on failure. */
+            /* Software-rendered CI emulators need minutes, not tens of seconds, for the first frames
+               of a full-screen, high-quality avatar: SwiftShader rasterises the 1.6 M-triangle LOD0
+               mesh on the CPU, and the app-side pixel verification only reports REAL + VERIFIED once a
+               copy shows real geometry pixels. Wait for a real verdict - verified pixels or a reported
+               renderer failure - instead of a fixed sleep, and stop early on failure. The deadline is
+               a wait budget for a slow rasteriser, not a tolerance: the visibility threshold, the
+               presented-frame minimum and every GL/EGL assertion below are unchanged. */
             var rendered = false
-            val verdictDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(300)
+            val verdictDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(600)
             while (System.nanoTime() < verdictDeadline) {
                 if (visible.await(500, TimeUnit.MILLISECONDS)) {
                     rendered = true

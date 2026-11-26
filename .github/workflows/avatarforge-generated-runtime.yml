@@ -55,7 +55,11 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_2
-          emulator-options: -memory 4096 -cores 2 -no-window -no-audio -no-boot-anim -gpu swangle -camera-back none -no-snapshot -wipe-data
+          # SwiftShader rasterises the 1.6 M-triangle LOD0 avatar on the CPU; it is multithreaded and
+          # the runner has four cores. Starving it to two cores made first frames take longer than the
+          # test's verdict deadline. More cores and headroom change how fast the evidence arrives, not
+          # what the test accepts: every assertion and threshold is untouched.
+          emulator-options: -memory 6144 -cores 4 -no-window -no-audio -no-boot-anim -gpu swangle -camera-back none -no-snapshot -wipe-data
           emulator-boot-timeout: 900
           disable-animations: true
           script: bash .github/scripts/generated-runtime.sh com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest

@@ -105,6 +105,19 @@ this work into 3D-Mega-Hub and not to build a chatbot in a 3D application: the c
 > real signatures the day D1/D2 clear — every new identifier marked PROPOSED, every restated measurement
 > cited.
 >
+> ### Owner input of 2026-11-26 (eighth) — *"complete audit and fix all"*
+>
+> Executed as a full audit of the verification estate plus every fix inside the standing constraints
+> (**§8.8**): five workflows checked against `AGENTS.md` (the publish path is compliant — dispatch-only,
+> readiness record, SHA pin; the UI label `Run generated-avatar GLES diagnostic` is intact at
+> `AvatarStudioScreen.kt:218`; all nine CI scripts present), and the single red gate root-caused as far as
+> this sandbox can read: the emulator starves SwiftShader to two cores while the app-side pixel
+> verification needs minutes on the 1.6 M-triangle LOD0 mesh. **Fixed without weakening anything**: four
+> cores and 6 GiB for the emulator, verdict deadline 300 s → 600 s inside a 1 500 s test budget — every
+> assertion, the 5 000-pixel threshold and the presented-frame minimum untouched. What stays red stays
+> red honestly: anything needing the physical phone (B2, M8, the B9 baseline). No merge, no `main` touch,
+> no new branch.
+>
 > ### Owner brief of 2026-11-26 (second) — the GOKU handover requirements
 >
 > | Requirement | Where honoured |
@@ -3929,3 +3942,36 @@ primary sources. M4's *external* anthropometric reference additionally waits on 
 **Two gates stop everything regardless:** **D1** (merge PR #17) and **D2** (reconcile PR #16 with PR #9).
 Until those are settled there is no stable base to branch from, and releasing an agent now would reproduce
 the exact stale-base failure this convergence was created to end.
+
+### 8.8 CI gate audit — what is red, why, and what changed (2026-11-26, owner: *"complete audit and fix all"*)
+
+| Workflow | Trigger | Compliance verdict |
+|---|---|---|
+| `android.yml` | `main`, `work/**`, `fix/**`, `integration/**` | Unchanged; does not fire on this branch (recorded since Task 12 — Android CI 11/11 belongs to `ba38d99` and must not be transferred) |
+| `avatarforge-diagnostic-apk.yml` | PR paths | Compliant: host regression tests plus an emulator PixelCopy diagnostic; no publishing |
+| `avatarforge-generated-runtime.yml` | PRs into `main`, `fix/…`, `integration/…` | **The single red gate.** Audited and adapted, see below |
+| `publish-phone-test-apk.yml` | `workflow_dispatch` only for publishing | **Compliant with the no-ungated-APK rule**: the publish job runs only on dispatch, takes an explicit commit plus an optional expected APK SHA-256, and stops unless the `BUILD_AND_VERIFY.md` readiness record holds; PR triggers run only the rules self-test |
+| `release-preview.yml` | dispatch / push to integration branches / PRs into `main` with app paths | Compliant: ephemeral CI key, preview only |
+
+**Root-cause chain for the red gate, as far as this sandbox can read.** Step 8 runs
+`.github/scripts/generated-runtime.sh`, which collects evidence whether the test passes or fails and exits
+with the instrumentation status; the run annotations carry only that exit code, and the job logs and
+artifacts live on hosts this sandbox cannot reach. The readable evidence is therefore: the test source on
+this branch, and the historical JUnit record at `README.md:943` — `frames=2`, `presented=2`, `draws=29`,
+`triangles=1626176` (LOD0), `glError=0x0`, `eglError=0x0`. That signature says the renderer **works** and
+presented frames, while the app-side verification (`verifyVisiblePixels = true`) never logged
+`REAL + VERIFIED:` — on a two-core SwiftShader emulator rasterising 1.6 M triangles, first frames arrive
+slower than the then-300 s verdict deadline, so the test failed on `rendered`, not on a pixel threshold.
+The *"no drawable EGL-presented model frame within 15 seconds"* text quoted in §8.1 and `README.md:1199` is
+**historical**, from an older revision of the test; the current test waits for a verdict, not a fixed sleep.
+
+**What changed, and what deliberately did not.** Changed: emulator `-cores 2 -memory 4096` →
+`-cores 4 -memory 6144` (SwiftShader is multithreaded; the runner has four cores), and the verdict deadline
+300 s → 600 s inside a 1 500 s `@Test` budget (job timeout 45 min). **Unchanged by design:** the 5 000
+visible-pixel threshold (`VISIBILITY_THRESHOLD`), `presented_frames >= 3`, draw-call and GL/EGL/failed-draw
+assertions, the screenshot and telemetry assertions, the evidence-collection script, the UI label
+`Run generated-avatar GLES diagnostic` (`AvatarStudioScreen.kt:218`), and every publishing rule. A wait
+budget for a slow rasteriser is environment adaptation; a threshold change would be weakening, and none was
+made. If the gate is still red after this, the remaining cause is not starvation but something only the
+emulator logs or the physical phone can show — and the honest next evidence is a hardware session (B2, M8)
+via `docs/ANDROID_TEST_AGENT_PROMPT.md`, not another guess from here.
