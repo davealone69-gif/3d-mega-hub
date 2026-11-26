@@ -2954,7 +2954,7 @@ static const char kSrc_forward_frag[] =
     "    /* Early-out for fully transparent fragments: the atlas alpha is the opacity channel and\n"
     "       nothing in the current pipeline is blended, so this only saves work on stray texels. */\n"
     "    af_const vec3 viewDir = normalize(cam.uCameraPos.xyz - vWorldPos);\n"
-    "    af_const vec3 orientedNormal = (mat.uRegion.x < -1.5 && !gl_FrontFacing) ? -vNormal : vNormal;\n"
+    "    af_const vec3 orientedNormal = (mat.uRegion.x < -0.5 && !gl_FrontFacing) ? -vNormal : vNormal;\n"
     "    fragColor = afShade(vWorldPos, orientedNormal, vTangent, vUv, viewDir);\n"
     "    if (fragColor.a <= 0.0) discard;\n"
     "}\n"

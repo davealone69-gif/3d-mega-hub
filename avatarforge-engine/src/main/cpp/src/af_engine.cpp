@@ -1408,9 +1408,11 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
         return static_cast<int32_t>(AF_ERR_UNSUPPORTED);
     }
 
-    /* Bake static scene-graph node.world transforms into unskinned vertex pools.
-       Skinned meshes apply joint world transforms dynamically during CPU skinning. */
-    if (asset.skins.empty() && !asset.nodes.empty()) {
+    /* Bake static scene-graph node.world transforms into the vertex pools. This runs for skinned
+       assets too: the engine does not apply imported skeletons (see the warning below), so the
+       bind pose is what gets drawn and the mesh node's world transform is the only placement the
+       file provides. Skipped only when a file declares no nodes at all. */
+    if (!asset.nodes.empty()) {
         std::vector<Mat4> poolWorld(asset.pools.size(), Mat4::identity());
         std::vector<bool> poolAssigned(asset.pools.size(), false);
         for (const auto& prim : asset.primitives) {
@@ -1513,6 +1515,10 @@ int32_t importIntoEngine(af_engine* e, const uint8_t* bytes, size_t size) {
         af_material am{};
         std::snprintf(am.name, sizeof(am.name), "%s", m.name.c_str());
         for (int c = 0; c < 4; ++c) am.base_color_factor[c] = m.baseColor[c];
+        /* glTF 2.0 §3.9.2: alphaMode OPAQUE renders fully opaque and ignores the alpha value.
+           Honouring a stored zero alpha here made the forward shader discard every fragment and
+           the whole model disappear, so OPAQUE always pins opacity to 1. */
+        if (m.alphaMode == "OPAQUE") am.base_color_factor[3] = 1.0f;
         am.metallic = m.metallic;
         am.roughness = m.roughness;
         am.ior = 1.4f;

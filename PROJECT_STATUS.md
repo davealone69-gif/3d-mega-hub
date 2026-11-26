@@ -88,3 +88,20 @@ Production release signing remains blocked until a user-owned keystore is config
 ## Next single gate
 
 Run the exact consolidated branch through host CTest, Android unit tests, lint, debug APK, R8/minification, signed preview APK/AAB, corrected emulator GLES smoke and artifact/signature checks. Inspect the captured model pixels. Then install and test that exact APK on Samsung SM-S921B. Until the phone test passes, the app is not a green build and renderer status remains **UNVERIFIED**.
+
+## Black-viewport renderer audit (2026-11-10, branch `arena/33f12efd-3d-mega-hub`, PR #16)
+
+Device report (Galaxy S24, SM-S921B, Xclipse 940): imported 9 MB GLB renders a black viewport and the PixelCopy gate fails with "0 geometry pixels"; the same failure hits the generated-avatar diagnostic. Native diagnostics were healthy throughout (draw calls, triangles, boundsInFrustum, EGL swaps), and a black-shaded silhouette would still clear the threshold against the dark blue-grey clear colour - so literally zero fragments were reaching the presented frame.
+
+Full host-side audit (all GLES shaders compiled and linked clean under Khronos glslang 11.7; probe-generated seed-1337 avatar is 389,717 CCW-agree vs 17,211 disagree, export/import roundtrip clean) ruled out shader errors, uniform/sampler binding, camera math, FBO completeness, UBO layouts and alpha defaults.
+
+Confirmed defects fixed in this pass:
+
+1. **Ground quad culled on GLES** - the studio floor strip winds clockwise from above while `glDisable(GL_CULL_FACE)` was never applied to it (the Vulkan ground pipeline uses `VK_CULL_MODE_NONE` for exactly this reason). Now drawn culling-disabled.
+2. **Imported submesh culling regression** - the photoreal patch narrowed the gles-fix's "no culling for all foreign submeshes (`region < 0`)" rule to double-sided-only (`region == -2`), so any scan/export with CW winding or mirrored node transforms vanished entirely with healthy statistics. Restored `region < 0` culling disable, and the forward shader's backface normal flip is widened from `mat.uRegion.x < -1.5` to `< -0.5` accordingly.
+3. **Skinned imports skipped node-transform baking** (`if (asset.skins.empty() && ...)`) although imported skeletons are never applied - the mesh node's world transform is the only placement those files get. Baking now runs for all files with nodes. Verified by `probe/import_fixes_probe`: skinned GLB with node translation +10 X bakes bounds to (10..11).
+4. **`alphaMode: OPAQUE` now pins `base_color_factor[3]` to 1** (glTF 2.0 3.9.2). A stored zero alpha previously drove `if (fragColor.a <= 0.0) discard` for every fragment and erased the whole model. Verified by the same probe; BLEND alpha preserved.
+5. **MSAA->HDR resolve self-test with fallback ladder** (`verifyResolvePath`): some GLES drivers (Xclipse/ANGLE class) report complete framebuffers yet resolve multisampled float colour to black. On failure the targets rebuild at 1x MSAA, then RGBA8, instead of shipping an invisible frame.
+6. **Failure evidence chain**: the PixelCopy diagnostic session now enables native `verifyFramePixels` (per-frame GL error drain + glReadPixels of the presented framebuffer), `nativeGetStats` carries `readbackValid`/`readbackNonBlackPixels`, and the FAILED message states whether geometry was already present in the GL framebuffer (compositor/PixelCopy loss) or absent (raster/culling/shading path). Also forces MATCH_PARENT layout on the SurfaceView (grey side bars in the screenshots were the uncovered container strip).
+
+Host evidence: all four CTest host tests rebuilt against the modified engine and pass (`native_sampling_test`, `glb_extension_test`, `camera_frustum_test`, `imported_glb_pbr_test`), plus `probe/import_fixes_probe` for fixes 3-4. The remaining unknown is device behaviour on the Xclipse driver; if the black viewport persists, the new failure message localises it to either the compositing path or the raster path in a single run.

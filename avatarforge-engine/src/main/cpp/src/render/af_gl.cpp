@@ -161,6 +161,7 @@ private:
     void drawComposite();
     void destroyTargets();
     void destroyAll();
+    bool verifyResolvePath();
     bool makeFramebufferWithTexture(GLuint* fbo, GLuint* texture, int w, int h, GLenum internalFormat,
                                     GLenum format, GLenum type, bool depth);
 
@@ -531,6 +532,47 @@ bool GlRenderer::makeFramebufferWithTexture(GLuint* fbo, GLuint* texture, int w,
     return status == GL_FRAMEBUFFER_COMPLETE;
 }
 
+/*
+ * Device-level self-test: clear the multisampled colour buffer, run the exact MSAA->HDR resolve
+ * blit the forward pass uses, and read one pixel back. Some GLES drivers (Xclipse/ANGLE class in
+ * particular) report complete framebuffers yet silently resolve multisampled float targets to
+ * black/garbage - which presents as "0 geometry pixels" with every runtime statistic healthy.
+ * A failed test here triggers the fallback ladder in createTargets() instead of shipping an
+ * invisible frame.
+ */
+bool GlRenderer::verifyResolvePath() {
+    if (msaaFbo_ == 0 || hdrFbo_ == 0) return false;
+    for (int drain = 0; drain < 16 && glGetError() != GL_NO_ERROR; ++drain) {}
+    glBindFramebuffer(GL_FRAMEBUFFER, msaaFbo_);
+    glViewport(0, 0, 1, 1);
+    glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, msaaFbo_);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hdrFbo_);
+    glBlitFramebuffer(0, 0, surfaceWidth_, surfaceHeight_, 0, 0, surfaceWidth_, surfaceHeight_,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, hdrFbo_);
+    GLubyte pixel[4] = {0, 0, 0, 0};
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    const GLenum readError = glGetError();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glClearColor(0.024f, 0.028f, 0.036f, 1.0f);
+    for (int drain = 0; drain < 16 && glGetError() != GL_NO_ERROR; ++drain) {}
+    if (readError != GL_NO_ERROR) return false;
+    const int dr = int(pixel[0]) > 64 ? int(pixel[0]) - 64 : 64 - int(pixel[0]);
+    const int dg = int(pixel[1]) > 128 ? int(pixel[1]) - 128 : 128 - int(pixel[1]);
+    const int db = int(pixel[2]) > 191 ? int(pixel[2]) - 191 : 191 - int(pixel[2]);
+    const bool ok = dr <= 3 && dg <= 3 && db <= 3;
+    if (!ok) {
+        AF_GL_LOGE("Resolve self-test FAILED: MSAA->HDR blit read back (%d,%d,%d,%d), expected (~64,~128,~191,255)",
+                   int(pixel[0]), int(pixel[1]), int(pixel[2]), int(pixel[3]));
+    } else {
+        AF_GL_LOGI("Resolve self-test passed: MSAA->HDR blit read back (%d,%d,%d,%d)",
+                   int(pixel[0]), int(pixel[1]), int(pixel[2]), int(pixel[3]));
+    }
+    return ok;
+}
+
 bool GlRenderer::createTargets(std::string* error) {
     const int w = surfaceWidth_ > 0 ? surfaceWidth_ : 1080;
     const int h = surfaceHeight_ > 0 ? surfaceHeight_ : 1920;
@@ -627,6 +669,30 @@ bool GlRenderer::createTargets(std::string* error) {
     stats_.bloomLevels = bloomLevels_;
     stats_.msaaSamples = options_.msaaSamples;
     stats_.shadowMapSize = options_.enableShadows ? options_.shadowMapSize : 0;
+
+    /* Device-level resolve self-test with a fallback ladder. A driver can report complete
+       framebuffers yet resolve multisampled float colour to black (seen on Xclipse/ANGLE class
+       GLES); that failure mode presents as "0 geometry pixels" with every statistic healthy.
+       Degrade instead of shipping an invisible frame: MSAA off first, then RGBA8 targets. */
+    if (!verifyResolvePath()) {
+        if (options_.msaaSamples > 1) {
+            AF_GL_LOGE("Resolve self-test failed at %dx MSAA; rebuilding targets with msaaSamples=1",
+                       options_.msaaSamples);
+            options_.msaaSamples = 1;
+            destroyTargets();
+            return createTargets(error);
+        }
+        if (hdrInternalFormat_ == GL_RGBA16F) {
+            AF_GL_LOGE("Resolve self-test failed with 1x float targets; rebuilding with RGBA8");
+            hdrInternalFormat_ = GL_RGBA8;
+            destroyTargets();
+            return createTargets(error);
+        }
+        *error = "GPU resolve self-test failed on every target configuration";
+        AF_GL_LOGE("FRAGILE: %s", error->c_str());
+        destroyTargets();
+        return false;
+    }
     return true;
 }
 
@@ -1252,6 +1318,7 @@ void GlRenderer::drawForwardPass() {
 
     glBindBufferRange(GL_UNIFORM_BUFFER, 0, cameraUbo_, GLintptr(frame) * cameraStride_, sizeof(CameraUbo));
 
+    const GLboolean cullingWasEnabled = glIsEnabled(GL_CULL_FACE);
     const bool debugMagenta = options_.debugMagenta;
 
     /* ---- studio ground ---- */
@@ -1264,7 +1331,12 @@ void GlRenderer::drawForwardPass() {
         glActiveTexture(GL_TEXTURE5);
         glBindTexture(GL_TEXTURE_2D, shadowTexture_);
         glActiveTexture(GL_TEXTURE0);
+        /* The quad's triangle strip winds clockwise as seen from above; the Vulkan ground
+           pipeline uses VK_CULL_MODE_NONE for exactly this reason. Match it here, or the floor
+           is back-face culled and never appears on GLES. */
+        glDisable(GL_CULL_FACE);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        if (cullingWasEnabled) glEnable(GL_CULL_FACE);
         ++drawCalls_;
     }
 
@@ -1285,7 +1357,6 @@ void GlRenderer::drawForwardPass() {
             return;
         }
         glUseProgram(avatarProgram);
-        const GLboolean cullingWasEnabled = glIsEnabled(GL_CULL_FACE);
         if (debugMagenta) {
             glDisable(GL_CULL_FACE);
             AF_GL_LOGW("DEBUG_MAGENTA active: avatar PBR, textures, material UBO and culling bypassed");
@@ -1316,7 +1387,13 @@ void GlRenderer::drawForwardPass() {
                 continue;
             }
             if (!debugMagenta) {
-                if (sm.region == -2) {
+                /* Foreign (imported) submeshes draw without back-face culling: real-world GLBs -
+                   photogrammetry scans, mirrored node transforms, sloppy exporters - ship CW or
+                   inconsistent winding, and culling then erases the entire model while every
+                   runtime statistic still reports healthy draw calls. The forward shader flips
+                   the shading normal on back faces for these regions (mat.uRegion.x < -0.5).
+                   Engine-generated submeshes (region >= 0) are CCW-verified and keep culling. */
+                if (sm.region < 0) {
                     glDisable(GL_CULL_FACE);
                 } else if (cullingWasEnabled) {
                     glEnable(GL_CULL_FACE);

@@ -81,6 +81,13 @@ class AvatarForgeSurfaceView(
         holder.setFormat(PixelFormat.OPAQUE)
         holder.addCallback(this)
         isFocusable = true
+        /* Compose AndroidView wraps factory children in their own LayoutParams; without
+           MATCH_PARENT the SurfaceView measured narrower than its container and the uncovered
+           strip showed as grey bars down both sides of the viewport. */
+        layoutParams = android.view.ViewGroup.LayoutParams(
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+            android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        )
         isClickable = true
         // Do NOT set a non-transparent View background on SurfaceView: the View layer sits above
         // the default Z = -2 EGL surface queue and would paint over the window punch-hole.
@@ -210,7 +217,7 @@ class AvatarForgeSurfaceView(
                 if (!running.get() || !surfaceReady) return@Thread
                 check(glbFile.isFile && glbFile.length() > 0L) { "Selected GLB is not available in app storage." }
                 Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight}")
-                nativeHandle = nativeCreate(surfaceHolder.surface, glbFile.absolutePath, max(1, surfaceWidth), max(1, surfaceHeight))
+                nativeHandle = nativeCreate(surfaceHolder.surface, glbFile.absolutePath, max(1, surfaceWidth), max(1, surfaceHeight), verifyVisiblePixels)
                 check(nativeHandle != 0L) { "AvatarForge native renderer returned a null session." }
                 val rendererInfo = nativeGetInfo(nativeHandle)
                 check(rendererInfo.startsWith("gles31|")) {
@@ -256,7 +263,7 @@ class AvatarForgeSurfaceView(
                     lastFrame = now
                     val presentedThisFrame = nativeRender(nativeHandle, delta)
                     val stats = nativeGetStats(nativeHandle)
-                    check(stats.size == 9) { "AvatarForge returned ${stats.size} renderer statistics; expected 9." }
+                    check(stats.size == 11) { "AvatarForge returned ${stats.size} renderer statistics; expected 11." }
                     val frames = stats[0]
                     val drawCalls = stats[1]
                     val triangles = stats[2]
@@ -266,6 +273,8 @@ class AvatarForgeSurfaceView(
                     val outsideCorners = stats[6]
                     val glError = stats[7]
                     val eglError = stats[8]
+                    val readbackValid = stats[9] == 1
+                    val readbackPixels = stats[10]
                     if (!reportedFrame) {
                         if (presentedThisFrame && framePresented && presentedFrames >= 3 && drawCalls > 0 && triangles > 0 && boundsInFrustum) {
                             reportedFrame = true
@@ -277,13 +286,15 @@ class AvatarForgeSurfaceView(
                             error("No drawable EGL-presented model frame within 15 seconds " +
                                 "(frames=$frames presented=$presentedFrames framePresented=$framePresented " +
                                 "draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
-                                "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)})")
+                                "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)} " +
+                                "nativeReadback=${if (readbackValid) readbackPixels else -1})")
                         }
                     }
                     if (verifyVisiblePixels && presentedThisFrame && presentedFrames >= 3 &&
                         drawCalls > 0 && triangles > 0 && boundsInFrustum && !pixelCopyComplete.get()) {
                         requestVisiblePixelCopy(apiVersion, frames, drawCalls, triangles, presentedFrames,
-                            boundsInFrustum, outsideCorners, glError, eglError)
+                            boundsInFrustum, outsideCorners, glError, eglError,
+                            if (readbackValid) readbackPixels else -1)
                     }
                     val remaining = 16_666_667L - (System.nanoTime() - now)
                     if (remaining > 0L) Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
@@ -347,7 +358,8 @@ class AvatarForgeSurfaceView(
         boundsInFrustum: Boolean,
         outsideCorners: Int,
         glError: Int,
-        eglError: Int
+        eglError: Int,
+        nativeReadbackPixels: Int = -1
     ) {
         if (!verifyVisiblePixels || pixelCopyComplete.get() ||
             !pixelCopyPending.compareAndSet(false, true)) return
@@ -471,7 +483,21 @@ class AvatarForgeSurfaceView(
                     val message = if (passed) {
                         "REAL + VERIFIED: PixelCopy saw $visiblePixels geometry pixels (background RGB=$backgroundRed,$backgroundGreen,$backgroundBlue) after $presentedFrames successful EGL swaps; screenshot=$screenshot"
                     } else {
-                        "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot"
+                        val evidence = if (nativeReadbackPixels >= 0) {
+                            if (nativeReadbackPixels > 0) {
+                                "native glReadback saw $nativeReadbackPixels geometry pixels on the same frames " +
+                                    "-> pixels are rasterised but lost between the GL framebuffer and PixelCopy " +
+                                    "(window compositing or PixelCopy capture path)"
+                            } else {
+                                "native glReadback also saw 0 geometry pixels on the same frames " +
+                                    "-> geometry never reaches the presented framebuffer " +
+                                    "(rasterisation, depth/culling or shading path)"
+                            }
+                        } else {
+                            "native readback unavailable (verifyFramePixels off)"
+                        }
+                        "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction " +
+                            "(required >=$MIN_VISIBLE_PIXELS); $evidence; screenshot=$screenshot"
                     }
                     recordSmokeResult(if (passed) "PIXELS_VERIFIED" else "FAILED",
                         apiVersion, frames, drawCalls, triangles, presentedFrames, boundsInFrustum,
@@ -501,7 +527,7 @@ class AvatarForgeSurfaceView(
             onStatus(message)
         }
     }
-    private external fun nativeCreate(surface: android.view.Surface, glbPath: String, width: Int, height: Int): Long
+    private external fun nativeCreate(surface: android.view.Surface, glbPath: String, width: Int, height: Int, verifyPixels: Boolean): Long
     private external fun nativeResize(handle: Long, width: Int, height: Int)
     private external fun nativeOrbitCamera(handle: Long, deltaYawDeg: Float, deltaPitchDeg: Float, zoomScale: Float)
     private external fun nativeResetCamera(handle: Long)

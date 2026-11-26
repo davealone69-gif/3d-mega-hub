@@ -57,7 +57,8 @@ void throwState(JNIEnv* env, const std::string& message) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
-    JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height) {
+    JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height,
+    jboolean verifyPixels) {
     if (!surface || !glbPath || width <= 0 || height <= 0) {
         throwState(env, "AvatarForge renderer requires a Surface, GLB path and non-zero size");
         return 0;
@@ -135,6 +136,10 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     options.shadowSoftness = 1.65f;
     options.enableBloom = true;
     options.enableSss = true;
+    /* The PixelCopy diagnostic session passes verifyPixels: the renderer then drains GL errors
+       and glReadPixels the presented frame each tick so failure reports can distinguish
+       "geometry never rasterised" from "rasterised but lost before compositing". */
+    options.verifyFramePixels = verifyPixels == JNI_TRUE;
     if (allForeignSubmeshes) {
         // Standard glTF 2.0 assets (§3.4) face +Z; studio portrait key + fill lighting for yawDeg = 0.
         options.sunAzimuthDeg = 152.0f;
@@ -500,7 +505,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetStats(
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return nullptr;
     const af::RendererStats stats = session->renderer->stats();
-    const jint values[9] = {
+    const jint values[11] = {
         static_cast<jint>(stats.frames),
         static_cast<jint>(stats.drawCalls),
         static_cast<jint>(stats.triangles),
@@ -509,10 +514,12 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetStats(
         stats.boundsInFrustum ? 1 : 0,
         static_cast<jint>(stats.outsideCorners),
         static_cast<jint>(stats.glError),
-        static_cast<jint>(stats.eglError)
+        static_cast<jint>(stats.eglError),
+        stats.readbackValid ? 1 : 0,
+        static_cast<jint>(stats.readbackNonBlackPixels)
     };
-    jintArray result = env->NewIntArray(9);
-    if (result) env->SetIntArrayRegion(result, 0, 9, values);
+    jintArray result = env->NewIntArray(11);
+    if (result) env->SetIntArrayRegion(result, 0, 11, values);
     return result;
 }
 

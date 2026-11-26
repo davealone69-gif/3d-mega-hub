@@ -8,3 +8,8 @@ local.properties
 /captures/
 *.jks
 *.keystore
+
+# Host probe binaries (sources are tracked; build outputs are not)
+probe/build/
+probe/winding_probe
+probe/import_fixes_probe
