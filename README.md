@@ -1290,6 +1290,17 @@ asserted**); the remedy is **M5 stage S-F**. Because both authorised tiers edit 
 test weakened, before/after measured, golden SHA-256 delta reported, one protected component per PR, register
 entry added. Status `PARTIAL` — owner-reported and source-diagnosed, **not yet measured**.
 
+**The quality bar now has a face.** Later on 2026-11-26 the owner attached the `/goal/` turnaround sheet
+directly to the conversation — hash-identical to the Dropbox file, so provably the same bytes — with the words
+*"This quality of mylove.glb"*. The plan records it in **§8.6.5**: three bust views at ≈170 px each of a
+stylised-realistic adult character, i.e. a head-detail bar (skin shading, hair strands, fabric lace), not a
+polygon bar; usable as a human-judged look, proportion and silhouette reference, still **not** a reconstruction
+input (**D14**) and **not** a threshold-fitting source. Permissions tighten rather than loosen: as an
+owner-asserted depiction of `mylove.glb`, the sheet becomes `redistribute = deny, train = deny`, and
+`mylove.glb` itself stays never-committed and unfittable. Whether automated calibration to it is ever permitted
+is the new open decision **D16**. Nothing was committed: only hashes and written observations enter the
+repository.
+
 **Unchanged protections.** `main` is untouched. PR #17 is **open and unmerged**.
 `arena/089497bd-3d-mega-hub` (`58aced02`) and `arena/25bd4008-3d-mega-hub` (`b79a7d0c`) are **preserved**, and
 §8.4 of the plan lists the donor branch's nine items of unique work with a `git show` recovery command for
