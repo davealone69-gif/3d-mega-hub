@@ -50,6 +50,18 @@ this work into 3D-Mega-Hub and not to build a chatbot in a 3D application: the c
 > them**. To close **B9** and **B2**, attach the nine captures to the conversation or have an M8 agent
 > reproduce the session on hardware it controls.
 >
+> ### Owner decision of 2026-11-26 (fourth) — D15 resolved: *"Definitely 1 and 2"*
+>
+> Recorded as: **tiers 1 and 2 of the §3.D item 10 deformation remedy are authorised — weight quality first,
+> then dual-quaternion skinning only if measurement still shows the fault — tier 3 (pose correctives) is not
+> authorised, and `af_vertex` keeps its 4 influences and 88-byte layout.** Two consequences were written into
+> the plan rather than left implicit: the tiers are **sequential and measurement-gated**, and because both
+> authorised tiers edit **protected** components (`af_rig.cpp`, `src/render/*`), a new **§3.M.1a protocol**
+> now defines how a human-authored mission may touch one — ABI unchanged, no test weakened, before/after
+> measured, golden SHA-256 delta reported, one protected component per PR, register entry added. Without that
+> protocol the decision would have been unexecutable. The interpretation and its alternative reading are
+> recorded in the **D15** row itself.
+>
 > ### Owner brief of 2026-11-26 (second) — the GOKU handover requirements
 >
 > | Requirement | Where honoured |
@@ -722,31 +734,52 @@ imported playback against the generating engine to **0.2 mm**.
 
    **Three remedy tiers, in cost order, each gated by the measurement below:**
 
-   1. **Weight quality — procedural, no ABI change, no licence question.** Soften or region-gate the 1 %
-      prune, widen the three-joint sharing rule at concave landmarks, remove the single-joint fallback where a
-      second influence exists within tolerance, and smooth weights by distance or heat diffusion. Stays inside
-      4 influences, so `af_vertex` and the renderer are untouched. **Try this first: it is the cheapest tier
-      and the only one with no external dependency.**
-   2. **Dual-quaternion skinning.** Removes linear-interpolation collapse (including the candy-wrapper case)
-      **without** needing more influences, but changes `Rig::skin` *and* the GPU skinning path in `af_gl.cpp`,
-      which compiles only under `if(ANDROID)` — so it cannot be validated by host `ctest` and needs device
-      verification (M7's constraint, §5.9 field 5(d)).
-   3. **Pose correctives** — delta-mush-style sculpted deltas, or learned correctives. This is the industry
-      answer, and it is precisely what **MHR** offers (*"non-linear pose correctives = neural-network-based
-      pose-dependent deformations"*, §6.4.1). It requires per-pose delta **data** or a trained **model**, so it
-      collides with **D9/D11** (no declared licence ⇒ nothing may be trained on, §3.I.2) and with §3.K's
-      *"no model weights ever load into the app process"* if learned. Sculpted deltas authored by the owner are
-      the licence-clean variant.
+   **Owner decision 2026-11-26: tiers 1 and 2 are AUTHORISED; tier 3 is NOT (**D15**). `af_vertex` keeps its
+   4 influences and its 88-byte layout.** The tiers are **sequential and measurement-gated**, not a menu: tier
+   2 may not begin until tier 1 has been measured and shown insufficient, because tier 2 costs a change to two
+   protected components and can only be verified on a device.
+
+   1. **Weight quality — AUTHORISED, DO THIS FIRST. Procedural, no ABI change, no licence question, no
+      dependency.** Soften or region-gate the 1 % prune (`af_rig.cpp:436`), widen the three-joint sharing rule
+      (`:369`) at concave landmarks, remove the single-joint fallbacks (`:408-409`, `:442`) where a second
+      influence exists within tolerance, and smooth weights by distance or heat diffusion. Stays inside 4
+      influences, so `af_vertex` and the renderer are untouched. **Touching `af_rig.cpp` is permitted here
+      because it is a human-authored mission under the §3.M.1a protocol, not a learning-system write** — read
+      that protocol before editing.
+   2. **Dual-quaternion skinning — AUTHORISED, but only if tier 1's measurement still shows the fault.**
+      DQS replaces the linear interpolation of transforms with quaternion blending, which removes
+      linear-interpolation collapse (including the candy-wrapper case) **without** needing more influences.
+      Two honest caveats: **(a)** DQS is not a pure win — it trades concave collapse for **joint bulging and
+      volume inflation** where influences are widely separated, so the M4 critic must report *both* the
+      collapse metric and a region-volume metric, and tier 2 can regress one while fixing the other; **(b)** it
+      changes `Rig::skin` (`af_rig.cpp:449`) *and* the GPU skinning path in `af_gl.cpp`, which compiles only
+      under `if(ANDROID)` — so it **cannot be validated by host `ctest`** and needs device verification
+      (§5.9 field 5(d), and B2's constraint that the LOD/GPU path has never run on a real GPU).
+   3. **Pose correctives — NOT AUTHORISED (D15).** Delta-mush-style sculpted deltas, or learned correctives:
+      the industry answer, and precisely what **MHR** offers (*"non-linear pose correctives =
+      neural-network-based pose-dependent deformations"*, §6.4.1). Deferred because it requires per-pose delta
+      **data** or a trained **model**, which collides with **D9/D11** (no declared licence ⇒ nothing may be
+      trained on, §3.I.2) and with §3.K's *"no model weights ever load into the app process"* if learned.
+      **This stays designed and unauthorised**: if tiers 1 and 2 are measured and the fault survives them, the
+      correct action is to report that with numbers and re-open D15 — not to start tier 3.
 
    **The metric that decides between them — measurable on the host, from geometry alone.** For named concave
    landmark pairs (axilla, inguinal, inner elbow, knuckle, neck/clavicle), pose the mesh through
    `af_engine_evaluate_animation` at a sweep of joint angles and report: *(i)* minimum `Bvh::signedDistance`
    (`af_mesh.h:612`) between the opposing surfaces — webbing shows as this distance falling toward and through
    zero; *(ii)* self-intersection count in the joint region; *(iii)* region surface-area change against rest;
-   *(iv)* the influence count actually used per vertex in that region, and how many were pruned by
-   `af_rig.cpp:436`. All four are procedural, deterministic and host-runnable. **Tolerances must be
+   *(iv)* **region volume** against rest — added because the authorised tier 2 (dual-quaternion skinning)
+   fixes concave collapse by *inflating* joints, so a collapse-only metric would score that inflation as a
+   win; *(v)* the influence count actually used per vertex in that region, and how many were pruned by
+   `af_rig.cpp:436`. All five are procedural, deterministic and host-runnable. **Landmark order is fixed:
+   axilla and inguinal fold first**, then inner elbow, knuckle, neck/clavicle — those two are where a
+   4-influence LBS pipeline with a 1 % prune webs first. **Tolerances must be
    established by measurement, not invented** (§2.1, P3) — the first run produces the baseline, and only a
    later run may call something a regression.
+   **Three measurement points, not one.** The critic runs **(1)** as a baseline before any change, **(2)**
+   after tier 1, and **(3)** after tier 2 if tier 2 is reached. **Tier 2 is authorised only if measurement (2)
+   still shows the fault** — that comparison is the gate, and it is why the baseline must be recorded with no
+   tolerance asserted.
 
    **Assignment.** Measurement → **M4**, as a fourth critic (§5.6 field 5(i)). Remedy → **M5 stage S-F**
    (§5.7 field 5). The ABI question → **D15**. The defect itself → **B9**.
@@ -1422,6 +1455,37 @@ These are the proven components. Neural Core has **no write access** to any of t
 
 A change to any of these is a **human pull request**, reviewed like any other. Neural Core may *propose* one
 by writing a diff into an experiment record; it may not apply one.
+
+#### 3.M.1a What "no write access" does and does not mean — the protocol for touching a protected component
+
+The protected set bars **Neural Core's autonomous machinery** — the learning loop, its proposals, its adapters
+and anything it can trigger. It does **not** bar a human-directed engineering mission, because two authorised
+missions cannot otherwise do their work: **M5 stage S-F** must edit `Rig::computeWeights` (`af_rig.cpp:282-447`)
+and `Rig::skin` (`:449`), and **M7** must tune the LOD constants in `af_lod_select.h` / `af_avatar_lod.cpp`.
+Both are protected. Refusing to edit them would make the owner's **D15** decision unexecutable; editing them
+freely would destroy the protection. So the rule is a **protocol**, and it binds every mission that touches a
+protected path:
+
+1. **Human-authored, never autonomous.** The change is written by a mission agent under a human-approved brief
+   and lands as a pull request. The learning system (§3.M.3's propose → test → compare loop) may **not**
+   produce it, and no code path may let a proposal reach a protected file.
+2. **The ABI does not move.** `af_vertex`'s **88-byte** layout and its 4-influence contract, `af_spec`'s
+   meaning, the **45-float** JNI contract, `kSpecFloatCount` and its `static_assert` stay exactly as they are
+   (**D15**). A protected-component change that alters an ABI is a different decision and needs the owner.
+3. **Existing tests pass unchanged.** No test is weakened, skipped, re-toleranced or deleted to accommodate the
+   change (§7 item 5). If an existing test legitimately must change because the *behaviour* changed, the PR
+   states which test, why, and what it asserted before.
+4. **Measure before and after, on the same subject.** The M4 critic's baseline record, then the post-change
+   record, with the delta reported per landmark pair. A protected-component change with no measurement is
+   indistinguishable from vandalism.
+5. **Golden byte-identity is re-checked, and any difference is reported.** The solver is deterministic, so a
+   weight change **will** alter generated bytes; that is expected here, and the PR must state the old and new
+   SHA-256 and sizes rather than let a reviewer discover it (§3.J's byte-identity assertion).
+6. **One protected component per pull request**, so a regression can be attributed and reverted (§3.N level 2,
+   `git revert` with a merge commit).
+7. **Recorded in the protected-component register.** `docs/NEURAL_CORE_PROTECTED.json` (created in M0) gains an
+   entry per authorised change: path, mission, commit, the decision that authorised it, and the measurement
+   that justified it. The register is how a future agent tells an approved edit from a violation.
 
 #### 3.M.2 What Neural Core may write
 
@@ -2539,8 +2603,13 @@ depends on another document having been read.
 > (axilla, inguinal, inner elbow, knuckle, neck/clavicle), pose the mesh with `af_engine_evaluate_animation`
 > across a sweep of joint angles and emit **(1)** the minimum `Bvh::signedDistance` between opposing surfaces
 > (`af_mesh.h:612`), **(2)** the self-intersection count in the joint region, **(3)** the region's
-> surface-area change against rest, and **(4)** the influence count actually used per vertex in that region
-> **plus how many were pruned** by `af_rig.cpp:436`. Read `Rig::computeWeights` (`af_rig.cpp:282-447`) before
+> surface-area change against rest, **(4)** the region's **volume** change against rest, and **(5)** the
+> influence count actually used per vertex in that region **plus how many were pruned** by `af_rig.cpp:436`.
+> **Instrument the axilla and inguinal fold first.** Measurement **(4)** exists because the authorised tier 2
+> (dual-quaternion skinning) fixes concave collapse by inflating joints — without a volume metric, that
+> inflation scores as a victory. **M4 delivers the baseline; M5 stage S-F re-runs this same critic after each
+> tier**, so the critic must be callable on demand with a named subject and sweep, not only inside the frozen
+> §3.J.1 suite. Read `Rig::computeWeights` (`af_rig.cpp:282-447`) before
 > writing it — in particular the three-joint sharing rule at `:369`, the 1 % prune at `:436-439`, and the two
 > single-joint weight-1.0 fallbacks at `:408-409` and `:442`, because measurement **(4)** exists to show
 > whether those code paths are firing in the regions that web. **The first run is a baseline, not a verdict**:
@@ -2632,13 +2701,16 @@ depends on another document having been read.
 > | **S-D** | **Morph targets on import** — deliverable **(f)** | S-A and S-C | `grep -ci morph af_glb_read.cpp` returns **non-zero** (it is **0** today); sparse morph targets read and drivable; `afcore.h:413-414` amended to match reality; host test round-tripping a generated avatar's blendshapes export → import → evaluate, with a stated tolerance. Reuse the sparse-accessor precedent already at `af_glb_read.cpp:427-467` |
 > | **S-E** | **Facial animation on imported faces** | **S-D only** — never before | The 52 ARKit channels driven on an imported face through its morph targets, via `FaceAnimation.kt`; per-channel displacement magnitude measured; **no channel silently zero** |
 >
-> | **S-F** | **Deformation quality — the remedy for *"webing on movement"*** (**B9**, §3.D item 10) | **M4's deformation critic has produced a baseline record** — a fix with no baseline cannot be shown to work | Tier 1 only unless **D15** is resolved: weight-quality changes inside the existing 4 influences (region-gate the 1 % prune at `af_rig.cpp:436`, widen the three-joint sharing rule at `:369`, remove the single-joint fallbacks at `:408-409`/`:442`, smooth by distance or heat diffusion). Then the critic re-runs and the **delta is reported per landmark pair**. Tier 2 (dual-quaternion skinning) additionally needs device verification because it touches `af_gl.cpp`. Tier 3 (pose correctives) is **`BLOCKED` on D9 and D11** |
+> | **S-F** | **Deformation quality — the remedy for *"webing on movement"*** (**B9**, §3.D item 10). **D15 is RESOLVED: tiers 1 and 2 are authorised, tier 3 is not, and `af_vertex` does not change** | **M4's deformation critic has produced a baseline record** — a fix with no baseline cannot be shown to work. **Tier 2 additionally requires tier 1 to have been measured and shown insufficient** | **Tier 1 first**, inside the existing 4 influences: region-gate the 1 % prune (`af_rig.cpp:436`), widen the three-joint sharing rule (`:369`), remove the single-joint fallbacks (`:408-409`, `:442`), smooth by distance or heat diffusion. Re-run the critic; report the **delta per landmark pair**. **Tier 2 (dual-quaternion skinning) only if the fault survives tier 1** — it changes `Rig::skin` *and* `af_gl.cpp`, cannot be host-tested, needs device verification, and trades concave collapse for **joint bulging**, so the critic must report a region-volume metric beside the collapse metric. **Both tiers edit protected components, so the §3.M.1a protocol binds**: human-authored PR, ABI unchanged, no test weakened, before/after measured, golden SHA-256 delta reported, one protected component per PR, entry added to `docs/NEURAL_CORE_PROTECTED.json`. **Tier 3 (pose correctives) is NOT AUTHORISED** — if the fault survives tiers 1 and 2, report that with numbers and re-open D15 |
 >
 > **Rules across the stages.** *(i)* S-A → S-B → S-C is strictly ordered; S-D needs S-A and S-C; S-E needs S-D.
 > **S-F is independent of S-D and S-E** — it needs only M4's baseline — and it may therefore start as soon as
 > that baseline exists, in parallel with the morph-target work. *(i-b)* **S-F must not change `af_vertex`**
-> (`afcore.h:318-327`, 88 bytes, §3.M.1 protected) unless **D15** says so; tier 1 exists precisely to improve
-> deformation *without* an ABI change.
+> (`afcore.h:318-327`, 88 bytes): **D15 is resolved and the answer is no** — the engine keeps 4 influences,
+> which is why tier 1 (weight quality) and tier 2 (dual-quaternion blending) are the authorised routes.
+> *(i-c)* **Tiers are sequential, not parallel.** Do tier 1, measure it, and only then consider tier 2. Tier 2
+> costs a change to two protected components and can only be verified on a device, so starting it before tier
+> 1 is measured spends the expensive option first.
 > *(ii)* **Learned motion generation is not a stage** — it is `BLOCKED` on licence (§3.D item 8) and must be
 > reported as blocked, not deferred silently. *(iii)* Do not implement both animation APIs (§7 item 3); S0
 > exists to prevent that. *(iv)* The donor branch is read-only reference material: recover its specification
@@ -2679,13 +2751,18 @@ depends on another document having been read.
 > generated avatar's blendshapes through export → import → evaluate. **This is an addition to M5; acceptance
 > criteria (a)–(e) are unchanged** (owner instruction 8).
 > *(g) Deformation quality — stage S-F, added 2026-11-26 after the owner reported **"webing on movement"**
-> (§3.D item 10, **B9**).* M4's deformation critic must show a **measured improvement** in the concave
-> landmark pairs it baselined — minimum `Bvh::signedDistance`, self-intersection count, region area change and
-> pruned-influence count, each reported **per landmark pair** with the sweep angles used. **`af_vertex` must
-> not change** (88 bytes, §3.M.1 protected) unless **D15** is resolved in favour of an ABI change; tier 1
-> exists to improve deformation without one. No pose-corrective data or learned model may be introduced here —
-> that is tier 3 and is **`BLOCKED` on D9 and D11**. If tier 1 produces no measured improvement, the honest
-> outcome is a report saying so with the numbers, **not** a claim that webbing is fixed.
+> (§3.D item 10, **B9**); **D15 resolved the same day — tiers 1 and 2 authorised, tier 3 not**.* M4's
+> deformation critic must show a **measured improvement** in the concave landmark pairs it baselined — minimum
+> `Bvh::signedDistance`, self-intersection count, region area change, **region volume** and pruned-influence
+> count, each reported **per landmark pair** with the sweep angles used, **axilla and inguinal fold first**.
+> **`af_vertex` must not change** — 88 bytes, 4 influences, per D15. **Tier 1 must be measured before tier 2
+> is attempted**, and tier 2's report must show the bulging/volume metric as well as the collapse metric,
+> because dual-quaternion skinning can fix one and worsen the other. Every edit to `af_rig.cpp` or `af_gl.cpp`
+> follows the **§3.M.1a protocol**: human-authored PR, no test weakened, before/after measured, golden SHA-256
+> delta stated, one protected component per PR, register entry added. **No pose-corrective data or learned
+> model may be introduced** — that is tier 3 and is **NOT AUTHORISED**. If tier 1 produces no measured
+> improvement, the honest outcome is a report saying so with the numbers and a request to re-open D15 — **not**
+> a claim that webbing is fixed, and not a quiet move to tier 3.
 >
 > **7. Required tests and build evidence.** The decision document, committed. For **(f)**: the new
 > export → import → evaluate morph round-trip test passing on the host, with its measured tolerance quoted,
@@ -3386,7 +3463,7 @@ owner can make, and each names the mission it blocks.
 | B6 | **PR #16 (`arena/33f12efd` → `main`) is a second competing path into `main`** alongside PR #9. **VERIFIED 2026-11-26: both open, both non-draft.** Full open-PR set: #17 (this line → trunk, non-draft, MERGEABLE), #16, #15 (draft), #14, #12 (superseded, left open), #9. They cannot both be right | The trunk's future, and therefore every mission's base | Owner reconciliation (**D2**). Neural Core work must not start on a branch whose base is unsettled |
 | B7 | **PR #17 must land before any mission branches.** **VERIFIED 2026-11-26: still open, non-draft, `MERGEABLE`, head `ba38d996074c2f8a9981ebbaeb0fee3e3cd4af5e`.** Every mission cuts from `integration/avatarforge-renderer-port`; branching earlier re-creates the stale-base problem in one step | Wave 0, therefore all of it | Merge PR #17 **with a merge commit, not a squash** (**D1**) |
 | B8 | **The brief's section D ended at the single word "Deformation."** Deformation is designed here as measurement (§3.D item 9, §3.E.2). If the owner intended corrective blendshapes, cloth or muscle simulation, or penetration resolution, **that is not designed in this document**. **PARTIALLY RE-ISSUED 2026-11-26:** the owner has now named one concrete deformation fault — *"webing on movement"* — which is designed as §3.D item 10 and tracked as **B9**. The remainder of section D (cloth, muscle simulation, penetration resolution) is still not issued | M4, M5 scope | Re-issue the remainder of section D |
-| B9 | **"Webbing on movement" — the owner's named deformation defect, reported 2026-11-26** with nine device captures in Dropbox `/3d/` as evidence (§8.6.1). Diagnosed from source as a **weight-quality and skinning-model** fault, not a rendering one: a 4-influence ceiling in the 88-byte `af_vertex` (`afcore.h:318-327`), weight sharing limited to bones within three joints (`af_rig.cpp:369`), influences under **1 %** pruned (`:436-439`), two single-joint weight-1.0 fallbacks (`:408-409`, `:442`), pure LBS in `Rig::skin` (`:449`) and **no body pose correctives anywhere** (§3.D item 10). `PARTIAL` — owner-reported and source-diagnosed, **not measured**, because the captures are unreadable from this workspace | M4 (needs the critic), M5 S-F (the remedy), and the credibility of any "photoreal" claim | **(a)** The owner attaches the nine captures to the conversation, or an M8 agent reproduces the session on hardware it controls, so the fault is *seen* and a baseline measured. **(b)** M4 builds the four-part host metric (min `signedDistance`, self-intersection count, region area change, influences used vs pruned). **(c)** Then tier 1 of §3.D item 10 — weight quality — is attempted before any ABI change (**D15**) or any corrective data (**D9/D11**) |
+| B9 | **"Webbing on movement" — the owner's named deformation defect, reported 2026-11-26** with nine device captures in Dropbox `/3d/` as evidence (§8.6.1). Diagnosed from source as a **weight-quality and skinning-model** fault, not a rendering one: a 4-influence ceiling in the 88-byte `af_vertex` (`afcore.h:318-327`), weight sharing limited to bones within three joints (`af_rig.cpp:369`), influences under **1 %** pruned (`:436-439`), two single-joint weight-1.0 fallbacks (`:408-409`, `:442`), pure LBS in `Rig::skin` (`:449`) and **no body pose correctives anywhere** (§3.D item 10). `PARTIAL` — owner-reported and source-diagnosed, **not measured**, because the captures are unreadable from this workspace | M4 (needs the critic), M5 S-F (the remedy), and the credibility of any "photoreal" claim | **(a)** The owner attaches the nine captures to the conversation, or an M8 agent reproduces the session on hardware it controls, so the fault is *seen* and a baseline measured. **(b)** M4 builds the **five-part** host metric (min `signedDistance`, self-intersection count, region area change, **region volume**, influences used vs pruned), axilla and inguinal fold first. **(c)** **D15 is RESOLVED (2026-11-26): tiers 1 and 2 authorised, tier 3 not, `af_vertex` keeps its 4 influences.** The remedy path is therefore settled and the *only* remaining gap is the **baseline measurement** — M4's critic must run before M5 stage S-F may change anything, and every edit to `af_rig.cpp` or `af_gl.cpp` follows the **§3.M.1a** protocol |
 
 ### 8.2 Unverified research — do not rely on these yet
 
@@ -3423,7 +3500,7 @@ Each was checked against a primary source and could not be confirmed. None may b
 | **D12** | **The donor's five animation fixtures** (~596 KB, Khronos `CesiumMan` and `Fox`, CC BY 4.0) as M5 test assets. The donor's own `THIRD_PARTY_NOTICES.md` records that they *"ARE packaged into the distributed APK"* and that `Fox.glb` has *"two separate rights holders with two separate licences on one file"* | vendor them with attribution shipped in the APK / use only in host tests, never in the APK / generate equivalent fixtures procedurally | **Host tests only; never in the APK.** CC BY 4.0 permits redistribution *with attribution*, so `redistribute` could be `allow` only if the attribution actually ships — and `Fox.glb`'s second rights holder makes that a two-licence obligation for one file (§3.I.2 rule 6). M5's stages S-A and S-C need fixtures either way; procedural ones avoid the question entirely |
 | **D13** | **Anny's `anny-full` topology disables its nudity-related mesh edits**, which intersects `AGENTS.md` §2.6's adults-only content policy — and M4 may want Anny as an anthropometric reference (D10) | permit `anny-full` for authoring/CI reference use only / restrict to the default `anny` topology / do not use Anny at all | **Reference use only, on the default `anny` topology, never generating assets that ship.** This is a content-policy decision about the owner's product, not an engineering preference, so it is the owner's. Anny's `smplx`/`smpl` topologies remain excluded outright (non-commercial) |
 | **D14** | **NEW: is multi-view turnaround reconstruction a Neural Core target?** The owner's `/goal/` folder holds a three-view character turnaround sheet (512 × 341 px, uploaded 2026-11-26). `afcore.h`'s `af_image_role` explicitly states the current analyser *"does not reconstruct a face, copy a garment, or fuse calibrated views"* and that `AF_IMAGE_EXTRA_VIEW` means *"no geometric fusion"* — so this is a `MISSING` subsystem, not a gap in an existing one (§8.6.2) | treat the sheet as a **proportion/silhouette reference** for M4's proportion critic (no new subsystem) / commission multi-view fusion as a **new mission** with its own brief / defer until M4 exists / decline | **Treat it as a proportion and silhouette reference for M4, and defer fusion.** At 512 × 341 px (≈170 px per view) the sheet cannot support face reconstruction at any engine quality, but it *can* anchor proportion targets — which is a measurement M4 already needs. Commissioning fusion would add an eleventh mission whose input resolution does not justify it. **Also required either way:** the sheet's provenance and licence are `UNKNOWN` and its filename suggests it is AI-generated, so under §3.I.2 it is `preview = allow, redistribute = unknown, train = unknown` — it may be looked at, but not shipped, and **not used to fit a critic's thresholds**, because fitting is training |
-| **D15** | **NEW: may the 88-byte `af_vertex` skinning ABI change to allow more than 4 influences?** The owner reported *"webing on movement"* (§3.D item 10, **B9**). `af_vertex` carries `uint16_t joints[4]; float weights[4]` (`afcore.h:318-327`), the renderer's vertex stride depends on that layout, and it sits in §3.M.1's **protected set** — so no mission may change it unilaterally | keep 4 influences and fix weight quality + consider dual-quaternion skinning (tiers 1–2) / raise the influence count and accept an ABI + renderer change / raise it only for a new optional vertex format beside the existing one | **Keep 4 influences; do tiers 1 and 2 first.** Tier 1 (weight quality: region-gate the 1 % prune at `af_rig.cpp:436`, widen the three-joint sharing rule at `:369`, remove the single-joint fallbacks at `:408-409`/`:442`, smooth by distance or heat diffusion) is procedural, needs no ABI change, no dependency and no licence — and the repository's own note at `af_rig.cpp:807` says weight faults have already masked visual faults here, so the weights are the first thing to measure. Tier 2 (dual-quaternion skinning) removes linear-interpolation collapse without more influences but touches `af_gl.cpp`, which cannot be host-tested. Only if both are measured and still insufficient should the ABI be reopened — and tier 3 (pose correctives) needs **D9/D11** settled first, because corrective data or a trained model cannot be produced or shipped while the training-eligible set is empty |
+| **D15** | **RESOLVED BY THE OWNER 2026-11-26 — "Definitely 1 and 2".** Recorded as: **tiers 1 and 2 of §3.D item 10 are authorised; tier 3 is not; `af_vertex` does not change.** So the engine keeps its 4-influence, 88-byte skinning ABI, fixes webbing through **weight quality first** and **dual-quaternion skinning second if measurement still shows the fault**, and does **not** pursue pose correctives now. *Interpretation note, recorded for honesty: the owner's answer was two characters long and the plan contained two numbered lists that day — the three remedy tiers of §3.D item 10, and the webbing-location options. It is read as the **tiers**, because that is the list the plan presented as numbered and because it answers D15, which was open. If the intent was the **locations** (armpit and hip), nothing changes: §3.D item 10's metric already instruments the **axilla and inguinal fold first**. Either way no re-work follows.* Original question: **may the 88-byte `af_vertex` skinning ABI change to allow more than 4 influences?** The owner reported *"webing on movement"* (§3.D item 10, **B9**). `af_vertex` carries `uint16_t joints[4]; float weights[4]` (`afcore.h:318-327`), the renderer's vertex stride depends on that layout, and it sits in §3.M.1's **protected set** — so no mission may change it unilaterally | keep 4 influences and fix weight quality + consider dual-quaternion skinning (tiers 1–2) / raise the influence count and accept an ABI + renderer change / raise it only for a new optional vertex format beside the existing one | **Keep 4 influences; do tiers 1 and 2 first.** Tier 1 (weight quality: region-gate the 1 % prune at `af_rig.cpp:436`, widen the three-joint sharing rule at `:369`, remove the single-joint fallbacks at `:408-409`/`:442`, smooth by distance or heat diffusion) is procedural, needs no ABI change, no dependency and no licence — and the repository's own note at `af_rig.cpp:807` says weight faults have already masked visual faults here, so the weights are the first thing to measure. Tier 2 (dual-quaternion skinning) removes linear-interpolation collapse without more influences but touches `af_gl.cpp`, which cannot be host-tested. Only if both are measured and still insufficient should the ABI be reopened — and tier 3 (pose correctives) needs **D9/D11** settled first, because corrective data or a trained model cannot be produced or shipped while the training-eligible set is empty |
 | D10 | **Reference body model: MHR or Anny** — full comparison now in **§6.4**; supersedes D5 | MHR for everything / Anny for everything / **split use as §6.4.3 recommends** / neither / defer until M3 exists | **Split use, neither adopted as the engine's body model.** MHR for **LOD strategy and corrective-deformation reference** (7 LODs vs this engine's 3; NN pose correctives vs linear blend skinning) and as a **`.glb` import oracle** for M2/M5. Anny for **anthropometric reference** in M4's critics — labelled phenotypes in `[0,1]` match `af_spec`'s named bounded fields, which MHR's latent Gaussian `identity_coeffs` (45 latent dims, **not** the same as `kSpecFloatCount = 45`) cannot. Both Apache-2.0 code, both ungated downloads, both Python/PyTorch ⇒ **authoring and CI only, never in the APK**. **Exclude Anny's `smplx`/`smpl` topologies** (non-commercial). **Three residual checks first:** MHR's release-bundle licence, `trimesh`'s licence, and a guarantee no script fetches the non-commercial bundle |
 
 ### 8.4 Standing prohibition: preserve `arena/089497bd-3d-mega-hub` and all unique work
@@ -3591,7 +3668,7 @@ licence files and repository headers directly rather than relying on secondary s
 | Item | Verified? | Verified how, or what remains | Gate: which mission may not start until it is closed |
 |---|---|---|---|
 | **B1** runtime gate fails | **PARTIAL — narrowed, and device evidence now exists but is unread (§8.6.1)** | Attribution is measured (lead passes, trunk fails, merged line fails at `bdaef4b5`, `ba38d996` **and `281806e7`**, run 45813704590). Because `281806e7` is documents-only, the failure is now shown to be **independent of the code delta between the last two heads** — it is a property of the gate or its runner environment. The *specific failing test* still could not be read: logs and artifacts are on hosts outside this workspace's permitted set, and the annotations give only `exit code 1` | **M3** may not treat any device metric as settled; **M7** may not claim a performance win; **M8(a)** must still separate flake from fault with repeated runs on hardware the agent controls |
-| **B9** "webing on movement" | **PARTIAL — owner-reported and source-diagnosed, NOT measured** | The owner named the fault on 2026-11-26 and pointed at nine device captures; the images are unreadable from this workspace, so the *diagnosis* is from source (§3.D item 10: 4-influence `af_vertex` at `afcore.h:318-327`, three-joint sharing limit at `af_rig.cpp:369`, 1 % prune at `:436-439`, single-joint fallbacks at `:408-409`/`:442`, pure LBS at `:449`, **no body pose correctives**) and the *baseline* does not exist yet | **M4** must build the deformation critic and record a baseline **with no tolerance asserted**; **M5 S-F** may not claim a fix without that baseline; **D15** must be settled before `af_vertex` changes |
+| **B9** "webing on movement" | **PARTIAL — owner-reported and source-diagnosed, NOT measured** | The owner named the fault on 2026-11-26 and pointed at nine device captures; the images are unreadable from this workspace, so the *diagnosis* is from source (§3.D item 10: 4-influence `af_vertex` at `afcore.h:318-327`, three-joint sharing limit at `af_rig.cpp:369`, 1 % prune at `:436-439`, single-joint fallbacks at `:408-409`/`:442`, pure LBS at `:449`, **no body pose correctives**) and the *baseline* does not exist yet | **M4** must build the deformation critic and record a baseline **with no tolerance asserted** — five measurements, axilla and inguinal fold first. **M5 S-F** may not claim a fix without that baseline, must do tier 1 before tier 2, and must follow the **§3.M.1a** protocol for every edit to `af_rig.cpp` or `af_gl.cpp`. **D15 is RESOLVED** (tiers 1–2 authorised, tier 3 not, `af_vertex` keeps 4 influences and its 88-byte layout) |
 | **B2** LOD never run on a real GPU | **NO — but see §8.6.1** | Requires hardware, and no substitute exists. Device captures dated **2026-11-26** (`generated_avatar_diagnostic (1).png`, `imported_glb_diagnostic (1).png`, plus 7 screenshots spanning ~6.5 minutes) exist in the owner's Dropbox and imply a **passing** visible-pixel check on both paths — but they are unreadable from this workspace, the producing head is unknown, and no LOD level, FPS or triangle count may be inferred from them | **M7** may not start; **M3**'s device records are provisional |
 | **B3** two animation APIs | **YES — facts** | Both headers read: this line's six functions at `afcore.h:447-463`, `:524`, `:525`; the donor's nine `af_engine_imported_*` at `afcore.h:271-286` | Closed as research. **M5** still needs the **D4 decision** before writing code |
 | **B4** donor branch and fixtures | **YES** | Branch present at `58aced02`; its `THIRD_PARTY_NOTICES.md` read, confirming the fixtures *"ARE packaged into the distributed APK (596 KB combined)"*, that *"CC BY 4.0 requires attribution"*, and that `Fox.glb` has two rights holders under two licences | Closed as research. **M5** needs D4 plus a fixture decision |

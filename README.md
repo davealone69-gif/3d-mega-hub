@@ -1276,6 +1276,20 @@ and facial animation on an imported face is impossible until that is closed.
 - **D12/D13** — the donor's CC BY 4.0 fixtures as M5 test assets, and Anny's `anny-full` topology against the
   adults-only content policy.
 
+**One owner-reported defect is now designed for.** On 2026-11-26 the owner reported *"webing on movement"*.
+It is diagnosed from source as a **weight-quality and skinning-model** fault, not a rendering one: a
+4-influence ceiling in the 88-byte `af_vertex` (`afcore.h:318-327`), weight sharing limited to bones within
+three joints (`af_rig.cpp:369`), influences under **1 %** pruned (`:436-439`), two single-joint weight-1.0
+fallbacks (`:408-409`, `:442`), pure linear blend skinning (`Rig::skin`, `:449`) and **no body pose
+correctives anywhere** in the engine. The owner resolved **D15** the same day — *"Definitely 1 and 2"* — so
+**weight quality is authorised first, dual-quaternion skinning second only if measurement still shows the
+fault, pose correctives are not authorised, and `af_vertex` does not change**. Measurement is a new **fifth
+M4 critic** (five host-runnable metrics, axilla and inguinal fold first, baseline recorded with **no tolerance
+asserted**); the remedy is **M5 stage S-F**. Because both authorised tiers edit **protected** components
+(`af_rig.cpp`, `src/render/*`), a new **§3.M.1a protocol** governs it: human-authored PR, ABI unchanged, no
+test weakened, before/after measured, golden SHA-256 delta reported, one protected component per PR, register
+entry added. Status `PARTIAL` — owner-reported and source-diagnosed, **not yet measured**.
+
 **Unchanged protections.** `main` is untouched. PR #17 is **open and unmerged**.
 `arena/089497bd-3d-mega-hub` (`58aced02`) and `arena/25bd4008-3d-mega-hub` (`b79a7d0c`) are **preserved**, and
 §8.4 of the plan lists the donor branch's nine items of unique work with a `git show` recovery command for
