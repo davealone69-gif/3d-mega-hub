@@ -1317,6 +1317,19 @@ which the owner authorises **Grok-Girls** for reuse while AvatarForge's anatomy 
 if any, becomes the integration baseline — recommendation: keep the pin) and **D18** (whether adult-mode
 integration enters scope — recommendation: record and defer). No cloud byte entered the repository.
 
+**"Fix all and continue with ai", executed inside the standing constraints.** *Fix*: the plan's §8.2
+research table is fully dispositioned — AIST++ split (API Apache-2.0 verified; dataset repository carries no
+licence, so the CC BY 4.0 data claim is uncitable), Stability SD 3.5 resolved (the repo carries only MIT
+`LICENSE-CODE`; weights terms live off-repo), Hunyuan Exhibit A read in full (territory exclusion verbatim
+twice, plus a NOTICE component layer), Meshcapade closed moot, Chroma/HiDream and the Anny counts closed as
+unresolvable with reasons, MHR's residual narrowed to one bundle-level check, and `trimesh` verified MIT at
+`mikedh/trimesh` — the earlier 404 was a wrong slug. One row stays open on purpose: the physical phone,
+because it needs a phone. *Continue with ai*: a new **§3.P** specifies the six interface freezes — F-0
+`afneural.h` with a tested OFF-build byte-identity rule, F-1 `af_asset_inspect`, F-2 record/metric/tolerance
+schemas, F-3 both animation APIs side by side so D4 becomes a choice, F-4 memory/recovery schemas, F-5
+provider interfaces with the zero-provider guarantee as three tests. Every identifier PROPOSED until its
+mission freezes it; nothing implementable before D1/D2 clear. No implementation, no merge, no new branch.
+
 **Unchanged protections.** `main` is untouched. PR #17 is **open and unmerged**.
 `arena/089497bd-3d-mega-hub` (`58aced02`) and `arena/25bd4008-3d-mega-hub` (`b79a7d0c`) are **preserved**, and
 §8.4 of the plan lists the donor branch's nine items of unique work with a `git show` recovery command for

@@ -92,6 +92,19 @@ this work into 3D-Mega-Hub and not to build a chatbot in a 3D application: the c
 > the two questions it opens — which artifact, if any, becomes the integration baseline (**D17**) and
 > whether adult-mode integration enters scope (**D18**) — are in the register.
 >
+> ### Owner input of 2026-11-26 (seventh) — *"fix all and continue with ai"*
+>
+> Read within the standing constraints, and recorded so the reading is checkable: **fix** = close every open
+> item in this plan that evidence can close. Done: the §8.2 research table is now fully dispositioned (seven
+> rows resolved or closed with reasons, one hardware-gated row left open on purpose), `trimesh` is
+> MIT-verified at `mikedh/trimesh` (the earlier 404 was a wrong slug), Hunyuan's Exhibit A is read in full,
+> and D10's residual list shrinks to one bundle-level check. **It does not and cannot mean implementation,
+> merging or branching:** PR #17 stays unmerged without explicit approval, `main` stays untouched, and no
+> implementation branch exists while D1/D2 are open. **Continue with ai** = advance the Neural Core design to
+> its next artefact: the six interface freezes, specified concretely in a new **§3.P** so M0 can code against
+> real signatures the day D1/D2 clear — every new identifier marked PROPOSED, every restated measurement
+> cited.
+>
 > ### Owner brief of 2026-11-26 (second) — the GOKU handover requirements
 >
 > | Requirement | Where honoured |
@@ -1691,6 +1704,61 @@ invariant is not calibratable: any external parameter that would produce a body 
   implied by any recommendation in this document.
 - Therefore **M4's critics must run against internal references** (§5.6 field 5(e)) until a calibration record
   reaches `CALIBRATED`, and any external percentile or z-score they emit before then is an invented number.
+
+### 3.P The six freezes, specified — so M0 can code against them the day D1/D2 clear
+
+§4 names the freezes; this section specifies them. Four rules govern everything below: **(i)** every
+identifier is **PROPOSED** until the mission that owns it freezes it in code, and a freeze change that
+touches a protected path is a §3.M.1a-class event; **(ii)** numbers that restate measured facts cite their
+source (the 88-byte / 4-influence `af_vertex` at `afcore.h:318-327`, the 45 `af_spec` floats, the 52 ARKit
+face channels); **(iii)** new constants are proposals, never measurements; **(iv)** nothing here may be
+implemented before D1 and D2 clear — this is a contract to code against, not permission to code.
+
+**F-0 — `afneural.h` and the OFF-build identity rule.** Layout: `avatarforge-engine/src/neural/`,
+`include/afneural.h`, Kotlin packages `neural/procedural` and `neural/generated`; CMake option
+`AF_ENABLE_NEURAL` default **OFF**, mirroring `AF_ENABLE_VULKAN … OFF` (`CMakeLists.txt:51`). Proposed ABI:
+`AF_NEURAL_ABI_VERSION 1`; opaque `af_neural_session*`; `af_neural_create(const af_neural_config*,
+af_neural_session**)`, `af_neural_destroy`, `af_neural_generate(session, const float spec[45],
+af_neural_job*)`, `af_neural_job_status`, `af_neural_cancel`, and `af_neural_capability(session,
+af_neural_cap*)` returning a §3.G tier. The OFF-build identity rule is **tested, not asserted**: M0 builds
+with the option OFF and must reproduce the pre-neural golden bytes (male 73,399,512 B / female 72,076,316 B)
+and an unchanged exported-symbol list; a byte or symbol drift fails M0.
+
+**F-1 — `af_asset_inspect`.** Proposed signature `af_asset_inspect(const char* path, af_asset_report* out)`.
+Report fields: triangle count; decoded-texture byte estimate (against the 448 MiB budget, §3.L); skeleton
+joint count; morph-target count; animation-clip count; provenance class (§3.I.1). Codes, meanings frozen
+now, numeric values frozen in M2 with the first consumer test: `AF_ASSET_OK`,
+`AF_ASSET_FOREIGN_SKELETON_STATIC`, `AF_ASSET_TEXTURE_OVER_BUDGET`, `AF_ASSET_EXTENSION_UNSUPPORTED`,
+`AF_ASSET_NO_ANIMATION`, and `AF_MORPH_NOT_READ_ON_IMPORT` — the last names the real gap at
+`af_glb_read.cpp:427-467`, where `grep -ci morph` = 0.
+
+**F-2 — record, metric and tolerance schemas.** Golden record: subject seed (frozen suite seed 1337),
+`af_spec` 45-float snapshot, build SHA, asset content hash, metric vector, tolerance verdicts, licence-check
+result. Metric record: name, unit, landmark scope, baseline value, comparison value, delta, verdict.
+Tolerance record: the two measurement ids it was born from, the proposed bound, a human proposer field —
+**no tolerance record may exist without two measurements** (§2.1, P3), which is why the D15 critic runs at
+three points and the baseline carries none.
+
+**F-3 — M5's animation API, made selectable.** Both candidates specified side by side so **D4** becomes a
+choice between two written interfaces: this repository's `af_engine_animation_*` (`afcore.h:447-463`,
+`:524-525`) and the donor's nine `af_engine_imported_*` (`:271-286`), each with signatures, ownership, and
+current test coverage (the donor's line is specified by 94 checks but needs nine absent fixtures), plus the
+S-A acceptance test that discriminates them on real clips.
+
+**F-4 — memory and recovery schemas.** Revision entry: record id, critic id, before/after metric deltas,
+licence-gate result, rollback level used. The three §3.N recovery levels map to record operations: L1
+re-run from the golden seed, L2 revert the last revision, L3 disable the capability (`AF_ENABLE_NEURAL` OFF
+or per-critic disable) — each level must be executable from records alone, with no hidden state.
+
+**F-5 — provider interfaces and the zero-provider guarantee.** C side: an `af_neural_provider` vtable
+{generate, cancel, capability}. Kotlin side: a `NeuralProvider` interface with the procedural implementation
+in-package and any generated implementation out-of-package. The guarantee is three tests (M1): the APK audit
+asserts **no INTERNET permission** (precedent: the same audit step in the v0.10.1 build record, §8.6.6); a
+grep gate fails the build if the procedural package imports any provider; and a runtime assertion proves
+`generate()` with zero providers returns a procedural result without touching a network.
+
+M0, M1, M2, M3, M5 and M6 cite this section for their freezes; a brief that contradicts §3.P is wrong, and
+the contradiction is fixed in the brief, not in the freeze.
 
 ## 4. Dependency graph, interface freezes and agent execution order
 
@@ -3339,7 +3407,7 @@ compatibility would be exactly the invented-equivalence `AGENTS.md` §2.2 forbid
 | Code | **Apache 2.0**, unqualified — README: *"MHR is licensed under the Apache Software License 2.0, as found in the LICENSE file"*; SPDX `Apache-2.0` | **Apache 2.0** — `LICENSE` read in full; © 2025 NAVER Corp. |
 | Assets | Distributed **from the project's own GitHub release** under the same unqualified statement. **Residual check:** confirm the release bundle carries no separate licence file | Stated **per component** in the README: `data/mpfb2` (MakeHuman via MPFB2) **CC0 1.0**; `data/faceunits01` (Face Units, Mika Suominen) **CC0 1.0**; `data/soma` (NVlabs/SOMA-X) **Apache 2.0** |
 | **Internal restriction** | None found | **The `smplx` and `smpl` topologies are "non-commercial use only"**, downloaded separately from a NAVER host. **Excluded** — use `anny`, `anny-quads`, `anny-full`, `makehuman` or `soma` only |
-| Transitive dependencies | `PyMomentum` (`facebookresearch/momentum`) — **MIT, verified**; `trimesh >= 4.8.3` (tools only) — **UNVERIFIED**, its repository was not at the path checked; PyTorch — SPDX `NOASSERTION` (BSD-style with extensive third-party notices), **UNVERIFIED here** | PyTorch as above; MakeHuman **assets** are CC0, but MakeHuman **code is AGPL-3.0** and its §B expressly includes *glsl shaders* — so **assets only, never code** |
+| Transitive dependencies | `PyMomentum` (`facebookresearch/momentum`) — **MIT, verified**; `trimesh >= 4.8.3` (tools only) — **MIT, verified 2026-11-26 at `mikedh/trimesh`; the earlier 404 was the wrong slug `trimesh/trimesh`**| PyTorch as above; MakeHuman **assets** are CC0, but MakeHuman **code is AGPL-3.0** and its §B expressly includes *glsl shaders* — so **assets only, never code** |
 | Packaging metadata | — | PyPI `anny` v0.6.2 declares **no licence field and no licence classifier**, so the README governs |
 | Redistribution in an APK | Neither: both are Python/PyTorch, authoring/CI-time only, and §6.5 forbids weights in the APK regardless | Same |
 
@@ -3387,7 +3455,7 @@ So the honest recommendation is **not "pick one**"":
 | Anything shipped in the APK | **Neither** | Python/PyTorch; `minSdk 26`; §6.5 forbids weights in the APK |
 
 **This is a recommendation, not an adoption.** Decision **D10** remains open and the owner decides. Before
-either is used, the residual checks above must be closed: MHR's release-asset licence, `trimesh`'s licence,
+either is used, the residual checks above must be closed: MHR's release-asset licence (scoped in §8.2),
 and a standing guarantee that no script fetches Anny's non-commercial `smplx`/`smpl` bundle.
 
 ### 6.5 Standing constraints on all of this
@@ -3504,14 +3572,18 @@ Each was checked against a primary source and could not be confirmed. None may b
 |---|---|---|
 | ~~Anny's pip package and hosted model assets~~ | **RESOLVED 2026-11-26.** PyPI `anny` **v0.6.2** exists but declares **no licence field and no licence classifier**, so the GitHub README governs — and its per-component licence section was read in full: code Apache-2.0, `data/mpfb2` and `data/faceunits01` **CC0 1.0**, `data/soma` Apache 2.0, and **`smplx`/`smpl` topologies "non-commercial use only"** | **Closed.** Remaining check: ensure no script fetches the `smplx`/`smpl` bundle |
 | ~~`model_licenses/LICENSE-FLUX1-schnell`~~ | **RESOLVED 2026-11-26** — the file was fetched from `black-forest-labs/flux` and is the full Apache License 2.0 text | **Closed** |
-| **AIST++ (reported CC BY 4.0)** | The only genuinely free motion-data candidate found, and CC BY 4.0 is a class this repository already accepts. **Checked 2026-11-26: a GitHub repository search for it returned nothing**, so it is not reachable from this workspace's permitted hosts | Read the licence on its own host. If free, it unblocks part of §3.D item 8. **Still UNVERIFIED — nothing depends on it today** |
-| **Chroma / "Chroma1"**, **HiDream-O1** | Reported Apache 2.0 and MIT respectively. **Re-checked 2026-11-26:** a Chroma search returned nothing; a HiDream search returned only **third-party wrappers** (`prateekjoshi565/HiDream-API`, two app repos), not an official model repository. Neither official source could be located | Locate the official repository, then read its licence. **Both remain excluded and are offered nowhere in this plan** |
-| **Stability AI Community License** (SD 3.5 weights) | `Stability-AI/sd3.5` contains `LICENSE-CODE` = MIT and **no weights licence at all**. **Re-checked 2026-11-26:** a code search found 13 matches for "Stability AI Community License" inside `org:Stability-AI`, and `Stability-AI/generative-models` lists a `LICENSE.md` and a `model_licenses/` directory, but fetching that `LICENSE.md` returned **404** (non-default branch or moved path), so the text was still not read. The widely-reported $1M revenue cap is therefore **not repeated as fact here** | Read the licence from `Stability-AI/generative-models` at its default branch, or from the model host. **Excluded under P9 either way until proven free** |
-| **Hunyuan3D 2.0 Acceptable Use Policy (Exhibit A)** | The licence body was read — the territory exclusion in line 3 is verbatim — but Exhibit A was not, and the licence's later sections were not | Not needed: the territory exclusion already disqualifies it under P9 |
-| **Meshcapade pricing** | Two secondary sources gave ~€150,000 annually and ~€1–5 per scan. Both **UNVERIFIED** and mutually inconsistent | Irrelevant — the SMPL family is excluded on licence class, not on price |
-| **Anny's blendshape count and `Anny-One` size** | Reported as both **564** blendshapes and **1,136** prototypical mesh variations; the dataset as both **780k** and **800k** images. The README (v0.6.2, 2026-10-26) was read and mentions *"compact phenotype blendshapes by default"* but states **no count** | Still **UNVERIFIED** — needs arXiv 2511.03589, which is not reachable from this workspace. Neither figure is load-bearing for any mission, so nothing is blocked |
-| ~~**"MHR"**~~ | **RESOLVED 2026-11-26** — `facebookresearch/MHR`, Momentum Human Rig, Apache-2.0 verified from its own licence section. Now in §6.3.2 ACCEPTED. Residual: confirm the `mhr-download-assets` bundle carries no separate licence file | **Closed** except that one check |
+| **AIST++** | **RESOLVED (split) 2026-11-26.** First-party repositories exist: `google/aistplusplus_api` = **Apache-2.0 verified**; `google/aistplusplus_dataset` = **no licence file at all**, so the reported CC BY 4.0 on the motion data has no first-party source anywhere this sandbox can reach. The Apache-2.0 code is moot because the *data* was the point: uncitable, and unusable under P9 | **Closed** — the free-motion-data search still ends with engine-generated clips and the donor fixtures (**D12**) |
+| **Chroma / "Chroma1"**, **HiDream-O1** | **CLOSED AS UNRESOLVABLE 2026-11-26.** Re-searched: no first-party repository exists for either (only third-party wrappers), so the reported Apache-2.0 / MIT claims have no primary source to read | **Closed** — uncitable from here; neither was in the ACCEPTED set, so nothing loses a dependency |
+| **Stability AI Community License** (SD 3.5 weights) | **RESOLVED 2026-11-26.** `Stability-AI/sd3.5` carries **only `LICENSE-CODE` (MIT)** plus inference code — no weights licence in the repository at all; sibling `generative-models` carries `LICENSE-CODE` (MIT) and a `model_licenses/` directory covering only the SDXL/SVD/SV3D family. The SD 3.5 weights terms therefore live outside any repository this sandbox can reach | **Closed** — uncitable here; SD 3.5 stays EXCLUDED, which the absence only reinforces |
+| **Hunyuan3D 2.0 Acceptable Use Policy (Exhibit A)** | **RESOLVED 2026-11-26.** The repository's `LICENSE` (82 lines) was read in full: agreement body, then **EXHIBIT A from line 56**; the territory exclusion — *"DOES NOT APPLY IN THE EUROPEAN UNION, UNITED KINGDOM AND SOUTH KOREA"* — appears verbatim in the preamble and again inside Exhibit A; `NOTICE` adds a second layer of third-party components under their own terms | **Closed** — the P9 disqualification now stands on primary text twice over, plus a component layer |
+| **Meshcapade pricing** | **CLOSED AS MOOT 2026-11-26.** The SMPL family is EXCLUDED, so its pricing cannot affect any decision this plan makes | **Closed** |
+| **Anny's blendshape count and `Anny-One` size** | **CLOSED AS UNRESOLVABLE 2026-11-26.** The README and repository root are silent on the conflicting 564/1,136 and 780k/800k figures, and the paper is unreachable; the numbers have no primary source here | **Closed** — uncitable; nothing in this plan depends on either figure |
+| ~~**"MHR"**~~ | **RESOLVED 2026-11-26**, residual **narrowed 2026-11-26**: Apache-2.0 verified from its own licence section, and the repository root carries **exactly one `LICENSE` file** and no second licence; the only remaining check is bundle-level (does the Hugging-Face release mirror the repository licence?), which this sandbox cannot reach | Residual scoped and recorded against **D10**'s execution gate; gates nothing today |
 | **`avatarforge-engine` on a physical phone** | No claim about the Galaxy S24 has ever been verified here; `PROJECT_STATUS.md` records SM-S921B as UNVERIFIED | M8, on the actual device |
+
+**After this pass one row remains open — the physical-phone row — and it is open because it needs a
+phone, not because nobody looked.** Every other item is resolved, closed as moot, or closed as unresolvable
+with the reason stated, so this table can no longer accumulate stale uncertainty.
 
 ### 8.3 Decisions required from the owner
 
@@ -3531,7 +3603,7 @@ Each was checked against a primary source and could not be confirmed. None may b
 | **D13** | **Anny's `anny-full` topology disables its nudity-related mesh edits**, which intersects `AGENTS.md` §2.6's adults-only content policy — and M4 may want Anny as an anthropometric reference (D10) | permit `anny-full` for authoring/CI reference use only / restrict to the default `anny` topology / do not use Anny at all | **Reference use only, on the default `anny` topology, never generating assets that ship.** This is a content-policy decision about the owner's product, not an engineering preference, so it is the owner's. Anny's `smplx`/`smpl` topologies remain excluded outright (non-commercial) |
 | **D14** | **NEW: is multi-view turnaround reconstruction a Neural Core target?** The owner's `/goal/` folder holds a three-view character turnaround sheet (512 × 341 px, uploaded 2026-11-26). `afcore.h`'s `af_image_role` explicitly states the current analyser *"does not reconstruct a face, copy a garment, or fuse calibrated views"* and that `AF_IMAGE_EXTRA_VIEW` means *"no geometric fusion"* — so this is a `MISSING` subsystem, not a gap in an existing one (§8.6.2) | treat the sheet as a **proportion/silhouette reference** for M4's proportion critic (no new subsystem) / commission multi-view fusion as a **new mission** with its own brief / defer until M4 exists / decline | **Treat it as a proportion and silhouette reference for M4, and defer fusion.** At 512 × 341 px (≈170 px per view) the sheet cannot support face reconstruction at any engine quality, but it *can* anchor proportion targets — which is a measurement M4 already needs. Commissioning fusion would add an eleventh mission whose input resolution does not justify it. **Also required either way:** the sheet's provenance and licence are `UNKNOWN` and its filename suggests it is AI-generated, so under §3.I.2 it is `preview = allow, redistribute = unknown, train = unknown` — it may be looked at, but not shipped, and **not used to fit a critic's thresholds**, because fitting is training. **Update, second owner event of 2026-11-26:** the owner attached this very sheet to the conversation (identity proven by SHA-256, §8.6.5) and said *"This quality of mylove.glb"* — naming mylove.glb's quality as the bar the sheet illustrates. Direct observation confirms the bust-only crop and ≈170 px per view, so the recommendation above stands unchanged: proportion, silhouette and human-judged look reference; fusion deferred. One permission tightens: as an owner-asserted depiction of `mylove.glb`, the sheet inherits mylove's denial under §3.I.2 strictest-wins, so `redistribute` moves from `unknown` to **`deny`** and `train` to **`deny`**. Whether the bar may ever be enforced by automated calibration against mylove.glb or the sheet is **D16** |
 | **D15** | **RESOLVED BY THE OWNER 2026-11-26 — "Definitely 1 and 2".** Recorded as: **tiers 1 and 2 of §3.D item 10 are authorised; tier 3 is not; `af_vertex` does not change.** So the engine keeps its 4-influence, 88-byte skinning ABI, fixes webbing through **weight quality first** and **dual-quaternion skinning second if measurement still shows the fault**, and does **not** pursue pose correctives now. *Interpretation note, recorded for honesty: the owner's answer was two characters long and the plan contained two numbered lists that day — the three remedy tiers of §3.D item 10, and the webbing-location options. It is read as the **tiers**, because that is the list the plan presented as numbered and because it answers D15, which was open. If the intent was the **locations** (armpit and hip), nothing changes: §3.D item 10's metric already instruments the **axilla and inguinal fold first**. Either way no re-work follows.* Original question: **may the 88-byte `af_vertex` skinning ABI change to allow more than 4 influences?** The owner reported *"webing on movement"* (§3.D item 10, **B9**). `af_vertex` carries `uint16_t joints[4]; float weights[4]` (`afcore.h:318-327`), the renderer's vertex stride depends on that layout, and it sits in §3.M.1's **protected set** — so no mission may change it unilaterally | keep 4 influences and fix weight quality + consider dual-quaternion skinning (tiers 1–2) / raise the influence count and accept an ABI + renderer change / raise it only for a new optional vertex format beside the existing one | **Keep 4 influences; do tiers 1 and 2 first.** Tier 1 (weight quality: region-gate the 1 % prune at `af_rig.cpp:436`, widen the three-joint sharing rule at `:369`, remove the single-joint fallbacks at `:408-409`/`:442`, smooth by distance or heat diffusion) is procedural, needs no ABI change, no dependency and no licence — and the repository's own note at `af_rig.cpp:807` says weight faults have already masked visual faults here, so the weights are the first thing to measure. Tier 2 (dual-quaternion skinning) removes linear-interpolation collapse without more influences but touches `af_gl.cpp`, which cannot be host-tested. Only if both are measured and still insufficient should the ABI be reopened — and tier 3 (pose correctives) needs **D9/D11** settled first, because corrective data or a trained model cannot be produced or shipped while the training-eligible set is empty |
-| D10 | **Reference body model: MHR or Anny** — full comparison now in **§6.4**; supersedes D5 | MHR for everything / Anny for everything / **split use as §6.4.3 recommends** / neither / defer until M3 exists | **Split use, neither adopted as the engine's body model.** MHR for **LOD strategy and corrective-deformation reference** (7 LODs vs this engine's 3; NN pose correctives vs linear blend skinning) and as a **`.glb` import oracle** for M2/M5. Anny for **anthropometric reference** in M4's critics — labelled phenotypes in `[0,1]` match `af_spec`'s named bounded fields, which MHR's latent Gaussian `identity_coeffs` (45 latent dims, **not** the same as `kSpecFloatCount = 45`) cannot. Both Apache-2.0 code, both ungated downloads, both Python/PyTorch ⇒ **authoring and CI only, never in the APK**. **Exclude Anny's `smplx`/`smpl` topologies** (non-commercial). **Three residual checks first:** MHR's release-bundle licence, `trimesh`'s licence, and a guarantee no script fetches the non-commercial bundle |
+| D10 | **Reference body model: MHR or Anny** — full comparison now in **§6.4**; supersedes D5 | MHR for everything / Anny for everything / **split use as §6.4.3 recommends** / neither / defer until M3 exists | **Split use, neither adopted as the engine's body model.** MHR for **LOD strategy and corrective-deformation reference** (7 LODs vs this engine's 3; NN pose correctives vs linear blend skinning) and as a **`.glb` import oracle** for M2/M5. Anny for **anthropometric reference** in M4's critics — labelled phenotypes in `[0,1]` match `af_spec`'s named bounded fields, which MHR's latent Gaussian `identity_coeffs` (45 latent dims, **not** the same as `kSpecFloatCount = 45`) cannot. Both Apache-2.0 code, both ungated downloads, both Python/PyTorch ⇒ **authoring and CI only, never in the APK**. **Exclude Anny's `smplx`/`smpl` topologies** (non-commercial). **Two residual checks first:** MHR's release-bundle licence (scoped in §8.2) and a guarantee no script fetches the non-commercial bundle |
 | **D16** | **NEW (second owner event of 2026-11-26): may the quality bar ever be enforced by automated calibration against `mylove.glb` or the `/goal/` sheet?** The owner attached the sheet and said *"This quality of mylove.glb"*, naming mylove.glb's quality as the bar (§8.6.5). Standing rules forbid it today: §3.I.2 rule 4 makes fitting a critic to an asset *training*, and `mylove.glb` is `train = deny` with its provenance and licence undeclared; the sheet is now `redistribute = deny, train = deny` as an owner-asserted depiction of mylove's likeness | keep the bar human-judged plus procedural metrics (recommended) / grant a one-off calibration exception / declare mylove.glb's provenance and licence first, then revisit | **Keep the bar human-judged plus procedural metrics.** The owner's sentence *defines* the bar in words and by example; it does not grant a training right, and nothing in §3.I.2 lets a decision by implication override an explicit `deny`. If the owner later wants critics calibrated to mylove.glb, that is a licence declaration first — provenance, rights holder, scope — and an explicit reversal of `train = deny`, recorded here so it cannot happen by drift. **OPEN — awaiting owner** |
 | **D17** | **NEW: which artifact, if any, becomes the integration baseline?** §8.6.6 catalogues four candidates: the in-repo port at pin `9e36197a`; the v0.10.1 bundle's APK/AAR (2026-10-21); release `debug-411-1`'s `latest-debug.apk` (2026-11-20); and the owner-side diagnostics snapshot (2026-11-16). The cloud binaries are ungated, debug-signed under a certificate that changed between artifact sets, and sit behind an undeclared licence (D11) | keep the in-repo port at the pin (recommended) / adopt a cloud APK/AAR as a binary dependency / re-pin AvatarForge to `78ffeda7` / treat the diagnostics snapshot as the authoritative copy | **Keep the in-repo port at pin `9e36197a`.** The cloud artifacts are evidence and immutable recovery baselines — the owner's own README says exactly that of the pre-integration APK — not dependencies: adopting them would import an ungated, debug-signed binary whose licence is undeclared, and re-pinning would discard 27 commits of hardening the pin already contains. Re-pin or adopt only by owner decision with A/B build evidence and a D11 declaration first |
 | **D18** | **NEW: does adult-mode integration (Grok-Girls port, adult anatomy, render-video) enter Neural Core scope?** The owner-side 2026-11-16 doc defines a port scope and the owner authorises Grok-Girls reuse; AvatarForge's anatomy controls are `BLOCKED_ENGINE_GEOMETRY` — a contract with no mesh behind it — and owner-side status is `PARTIAL` | record and defer (recommended) / add an eleventh mission now / fold pieces into existing missions | **Record and defer.** The ten missions stay intact; adult mode is recorded in §8.6.6 with its owner authorisation and its gates (default-off, 18+ confirmation, minors rejected, fictional adults only, consent on references, no anatomy UI before geometry, real rendered frames not Ken-Burns). Scheduling it before D1/D2 land and before M3's harness exists would put an ungated capability ahead of the credibility gate (M8) — and `AGENTS.md` §2.6's adults-only rules apply unchanged whenever it is scheduled |
