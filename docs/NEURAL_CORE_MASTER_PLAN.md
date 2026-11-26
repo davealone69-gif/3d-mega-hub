@@ -36,6 +36,20 @@ this work into 3D-Mega-Hub and not to build a chatbot in a 3D application: the c
 >
 > **No implementation, destructive Git operation, or merge has been performed under this document.**
 >
+> ### Owner input of 2026-11-26 (third) — four Dropbox links and one named fault
+>
+> | Input | Where honoured |
+> |---|---|
+> | Four Dropbox links: the `ink` authoring project, `/3d/` device captures, `/3d real/` reference models, and a `/goal/` three-view turnaround sheet | **§8.6** — each resolved and identified by `content_hash`; links 1 and 3 were already documented in depth by `docs/OWNER_MODELS_2026-11-15.md` and `docs/QUALITY_REFERENCE_ink_glb.md`; **nothing was downloaded into this repository** |
+> | *"Current faults notice **webing on movement**"* | **§3.D item 10**, **B9**, **D15**; measured by a new fourth **M4** critic, remedied in new **M5 stage S-F**. Diagnosed from source as a weight-quality and skinning-model defect, **not** a rendering or LOD one. `PARTIAL` — owner-reported, not measured |
+> | *"this is details in want on **mylove.glb**"* | **§8.6.3** — `mylove.glb` is an identity/detail target for **measurement only**: already recorded at 9,287,272 B with both hashes, private, `redistribute = deny`, `train = deny`, never committed, and no critic may be fitted to it |
+> | *"**ink.glb** … close to quality wanted"* | **§8.6.3** — upgrades the repository's existing quality reference from *researched recommendation* to **owner-confirmed target**, while its licence position is unchanged: Daz Genesis 8 Female content, so `redistribute = deny` and `train = deny` |
+>
+> **Honest limit on all of the above:** the images could not be retrieved from this workspace
+> (`dl.dropboxusercontent.com` is outside the permitted host set), so **no measurement in this plan comes from
+> them**. To close **B9** and **B2**, attach the nine captures to the conversation or have an M8 agent
+> reproduce the session on hardware it controls.
+>
 > ### Owner brief of 2026-11-26 (second) — the GOKU handover requirements
 >
 > | Requirement | Where honoured |
@@ -681,6 +695,61 @@ imported playback against the generating engine to **0.2 mm**.
    improvement follows from M4's critics and M6's approved constants. If the brief's own deformation
    requirements are broader — corrective blendshapes, cloth or muscle simulation, penetration resolution —
    they are **not designed here** and need re-issuing.
+10. **Webbing on movement — the owner's named deformation defect, 2026-11-26.** *This partially re-issues
+   section D: the owner has now named one concrete deformation fault.* Reported as **"current faults notice
+   webing on movement"**, with the evidence being the nine device captures in the owner's Dropbox `/3d/`
+   folder (§8.6.1). **Status: `PARTIAL` — owner-reported, and not measured by this plan**, because the images
+   cannot be retrieved from this workspace (§8.6's limitation). What follows is a diagnosis from the engine's
+   own source, which *is* verifiable here.
+
+   **Why this pipeline webs at concave joints — read from the code, not inferred:**
+
+   | Evidence | Location | Consequence |
+   |---|---|---|
+   | A vertex carries **4 joints + 4 weights**: `uint16_t joints[4]; float weights[4]` inside the byte-exact **88-byte** `af_vertex` | `afcore.h:318-327` | A hard **4-influence ceiling**, and it is an ABI contract the renderer's vertex stride depends on (§3.M.1 protected) |
+   | A vertex *"may share its weight only with bones **within three joints** of that one"* | `af_rig.cpp:369` | Weight sharing is topologically restricted, so a concave region between two chains can be denied the influences it needs |
+   | Influences contributing **< 1 %** are zeroed, then survivors renormalised | `af_rig.cpp:436-439` | The prune removes exactly the small third and fourth influences that keep an armpit or hip open |
+   | Two **single-joint, weight-1.0 fallbacks** | `af_rig.cpp:408-409` and `:442` | A vertex that falls back is rigidly bound to one bone — the surface there does not deform at all, which reads as webbing or a crease |
+   | `Rig::skin` is **pure linear blend skinning**; `Rig::deform` adds only the **52 ARKit face** blendshapes | `af_rig.cpp:449`, `:727` | **There are no body pose correctives anywhere in the engine.** LBS linearly interpolates rotations, which collapses concave surfaces inward as a joint closes |
+   | *"the skin weights were wrong too (see `computeWeights`) and hid it"* | `af_rig.cpp:807` | The repository already records weight faults **masking** visual faults — precedent for measuring weights and appearance together |
+   | *"joint-collapse/self-intersection observations"* are listed as something to check, **with no metric defined** | `docs/AVATAR_PHOTO_OVERLAY_QUALITY_TEST_BACKLOG.md:63` | The project anticipated this defect class and never instrumented it. That is the gap |
+
+   **The defect, stated precisely.** Webbing at the axilla, inguinal fold, inner elbow, knuckles and
+   neck/clavicle is the expected behaviour of 4-influence LBS whose small influences are pruned at 1 % and
+   whose fallback binds a vertex to a single bone, with no pose-dependent correction. It is a **weight-quality
+   and skinning-model** defect, not a rendering or LOD defect — and it is therefore **not** M7's, and **not**
+   fixed by the texture work.
+
+   **Three remedy tiers, in cost order, each gated by the measurement below:**
+
+   1. **Weight quality — procedural, no ABI change, no licence question.** Soften or region-gate the 1 %
+      prune, widen the three-joint sharing rule at concave landmarks, remove the single-joint fallback where a
+      second influence exists within tolerance, and smooth weights by distance or heat diffusion. Stays inside
+      4 influences, so `af_vertex` and the renderer are untouched. **Try this first: it is the cheapest tier
+      and the only one with no external dependency.**
+   2. **Dual-quaternion skinning.** Removes linear-interpolation collapse (including the candy-wrapper case)
+      **without** needing more influences, but changes `Rig::skin` *and* the GPU skinning path in `af_gl.cpp`,
+      which compiles only under `if(ANDROID)` — so it cannot be validated by host `ctest` and needs device
+      verification (M7's constraint, §5.9 field 5(d)).
+   3. **Pose correctives** — delta-mush-style sculpted deltas, or learned correctives. This is the industry
+      answer, and it is precisely what **MHR** offers (*"non-linear pose correctives = neural-network-based
+      pose-dependent deformations"*, §6.4.1). It requires per-pose delta **data** or a trained **model**, so it
+      collides with **D9/D11** (no declared licence ⇒ nothing may be trained on, §3.I.2) and with §3.K's
+      *"no model weights ever load into the app process"* if learned. Sculpted deltas authored by the owner are
+      the licence-clean variant.
+
+   **The metric that decides between them — measurable on the host, from geometry alone.** For named concave
+   landmark pairs (axilla, inguinal, inner elbow, knuckle, neck/clavicle), pose the mesh through
+   `af_engine_evaluate_animation` at a sweep of joint angles and report: *(i)* minimum `Bvh::signedDistance`
+   (`af_mesh.h:612`) between the opposing surfaces — webbing shows as this distance falling toward and through
+   zero; *(ii)* self-intersection count in the joint region; *(iii)* region surface-area change against rest;
+   *(iv)* the influence count actually used per vertex in that region, and how many were pruned by
+   `af_rig.cpp:436`. All four are procedural, deterministic and host-runnable. **Tolerances must be
+   established by measurement, not invented** (§2.1, P3) — the first run produces the baseline, and only a
+   later run may call something a regression.
+
+   **Assignment.** Measurement → **M4**, as a fourth critic (§5.6 field 5(i)). Remedy → **M5 stage S-F**
+   (§5.7 field 5). The ABI question → **D15**. The defect itself → **B9**.
 
 ### 3.E Evaluation Intelligence
 
@@ -2464,7 +2533,22 @@ depends on another document having been read.
 > **negative control** that deliberately distorts one landmark and requires the proportion critic to name it.
 > A gate never shown to fail is not a gate.
 >
-> **(i) No new dependency, dataset, model or weight** enters the repository or the APK in this mission.
+> **(i) The deformation critic — added 2026-11-26 after the owner reported *"webing on movement"* (§3.D
+> item 10, B9).** This is the fourth critic, and it is the one that turns a reported visual fault into a
+> number. Implement exactly the metric specified in §3.D item 10: for the named concave landmark pairs
+> (axilla, inguinal, inner elbow, knuckle, neck/clavicle), pose the mesh with `af_engine_evaluate_animation`
+> across a sweep of joint angles and emit **(1)** the minimum `Bvh::signedDistance` between opposing surfaces
+> (`af_mesh.h:612`), **(2)** the self-intersection count in the joint region, **(3)** the region's
+> surface-area change against rest, and **(4)** the influence count actually used per vertex in that region
+> **plus how many were pruned** by `af_rig.cpp:436`. Read `Rig::computeWeights` (`af_rig.cpp:282-447`) before
+> writing it — in particular the three-joint sharing rule at `:369`, the 1 % prune at `:436-439`, and the two
+> single-joint weight-1.0 fallbacks at `:408-409` and `:442`, because measurement **(4)** exists to show
+> whether those code paths are firing in the regions that web. **The first run is a baseline, not a verdict**:
+> it must be recorded with no tolerance asserted, and a tolerance may only be set from a second, measured
+> comparison (§2.1, P3 — no invented numbers). Do **not** attempt a fix in this mission; the remedy is M5
+> stage **S-F**, and a critic that also fixes cannot tell you whether the fix worked.
+>
+> **(j) No new dependency, dataset, model or weight** enters the repository or the APK in this mission.
 >
 > **6. Acceptance criteria.** Three critics (proportions, face, skin) each emitting **≥5 measurements** with
 > units into an `EvaluationRecord`. No adjectives in a measurement. The reference population is **named and
@@ -2476,6 +2560,11 @@ depends on another document having been read.
 > model units**; a generated body is **1,148,034 triangles** where a Daz Genesis 8 body skin is **27,292**;
 > textures are **one shared 2048² atlas** against **four 4096² maps**. Generated bytes must not change
 > unless a golden-record diff is approved by the owner. The adults-only invariant still passes.
+> **Added 2026-11-26, and the three-critic minimum above is unchanged:** a **fourth critic (deformation)**
+> emits the four §3.D item 10 measurements for each named concave landmark pair, as a **baseline record with
+> no tolerance asserted**, so that *"webing on movement"* (**B9**) becomes measurable before anyone attempts
+> to fix it. Its output must include the pruned-influence count, because that is the evidence for or against
+> tier 1 of the remedy (**D15**).
 >
 > **7. Required tests and build evidence.** A baseline `EvaluationRecord` for the deterministic seed with
 > all critic measurements populated, quoted verbatim. `ctest` green including the new critic tests. CI
@@ -2505,9 +2594,10 @@ depends on another document having been read.
 
 ### 5.7 M5 — Animation Intelligence
 
-> **1. Exact objective.** Third-party skeleton adoption, foot-contact and slide detection, IK (§3.D), **and
-> morph-target application on import** (owner instruction 6, 2026-11-26 — see acceptance criterion **(f)**) —
-> **beginning with a written API decision, not code.** Publish freeze **F-3**.
+> **1. Exact objective.** Third-party skeleton adoption, foot-contact and slide detection, IK (§3.D),
+> **morph-target application on import** (owner instruction 6, 2026-11-26 — see acceptance criterion **(f)**),
+> **and deformation quality: the remedy for the owner-reported *"webing on movement"* fault** (§3.D item 10,
+> **B9**, stage **S-F**) — **beginning with a written API decision, not code.** Publish freeze **F-3**.
 >
 > **2. Repository and correct working branch.** As §5.0. The decision document and the implementation may be one PR, but the
 > decision must be committed and reviewed **before** implementation starts.
@@ -2542,7 +2632,13 @@ depends on another document having been read.
 > | **S-D** | **Morph targets on import** — deliverable **(f)** | S-A and S-C | `grep -ci morph af_glb_read.cpp` returns **non-zero** (it is **0** today); sparse morph targets read and drivable; `afcore.h:413-414` amended to match reality; host test round-tripping a generated avatar's blendshapes export → import → evaluate, with a stated tolerance. Reuse the sparse-accessor precedent already at `af_glb_read.cpp:427-467` |
 > | **S-E** | **Facial animation on imported faces** | **S-D only** — never before | The 52 ARKit channels driven on an imported face through its morph targets, via `FaceAnimation.kt`; per-channel displacement magnitude measured; **no channel silently zero** |
 >
+> | **S-F** | **Deformation quality — the remedy for *"webing on movement"*** (**B9**, §3.D item 10) | **M4's deformation critic has produced a baseline record** — a fix with no baseline cannot be shown to work | Tier 1 only unless **D15** is resolved: weight-quality changes inside the existing 4 influences (region-gate the 1 % prune at `af_rig.cpp:436`, widen the three-joint sharing rule at `:369`, remove the single-joint fallbacks at `:408-409`/`:442`, smooth by distance or heat diffusion). Then the critic re-runs and the **delta is reported per landmark pair**. Tier 2 (dual-quaternion skinning) additionally needs device verification because it touches `af_gl.cpp`. Tier 3 (pose correctives) is **`BLOCKED` on D9 and D11** |
+>
 > **Rules across the stages.** *(i)* S-A → S-B → S-C is strictly ordered; S-D needs S-A and S-C; S-E needs S-D.
+> **S-F is independent of S-D and S-E** — it needs only M4's baseline — and it may therefore start as soon as
+> that baseline exists, in parallel with the morph-target work. *(i-b)* **S-F must not change `af_vertex`**
+> (`afcore.h:318-327`, 88 bytes, §3.M.1 protected) unless **D15** says so; tier 1 exists precisely to improve
+> deformation *without* an ABI change.
 > *(ii)* **Learned motion generation is not a stage** — it is `BLOCKED` on licence (§3.D item 8) and must be
 > reported as blocked, not deferred silently. *(iii)* Do not implement both animation APIs (§7 item 3); S0
 > exists to prevent that. *(iv)* The donor branch is read-only reference material: recover its specification
@@ -2582,6 +2678,14 @@ depends on another document having been read.
 > them drivable, update `afcore.h`'s import contract to match reality, and add a host test that round-trips a
 > generated avatar's blendshapes through export → import → evaluate. **This is an addition to M5; acceptance
 > criteria (a)–(e) are unchanged** (owner instruction 8).
+> *(g) Deformation quality — stage S-F, added 2026-11-26 after the owner reported **"webing on movement"**
+> (§3.D item 10, **B9**).* M4's deformation critic must show a **measured improvement** in the concave
+> landmark pairs it baselined — minimum `Bvh::signedDistance`, self-intersection count, region area change and
+> pruned-influence count, each reported **per landmark pair** with the sweep angles used. **`af_vertex` must
+> not change** (88 bytes, §3.M.1 protected) unless **D15** is resolved in favour of an ABI change; tier 1
+> exists to improve deformation without one. No pose-corrective data or learned model may be introduced here —
+> that is tier 3 and is **`BLOCKED` on D9 and D11**. If tier 1 produces no measured improvement, the honest
+> outcome is a report saying so with the numbers, **not** a claim that webbing is fixed.
 >
 > **7. Required tests and build evidence.** The decision document, committed. For **(f)**: the new
 > export → import → evaluate morph round-trip test passing on the host, with its measured tolerance quoted,
@@ -3156,7 +3260,18 @@ incomplete: it had not read how each model is *parameterised*, which is the prop
   either candidate**: every bridge requires a committed calibration record at status `CALIBRATED` (§3.O.2),
   and until one exists M4's critics must run on `ENGINE_INTERNAL` references (§3.O.3).
 
-So the honest recommendation is **not "pick one"**:
+**One owner-reported fault makes the capability gap concrete.** On 2026-11-26 the owner reported *"webing on
+movement"* in the engine's own output (**B9**, §3.D item 10). Diagnosed from source, it is a weight-quality
+and skinning-model defect: a 4-influence ceiling in the 88-byte `af_vertex`, a 1 % influence prune
+(`af_rig.cpp:436`), single-joint fallbacks (`:408-409`, `:442`), pure LBS (`Rig::skin`, `:449`) and **no body
+pose correctives anywhere in the engine**. Non-linear pose-dependent correction is *the* standard remedy for
+exactly this artifact class — and it is the capability MHR has that this engine lacks. **That strengthens
+MHR's case as a *reference* for tier 3 and does not adopt it**: tier 3 needs corrective **data** or a trained
+**model**, both of which are `BLOCKED` on **D9/D11** because the training-eligible set is empty (§3.I.2), and
+MHR's correctives are neural, which §3.K bars from the app process. Tiers 1 and 2 — weight quality and
+dual-quaternion skinning — are procedural, licence-clean and must be measured first (**D15**).
+
+So the honest recommendation is **not "pick one**"":
 
 | Use | Candidate | Why |
 |---|---|---|
@@ -3270,7 +3385,8 @@ owner can make, and each names the mission it blocks.
 | B5 | **Morph targets are not read on import at all** — **VERIFIED 2026-11-26**: zero occurrences of `morph` in `af_glb_read.cpp`, while `afcore.h:390` confirms the exporter writes them and `afcore.h:413-414` documents the import side as unsupported; the two directions are asymmetric. No scanned or generated face can be driven until this changes  | Facial animation on imported models (§3.C item 3, §3.D item 6); **part of B3's import capability** | **ASSIGNED TO M5** by owner instruction 6, 2026-11-26 — see §5.7 deliverable (f). M5 is the correct owner because it already owns the imported-asset animation capability and its own exclusion previously deferred this; M2 is *not* the owner because M2 inspects and reports, and its exclusions forbid implementing morph application. M2's duty is unchanged: report `AF_MORPH_NOT_READ_ON_IMPORT`, never `supported` |
 | B6 | **PR #16 (`arena/33f12efd` → `main`) is a second competing path into `main`** alongside PR #9. **VERIFIED 2026-11-26: both open, both non-draft.** Full open-PR set: #17 (this line → trunk, non-draft, MERGEABLE), #16, #15 (draft), #14, #12 (superseded, left open), #9. They cannot both be right | The trunk's future, and therefore every mission's base | Owner reconciliation (**D2**). Neural Core work must not start on a branch whose base is unsettled |
 | B7 | **PR #17 must land before any mission branches.** **VERIFIED 2026-11-26: still open, non-draft, `MERGEABLE`, head `ba38d996074c2f8a9981ebbaeb0fee3e3cd4af5e`.** Every mission cuts from `integration/avatarforge-renderer-port`; branching earlier re-creates the stale-base problem in one step | Wave 0, therefore all of it | Merge PR #17 **with a merge commit, not a squash** (**D1**) |
-| B8 | **The brief's section D ended at the single word "Deformation."** Deformation is designed here as measurement (§3.D item 9, §3.E.2). If the owner intended corrective blendshapes, cloth or muscle simulation, or penetration resolution, **that is not designed in this document** | M4, M5 scope | Re-issue the remainder of section D |
+| B8 | **The brief's section D ended at the single word "Deformation."** Deformation is designed here as measurement (§3.D item 9, §3.E.2). If the owner intended corrective blendshapes, cloth or muscle simulation, or penetration resolution, **that is not designed in this document**. **PARTIALLY RE-ISSUED 2026-11-26:** the owner has now named one concrete deformation fault — *"webing on movement"* — which is designed as §3.D item 10 and tracked as **B9**. The remainder of section D (cloth, muscle simulation, penetration resolution) is still not issued | M4, M5 scope | Re-issue the remainder of section D |
+| B9 | **"Webbing on movement" — the owner's named deformation defect, reported 2026-11-26** with nine device captures in Dropbox `/3d/` as evidence (§8.6.1). Diagnosed from source as a **weight-quality and skinning-model** fault, not a rendering one: a 4-influence ceiling in the 88-byte `af_vertex` (`afcore.h:318-327`), weight sharing limited to bones within three joints (`af_rig.cpp:369`), influences under **1 %** pruned (`:436-439`), two single-joint weight-1.0 fallbacks (`:408-409`, `:442`), pure LBS in `Rig::skin` (`:449`) and **no body pose correctives anywhere** (§3.D item 10). `PARTIAL` — owner-reported and source-diagnosed, **not measured**, because the captures are unreadable from this workspace | M4 (needs the critic), M5 S-F (the remedy), and the credibility of any "photoreal" claim | **(a)** The owner attaches the nine captures to the conversation, or an M8 agent reproduces the session on hardware it controls, so the fault is *seen* and a baseline measured. **(b)** M4 builds the four-part host metric (min `signedDistance`, self-intersection count, region area change, influences used vs pruned). **(c)** Then tier 1 of §3.D item 10 — weight quality — is attempted before any ABI change (**D15**) or any corrective data (**D9/D11**) |
 
 ### 8.2 Unverified research — do not rely on these yet
 
@@ -3306,6 +3422,8 @@ Each was checked against a primary source and could not be confirmed. None may b
 | **D11** | **NEW, and prior to D9: the licence of the AvatarForge engine port itself.** `docs/AVATARFORGE_INTEGRATION.md` records *"No repository-level `LICENSE` file was present at the pinned AvatarForge branch"* (donor `work/android-engine-dev` @ `9e36197ace3b18faa6c566d93f8fce89b185c45d`) and that copying between the owner's own repositories *"does not establish third-party redistribution rights"*. `docs/MASTER_BLUEPRINT.md`: *"A dependency's licence does not automatically license the host app or generated assets."* | declare a project licence for `:avatarforge-engine` / keep the app internal-only and never distribute / obtain clarification from the donor repository's owner (the owner) | **Declare it before D9, and before any external distribution of the app.** This is the owner's own repository, so it may be a one-line decision — but it must be *made*, because every downstream licence statement (D9, §3.I.2's `redistribute`, M6's training eligibility, M9's dataset gate) inherits it. Until then the honest status of the engine's licence is `MISSING`, not "presumably fine" |
 | **D12** | **The donor's five animation fixtures** (~596 KB, Khronos `CesiumMan` and `Fox`, CC BY 4.0) as M5 test assets. The donor's own `THIRD_PARTY_NOTICES.md` records that they *"ARE packaged into the distributed APK"* and that `Fox.glb` has *"two separate rights holders with two separate licences on one file"* | vendor them with attribution shipped in the APK / use only in host tests, never in the APK / generate equivalent fixtures procedurally | **Host tests only; never in the APK.** CC BY 4.0 permits redistribution *with attribution*, so `redistribute` could be `allow` only if the attribution actually ships — and `Fox.glb`'s second rights holder makes that a two-licence obligation for one file (§3.I.2 rule 6). M5's stages S-A and S-C need fixtures either way; procedural ones avoid the question entirely |
 | **D13** | **Anny's `anny-full` topology disables its nudity-related mesh edits**, which intersects `AGENTS.md` §2.6's adults-only content policy — and M4 may want Anny as an anthropometric reference (D10) | permit `anny-full` for authoring/CI reference use only / restrict to the default `anny` topology / do not use Anny at all | **Reference use only, on the default `anny` topology, never generating assets that ship.** This is a content-policy decision about the owner's product, not an engineering preference, so it is the owner's. Anny's `smplx`/`smpl` topologies remain excluded outright (non-commercial) |
+| **D14** | **NEW: is multi-view turnaround reconstruction a Neural Core target?** The owner's `/goal/` folder holds a three-view character turnaround sheet (512 × 341 px, uploaded 2026-11-26). `afcore.h`'s `af_image_role` explicitly states the current analyser *"does not reconstruct a face, copy a garment, or fuse calibrated views"* and that `AF_IMAGE_EXTRA_VIEW` means *"no geometric fusion"* — so this is a `MISSING` subsystem, not a gap in an existing one (§8.6.2) | treat the sheet as a **proportion/silhouette reference** for M4's proportion critic (no new subsystem) / commission multi-view fusion as a **new mission** with its own brief / defer until M4 exists / decline | **Treat it as a proportion and silhouette reference for M4, and defer fusion.** At 512 × 341 px (≈170 px per view) the sheet cannot support face reconstruction at any engine quality, but it *can* anchor proportion targets — which is a measurement M4 already needs. Commissioning fusion would add an eleventh mission whose input resolution does not justify it. **Also required either way:** the sheet's provenance and licence are `UNKNOWN` and its filename suggests it is AI-generated, so under §3.I.2 it is `preview = allow, redistribute = unknown, train = unknown` — it may be looked at, but not shipped, and **not used to fit a critic's thresholds**, because fitting is training |
+| **D15** | **NEW: may the 88-byte `af_vertex` skinning ABI change to allow more than 4 influences?** The owner reported *"webing on movement"* (§3.D item 10, **B9**). `af_vertex` carries `uint16_t joints[4]; float weights[4]` (`afcore.h:318-327`), the renderer's vertex stride depends on that layout, and it sits in §3.M.1's **protected set** — so no mission may change it unilaterally | keep 4 influences and fix weight quality + consider dual-quaternion skinning (tiers 1–2) / raise the influence count and accept an ABI + renderer change / raise it only for a new optional vertex format beside the existing one | **Keep 4 influences; do tiers 1 and 2 first.** Tier 1 (weight quality: region-gate the 1 % prune at `af_rig.cpp:436`, widen the three-joint sharing rule at `:369`, remove the single-joint fallbacks at `:408-409`/`:442`, smooth by distance or heat diffusion) is procedural, needs no ABI change, no dependency and no licence — and the repository's own note at `af_rig.cpp:807` says weight faults have already masked visual faults here, so the weights are the first thing to measure. Tier 2 (dual-quaternion skinning) removes linear-interpolation collapse without more influences but touches `af_gl.cpp`, which cannot be host-tested. Only if both are measured and still insufficient should the ABI be reopened — and tier 3 (pose correctives) needs **D9/D11** settled first, because corrective data or a trained model cannot be produced or shipped while the training-eligible set is empty |
 | D10 | **Reference body model: MHR or Anny** — full comparison now in **§6.4**; supersedes D5 | MHR for everything / Anny for everything / **split use as §6.4.3 recommends** / neither / defer until M3 exists | **Split use, neither adopted as the engine's body model.** MHR for **LOD strategy and corrective-deformation reference** (7 LODs vs this engine's 3; NN pose correctives vs linear blend skinning) and as a **`.glb` import oracle** for M2/M5. Anny for **anthropometric reference** in M4's critics — labelled phenotypes in `[0,1]` match `af_spec`'s named bounded fields, which MHR's latent Gaussian `identity_coeffs` (45 latent dims, **not** the same as `kSpecFloatCount = 45`) cannot. Both Apache-2.0 code, both ungated downloads, both Python/PyTorch ⇒ **authoring and CI only, never in the APK**. **Exclude Anny's `smplx`/`smpl` topologies** (non-commercial). **Three residual checks first:** MHR's release-bundle licence, `trimesh`'s licence, and a guarantee no script fetches the non-commercial bundle |
 
 ### 8.4 Standing prohibition: preserve `arena/089497bd-3d-mega-hub` and all unique work
@@ -3354,7 +3472,117 @@ So that its absence is not mistaken for an oversight:
 - **Anything outside `avatarforge-engine/`.** `:app` is touched only where a mission says so, and only to
   consume an engine interface. No 3D-Mega-Hub merge, no Cue-Next change, no unrelated objective in any PR.
 
-### 8.6 Verification ledger — what must be verified before each mission may begin
+### 8.6 Owner-supplied material checked 2026-11-26 — four Dropbox links
+
+The owner supplied four links. Each was resolved through the Dropbox connector and its metadata read.
+**Nothing was downloaded into this repository and nothing here may ever be committed or packed into an APK**
+(`AGENTS.md` rule 5; `docs/QUALITY_REFERENCE_ink_glb.md` already states it for `ink.glb`). Files are
+identified below by **Dropbox `content_hash`**, not by path, per §3.I.1's evidence rule.
+
+**One hard limitation on this check:** image and model **contents could not be read from this workspace**.
+`get_temporary_link` resolves, but retrieval fails — `dl.dropboxusercontent.com` is outside the permitted host
+set (`SSL_ERROR_SYSCALL`, `http=000`, 0 bytes). So every statement below is from **metadata plus this
+repository's own prior records**, and no measurement is claimed from a file that could not be opened.
+
+| Link | Resolved to | Identity | What is established | Status |
+|---|---|---|---|---|
+| 1 | Folder `/New folder (2)/ink/` — the **authoring project** behind `ink.glb`: `source/zeee.fbx` (72,370,736 B, hash `93dc26ac…`) and `textures/` (**18 files, ≈42,974,739 B**) | — | **Already documented**, in depth, by `docs/OWNER_MODELS_2026-11-15.md` §6 and `docs/QUALITY_REFERENCE_ink_glb.md`. `zeee.fbx` is the **DAZ Studio** export (FBX SDK 2020.2): 198 bones, 6 skin deformers, one 1-second animation stack, **0 blend shapes** | `REAL + VERIFIED` **from the repository's own prior inspection**, not re-verified now |
+| 2 | Folder `/3d/` — **9 files, all uploaded 2026-11-26 14:32Z**: `generated_avatar_diagnostic (1).png` (561,510 B, `25c856f9…`), `imported_glb_diagnostic (1).png` (539,517 B, `2a59e11f…`), and **7 device screenshots** `Screenshot_20261126_222519…223144.jpg` | — | **NEW — and the most significant item in this check.** See below | Existence `REAL + VERIFIED` via Dropbox metadata; **contents `UNVERIFIED`** (unreadable here) |
+| 3 | Folder `/3d real/` — **9 GLB files**: `ink.glb` **103,566,844 B** (`081e2ddd…`), `beautiful_realistic_undressed_girls_-_14_anims.glb` 38,595,284 B (`9cb25d27…`), `woman_dancing_nude.glb` 10,252,696 B, `heather.glb` 6,923,180 B **and** `heather (1).glb` 6,569,344 B (**different hashes ⇒ genuinely two versions**), `nude_girl_t_pose_…_fbx.glb` 1,493,892 B with a `(1)` copy at the **identical hash** `1f863999…`, and `(2)`/`(3)` copies both at `3bd5d831…` (**exact duplicates**) | — | **Already documented** by `docs/OWNER_MODELS_2026-11-15.md` §1–§5 and §7 | `REAL + VERIFIED` from prior inspection |
+| 4 | `/goal/three_view_character_turnaround_sheet_same_layout_and_presentati_4a719b64.jpeg` — **512 × 341 px**, 27,300 B (`c21e0ba8…`), uploaded 2026-11-26 14:33Z, in a folder named **`/goal/`** | — | **NEW.** A stated *goal*: a three-view character turnaround sheet. See below | Dimensions `REAL + VERIFIED` from media metadata; contents and provenance `UNVERIFIED` |
+
+#### 8.6.1 Why link 2 matters: the first device evidence since `797d156`
+
+`docs/PHONE_TEST_2026-11-15.md` records the only prior real-device session — a **38-second** run of the APK of
+`797d156`, after which *"every build after `797d156`: nothing verified."* Link 2 changes that, **partly**:
+
+- The two PNG names are not arbitrary. Per `README.md` and `BUILD_AND_VERIFY.md`, the app writes
+  `generated_avatar_diagnostic.png` and `imported_glb_diagnostic.png` **only when its PixelCopy
+  visible-pixel check passes** (failures write `failed_render.png` instead), and
+  `docs/PHONE_TEST_2026-11-15.md` already relies on exactly that inference for the 2026-11-15 capture.
+  **No `failed_render.png` is present in the folder.** So a visible-pixel check passed on **both** paths —
+  generated and imported — on whatever device produced these.
+- The seven screenshots span **22:25:19 → 22:31:44** in device-local time. In Perth (UTC+8) that is
+  **14:25:19 → 14:31:44 UTC**, matching the 14:32Z upload — a session of roughly **6.5 minutes**, against the
+  38-second window of 2026-11-15. That directly touches the standing gap *"heat, battery, sessions >38 s:
+  NOT MEASURED."*
+- **But none of it is readable here**, so **no number may be recorded**: not FPS, not triangles, not heap, not
+  pixel counts, not the device model, not the APK's commit. Which head produced these captures is **unknown**
+  from metadata alone, and §7 item 6 forbids transferring a result to a head that did not produce it.
+
+**Consequence for the plan.** Blockers **B1** and **B2** move from *"no device evidence exists"* to *"device
+evidence exists and is unread"* — which is a **different and more actionable** state, and it is why **M8** is
+in wave 0. The correct next step is not to guess at these files but to have the owner attach them to the
+conversation (attachments are readable) or have an M8 agent reproduce the session on hardware it controls,
+recording the APK's commit SHA beside every figure. Until then: `PARTIAL`.
+
+#### 8.6.2 Why link 4 matters: it states a goal the engine explicitly cannot meet
+
+A three-view turnaround sheet is a **multi-view reconstruction** target. `afcore.h`'s `af_image_role` enum
+disclaims precisely that, in its own words: the roles *"describe caller intent, not capabilities the current
+classical analyser does not have: it samples coarse framing/proportions/colours and **does not reconstruct a
+face, copy a garment, or fuse calibrated views**"*, and `AF_IMAGE_EXTRA_VIEW` is *"additional independently
+analysed view; **no geometric fusion**."*
+
+Three honest observations, none of them a criticism of the goal:
+
+1. **The capability is `MISSING`, not partial.** Multi-view fusion is not a tuning problem on the existing
+   analyser; it is a different subsystem, and §3.D/§3.C do not design one today.
+2. **512 × 341 px is small for the purpose** — roughly 170 px per view if the three views share the width.
+   Face reconstruction from that is not plausible at any engine quality; a turnaround sheet at this size is a
+   *proportion and silhouette* reference, which **is** usable, and M4's proportion critic is where it would
+   land.
+3. **Its provenance is unknown and its filename pattern suggests it is AI-generated** (a truncated prompt as
+   the name plus a hash suffix). Under §3.I.1 that makes it class **AI-GENERATED** with
+   `licence = UNKNOWN`, `licence_verified = 0`, and under §3.I.2 `preview = allow, redistribute = unknown,
+   train = unknown`. **It may be looked at; it may not be shipped, published, or used to fit a critic's
+   thresholds** — fitting is training (§3.I.2 rule 4).
+
+That is decision **D14**.
+
+#### 8.6.3 What the owner stated about this material on 2026-11-26
+
+Three statements accompanied the links. They are **owner-sourced**, which makes them authoritative as to
+*intent* and *target*, and `UNVERIFIED` as to any measurement — this workspace could not open the images.
+
+| Owner's words | What it establishes | Consequence for the plan |
+|---|---|---|
+| *"Current faults notice **webing on movement**"*, pointing at the `/3d/` captures | A **named, current visual defect** in the engine's own output, with the nine captures as its evidence | Now **B9** and **§3.D item 10**, diagnosed from source as a weight-quality and skinning-model fault (4-influence `af_vertex`, 1 % prune at `af_rig.cpp:436`, single-joint fallbacks, pure LBS, no body pose correctives). Measurement → **M4**'s new deformation critic; remedy → **M5 stage S-F**; the ABI question → **D15**. It also **partially re-issues section D**, so **B8** narrows |
+| *"this is details in want on **mylove.glb**"*, pointing at the same folder | The `/3d/` material is the **detail reference** the owner wants realised on `mylove.glb` | `mylove.glb` is already recorded in `docs/AVATAR_GEOMETRY_EVIDENCE.md` — **9,287,272 B**, SHA-256 `8ef94a00…`, Dropbox content hash `388a94e7…`, and **"private. Do not commit, publish or redistribute"** (`AGENTS.md` rule 5). It is therefore an **identity/detail target for measurement only**: `preview = allow, redistribute = deny, train = deny` (§3.I.2). No mission may embed it, and no critic may be fitted to it (§3.I.2 rule 4) |
+| *"**ink.glb** this is close to quality wanted"* | **Owner confirmation** of the quality target the repository had already designated | `docs/QUALITY_REFERENCE_ink_glb.md` already names `ink.glb` the quality reference, and §1.3 row 18 and §3.C already quote its numbers (body skin **27,292** triangles against this engine's **1,148,034**; four 4096² skin maps against one shared 2048² atlas). The owner's statement upgrades that from *researched recommendation* to **owner-confirmed target** — but changes nothing about its licence: it is **Daz Genesis 8 Female** content, so `redistribute = deny` and `train = deny` (§8.6.4) |
+
+**One caution that must not be lost.** `ink.glb` being "close to the quality wanted" is a statement about
+**appearance**, and its appearance comes from a professionally sculpted mesh, 18 large textures and 45
+separately drawn parts — not from anything this engine's procedural solver does. Matching it is therefore a
+**content** problem (§3.C, `docs/PHOTOREAL_UPGRADE_PLAN.md`), and **no part of it may be copied into the
+engine or an APK**. It is a target to measure against, at a distance.
+
+#### 8.6.4 `ink.glb` is the worked example of §3.I.2, and its licence position is already settled
+
+Links 1 and 3 add no new licence facts, but they make §3.I.2 concrete, because the repository has already
+established them: `ink.glb` is a **Daz 3D Genesis 8 Female** figure with commercial add-ons (hair, brows,
+boots, an anatomy add-on), and *"whoever uploaded it to Sketchfab could not give a CC-BY licence to content
+they do not own, so the label does not make it free to ship."* Its three permissions therefore split exactly
+as §3.I.2 predicts:
+
+| Permission | Value | Reason |
+|---|---|---|
+| `may_preview_locally` | **allow** | It is the owner's own file and the project's **quality reference target** (`docs/QUALITY_REFERENCE_ink_glb.md`) |
+| `may_redistribute` | **deny** | Daz content; shipping it in an app needs Daz's Interactive Licence **per product**, bought by the owner |
+| `may_train_on` | **deny** | Same, and §3.I.2 rule 4: fitting to it would be a derivative computational use |
+
+Two further facts from the prior inspection that constrain missions directly:
+
+- **`zeee.fbx` has 0 blend shapes**, so `ink.glb`'s absence of morph targets is **not a conversion loss** —
+  the source had no shape controls either. Sliders can never drive that file, which is why **M5 stage S-D**
+  must be proven on an avatar **this engine generated** (whose exporter does write morph targets,
+  `afcore.h:390`), not on `ink.glb`.
+- Its 18 textures (twelve 4096², six 2048²) need **1,152 MiB decoded with mipmaps** against the **448 MiB**
+  budget; `7e4f0cb` already reduces that to **384 MiB** and the file to 60.8 MB, cutting host import from
+  **7.2 s / 962 MB peak** to **2.0 s / 364 MB peak**. So M2's over-budget path is **already implemented and
+  unit-tested** (16 JVM tests) — M2 must **report and reuse** it, not rebuild it (**P8**).
+
+### 8.7 Verification ledger — what must be verified before each mission may begin
 
 Requirement 7 of the owner's approval: **verify all eight blockers and ten unverified research items before
 their dependent missions begin.** Status as at 2026-11-26, after a primary-source verification pass that read
@@ -3362,8 +3590,9 @@ licence files and repository headers directly rather than relying on secondary s
 
 | Item | Verified? | Verified how, or what remains | Gate: which mission may not start until it is closed |
 |---|---|---|---|
-| **B1** runtime gate fails | **PARTIAL — and narrowed** | Attribution is measured (lead passes, trunk fails, merged line fails at `bdaef4b5`, `ba38d996` **and `281806e7`**, run 45813704590). Because `281806e7` is documents-only, the failure is now shown to be **independent of the code delta between the last two heads** — it is a property of the gate or its runner environment. The *specific failing test* still could not be read: logs and artifacts are on hosts outside this workspace's permitted set, and the annotations give only `exit code 1` | **M3** may not treat any device metric as settled; **M7** may not claim a performance win; **M8(a)** must still separate flake from fault with repeated runs on hardware the agent controls |
-| **B2** LOD never run on a real GPU | **NO** | Requires hardware. No substitute exists | **M7** may not start; **M3**'s device records are provisional |
+| **B1** runtime gate fails | **PARTIAL — narrowed, and device evidence now exists but is unread (§8.6.1)** | Attribution is measured (lead passes, trunk fails, merged line fails at `bdaef4b5`, `ba38d996` **and `281806e7`**, run 45813704590). Because `281806e7` is documents-only, the failure is now shown to be **independent of the code delta between the last two heads** — it is a property of the gate or its runner environment. The *specific failing test* still could not be read: logs and artifacts are on hosts outside this workspace's permitted set, and the annotations give only `exit code 1` | **M3** may not treat any device metric as settled; **M7** may not claim a performance win; **M8(a)** must still separate flake from fault with repeated runs on hardware the agent controls |
+| **B9** "webing on movement" | **PARTIAL — owner-reported and source-diagnosed, NOT measured** | The owner named the fault on 2026-11-26 and pointed at nine device captures; the images are unreadable from this workspace, so the *diagnosis* is from source (§3.D item 10: 4-influence `af_vertex` at `afcore.h:318-327`, three-joint sharing limit at `af_rig.cpp:369`, 1 % prune at `:436-439`, single-joint fallbacks at `:408-409`/`:442`, pure LBS at `:449`, **no body pose correctives**) and the *baseline* does not exist yet | **M4** must build the deformation critic and record a baseline **with no tolerance asserted**; **M5 S-F** may not claim a fix without that baseline; **D15** must be settled before `af_vertex` changes |
+| **B2** LOD never run on a real GPU | **NO — but see §8.6.1** | Requires hardware, and no substitute exists. Device captures dated **2026-11-26** (`generated_avatar_diagnostic (1).png`, `imported_glb_diagnostic (1).png`, plus 7 screenshots spanning ~6.5 minutes) exist in the owner's Dropbox and imply a **passing** visible-pixel check on both paths — but they are unreadable from this workspace, the producing head is unknown, and no LOD level, FPS or triangle count may be inferred from them | **M7** may not start; **M3**'s device records are provisional |
 | **B3** two animation APIs | **YES — facts** | Both headers read: this line's six functions at `afcore.h:447-463`, `:524`, `:525`; the donor's nine `af_engine_imported_*` at `afcore.h:271-286` | Closed as research. **M5** still needs the **D4 decision** before writing code |
 | **B4** donor branch and fixtures | **YES** | Branch present at `58aced02`; its `THIRD_PARTY_NOTICES.md` read, confirming the fixtures *"ARE packaged into the distributed APK (596 KB combined)"*, that *"CC BY 4.0 requires attribution"*, and that `Fox.glb` has two rights holders under two licences | Closed as research. **M5** needs D4 plus a fixture decision |
 | **B5** morph targets on import | **YES — and CORRECTED** | `grep -ci morph` over `af_glb_read.cpp` = **0**: not read at all, not merely unapplied. `afcore.h:390` (exporter writes them) and `:413-414` (import side unsupported) read directly | Closed. **M2** must use `AF_MORPH_NOT_READ_ON_IMPORT` |
