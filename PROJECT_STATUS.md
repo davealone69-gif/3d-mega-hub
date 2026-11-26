@@ -4,6 +4,8 @@ Last updated: 2026-11-26 (root cause 16 and its History entry: the forward-pass 
 
 ## Repository and branches
 
+**Superseded 2026-11-26.** The table below is the 2026-11-14 record and is kept as history; several rows in it are now wrong. The current state is in the README's [Branch convergence handover — 2026-11-26](README.md#branch-convergence-handover--2026-11-26). In short: `main` is `fa9fc3658145c62bb38ecc7b4023938b0e625b8b` and untouched; the working branch is `arena/1535c8f6-3d-mega-hub`, which now contains the whole trunk (merge commit `88c2c67` from `9baf7c6`); PR #12 is superseded by the convergence pull request and left open for the owner; 15 branches were deleted from 22, with every tip SHA recorded in [`docs/BRANCH_CONVERGENCE_PLAN.md`](docs/BRANCH_CONVERGENCE_PLAN.md); and PR #16 (`arena/33f12efd-3d-mega-hub` into `main`) is a second competing path into `main` that the owner must reconcile with PR #9.
+
 | Item | State |
 |---|---|
 | Repository | [davealone69-gif/3d-mega-hub](https://github.com/davealone69-gif/3d-mega-hub) |
