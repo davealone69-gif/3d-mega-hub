@@ -31,9 +31,7 @@ import com.google.android.filament.gltfio.Gltfio
 import com.google.android.filament.gltfio.ResourceLoader
 import com.google.android.filament.gltfio.UbershaderProvider
 import com.davemega.hub.avatarforge.GlbValidator
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.InputStream
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 import kotlin.math.cos
@@ -681,7 +679,12 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                         context.contentResolver.openInputStream(uri)
                             ?: error("Android could not open the selected GLB URI")
                     }
-                    bytes = readBounded(stream)
+                    // Trunk's bounded reader (BoundedGlbReader, unit-tested) replaces the lead's
+                    // now-removed local readBounded(): same 128 MiB ceiling, but it spools through
+                    // the cache dir so a large import does not need a second full-size allocation.
+                    // `stream` is in scope here (declared in this else), which the trunk's own
+                    // after-the-block placement was not.
+                    bytes = BoundedGlbReader.read(stream, context.cacheDir, MAX_MODEL_BYTES)
                 }
                 if (bytes!!.isEmpty()) error("Selected GLB is empty")
                 GlbValidator.validate(bytes!!)
@@ -712,24 +715,6 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
                     }
                 }
             }
-        }
-    }
-
-    private fun readBounded(input: InputStream): ByteArray {
-        input.use { source ->
-            val output = ByteArrayOutputStream()
-            val buffer = ByteArray(64 * 1024)
-            var total = 0L
-            while (true) {
-                val count = source.read(buffer)
-                if (count < 0) break
-                total += count
-                require(total <= MAX_MODEL_BYTES) {
-                    "GLB exceeds the viewer's ${MAX_MODEL_BYTES / (1024L * 1024L)} MiB safety limit"
-                }
-                output.write(buffer, 0, count)
-            }
-            return output.toByteArray()
         }
     }
 
