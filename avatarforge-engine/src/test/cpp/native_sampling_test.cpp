@@ -3,6 +3,7 @@
 #include "af_anatomy.h"
 #include "af_body.h"
 #include "af_glb.h"
+#include "af_hair_cards.h"
 #include "af_rig.h"
 #include "af_texture.h"
 #include "af_uv.h"
@@ -534,10 +535,153 @@ int main() {
                 "eyeBlinkLeft must not squash the eyeball or cornea meshes");
     }
 
+    // Procedural Hair Card Generator end-to-end verification:
+    //   1) Every selectable hairstyle (1..9) generates watertight, manifold 3D strand ribbons
+    //      while bald (0) generates zero hair cards.
+    //   2) Full mesh build + UV packing + strand-sheet baking + GLB MASK/doubleSided export +
+    //      rigging all agree on REGION_HAIR_CARD.
+    {
+        for (int style = 0; style <= 9; ++style) {
+            af::BodyField hcField(qualityMetrics);
+            af::ApparelOptions hcApp{};
+            hcApp.hair = style;
+            hcField.setApparel(hcApp);
+            af::Mesh cardOnly;
+            const af::HairCardReport rep = af::appendProceduralHairCards(hcField, 0.0f, &cardOnly);
+            if (style == 0) {
+                require(rep.cardCount == 0 && cardOnly.vertexCount() == 0,
+                        "bald hairstyle must not generate hair cards");
+            } else {
+                require(rep.cardCount >= 12 && rep.vertexCount > 200 && rep.triangleCount > 200,
+                        "non-bald hairstyle must generate layered strand hair cards");
+                const af::Mesh::ManifoldReport audit = cardOnly.audit();
+                require(audit.openEdges == 0 && audit.nonManifoldEdges == 0,
+                        "procedural hair cards must be watertight and manifold");
+                for (size_t i = 0; i < cardOnly.positions.size(); ++i) {
+                    const af::Vec3& p = cardOnly.positions[i];
+                    require(std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z),
+                            "hair card vertex position must be finite");
+                    require(cardOnly.regions[i] == af::REGION_HAIR_CARD,
+                            "hair card vertex region must be REGION_HAIR_CARD");
+                    const float u = cardOnly.uvs[i * 2];
+                    const float v = cardOnly.uvs[i * 2 + 1];
+                    require(u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f,
+                            "hair card parametric UVs must stay in [0, 1]");
+                }
+            }
+        }
+
+        // End-to-end build with AF_HAIR_LONG: body + dual-mesh eyes + layered hair cards.
+        af::BodyField longField(qualityMetrics);
+        af::ApparelOptions longApp{};
+        longApp.hair = 4; // AF_HAIR_LONG
+        longApp.latticeCell = 0.018f;
+        longField.setApparel(longApp);
+        af::Mesh hairAvatar;
+        af::BodyBuildReport hairBuildRep;
+        require(af::buildBodyMesh(longField, coarseOptions, &hairAvatar, &hairBuildRep),
+                "body mesh build with long hair cards failed");
+        require(hairBuildRep.openEdgesAfterRepair == 0 && hairBuildRep.nonManifoldEdges == 0,
+                "avatar mesh with hair cards must remain watertight and manifold");
+
+        size_t hairCardVerts = 0;
+        for (int32_t r : hairAvatar.regions) {
+            if (r == af::REGION_HAIR_CARD) ++hairCardVerts;
+        }
+        require(hairCardVerts > 1500, "long hairstyle avatar must contain dense hair card geometry");
+
+        af::UVLayout hairLayout;
+        require(af::unwrapAtlas(&hairAvatar, 512, 512, &hairLayout), "hair card atlas unwrap failed");
+        int hairCardCharts = 0;
+        af::UVChart hairChart{};
+        for (const af::UVChart& ch : hairLayout.charts) {
+            if (ch.material == af::REGION_HAIR_CARD) {
+                ++hairCardCharts;
+                hairChart = ch;
+            }
+        }
+        require(hairCardCharts == 1,
+                "all hair cards must pack into one shared 4-variant strand sheet chart");
+        require((hairChart.rectMax.x - hairChart.rectMin.x) > 0.10f &&
+                (hairChart.rectMax.y - hairChart.rectMin.y) > 0.10f,
+                "hair card strand sheet must receive high-resolution atlas area");
+
+        hairAvatar.computeTangents();
+        af::TextureSet hairTex;
+        af::BakeOptions hairBake{};
+        hairBake.width = 512;
+        hairBake.height = 512;
+        hairBake.threads = 2;
+        require(af::bakeTextures(hairAvatar, hairLayout, qualityMetrics, hairToneSpec, hairBake, &hairTex),
+                "hair card texture bake failed");
+
+        int opaqueHairPx = 0, transparentHairPx = 0, ridgeNormalPx = 0;
+        const int hx0 = std::max(0, static_cast<int>(std::floor(hairChart.rectMin.x * 512.0f)) + 2);
+        const int hx1 = std::min(511, static_cast<int>(std::ceil(hairChart.rectMax.x * 512.0f)) - 2);
+        const int hy0 = std::max(0, static_cast<int>(std::floor(hairChart.rectMin.y * 512.0f)) + 2);
+        const int hy1 = std::min(511, static_cast<int>(std::ceil(hairChart.rectMax.y * 512.0f)) - 2);
+        for (int py = hy0; py <= hy1; ++py) {
+            for (int px = hx0; px <= hx1; ++px) {
+                const size_t idx = static_cast<size_t>(py) * 512 + static_cast<size_t>(px);
+                const uint8_t a = hairTex.baseColor[idx * 4 + 3];
+                const int nx = static_cast<int>(hairTex.normal[idx * 4 + 0]);
+                if (a >= 200) ++opaqueHairPx;
+                if (a <= 40) ++transparentHairPx;
+                if (std::abs(nx - 128) >= 18) ++ridgeNormalPx;
+            }
+        }
+        require(opaqueHairPx > 200 && transparentHairPx > 100,
+                "hair card strand sheet must bake both opaque root/shaft and feathered wispy tips");
+        require(ridgeNormalPx > 200,
+                "hair card normal map must contain cylindrical strand-ridge normal variation");
+
+        // GLB export must emit doubleSided + alphaMode:MASK + alphaCutoff for hair_cards.
+        af::GlbOptions hairGlbOpts{};
+        hairGlbOpts.embedTextures = false;
+        std::vector<uint8_t> hairGlbBytes;
+        af::GlbResult hairGlbRes{};
+        require(af::writeGlb(hairAvatar, &hairLayout, nullptr, nullptr, qualityMetrics,
+                             hairToneSpec, hairGlbOpts, &hairGlbBytes, &hairGlbRes),
+                "GLB export with hair cards failed");
+        require(hairGlbBytes.size() > 28, "hair card GLB output is truncated");
+        const uint32_t hairJsonLen = static_cast<uint32_t>(hairGlbBytes[12]) |
+                                     (static_cast<uint32_t>(hairGlbBytes[13]) << 8) |
+                                     (static_cast<uint32_t>(hairGlbBytes[14]) << 16) |
+                                     (static_cast<uint32_t>(hairGlbBytes[15]) << 24);
+        const std::string hairGlbJson(reinterpret_cast<const char*>(hairGlbBytes.data() + 20), hairJsonLen);
+        const size_t hcMatPos = hairGlbJson.find("\"name\":\"hair_cards\"");
+        require(hcMatPos != std::string::npos, "GLB export missing hair_cards material");
+        const std::string hcMatSlice = hairGlbJson.substr(hcMatPos, 320);
+        require(hcMatSlice.find("\"doubleSided\":true") != std::string::npos,
+                "hair_cards GLB material must be doubleSided");
+        require(hcMatSlice.find("\"alphaMode\":\"MASK\"") != std::string::npos &&
+                hcMatSlice.find("\"alphaCutoff\":0.35") != std::string::npos,
+                "hair_cards GLB material must export alphaMode:MASK with alphaCutoff:0.35");
+
+        // Rigging: hair card vertices bind only to head/neck/upper-torso/clavicle bones.
+        af::Rig hairRig;
+        require(hairRig.build(longField, hairAvatar), "hair card rig build failed");
+        for (size_t i = 0; i < hairAvatar.positions.size(); ++i) {
+            if (hairAvatar.regions[i] != af::REGION_HAIR_CARD) continue;
+            const af::SkinWeights& sw = hairRig.weights()[i];
+            float wSum = 0.0f;
+            for (int k = 0; k < 4; ++k) {
+                if (sw.weights[k] <= 0.0f) continue;
+                wSum += sw.weights[k];
+                const std::string& jn = hairRig.joints()[sw.joints[k]].name;
+                require(jn == "head" || jn == "neck_01" || jn == "spine_03" ||
+                        jn == "clavicle_L" || jn == "clavicle_R",
+                        "hair card vertex bound to unexpected bone");
+            }
+            require(std::fabs(wSum - 1.0f) < 1e-3f, "hair card skin weights must sum to 1.0");
+        }
+    }
+
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
     std::puts("PASS: long hairstyle has measurable volumetric depth behind the skull");
     std::puts("PASS: GLB export omits KHR_materials_sheen and exports wet cornea with BLEND + clearcoat");
     std::puts("PASS: dual-mesh eyes pass geometry, sclera/iris texture, rigid skinning, and blendshape checks");
+    std::puts("PASS: procedural hair cards pass watertightness, UV sheet, alpha/normal bake, GLB MASK, and rigging checks");
 
     std::puts("PASS: 40 repeated single-thread, parallel, and block-skipped sampling comparisons");
     return 0;

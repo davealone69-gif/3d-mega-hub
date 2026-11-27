@@ -242,6 +242,8 @@ bool boneAppliesToRegion(const Joint& j, int vertexRegion) {
             return isFace || isHeadBone || j.name == "jaw";
         case REGION_HAIR: case REGION_LASH:
             return isHeadBone || isFace;
+        case REGION_HAIR_CARD:
+            return isHeadBone || j.name == "spine_03" || j.name == "clavicle_L" || j.name == "clavicle_R";
         case REGION_NAIL:
             return isFinger || isFoot || isHand;
         case REGION_SHOE:

@@ -32,6 +32,7 @@ const MaterialDef& materialForRegion(int region) {
         /* GEAR            */ {"gear",        {0.62f, 0.60f, 0.55f}, 0.85f, 0.35f, 2.20f, 0.05f, 0.50f, 0.00f, 0.15f, 0.014f},
         /* CORNEA_L        */ {"cornea_left", {1.00f, 1.00f, 1.00f}, 0.00f, 0.032f, 1.376f, 0.00f, 0.50f, 0.00f, 0.00f, 0.002f},
         /* CORNEA_R        */ {"cornea_right",{1.00f, 1.00f, 1.00f}, 0.00f, 0.032f, 1.376f, 0.00f, 0.50f, 0.00f, 0.00f, 0.002f},
+        /* HAIR_CARD       */ {"hair_cards",  {0.09f, 0.06f, 0.05f}, 0.00f, 0.30f,  1.55f,  0.60f, 0.65f, 0.00f, 0.92f, 0.003f},
     };
     if (region < 0 || region >= REGION_COUNT) return kMaterials[0];
     return kMaterials[region];
@@ -605,6 +606,103 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
     parallelFor(chartCount, threads, [&](int c0, int c1) {
         for (int ci = c0; ci < c1; ++ci) {
             const UVChart& chart = layout.charts[static_cast<size_t>(ci)];
+            if (chart.material == REGION_HAIR_CARD) {
+                /* Bake the 4-variant multi-strand hair card sheet directly in UV space over the
+                   chart's placed rectangle so every lock gets crisp per-fibre normal ridges,
+                   root-to-tip melanin gradient, and feathered wispy tip alpha without overlap races. */
+                const float gutterUV = static_cast<float>(std::max(2, layout.gutterTexels)) / static_cast<float>(w);
+                const float innerU0 = chart.rectMin.x + gutterUV;
+                const float innerV0 = chart.rectMin.y + gutterUV;
+                const float innerU1 = maxf(innerU0 + 1e-4f, chart.rectMax.x - gutterUV);
+                const float innerV1 = maxf(innerV0 + 1e-4f, chart.rectMax.y - gutterUV);
+                const int x0 = maxi(0, static_cast<int>(std::floor(chart.rectMin.x * static_cast<float>(w))));
+                const int x1 = mini(w - 1, static_cast<int>(std::ceil(chart.rectMax.x * static_cast<float>(w))));
+                const int y0 = maxi(0, static_cast<int>(std::floor(chart.rectMin.y * static_cast<float>(h))));
+                const int y1 = mini(h - 1, static_cast<int>(std::ceil(chart.rectMax.y * static_cast<float>(h))));
+                const MaterialDef& hmat = materialForRegion(REGION_HAIR_CARD);
+
+                for (int py = y0; py <= y1; ++py) {
+                    const float sv = (static_cast<float>(py) + 0.5f) / static_cast<float>(h);
+                    const float cardV = clampf((sv - innerV0) / (innerV1 - innerV0), 0.0f, 1.0f);
+                    for (int px = x0; px <= x1; ++px) {
+                        const float su = (static_cast<float>(px) + 0.5f) / static_cast<float>(w);
+                        const float cardU = clampf((su - innerU0) / (innerU1 - innerU0), 0.0f, 1.0f);
+
+                        /* 4 distinct strand-card strips across cardU in [0, 1]. */
+                        const float scaledU = cardU * 4.0f;
+                        const int variant = mini(3, maxi(0, static_cast<int>(std::floor(scaledU))));
+                        const float stripU = clampf(scaledU - static_cast<float>(variant), 0.0f, 1.0f);
+                        const float vPhase = static_cast<float>(variant) * 1.73205f;
+
+                        /* Gentle wavy strand flow along cardV (root 0 -> tip 1). */
+                        const float wave = 0.022f * std::sin(cardV * 6.2831853f * (1.2f + 0.25f * static_cast<float>(variant)) + vPhase);
+                        const float uFlow = clampf(stripU + wave, 0.0f, 1.0f);
+
+                        /* Fine layered micro-strand fibres + clump bundles across stripU. */
+                        const float strandFreq = 38.0f + 5.0f * static_cast<float>(variant);
+                        const float clumpFreq = 9.0f + 1.5f * static_cast<float>(variant);
+                        const float strandPhase = uFlow * strandFreq * 6.2831853f + vPhase * 2.1f;
+                        const float clumpPhase = uFlow * clumpFreq * 6.2831853f + vPhase;
+                        const float microStrand = 0.5f + 0.5f * std::sin(strandPhase);
+                        const float clumpStrand = 0.5f + 0.5f * std::sin(clumpPhase);
+                        const float fineDetail = 0.5f + 0.5f * std::sin(strandPhase * 2.13f + cardV * 4.2f);
+                        const float fibreHeight = 0.55f * microStrand + 0.30f * clumpStrand + 0.15f * fineDetail;
+
+                        /* Analytic dHeight/du for cylindrical strand normal ridges running along cardV. */
+                        const float dhDu = (0.55f * std::cos(strandPhase) * 1.35f +
+                                            0.30f * std::cos(clumpPhase) * 0.75f);
+                        const float dhDv = 0.06f * std::cos(cardV * 12.0f + clumpPhase);
+                        const Vec3 nts = options.bakeMicroRelief
+                            ? Vec3(-dhDu * 0.55f, -dhDv, 1.0f).normalizedOr(Vec3(0, 0, 1))
+                            : Vec3(0, 0, 1);
+
+                        /* Root-to-tip melanin brightness + per-strand natural tonal breakup. */
+                        const float rootToTip = lerpf(0.74f, 1.08f, smoothstepf(0.05f, 0.88f, cardV));
+                        const float strandValue = clampf(rootToTip * (0.78f + 0.34f * fibreHeight), 0.35f, 1.15f);
+                        const Vec3 albedoLinear(strandValue, strandValue * 0.99f, strandValue * 0.97f);
+
+                        /* Feathered multi-strand alpha mask: solid root anchor, soft lateral edges,
+                           and staggered wispy strand lengths tapering cleanly to zero at tips. */
+                        const float edgeDist = minf(stripU, 1.0f - stripU);
+                        const float edgeMask = smoothstepf(0.02f, 0.14f, edgeDist + 0.06f * (fibreHeight - 0.5f));
+                        const float strandTipEnd = lerpf(0.68f, 0.99f, clampf(0.55f * clumpStrand + 0.45f * microStrand, 0.0f, 1.0f));
+                        const float tipMask = 1.0f - smoothstepf(strandTipEnd - 0.14f, strandTipEnd, cardV);
+                        const float rootSolid = 1.0f - smoothstepf(0.04f, 0.16f, cardV);
+                        const float strandDensity = smoothstepf(0.14f, 0.42f, fibreHeight + 0.25f * (1.0f - cardV));
+                        const float alpha = clampf(maxf(rootSolid * edgeMask, edgeMask * tipMask * strandDensity), 0.0f, 1.0f);
+
+                        const float rough = clampf(hmat.roughness + 0.12f * (1.0f - fibreHeight) + 0.08f * cardV, 0.18f, 0.55f);
+                        const float occ = clampf(lerpf(0.55f, 1.0f, smoothstepf(0.0f, 0.22f, cardV)) * (0.72f + 0.28f * fibreHeight), 0.25f, 1.0f);
+                        const float thickness = clampf(lerpf(0.08f, 0.22f, cardV), 0.04f, 0.25f);
+
+                        const size_t t = static_cast<size_t>(py) * w + px;
+                        uint8_t* bc = &out->baseColor[t * 4];
+                        uint8_t* nm = &out->normal[t * 4];
+                        uint8_t* mr = &out->metallicRoughness[t * 4];
+                        uint8_t* ss = &out->subsurface[t * 4];
+                        const Vec3 srgb = linearToSrgb(vmin(vmax(albedoLinear, Vec3(0, 0, 0)), Vec3(1, 1, 1)));
+                        bc[0] = static_cast<uint8_t>(saturate(srgb.x) * 255.0f + 0.5f);
+                        bc[1] = static_cast<uint8_t>(saturate(srgb.y) * 255.0f + 0.5f);
+                        bc[2] = static_cast<uint8_t>(saturate(srgb.z) * 255.0f + 0.5f);
+                        bc[3] = static_cast<uint8_t>(saturate(alpha) * 255.0f + 0.5f);
+                        nm[0] = static_cast<uint8_t>(saturate(nts.x * 0.5f + 0.5f) * 255.0f + 0.5f);
+                        nm[1] = static_cast<uint8_t>(saturate(nts.y * 0.5f + 0.5f) * 255.0f + 0.5f);
+                        nm[2] = static_cast<uint8_t>(saturate(nts.z * 0.5f + 0.5f) * 255.0f + 0.5f);
+                        nm[3] = 255;
+                        mr[0] = 255;
+                        mr[1] = static_cast<uint8_t>(saturate(rough) * 255.0f + 0.5f);
+                        mr[2] = 0;
+                        mr[3] = 255;
+                        out->occlusion[t] = static_cast<uint8_t>(saturate(occ) * 255.0f + 0.5f);
+                        ss[0] = static_cast<uint8_t>(saturate(thickness * 4.0f) * 255.0f + 0.5f);
+                        ss[1] = 0;
+                        ss[2] = 0;
+                        ss[3] = 255;
+                        filled[t] = 1;
+                    }
+                }
+                continue;
+            }
             for (int32_t i = 0; i < chart.faceCount; ++i) {
                 const int32_t face = layout.faces[static_cast<size_t>(chart.firstFace + i)];
                 if (face < 0 || static_cast<size_t>(face) >= faceCount) continue;

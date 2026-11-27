@@ -25,6 +25,7 @@ class AvatarForgeSurfaceView(
     context: Context,
     private val glbFile: File,
     private val verifyVisiblePixels: Boolean = false,
+    private val preferVulkan: Boolean = true,
     private val onStatus: (String) -> Unit
 ) : SurfaceView(context), SurfaceHolder.Callback {
     private val running = AtomicBoolean(false)
@@ -210,22 +211,28 @@ class AvatarForgeSurfaceView(
             var failureStatus: String? = null
             try {
                 recordSmokeResult("STARTING")
-                onStatus("Starting AvatarForge GLES renderer and importing ${glbFile.name}…")
+                onStatus("Starting AvatarForge renderer and importing ${glbFile.name}…")
                 while (running.get() && surfaceReady && (surfaceWidth <= 0 || surfaceHeight <= 0)) Thread.sleep(10)
                 if (!running.get() || !surfaceReady) return@Thread
                 check(glbFile.isFile && glbFile.length() > 0L) { "Selected GLB is not available in app storage." }
-                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight}")
-                nativeHandle = nativeCreate(surfaceHolder.surface, glbFile.absolutePath, max(1, surfaceWidth), max(1, surfaceHeight))
+                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight} preferVulkan=$preferVulkan")
+                nativeHandle = nativeCreate(
+                    surfaceHolder.surface,
+                    glbFile.absolutePath,
+                    max(1, surfaceWidth),
+                    max(1, surfaceHeight),
+                    preferVulkan
+                )
                 check(nativeHandle != 0L) { "AvatarForge native renderer returned a null session." }
                 val rendererInfo = nativeGetInfo(nativeHandle)
-                check(rendererInfo.startsWith("gles31|")) {
-                    "Unexpected AvatarForge backend information: $rendererInfo"
-                }
-                val apiVersion = rendererInfo.substringAfter('|').substringBefore('|')
+                val descriptor = RendererBackendPolicy.parse(rendererInfo)
+                val backendLabel = descriptor.backend.displayName
+                val apiVersion = "${descriptor.backend.id}:${descriptor.apiVersion}"
                 val firstPresentBudgetNanos = RendererFrameBudget.firstPresentBudgetNanos(rendererInfo)
                 val firstPresentBudgetSeconds = firstPresentBudgetNanos / 1_000_000_000L
                 recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion)
-                onStatus("AvatarForge GLES renderer active · $apiVersion · ${glbFile.name}")
+                Log.i(TAG, "RENDERER_ACTIVE backend=${descriptor.backend.id} device=${descriptor.deviceSummary} api=${descriptor.apiVersion}")
+                onStatus("AvatarForge $backendLabel renderer active · ${descriptor.deviceSummary} · ${glbFile.name}")
                 var lastFrame = System.nanoTime()
                 var lastWidth = surfaceWidth
                 var lastHeight = surfaceHeight
@@ -279,9 +286,9 @@ class AvatarForgeSurfaceView(
                             recordSmokeResult("FRAME_PRESENTED", apiVersion, frames, drawCalls, triangles,
                                 presentedFrames, boundsInFrustum, outsideCorners, glError, eglError)
                             Log.i(TAG, "FRAME_PRESENTED api=$apiVersion frames=$frames presented=$presentedFrames draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum")
-                            onStatus("EGL frame presented · $presentedFrames successful swaps · $drawCalls draw calls · $triangles triangles")
+                            onStatus("$backendLabel frame presented · $presentedFrames swaps · $drawCalls draws · $triangles tris")
                         } else if (System.nanoTime() - frameWaitStarted > firstPresentBudgetNanos) {
-                            error("No drawable EGL-presented model frame within $firstPresentBudgetSeconds seconds " +
+                            error("No drawable $backendLabel-presented model frame within $firstPresentBudgetSeconds seconds " +
                                 "(frames=$frames presented=$presentedFrames framePresented=$framePresented " +
                                 "draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
                                 "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)})")
@@ -289,8 +296,16 @@ class AvatarForgeSurfaceView(
                     }
                     if (verifyVisiblePixels && presentedThisFrame && presentedFrames >= 3 &&
                         drawCalls > 0 && triangles > 0 && boundsInFrustum && !pixelCopyComplete.get()) {
+                        // Finish GPU work for the presented frame and hold the next frame until
+                        // PixelCopy completes. On software SwiftShader emulators, submitting new
+                        // frames back-to-back starves SurfaceFlinger's PixelCopy readback until
+                        // the 15s timeout fires.
+                        nativeWaitIdle(nativeHandle)
                         requestVisiblePixelCopy(apiVersion, frames, drawCalls, triangles, presentedFrames,
                             boundsInFrustum, outsideCorners, glError, eglError)
+                        while (pixelCopyPending.get() && running.get() && surfaceReady) {
+                            Thread.sleep(5)
+                        }
                     }
                     val remaining = 16_666_667L - (System.nanoTime() - now)
                     if (remaining > 0L) Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
@@ -588,11 +603,18 @@ class AvatarForgeSurfaceView(
             onStatus(message)
         }
     }
-    private external fun nativeCreate(surface: android.view.Surface, glbPath: String, width: Int, height: Int): Long
+    private external fun nativeCreate(
+        surface: android.view.Surface,
+        glbPath: String,
+        width: Int,
+        height: Int,
+        preferVulkan: Boolean
+    ): Long
     private external fun nativeResize(handle: Long, width: Int, height: Int)
     private external fun nativeOrbitCamera(handle: Long, deltaYawDeg: Float, deltaPitchDeg: Float, zoomScale: Float)
     private external fun nativeResetCamera(handle: Long)
     private external fun nativeRender(handle: Long, deltaSeconds: Float): Boolean
+    private external fun nativeWaitIdle(handle: Long)
     private external fun nativeGetInfo(handle: Long): String
     private external fun nativeGetStats(handle: Long): IntArray
     private external fun nativeDestroy(handle: Long)

@@ -32,6 +32,7 @@
  * closed manifold. That is the property the renderer and the rig both depend on.
  */
 #include "af_body.h"
+#include "af_hair_cards.h"
 #include "af_threads.h"
 #include <algorithm>
 #include <chrono>
@@ -954,6 +955,12 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
     /* Append watertight analytic dual-mesh eyes (inner sclera + recessed iris bowl, outer wet
        corneal dome) after body SDF normals so each eye shell keeps exact analytic curvature. */
     appendAnalyticDualMeshEyes(field, floorShiftY, &mesh);
+
+    /* Append watertight layered strand hair cards with authored root-to-tip UVs when a non-bald
+       hairstyle is selected. Cards drape over the SDF scalp base without penetrating skin. */
+    if (field.apparel().hair > 0) {
+        appendProceduralHairCards(field, floorShiftY, &mesh);
+    }
 
     mesh.computeCurvature(1);
     if (options.computeTangents && mesh.uvs.size() >= mesh.vertexCount() * 2) mesh.computeTangents();

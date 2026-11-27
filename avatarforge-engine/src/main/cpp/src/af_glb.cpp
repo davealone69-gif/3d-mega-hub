@@ -664,15 +664,18 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
         for (size_t mi = 0; mi < names.size(); ++mi) {
             const int materialRegion = representativeRegion(static_cast<int>(mi));
             const bool isCornea = (materialRegion == REGION_CORNEA_L || materialRegion == REGION_CORNEA_R);
+            const bool isHairCard = (materialRegion == REGION_HAIR_CARD);
             const MaterialDef& md = materialForRegion(materialRegion);
-            const Vec3 baseColor = materialRegion == REGION_HAIR
+            const Vec3 baseColor = (materialRegion == REGION_HAIR || isHairCard)
                 ? hairBaseColorForSpec(spec) : md.baseColor;
             if (mi) j += ',';
             j += "{\"name\":\"";
             jsonEscape(j, names[mi]);
-            j += "\",\"doubleSided\":false";
+            j += isHairCard ? "\",\"doubleSided\":true" : "\",\"doubleSided\":false";
             if (isCornea) {
                 j += ",\"alphaMode\":\"BLEND\"";
+            } else if (isHairCard) {
+                j += ",\"alphaMode\":\"MASK\",\"alphaCutoff\":0.35";
             }
             j += ",\"pbrMetallicRoughness\":{\"baseColorFactor\":[";
             jsonNum(j, baseColor.x); j += ',';

@@ -57,7 +57,8 @@ void throwState(JNIEnv* env, const std::string& message) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
-    JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height) {
+    JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height,
+    jboolean preferVulkan) {
     if (!surface || !glbPath || width <= 0 || height <= 0) {
         throwState(env, "AvatarForge renderer requires a Surface, GLB path and non-zero size");
         return 0;
@@ -128,7 +129,9 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     }
 
     af::RendererOptions options{};
-    options.preferVulkan = false; // Samsung Galaxy S24 (SM-S921B) uses the dedicated GLES 3.2 path.
+    /* Vulkan-first on hardware Android GPUs (Xclipse 940, Adreno, Mali, Immortalis) with
+       automatic GLES 3.1 fallback on software emulators or when Vulkan is unavailable. */
+    options.preferVulkan = (preferVulkan == JNI_TRUE);
     options.quality = af::QualityPreset::HIGH;
     options.msaaSamples = 4;
     options.shadowMapSize = 2048;
@@ -152,7 +155,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     std::string rendererError;
     session->renderer = af::Renderer::create(session->window, options, &rendererError);
     if (!session->renderer) {
-        throwState(env, "AvatarForge GLES renderer creation failed: " + rendererError);
+        throwState(env, "AvatarForge renderer creation failed: " + rendererError);
         return 0;
     }
     if (!session->renderer->resize(width, height)) {
@@ -541,6 +544,13 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResetCamera(
     if (!session || !session->renderer) return;
     session->camera = session->initialCamera;
     session->renderer->setCamera(session->camera);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeWaitIdle(
+    JNIEnv*, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (session && session->renderer) session->renderer->waitIdle();
 }
 
 extern "C" JNIEXPORT void JNICALL

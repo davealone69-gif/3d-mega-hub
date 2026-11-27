@@ -66,7 +66,8 @@ enum : uint32_t {
 const char* regionLabel(int region) {
     static const char* const kNames[REGION_COUNT] = {
         "skin", "eye_left", "eye_right", "teeth", "tongue", "lips", "hair", "lash",
-        "nail", "cloth_upper", "cloth_lower", "shoe", "gear", "cornea_left", "cornea_right"
+        "nail", "cloth_upper", "cloth_lower", "shoe", "gear", "cornea_left", "cornea_right",
+        "hair_cards"
     };
     return (region >= 0 && region < REGION_COUNT) ? kNames[region] : "skin";
 }
@@ -327,7 +328,7 @@ void rebuildSubmeshesAndMaterials(af_engine* e) {
                 if (gt[0] > 0.0f || gt[1] > 0.0f || gt[2] > 0.0f) {
                     base[0] = gt[0]; base[1] = gt[1]; base[2] = gt[2];
                 }
-            } else if (r == REGION_HAIR) {
+            } else if (r == REGION_HAIR || r == REGION_HAIR_CARD) {
                 const float* ht = e->spec.hair_tone;
                 if (ht[0] > 0.0f || ht[1] > 0.0f || ht[2] > 0.0f) {
                     base[0] = ht[0]; base[1] = ht[1]; base[2] = ht[2];

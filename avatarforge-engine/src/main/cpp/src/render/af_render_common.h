@@ -186,8 +186,12 @@ inline bool isCorneaRegion(int region) {
     return region == 13 || region == 14;
 }
 
+inline bool isHairCardRegion(int region) {
+    return region == 15;
+}
+
 /* ------------------------------------------------------------------ material mapping ------- */
-/* af_region -> AfSurface kind. The region ids are the kernel's (0..14) and are part of the ABI. */
+/* af_region -> AfSurface kind. The region ids are the kernel's (0..15) and are part of the ABI. */
 inline int materialKindForRegion(int region, float metallic) {
     switch (region) {
         case 0:  return AF_KIND_SKIN;    /* skin            */
@@ -205,6 +209,7 @@ inline int materialKindForRegion(int region, float metallic) {
         case 12: return (metallic > 0.35f) ? AF_KIND_METAL : AF_KIND_CLOTH;   /* gear */
         case 13:
         case 14: return AF_KIND_CORNEA;  /* cornea_left / cornea_right */
+        case 15: return AF_KIND_HAIR;    /* layered strand hair cards */
         default: return AF_KIND_GENERIC;
     }
 }

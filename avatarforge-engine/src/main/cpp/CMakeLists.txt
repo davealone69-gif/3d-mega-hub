@@ -17,6 +17,7 @@ add_library(afcore SHARED
     src/af_field.cpp
     src/af_glb.cpp
     src/af_glb_read.cpp
+    src/af_hair_cards.cpp
     src/af_json.cpp
     src/af_image.cpp
     src/af_isosurface.cpp
@@ -40,9 +41,9 @@ if(ANDROID)
     target_link_libraries(afcore PRIVATE dl log)
 endif()
 
-# AvatarForge custom renderer, copied from the canonical engine source.
-# GLES is forced by the Hub runtime on the target Samsung profile; Vulkan remains
-# compiled as an optional backend but is not selected by default.
+# AvatarForge custom PBR renderer, copied from the canonical engine source.
+# Runs Vulkan 1.0/1.1 first on hardware Android GPUs with automatic OpenGL ES 3.1/3.2
+# fallback on software emulators or when hardware Vulkan is unavailable.
 if(ANDROID)
     add_library(afrender SHARED
         src/render/af_render.cpp

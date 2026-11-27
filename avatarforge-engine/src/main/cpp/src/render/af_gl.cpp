@@ -1492,7 +1492,7 @@ void GlRenderer::drawForwardPass() {
                     continue;
                 }
                 if (!debugMagenta) {
-                    if (sm.region == -2) {
+                    if (sm.region == -2 || isHairCardRegion(sm.region)) {
                         glDisable(GL_CULL_FACE);
                     } else if (cullingWasEnabled) {
                         glEnable(GL_CULL_FACE);
