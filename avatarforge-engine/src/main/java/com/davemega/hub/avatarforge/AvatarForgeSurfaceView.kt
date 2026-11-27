@@ -227,10 +227,10 @@ class AvatarForgeSurfaceView(
                 val rendererInfo = nativeGetInfo(nativeHandle)
                 val descriptor = RendererBackendPolicy.parse(rendererInfo)
                 val backendLabel = descriptor.backend.displayName
-                val apiVersion = "${descriptor.backend.id}:${descriptor.apiVersion}"
+                val apiVersion = descriptor.apiVersion
                 val firstPresentBudgetNanos = RendererFrameBudget.firstPresentBudgetNanos(rendererInfo)
                 val firstPresentBudgetSeconds = firstPresentBudgetNanos / 1_000_000_000L
-                recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion)
+                recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion, backend = descriptor.backend.id)
                 Log.i(TAG, "RENDERER_ACTIVE backend=${descriptor.backend.id} device=${descriptor.deviceSummary} api=${descriptor.apiVersion}")
                 onStatus("AvatarForge $backendLabel renderer active · ${descriptor.deviceSummary} · ${glbFile.name}")
                 var lastFrame = System.nanoTime()
@@ -357,10 +357,11 @@ class AvatarForgeSurfaceView(
         eglError: Int = 0,
         pixelCount: Int = 0,
         screenshotPath: String = "",
-        error: String = ""
+        error: String = "",
+        backend: String = ""
     ) {
         val preferences = context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE)
-        preferences.edit()
+        val editor = preferences.edit()
             .putString("status", status)
             .putString("api_version", apiVersion)
             .putInt("frames", frames)
@@ -375,7 +376,10 @@ class AvatarForgeSurfaceView(
             .putString("screenshot_path", screenshotPath)
             .putString("error", error)
             .putLong("updated_at_epoch_ms", System.currentTimeMillis())
-            .commit()
+        if (backend.isNotEmpty()) {
+            editor.putString("backend", backend)
+        }
+        editor.commit()
 
         // Keep a durable, machine-readable report in Downloads, not only SharedPreferences.
         val report = org.json.JSONObject()

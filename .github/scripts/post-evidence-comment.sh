@@ -18,19 +18,21 @@ OUT="artifacts/avatarforge/runtime-captures"
   python3 - <<'EOF'
 import glob, xml.etree.ElementTree as ET
 found = False
-for x in glob.glob("app/build/outputs/androidTest-results/connected/**/*.xml", recursive=True):
+for x in sorted(glob.glob("app/build/outputs/androidTest-results/connected/**/*.xml", recursive=True)):
     try:
         r = ET.parse(x).getroot()
     except Exception:
         continue
     for tc in r.iter("testcase"):
-        for f in list(tc.iter("failure")) + list(tc.iter("error")):
+        fails = list(tc.iter("failure")) + list(tc.iter("error"))
+        state = "FAIL" if fails else "PASS"
+        print(f"[{state}] {tc.get('classname')}.{tc.get('name')} ({tc.get('time')}s)")
+        for f in fails:
             found = True
-            print(f"TEST {tc.get('classname')}.{tc.get('name')}")
             print((f.get("message") or "")[:1200])
             print((f.text or "")[:1200])
 if not found:
-    print("no JUnit failure node found (crash before reporting?)")
+    print("no JUnit failure node found (crash or shell error?)")
 EOF
   echo '```'
 } > /tmp/evidence-body.md
