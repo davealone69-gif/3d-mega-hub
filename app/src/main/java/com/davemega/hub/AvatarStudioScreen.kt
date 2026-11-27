@@ -67,10 +67,12 @@ fun AvatarStudioScreen(
     }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
     var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
-    // Imported GLBs open in the animation-capable gltfio preview by default.
-    // The native AvatarForge GLES renderer currently does not skin imported GLBs.
-    var useFilamentAnimationPreview by remember(avatarUri) {
-        mutableStateOf(avatarUri != null && avatarUri.scheme == "file")
+    // Route external animated GLBs to the Filament gltfio preview so skeletal clips can play.
+    // AvatarForge-generated avatars, diagnostics, and static GLBs default to AvatarForgeSurfaceView
+    // (native GLES) so they do not trigger Filament's morph-storage or ubershader blockers.
+    var useFilamentAnimationPreview by remember(avatarUri, pixelDiagnosticPath) {
+        val isActiveDiagnostic = pixelDiagnosticPath != null && avatarUri?.path == pixelDiagnosticPath
+        mutableStateOf(!isActiveDiagnostic && GlbPreviewRouter.shouldDefaultToFilament(avatarUri))
     }
     var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
     var animationCount by remember { mutableStateOf(0) }
@@ -136,7 +138,7 @@ fun AvatarStudioScreen(
                 Text(if (generating) "Diagnostic running…" else "Run generated-avatar GLES diagnostic")
             }
         }
-        Text("Imported GLBs open in the Filament gltfio preview so embedded skeletal animation can play. Switch to AvatarForge GLES preview for the native static-render path.")
+        Text("External animated GLBs open in the Filament gltfio preview so embedded skeletal clips can play. AvatarForge-generated avatars, diagnostics, and static GLBs open in the native AvatarForge GLES viewport.")
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

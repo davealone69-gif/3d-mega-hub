@@ -2,12 +2,15 @@
 #include "af_prompt.h"
 #include "af_anatomy.h"
 #include "af_body.h"
+#include "af_glb.h"
 #include "af_texture.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 #include <vector>
 
 namespace {
@@ -322,8 +325,67 @@ int main() {
                 "a selectable hairstyle produced no interior samples in the head envelope");
     }
 
+    // Exported GLBs must omit KHR_materials_sheen when no sheen texture is authored
+    // while retaining the AvatarForge generator stamp and KHR_materials_ior.
+    {
+        af::Mesh minimalMesh;
+        minimalMesh.positions = {
+            af::Vec3(0.0f, 0.0f, 0.0f),
+            af::Vec3(0.1f, 0.0f, 0.0f),
+            af::Vec3(0.0f, 0.1f, 0.0f)
+        };
+        minimalMesh.normals = {
+            af::Vec3(0.0f, 0.0f, 1.0f),
+            af::Vec3(0.0f, 0.0f, 1.0f),
+            af::Vec3(0.0f, 0.0f, 1.0f)
+        };
+        minimalMesh.uvs = {
+            0.0f, 0.0f,
+            1.0f, 0.0f,
+            0.0f, 1.0f
+        };
+        minimalMesh.tangents = {
+            af::Vec4(1.0f, 0.0f, 0.0f, 1.0f),
+            af::Vec4(1.0f, 0.0f, 0.0f, 1.0f),
+            af::Vec4(1.0f, 0.0f, 0.0f, 1.0f)
+        };
+        minimalMesh.regions = {
+            af::REGION_CLOTH_UPPER,
+            af::REGION_CLOTH_UPPER,
+            af::REGION_CLOTH_UPPER
+        };
+        minimalMesh.indices = {0u, 1u, 2u};
+
+        af::GlbOptions glbOptions{};
+        glbOptions.embedTextures = false;
+        glbOptions.includeAnimations = false;
+        glbOptions.includeMorphTargets = false;
+        std::vector<uint8_t> glbBytes;
+        af::GlbResult glbResult{};
+        require(af::writeGlb(minimalMesh, nullptr, nullptr, nullptr, hairGradientMetrics,
+                             hairToneSpec, glbOptions, &glbBytes, &glbResult),
+                "writeGlb failed on minimal test mesh");
+        require(glbBytes.size() >= 20, "exported GLB is shorter than header");
+        const uint32_t jsonLen =
+            static_cast<uint32_t>(glbBytes[12]) |
+            (static_cast<uint32_t>(glbBytes[13]) << 8) |
+            (static_cast<uint32_t>(glbBytes[14]) << 16) |
+            (static_cast<uint32_t>(glbBytes[15]) << 24);
+        require(jsonLen > 0 && 20u + jsonLen <= glbBytes.size(),
+                "exported GLB JSON chunk length is out of range");
+        const std::string glbJson(
+            reinterpret_cast<const char*>(glbBytes.data() + 20), jsonLen);
+        require(glbJson.find("\"generator\":\"AvatarForge ") != std::string::npos,
+                "exported GLB is missing AvatarForge generator stamp");
+        require(glbJson.find("KHR_materials_ior") != std::string::npos,
+                "exported GLB is missing KHR_materials_ior");
+        require(glbJson.find("KHR_materials_sheen") == std::string::npos,
+                "exported GLB must not emit KHR_materials_sheen without an authored sheen texture");
+    }
+
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
     std::puts("PASS: long hairstyle has measurable volumetric depth behind the skull");
+    std::puts("PASS: GLB export omits KHR_materials_sheen when no sheen texture is authored");
 
     std::puts("PASS: 40 repeated single-thread, parallel, and block-skipped sampling comparisons");
     return 0;
