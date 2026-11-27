@@ -24,6 +24,67 @@ enum class LightingPreset(val nativeId: Int, val label: String) {
 }
 
 /**
+ * Built-in 71-joint animation clips matching `af_clip` in `afcore.h`.
+ */
+enum class AnimationClipPreset(val nativeId: Int, val label: String) {
+    REST(0, "Rest"),
+    IDLE(1, "Idle"),
+    BREATHE(2, "Breathe"),
+    WALK(3, "Walk"),
+    RUN(4, "Run"),
+    JOG(5, "Jog"),
+    SQUAT(6, "Squat"),
+    JUMP(7, "Jump"),
+    WAVE(8, "Wave"),
+    PUNCH(9, "Punch"),
+    KICK(10, "Kick"),
+    T_POSE(11, "T-Pose"),
+    A_POSE(12, "A-Pose"),
+    SIT(13, "Sit"),
+    TURN_360(14, "Turn 360"),
+    PUSHUP(15, "Pushup"),
+}
+
+/**
+ * Live 52-ARKit facial expression presets matching `nativeApplyExpression` in `avatarforge_renderer_jni.cpp`.
+ */
+enum class FacialExpressionPreset(val nativeId: Int, val label: String) {
+    NEUTRAL(0, "Neutral"),
+    SMILE(1, "Smile"),
+    BLINK(2, "Blink"),
+    WINK(3, "Wink"),
+    SURPRISED(4, "Surprised"),
+    FROWN(5, "Frown"),
+    GAZE_LEFT(6, "Gaze Left"),
+    GAZE_RIGHT(7, "Gaze Right"),
+}
+
+/**
+ * Human-readable labels for the 16 `af_region` IDs in `af_mesh.h` returned by tap-to-inspect picking.
+ */
+object AvatarRegionNames {
+    fun displayName(regionId: Int): String = when (regionId) {
+        0 -> "Skin"
+        1 -> "Left Eye"
+        2 -> "Right Eye"
+        3 -> "Teeth"
+        4 -> "Tongue"
+        5 -> "Lips"
+        6 -> "Hair Cap"
+        7 -> "Brows & Lashes"
+        8 -> "Nails"
+        9 -> "Upper Garment"
+        10 -> "Lower Garment"
+        11 -> "Footwear"
+        12 -> "Gear / Armor"
+        13 -> "Left Cornea"
+        14 -> "Right Cornea"
+        15 -> "Hair Cards"
+        else -> "Imported Mesh"
+    }
+}
+
+/**
  * Structured avatar customization state for the AvatarForge Studio UI.
  * Combines explicit anthropometric / style controls with optional prompt notes
  * into a deterministic [AvatarSpec] and human-readable prompt summary.

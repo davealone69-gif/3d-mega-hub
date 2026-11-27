@@ -56,4 +56,31 @@ class StudioViewportControlsTest {
         assertEquals(0.95f, spec.skinMelanin, 1e-4f)
         assertEquals(1, spec.seed)
     }
+
+    @Test
+    fun animationClipsAndFacialExpressionsMatchNativeIds() {
+        val clipIds = AnimationClipPreset.entries.map { it.nativeId }
+        assertEquals((0 until 16).toList(), clipIds)
+        assertEquals(0, AnimationClipPreset.REST.nativeId)
+        assertEquals(3, AnimationClipPreset.WALK.nativeId)
+        assertEquals(14, AnimationClipPreset.TURN_360.nativeId)
+        assertEquals(15, AnimationClipPreset.PUSHUP.nativeId)
+
+        val exprIds = FacialExpressionPreset.entries.map { it.nativeId }
+        assertEquals((0 until FacialExpressionPreset.entries.size).toList(), exprIds)
+        assertEquals(0, FacialExpressionPreset.NEUTRAL.nativeId)
+        assertEquals(1, FacialExpressionPreset.SMILE.nativeId)
+        assertEquals(7, FacialExpressionPreset.GAZE_RIGHT.nativeId)
+    }
+
+    @Test
+    fun avatarRegionNamesCoverAllSixteenNativeRegions() {
+        val names = (0 until 16).map { AvatarRegionNames.displayName(it) }
+        assertEquals(16, names.toSet().size)
+        assertEquals("Skin", AvatarRegionNames.displayName(0))
+        assertEquals("Left Cornea", AvatarRegionNames.displayName(13))
+        assertEquals("Right Cornea", AvatarRegionNames.displayName(14))
+        assertEquals("Hair Cards", AvatarRegionNames.displayName(15))
+        assertEquals("Imported Mesh", AvatarRegionNames.displayName(-1))
+    }
 }

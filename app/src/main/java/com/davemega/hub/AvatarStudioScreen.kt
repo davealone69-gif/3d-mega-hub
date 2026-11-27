@@ -35,12 +35,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.compose.ui.viewinterop.AndroidView
+import com.davemega.hub.avatarforge.AnimationClipPreset
 import com.davemega.hub.avatarforge.AvatarCustomizationState
 import com.davemega.hub.avatarforge.AvatarForgeEngine
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
+import com.davemega.hub.avatarforge.AvatarRegionNames
 import com.davemega.hub.avatarforge.AvatarSpec
 import com.davemega.hub.avatarforge.Build
 import com.davemega.hub.avatarforge.CameraPreset
+import com.davemega.hub.avatarforge.FacialExpressionPreset
 import com.davemega.hub.avatarforge.HairStyle
 import com.davemega.hub.avatarforge.LightingPreset
 import com.davemega.hub.avatarforge.Outfit
@@ -86,6 +89,14 @@ fun AvatarStudioScreen(
     var autoTurntable by remember(avatarUri) { mutableStateOf(false) }
     var showSkeleton by remember(avatarUri) { mutableStateOf(false) }
     var flatShading by remember(avatarUri) { mutableStateOf(false) }
+    var liveJointCount by remember(avatarUri) { mutableStateOf(0) }
+    var liveBlendshapeCount by remember(avatarUri) { mutableStateOf(0) }
+    var liveRigActive by remember(avatarUri) { mutableStateOf(false) }
+    var selectedClip by remember(avatarUri) { mutableStateOf(AnimationClipPreset.REST) }
+    var clipSpeed by remember(avatarUri) { mutableStateOf(1.0f) }
+    var selectedExpression by remember(avatarUri) { mutableStateOf(FacialExpressionPreset.NEUTRAL) }
+    var pickedRegionId by remember(avatarUri) { mutableStateOf(-1) }
+    var pickedRegionDistance by remember(avatarUri) { mutableStateOf(0f) }
     var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
     var animationCount by remember { mutableStateOf(0) }
     var selectedAnimation by remember { mutableStateOf(0) }
@@ -123,7 +134,8 @@ fun AvatarStudioScreen(
                                     prompt = diagnosticPrompt
                                 ),
                                 prompt = diagnosticPrompt,
-                                outputName = "diagnostic-seed-1337-${System.currentTimeMillis()}.glb"
+                                outputName = "diagnostic-seed-1337-${System.currentTimeMillis()}.glb",
+                                preserveLiveRig = false
                             )
                             check(result.deformedMeshValidated) { "Native deformed-mesh validation was not confirmed." }
                             pixelDiagnosticPath = result.file.absolutePath
@@ -158,9 +170,24 @@ fun AvatarStudioScreen(
                 key(avatarUri, useFilamentAnimationPreview) {
                     val importedGlb = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)
                     if (importedGlb != null && importedGlb.isFile && !useFilamentAnimationPreview) {
+                        val isDiagnosticSession = pixelDiagnosticPath != null && importedGlb.absolutePath == pixelDiagnosticPath
                         AndroidView(
                             factory = { viewContext ->
-                                AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = isDebuggable) { status ->
+                                AvatarForgeSurfaceView(
+                                    context = viewContext,
+                                    glbFile = importedGlb,
+                                    verifyVisiblePixels = isDebuggable,
+                                    allowLiveRig = !isDiagnosticSession,
+                                    onCapabilities = { joints, shapes, isLive ->
+                                        liveJointCount = joints
+                                        liveBlendshapeCount = shapes
+                                        liveRigActive = isLive
+                                    },
+                                    onRegionPicked = { regionId, distanceM ->
+                                        pickedRegionId = regionId
+                                        pickedRegionDistance = distanceM
+                                    }
+                                ) { status ->
                                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                                         rendererStatus = status
                                         val savedPath = context.getSharedPreferences("avatarforge_renderer_smoke", Context.MODE_PRIVATE)
@@ -207,11 +234,34 @@ fun AvatarStudioScreen(
                     }
                 }
                 Text(
-                    "Drag to orbit · Pinch to zoom · Double-tap to reset camera",
+                    "Drag to orbit · Pinch to zoom · Tap to inspect region · Double-tap to reset camera",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (hasImportedFile && !useFilamentAnimationPreview) {
+                    if (pickedRegionId >= 0) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                "Selected region: ${AvatarRegionNames.displayName(pickedRegionId)} (${String.format(java.util.Locale.US, "%.2f", pickedRegionDistance)} m)",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilterChip(
+                                selected = false,
+                                onClick = {
+                                    pickedRegionId = -1
+                                    pickedRegionDistance = 0f
+                                    avatarForgeSurfaceView?.clearRegionHighlight()
+                                },
+                                label = { Text("Clear") }
+                            )
+                        }
+                    }
                     Text("Camera", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -273,6 +323,65 @@ fun AvatarStudioScreen(
                             },
                             label = { Text("Clay") }
                         )
+                    }
+                    if (liveJointCount > 0) {
+                        Text(
+                            if (liveRigActive) "Animation ($liveJointCount joints · live rig)" else "Animation ($liveJointCount joints)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            AnimationClipPreset.entries.forEach { clip ->
+                                FilterChip(
+                                    selected = selectedClip == clip,
+                                    onClick = {
+                                        selectedClip = clip
+                                        avatarForgeSurfaceView?.setAnimationClip(clip, clipSpeed, true)
+                                    },
+                                    label = { Text(clip.label) }
+                                )
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(0.5f to "0.5x", 1.0f to "1x", 1.5f to "1.5x").forEach { (spd, label) ->
+                                FilterChip(
+                                    selected = kotlin.math.abs(clipSpeed - spd) < 0.05f,
+                                    onClick = {
+                                        clipSpeed = spd
+                                        avatarForgeSurfaceView?.setAnimationClip(selectedClip, spd, true)
+                                    },
+                                    label = { Text("Speed $label") }
+                                )
+                            }
+                        }
+                    }
+                    if (liveBlendshapeCount > 0) {
+                        Text(
+                            "Expressions ($liveBlendshapeCount ARKit shapes)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            FacialExpressionPreset.entries.forEach { expr ->
+                                FilterChip(
+                                    selected = selectedExpression == expr,
+                                    onClick = {
+                                        selectedExpression = expr
+                                        avatarForgeSurfaceView?.setFacialExpression(expr)
+                                    },
+                                    label = { Text(expr.label) }
+                                )
+                            }
+                        }
                     }
                 }
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)

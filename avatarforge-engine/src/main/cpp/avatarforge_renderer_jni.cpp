@@ -3,7 +3,9 @@
 #include <android/native_window_jni.h>
 
 #include "afcore.h"
+#include "avatarforge_live_rig.h"
 #include "render/af_render.h"
+#include "render/af_render_common.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,6 +20,7 @@
 namespace {
 struct NativeAvatarSession {
     ANativeWindow* window = nullptr;
+    std::shared_ptr<af_engine> liveEngine;
     af_engine* engine = nullptr;
     af::Renderer* renderer = nullptr;
     int width = 0;
@@ -26,6 +29,8 @@ struct NativeAvatarSession {
     af::CameraState initialCamera{};
     af::RendererOptions baseOptions{};
     bool allForeignSubmeshes = false;
+    bool isLiveRig = false;
+    int32_t highlightedRegion = -1;
     float boundsMin[3] = {0.0f, 0.0f, 0.0f};
     float boundsMax[3] = {0.0f, 1.75f, 0.0f};
     float minDistance = 0.05f;
@@ -39,7 +44,10 @@ struct NativeAvatarSession {
             delete renderer;
             renderer = nullptr;
         }
-        if (engine) {
+        if (liveEngine) {
+            engine = nullptr;
+            liveEngine.reset();
+        } else if (engine) {
             af_engine_destroy(engine);
             engine = nullptr;
         }
@@ -62,47 +70,58 @@ void throwState(JNIEnv* env, const std::string& message) {
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height,
-    jboolean preferVulkan) {
+    jboolean preferVulkan, jboolean allowLiveRig) {
     if (!surface || !glbPath || width <= 0 || height <= 0) {
         throwState(env, "AvatarForge renderer requires a Surface, GLB path and non-zero size");
         return 0;
     }
     const char* path = env->GetStringUTFChars(glbPath, nullptr);
     if (!path) return 0;
+    const std::string pathStr(path);
+    env->ReleaseStringUTFChars(glbPath, path);
 
     std::unique_ptr<NativeAvatarSession> session(new (std::nothrow) NativeAvatarSession());
     if (!session) {
-        env->ReleaseStringUTFChars(glbPath, path);
         throwState(env, "Unable to allocate AvatarForge render session");
         return 0;
     }
 
     session->window = ANativeWindow_fromSurface(env, surface);
     if (!session->window) {
-        env->ReleaseStringUTFChars(glbPath, path);
         throwState(env, "Android could not provide a native window for the AvatarForge surface");
         return 0;
     }
     session->width = width;
     session->height = height;
 
-    af_spec spec{};
-    af_spec_init(&spec);
-    const int32_t createResult = af_engine_create(&spec, nullptr, &session->engine);
-    if (createResult != AF_OK || !session->engine) {
-        env->ReleaseStringUTFChars(glbPath, path);
-        throwState(env, "af_engine_create failed: " + std::to_string(createResult));
-        return 0;
+    if (allowLiveRig == JNI_TRUE) {
+        auto live = af::LiveRigRegistry::acquireForPath(pathStr);
+        if (live && af_engine_submesh_count(live.get()) > 0) {
+            session->liveEngine = std::move(live);
+            session->engine = session->liveEngine.get();
+            session->isLiveRig = true;
+            float zeroWeights[52] = {};
+            af_engine_apply_blendshapes(session->engine, zeroWeights, 52);
+        }
     }
 
-    const int32_t importResult = af_engine_import_glb(session->engine, path);
-    const std::string importError = af_engine_last_error(session->engine)
-        ? af_engine_last_error(session->engine) : "";
-    env->ReleaseStringUTFChars(glbPath, path);
-    if (importResult != AF_OK) {
-        throwState(env, "AvatarForge GLB import failed (" + std::to_string(importResult) +
-                        "): " + importError);
-        return 0;
+    if (!session->engine) {
+        af_spec spec{};
+        af_spec_init(&spec);
+        const int32_t createResult = af_engine_create(&spec, nullptr, &session->engine);
+        if (createResult != AF_OK || !session->engine) {
+            throwState(env, "af_engine_create failed: " + std::to_string(createResult));
+            return 0;
+        }
+
+        const int32_t importResult = af_engine_import_glb(session->engine, pathStr.c_str());
+        const std::string importError = af_engine_last_error(session->engine)
+            ? af_engine_last_error(session->engine) : "";
+        if (importResult != AF_OK) {
+            throwState(env, "AvatarForge GLB import failed (" + std::to_string(importResult) +
+                            "): " + importError);
+            return 0;
+        }
     }
 
     /* Apply the initial skin pose before reading submesh bounds for camera framing.
@@ -651,6 +670,157 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetInspectionMode
     if (!session || !session->renderer) return;
     session->renderer->setSkeletonVisible(showSkeleton == JNI_TRUE);
     session->renderer->setFlatShading(flatShading == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetCapabilities(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    jint values[3] = {0, 0, 0};
+    if (session && session->engine) {
+        values[0] = static_cast<jint>(af_engine_joint_count(session->engine));
+        af_stats stats{};
+        if (af_engine_stats(session->engine, &stats) == AF_OK) {
+            values[1] = static_cast<jint>(stats.blendshape_count);
+        }
+        values[2] = session->isLiveRig ? 1 : 0;
+    }
+    jintArray out = env->NewIntArray(3);
+    if (out) env->SetIntArrayRegion(out, 0, 3, values);
+    return out;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetAnimationClip(
+    JNIEnv*, jobject, jlong handle, jint clipId, jfloat speed, jboolean loop) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer || !session->engine) return;
+    if (af_engine_joint_count(session->engine) <= 0) return;
+    const int32_t safeClip = std::clamp<int32_t>(clipId, AF_CLIP_REST, AF_CLIP_COUNT - 1);
+    const float safeSpeed = std::isfinite(speed) ? std::clamp(speed, 0.1f, 3.0f) : 1.0f;
+    session->renderer->setClip(safeClip, safeSpeed, loop == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeApplyExpression(
+    JNIEnv*, jobject, jlong handle, jint expressionId) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer || !session->engine) return;
+    if (af_engine_joint_count(session->engine) <= 0) return;
+    // Matches kBlendshapeNames[52] in af_rig.cpp.
+    float w[52] = {};
+    switch (expressionId) {
+        case 1: // Smile
+            w[43] = 0.85f; // mouthSmileLeft
+            w[44] = 0.85f; // mouthSmileRight
+            w[6]  = 0.45f; // cheekSquintLeft
+            w[7]  = 0.45f; // cheekSquintRight
+            w[18] = 0.25f; // eyeSquintLeft
+            w[19] = 0.25f; // eyeSquintRight
+            w[27] = 0.30f; // mouthDimpleLeft
+            w[28] = 0.30f; // mouthDimpleRight
+            break;
+        case 2: // Blink
+            w[8]  = 1.00f; // eyeBlinkLeft
+            w[9]  = 1.00f; // eyeBlinkRight
+            break;
+        case 3: // Wink
+            w[8]  = 1.00f; // eyeBlinkLeft
+            w[6]  = 0.40f; // cheekSquintLeft
+            w[43] = 0.65f; // mouthSmileLeft
+            w[44] = 0.35f; // mouthSmileRight
+            w[4]  = 0.35f; // browOuterUpRight
+            break;
+        case 4: // Surprised
+            w[2]  = 0.85f; // browInnerUp
+            w[3]  = 0.80f; // browOuterUpLeft
+            w[4]  = 0.80f; // browOuterUpRight
+            w[20] = 0.90f; // eyeWideLeft
+            w[21] = 0.90f; // eyeWideRight
+            w[24] = 0.72f; // jawOpen
+            break;
+        case 5: // Frown
+            w[0]  = 0.80f; // browDownLeft
+            w[1]  = 0.80f; // browDownRight
+            w[29] = 0.75f; // mouthFrownLeft
+            w[30] = 0.75f; // mouthFrownRight
+            w[49] = 0.25f; // noseSneerLeft
+            w[50] = 0.25f; // noseSneerRight
+            break;
+        case 6: // Gaze Left (character's left: left eye out, right eye in)
+            w[14] = 0.90f; // eyeLookOutLeft
+            w[13] = 0.90f; // eyeLookInRight
+            break;
+        case 7: // Gaze Right (character's right: left eye in, right eye out)
+            w[12] = 0.90f; // eyeLookInLeft
+            w[15] = 0.90f; // eyeLookOutRight
+            break;
+        default: // 0 = Neutral
+            break;
+    }
+    if (af_engine_apply_blendshapes(session->engine, w, 52) == AF_OK) {
+        session->renderer->invalidateMesh();
+    }
+}
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativePickRegion(
+    JNIEnv* env, jobject, jlong handle, jfloat normX, jfloat normY) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    jfloat result[2] = {-1.0f, 0.0f};
+    if (session && session->renderer && session->engine && session->width > 0 && session->height > 0 &&
+        std::isfinite(normX) && std::isfinite(normY)) {
+        const af::CameraState& cam = session->camera;
+        const float aspect = static_cast<float>(session->width) / static_cast<float>(session->height);
+        const float yaw = cam.yawDeg * 3.14159265358979323846f / 180.0f;
+        const float pitch = cam.pitchDeg * 3.14159265358979323846f / 180.0f;
+        const float dist = cam.distance < 0.3f ? 0.3f : cam.distance;
+        const af::Vec3 target{cam.targetX, cam.targetY, cam.targetZ};
+        const af::Vec3 eye{
+            cam.targetX + dist * std::cos(pitch) * std::sin(yaw),
+            cam.targetY + dist * std::sin(pitch),
+            cam.targetZ + dist * std::cos(pitch) * std::cos(yaw)
+        };
+        const af::Vec3 forward = af::vnormalize(af::vsub(target, eye));
+        const af::Vec3 worldUp{0.0f, 1.0f, 0.0f};
+        af::Vec3 right = af::vcross(forward, worldUp);
+        if (af::vdot(right, right) < 1e-10f) right = af::Vec3{1.0f, 0.0f, 0.0f};
+        else right = af::vnormalize(right);
+        const af::Vec3 camUp = af::vcross(right, forward);
+        const float safeFov = std::isfinite(cam.fovDeg) ? std::clamp(cam.fovDeg, 10.0f, 120.0f) : 32.0f;
+        const float tanHalfV = std::tan(safeFov * 3.14159265358979323846f / 360.0f);
+        const float ndcX = std::clamp(normX, 0.0f, 1.0f) * 2.0f - 1.0f;
+        const float ndcY = 1.0f - std::clamp(normY, 0.0f, 1.0f) * 2.0f;
+        const af::Vec3 rayDir = af::vnormalize(
+            af::vadd(af::vadd(forward, af::vscale(right, ndcX * aspect * tanHalfV)),
+                     af::vscale(camUp, ndcY * tanHalfV)));
+
+        const float origArr[3] = {eye.x, eye.y, eye.z};
+        const float dirArr[3] = {rayDir.x, rayDir.y, rayDir.z};
+        float hitDist = 0.0f;
+        const int32_t hitRegion = af::pickRegion(session->engine, origArr, dirArr, &hitDist, nullptr);
+        if (hitRegion >= 0 && hitRegion == session->highlightedRegion) {
+            session->highlightedRegion = -1;
+            hitDist = 0.0f;
+        } else {
+            session->highlightedRegion = hitRegion;
+        }
+        session->renderer->setHighlightRegion(session->highlightedRegion);
+        result[0] = static_cast<jfloat>(session->highlightedRegion);
+        result[1] = session->highlightedRegion >= 0 ? hitDist : 0.0f;
+    }
+    jfloatArray out = env->NewFloatArray(2);
+    if (out) env->SetFloatArrayRegion(out, 0, 2, result);
+    return out;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeClearHighlight(
+    JNIEnv*, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->highlightedRegion = -1;
+    session->renderer->setHighlightRegion(-1);
 }
 
 extern "C" JNIEXPORT void JNICALL

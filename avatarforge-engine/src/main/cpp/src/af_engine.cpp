@@ -498,6 +498,10 @@ int32_t af_engine_create(const af_spec* spec, const af_callbacks* callbacks, af_
     return static_cast<int32_t>(AF_OK);
 }
 
+void af_engine_clear_callbacks(af_engine* engine) {
+    if (engine) engine->cb = af_callbacks{};
+}
+
 void af_engine_destroy(af_engine* engine) {
     delete engine;
 }

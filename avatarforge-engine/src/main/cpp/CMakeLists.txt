@@ -96,6 +96,7 @@ if(BUILD_TESTING AND NOT ANDROID)
     add_executable(af_camera_frustum_test
         ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/camera_frustum_test.cpp)
     target_include_directories(af_camera_frustum_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/render
         ${CMAKE_CURRENT_SOURCE_DIR}/include)

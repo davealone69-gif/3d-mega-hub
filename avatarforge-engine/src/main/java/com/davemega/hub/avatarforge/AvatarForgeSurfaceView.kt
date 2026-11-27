@@ -26,6 +26,9 @@ class AvatarForgeSurfaceView(
     private val glbFile: File,
     private val verifyVisiblePixels: Boolean = false,
     private val preferVulkan: Boolean = true,
+    private val allowLiveRig: Boolean = true,
+    private val onCapabilities: (jointCount: Int, blendshapeCount: Int, isLiveRig: Boolean) -> Unit = { _, _, _ -> },
+    private val onRegionPicked: (regionId: Int, distanceM: Float) -> Unit = { _, _ -> },
     private val onStatus: (String) -> Unit
 ) : SurfaceView(context), SurfaceHolder.Callback {
     private val running = AtomicBoolean(false)
@@ -50,6 +53,13 @@ class AvatarForgeSurfaceView(
     private var pendingInspectionDirty = false
     private var showSkeleton = false
     private var flatShading = false
+    private var pendingClipId: Int? = null
+    private var pendingClipSpeed: Float = 1.0f
+    private var pendingClipLoop: Boolean = true
+    private var pendingExpressionId: Int? = null
+    private var pendingPickNormX: Float? = null
+    private var pendingPickNormY: Float? = null
+    private var pendingClearHighlight = false
     @Volatile private var autoTurntable = false
     @Volatile private var userInteracting = false
     private var lastTouchX = 0f
@@ -94,6 +104,28 @@ class AvatarForgeSurfaceView(
         autoTurntable = enabled
     }
 
+    fun setAnimationClip(clip: AnimationClipPreset, speed: Float = 1.0f, loop: Boolean = true) {
+        synchronized(cameraLock) {
+            pendingClipId = clip.nativeId
+            pendingClipSpeed = speed.coerceIn(0.1f, 3.0f)
+            pendingClipLoop = loop
+        }
+    }
+
+    fun setFacialExpression(expression: FacialExpressionPreset) {
+        synchronized(cameraLock) {
+            pendingExpressionId = expression.nativeId
+        }
+    }
+
+    fun clearRegionHighlight() {
+        synchronized(cameraLock) {
+            pendingPickNormX = null
+            pendingPickNormY = null
+            pendingClearHighlight = true
+        }
+    }
+
     private val scaleDetector = ScaleGestureDetector(
         context,
         object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -112,6 +144,21 @@ class AvatarForgeSurfaceView(
     private val tapDetector = GestureDetector(
         context,
         object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                val w = width
+                val h = height
+                if (w > 0 && h > 0) {
+                    val nx = (e.x / w.toFloat()).coerceIn(0f, 1f)
+                    val ny = (e.y / h.toFloat()).coerceIn(0f, 1f)
+                    synchronized(cameraLock) {
+                        pendingPickNormX = nx
+                        pendingPickNormY = ny
+                        pendingClearHighlight = false
+                    }
+                }
+                return true
+            }
+
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 synchronized(cameraLock) {
                     pendingYawDeg = 0f
@@ -262,15 +309,23 @@ class AvatarForgeSurfaceView(
                 while (running.get() && surfaceReady && (surfaceWidth <= 0 || surfaceHeight <= 0)) Thread.sleep(10)
                 if (!running.get() || !surfaceReady) return@Thread
                 check(glbFile.isFile && glbFile.length() > 0L) { "Selected GLB is not available in app storage." }
-                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight} preferVulkan=$preferVulkan")
+                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight} preferVulkan=$preferVulkan allowLiveRig=$allowLiveRig")
                 nativeHandle = nativeCreate(
                     surfaceHolder.surface,
                     glbFile.absolutePath,
                     max(1, surfaceWidth),
                     max(1, surfaceHeight),
-                    preferVulkan
+                    preferVulkan,
+                    allowLiveRig
                 )
                 check(nativeHandle != 0L) { "AvatarForge native renderer returned a null session." }
+                val caps = nativeGetCapabilities(nativeHandle)
+                if (caps.size == 3) {
+                    val joints = caps[0]
+                    val shapes = caps[1]
+                    val liveRig = caps[2] == 1
+                    mainHandler.post { onCapabilities(joints, shapes, liveRig) }
+                }
                 val rendererInfo = nativeGetInfo(nativeHandle)
                 val descriptor = RendererBackendPolicy.parse(rendererInfo)
                 val backendLabel = descriptor.backend.displayName
@@ -302,6 +357,13 @@ class AvatarForgeSurfaceView(
                     var applyInspection = false
                     var skeletonNow = false
                     var flatNow = false
+                    var clipIdNow: Int? = null
+                    var clipSpeedNow = 1.0f
+                    var clipLoopNow = true
+                    var exprIdNow: Int? = null
+                    var pickXNow: Float? = null
+                    var pickYNow: Float? = null
+                    var clearHighlightNow = false
                     synchronized(cameraLock) {
                         deltaYaw = pendingYawDeg
                         deltaPitch = pendingPitchDeg
@@ -312,6 +374,13 @@ class AvatarForgeSurfaceView(
                         applyInspection = pendingInspectionDirty
                         skeletonNow = showSkeleton
                         flatNow = flatShading
+                        clipIdNow = pendingClipId
+                        clipSpeedNow = pendingClipSpeed
+                        clipLoopNow = pendingClipLoop
+                        exprIdNow = pendingExpressionId
+                        pickXNow = pendingPickNormX
+                        pickYNow = pendingPickNormY
+                        clearHighlightNow = pendingClearHighlight
                         pendingYawDeg = 0f
                         pendingPitchDeg = 0f
                         pendingZoomScale = 1f
@@ -319,6 +388,11 @@ class AvatarForgeSurfaceView(
                         pendingCameraPresetId = null
                         pendingLightingPresetId = null
                         pendingInspectionDirty = false
+                        pendingClipId = null
+                        pendingExpressionId = null
+                        pendingPickNormX = null
+                        pendingPickNormY = null
+                        pendingClearHighlight = false
                     }
                     val now = System.nanoTime()
                     val delta = ((now - lastFrame).toDouble() / 1_000_000_000.0).coerceIn(0.001, 0.1).toFloat()
@@ -328,6 +402,12 @@ class AvatarForgeSurfaceView(
                     }
                     if (applyInspection) {
                         nativeSetInspectionModes(nativeHandle, skeletonNow, flatNow)
+                    }
+                    if (clipIdNow != null) {
+                        nativeSetAnimationClip(nativeHandle, clipIdNow!!, clipSpeedNow, clipLoopNow)
+                    }
+                    if (exprIdNow != null) {
+                        nativeApplyExpression(nativeHandle, exprIdNow!!)
                     }
                     if (cameraPresetId != null) {
                         nativeSetCameraPreset(nativeHandle, cameraPresetId!!)
@@ -339,6 +419,17 @@ class AvatarForgeSurfaceView(
                         }
                         if (deltaYaw != 0f || deltaPitch != 0f || zoomScale != 1f) {
                             nativeOrbitCamera(nativeHandle, deltaYaw, deltaPitch, zoomScale)
+                        }
+                    }
+                    if (clearHighlightNow) {
+                        nativeClearHighlight(nativeHandle)
+                        mainHandler.post { onRegionPicked(-1, 0f) }
+                    } else if (pickXNow != null && pickYNow != null) {
+                        val picked = nativePickRegion(nativeHandle, pickXNow!!, pickYNow!!)
+                        if (picked.size == 2) {
+                            val hitRegion = picked[0].toInt()
+                            val hitDist = picked[1]
+                            mainHandler.post { onRegionPicked(hitRegion, hitDist) }
                         }
                     }
                     val presentedThisFrame = nativeRender(nativeHandle, delta)
@@ -685,7 +776,8 @@ class AvatarForgeSurfaceView(
         glbPath: String,
         width: Int,
         height: Int,
-        preferVulkan: Boolean
+        preferVulkan: Boolean,
+        allowLiveRig: Boolean
     ): Long
     private external fun nativeResize(handle: Long, width: Int, height: Int)
     private external fun nativeOrbitCamera(handle: Long, deltaYawDeg: Float, deltaPitchDeg: Float, zoomScale: Float)
@@ -693,6 +785,11 @@ class AvatarForgeSurfaceView(
     private external fun nativeSetCameraPreset(handle: Long, presetId: Int)
     private external fun nativeSetLightingPreset(handle: Long, presetId: Int)
     private external fun nativeSetInspectionModes(handle: Long, showSkeleton: Boolean, flatShading: Boolean)
+    private external fun nativeGetCapabilities(handle: Long): IntArray
+    private external fun nativeSetAnimationClip(handle: Long, clipId: Int, speed: Float, loop: Boolean)
+    private external fun nativeApplyExpression(handle: Long, expressionId: Int)
+    private external fun nativePickRegion(handle: Long, normX: Float, normY: Float): FloatArray
+    private external fun nativeClearHighlight(handle: Long)
     private external fun nativeRender(handle: Long, deltaSeconds: Float): Boolean
     private external fun nativeWaitIdle(handle: Long)
     private external fun nativeGetInfo(handle: Long): String
