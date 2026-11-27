@@ -34,6 +34,10 @@ for x in sorted(glob.glob("app/build/outputs/androidTest-results/connected/**/*.
 if not found:
     print("no JUnit failure node found (crash or shell error?)")
 EOF
+  if [ -s "$OUT/gradle-output.txt" ]; then
+    echo "--- Gradle output tail ---"
+    tail -n 45 "$OUT/gradle-output.txt"
+  fi
   echo '```'
 } > /tmp/evidence-body.md
 python3 - <<'EOF'

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Runs GeneratedAvatarRuntimeTest on the Android emulator, always captures evidence
-# (screencap, logcat, app diagnostics, sha256 manifest), and exits with Gradle's exact code.
+# (Gradle output, screencap, logcat, app diagnostics, sha256 manifest), and exits with Gradle's exact code.
 set +e
-./gradlew :app:connectedDebugAndroidTest \
-  -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest \
-  --stacktrace
-test_status=$?
-
 OUT="artifacts/avatarforge/runtime-captures"
 mkdir -p "$OUT"
+
+./gradlew :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest \
+  --stacktrace 2>&1 | tee "$OUT/gradle-output.txt"
+test_status=${PIPESTATUS[0]}
 
 adb exec-out screencap -p > "$OUT/emulator-screen.png" || true
 adb logcat -d > "$OUT/logcat.txt" || true
