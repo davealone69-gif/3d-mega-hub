@@ -195,31 +195,63 @@ void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
     Vec3 albedo = ctx.skinAlbedo;
     const float macro = fbm(n, p * 6.0f, 3) * 0.06f;
     albedo = albedo * (1.0f + macro);
+    const float headH = maxf(m.y.crownY - m.y.chinY, 0.16f);
+    const float noseY = m.y.eyeY - headH * 0.075f;
+    const float faceFrontZ = -m.head.rz * 0.96f;
+
+    /* Portrait tri-zone facial colour grading (MetaHuman / classical portrait anatomy):
+       - Upper third (forehead/temples): warmer golden-ochre (thinner subcutaneous fat over bone)
+       - Middle third (cheeks/nose/ears): richer rosy hemoglobin blush
+       - Lower third (jaw/chin/under-eye): subtly cooler olive-blue undertone */
+    const float foreheadZone = mask3(p, Vec3(0.0f, m.y.eyeY + headH * 0.19f, faceFrontZ * 0.84f),
+                                     Vec3(m.head.rx * 0.92f, headH * 0.16f, m.head.rz * 0.65f));
+    const float jawCoolZone = mask3(p, Vec3(0.0f, m.y.chinY + headH * 0.11f, faceFrontZ * 0.78f),
+                                    Vec3(m.jaw.rx * 1.15f, headH * 0.13f, m.head.rz * 0.72f));
+    albedo = albedo.lerp(albedo * Vec3(1.045f, 1.015f, 0.945f), foreheadZone * 0.42f);
+    albedo = albedo.lerp(albedo * Vec3(0.955f, 0.975f, 1.025f), jawCoolZone * 0.30f);
 
     /* Erythema: cheeks, nose, ears, elbows, knees, knuckles, and the palms/soles slightly
        deeper. All are anatomical, positioned from the solved landmarks. */
     float blush = 0.0f;
-    blush += mask3(p, Vec3(m.faceWidth * 0.32f, m.mouthY + (m.y.crownY - m.y.chinY) * 0.075f, -m.head.rz * 0.82f),
+    blush += mask3(p, Vec3(m.faceWidth * 0.32f, m.mouthY + headH * 0.075f, -m.head.rz * 0.82f),
                    Vec3(m.faceWidth * 0.24f, m.head.rz * 0.36f, m.head.rz * 0.42f)) * 0.9f;   /* left cheek */
-    blush += mask3(p, Vec3(-m.faceWidth * 0.32f, m.mouthY + (m.y.crownY - m.y.chinY) * 0.075f, -m.head.rz * 0.82f),
+    blush += mask3(p, Vec3(-m.faceWidth * 0.32f, m.mouthY + headH * 0.075f, -m.head.rz * 0.82f),
                    Vec3(m.faceWidth * 0.24f, m.head.rz * 0.36f, m.head.rz * 0.42f)) * 0.9f;   /* right cheek */
-    blush += mask3(p, Vec3(0, m.mouthY + (m.y.crownY - m.y.chinY) * 0.115f, -m.head.rz * 1.00f),
-                   Vec3(m.faceWidth * 0.16f, m.head.rz * 0.30f, m.head.rz * 0.40f)) * 0.8f;   /* nose */
+    blush += mask3(p, Vec3(0, m.mouthY + headH * 0.115f, -m.head.rz * 1.00f),
+                   Vec3(m.faceWidth * 0.16f, m.head.rz * 0.30f, m.head.rz * 0.40f)) * 0.85f;  /* nose */
+    for (int side = 0; side < 2; ++side) {
+        const float sx = (side == 0) ? 1.0f : -1.0f;
+        /* Ears: thin vascular cartilage glows warmly. */
+        blush += mask3(p, Vec3(sx * m.head.rx * 1.02f, m.y.eyeY - headH * 0.055f, -m.head.rz * 0.10f),
+                       Vec3(m.head.rx * 0.24f, m.earLength * 0.60f, m.head.rz * 0.34f)) * 0.72f;
+    }
     for (int s2 = 0; s2 < 2; ++s2) {
-        const Chain& c = ctx.m ? ctx.chains[s2] : ctx.chains[s2];
+        const Chain& c = ctx.chains[s2];
         blush += mask3(p, (c.hipJoint + c.knee) * 0.5f + Vec3(c.knee.x - c.hipJoint.x, 0, c.knee.z - c.hipJoint.z) * 0.18f,
                        Vec3(0.055f, 0.045f, 0.055f)) * 0.5f;                                     /* knees */
         blush += mask3(p, c.elbow, Vec3(0.035f, 0.035f, 0.035f)) * 0.55f;                     /* elbows */
         blush += mask3(p, c.ball, Vec3(0.06f, 0.03f, 0.10f)) * 0.35f;                         /* balls of feet */
     }
-    blush += mask3(p, Vec3(0, m.y.crownY - (m.y.crownY - m.y.chinY) * 0.10f, m.head.centreZ * 0.5f),
+    blush += mask3(p, Vec3(0, m.y.crownY - headH * 0.10f, m.head.centreZ * 0.5f),
                    Vec3(m.head.rx * 1.05f, m.head.rz * 0.35f, m.head.rz * 0.95f)) * 0.30f;       /* scalp */
     blush = saturate(blush);
     const float blushNoise = 0.75f + 0.5f * fbm(n, p * 22.0f, 3);
-    const float erythema = blush * 0.22f * blushNoise;
-    albedo.x = saturate(albedo.x + erythema * 0.55f);
-    albedo.y = saturate(albedo.y - erythema * 0.06f);
-    albedo.z = saturate(albedo.z - erythema * 0.10f);
+    const float erythema = blush * 0.24f * blushNoise;
+    albedo.x = saturate(albedo.x + erythema * 0.58f);
+    albedo.y = saturate(albedo.y - erythema * 0.065f);
+    albedo.z = saturate(albedo.z - erythema * 0.105f);
+
+    /* Subtle orbital skin shading: softer, slightly darker translucent skin around the eyelids
+       and lashline anchors the eyes naturally in the face. */
+    float orbitalShade = 0.0f;
+    for (int side = 0; side < 2; ++side) {
+        const Vec3 ec = ctx.eyeCentre[side];
+        const float er = maxf(ctx.eyeRadius, 0.009f);
+        orbitalShade += mask3(p, ec + Vec3(0.0f, er * 0.38f, -er * 0.62f), Vec3(er * 1.65f, er * 1.05f, er * 1.05f)) * 0.55f;
+        orbitalShade += mask3(p, ec + Vec3(0.0f, -er * 0.72f, -er * 0.55f), Vec3(er * 1.45f, er * 0.68f, er * 0.95f)) * 0.35f;
+    }
+    orbitalShade = saturate(orbitalShade);
+    albedo = albedo.lerp(albedo * Vec3(0.84f, 0.78f, 0.80f), orbitalShade * 0.34f);
 
     /* Freckles and naevi: sparse, denser on sun-exposed skin. */
     const float freckleField = fbm(n, p * 90.0f + Vec3(3.1f, 7.7f, 1.3f), 2);
@@ -233,26 +265,80 @@ void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
 
     /* Capillary detail in thin skin (temples, hands, lower legs) - fine darker lines. */
     const float veins = saturate((fbm(n, p * 42.0f + Vec3(11.0f, 0.0f, 5.0f), 3, 2.3f, 0.55f) - 0.55f) * 5.0f);
-    const float thinSkin = saturate(mask3(p, Vec3(0, m.y.crownY - (m.y.crownY - m.y.chinY) * 0.20f, -m.head.rz * 0.4f),
+    const float thinSkin = saturate(mask3(p, Vec3(0, m.y.crownY - headH * 0.20f, -m.head.rz * 0.4f),
                                           Vec3(m.head.rx * 1.1f, m.head.rz * 0.5f, m.head.rz * 0.9f)) + blush * 0.4f);
     const Vec3 veinTint(0.72f, 0.66f, 0.74f);
     albedo = albedo.lerp(albedo * veinTint * 1.05f, veins * thinSkin * 0.18f);
 
-    /* Lips are a distinct material but share the skin mesh's boundary; the region label handles
-       the switch, so nothing extra is needed here. */
+    /* Anatomical sebum / oiliness roughness map:
+       Real human skin is NOT uniform clay — the T-zone (nose bridge/tip, central forehead,
+       inner cheeks, eyelids, upper-lip cupid's bow, chin apex) carries a glossy lipid sheen
+       (roughness ~0.28-0.36), while outer cheeks, jaw, neck, and limbs remain satin-matte (~0.50-0.58). */
+    float sebum = 0.0f;
+    sebum += mask3(p, Vec3(0.0f, noseY + headH * 0.02f, faceFrontZ * 1.14f),
+                   Vec3(m.head.rx * 0.28f, headH * 0.13f, m.head.rz * 0.48f)) * 1.00f;          /* nose bridge & tip */
+    sebum += mask3(p, Vec3(0.0f, m.y.eyeY + headH * 0.16f, faceFrontZ * 0.92f),
+                   Vec3(m.head.rx * 0.52f, headH * 0.12f, m.head.rz * 0.42f)) * 0.78f;          /* central forehead */
+    sebum += mask3(p, Vec3(0.0f, m.y.chinY + headH * 0.06f, faceFrontZ * 0.94f),
+                   Vec3(m.head.rx * 0.28f, headH * 0.07f, m.head.rz * 0.36f)) * 0.65f;          /* chin highlight */
+    for (int side = 0; side < 2; ++side) {
+        const float sx = (side == 0) ? 1.0f : -1.0f;
+        /* Zygomatic cheekbone highlights & eyelids carry crisp portrait specular. */
+        sebum += mask3(p, Vec3(sx * m.faceWidth * 0.34f, m.y.eyeY - headH * 0.07f, faceFrontZ * 0.80f),
+                       Vec3(m.faceWidth * 0.20f, headH * 0.08f, m.head.rz * 0.38f)) * 0.72f;
+        sebum += mask3(p, ctx.eyeCentre[side] + Vec3(0.0f, ctx.eyeRadius * 0.55f, -ctx.eyeRadius * 0.65f),
+                       Vec3(ctx.eyeRadius * 1.30f, ctx.eyeRadius * 0.62f, ctx.eyeRadius * 0.85f)) * 0.68f;
+    }
+    sebum = saturate(sebum);
+    const float microRoughVar = (fbm(n, p * 85.0f, 2) - 0.5f) * 0.055f;
+    const float baseSkinRough = saturate(0.56f - 0.08f * ctx.spec->body_fat + 0.08f * age - 0.05f * s.curvature);
 
     out->albedo = albedo;
-    out->roughness = saturate(0.62f - 0.10f * ctx.spec->body_fat + 0.10f * age - 0.06f * s.curvature);
+    out->roughness = clampf(lerpf(baseSkinRough, 0.27f + 0.05f * age, sebum * 0.88f) + microRoughVar, 0.22f, 0.74f);
     out->metallic = 0.0f;
     out->thickness = s.thickness;
-    out->scatterRadius = saturate(s.thickness * 1.6f);
+    /* Thin facial structures (ears, nasal alae, eyelids) scatter light richly under backlighting. */
+    float thinBoost = 0.0f;
+    for (int side = 0; side < 2; ++side) {
+        const float sx = (side == 0) ? 1.0f : -1.0f;
+        thinBoost += mask3(p, Vec3(sx * m.head.rx * 1.04f, m.y.eyeY - headH * 0.055f, -m.head.rz * 0.10f),
+                           Vec3(m.head.rx * 0.24f, m.earLength * 0.62f, m.head.rz * 0.34f)) * 0.65f;
+    }
+    thinBoost += mask3(p, Vec3(0.0f, noseY, faceFrontZ * 1.18f),
+                       Vec3(m.head.rx * 0.24f, headH * 0.07f, m.head.rz * 0.32f)) * 0.45f;
+    out->scatterRadius = saturate(s.thickness * 1.6f + thinBoost * 0.45f);
     out->tint = ctx.spec->skin_melanin;
-    /* Occlusion: crevices darken, and the belt/bust/armpit contact regions darken further. */
-    out->occlusion = saturate(0.55f + 0.55f * s.curvature);
+
+    /* Anatomical contact & cavity ambient occlusion:
+       Curvature plus key facial/body cavities (orbits, nostrils, alar crease, under-chin neck,
+       ear concha, lip corners, clavicles, armpits, waist, bust) give sculptural 3D depth. */
+    out->occlusion = saturate(0.58f + 0.52f * s.curvature);
+    /* Orbital & lashline cavity AO. */
+    for (int side = 0; side < 2; ++side) {
+        const float sx = (side == 0) ? 1.0f : -1.0f;
+        const Vec3 ec = ctx.eyeCentre[side];
+        const float er = maxf(ctx.eyeRadius, 0.009f);
+        out->occlusion *= 1.0f - 0.34f * mask3(p, ec + Vec3(0.0f, er * 0.25f, -er * 0.35f),
+                                               Vec3(er * 1.55f, er * 1.15f, er * 1.10f));
+        /* Nostril / alar groove cavity AO. */
+        out->occlusion *= 1.0f - 0.36f * mask3(p, Vec3(sx * m.head.rx * 0.11f, noseY - headH * 0.022f, faceFrontZ * 1.02f),
+                                               Vec3(m.head.rx * 0.12f, headH * 0.042f, m.head.rz * 0.22f));
+        /* Ear concha & behind-ear shadow AO. */
+        out->occlusion *= 1.0f - 0.30f * mask3(p, Vec3(sx * m.head.rx * 1.02f, m.y.eyeY - headH * 0.055f, -m.head.rz * 0.05f),
+                                               Vec3(m.head.rx * 0.14f, m.earLength * 0.42f, m.head.rz * 0.24f));
+        /* Armpit contact AO. */
+        out->occlusion *= 1.0f - 0.28f * mask3(p, Vec3(sx * m.chest.rx * 0.92f, m.y.armpitY, m.chest.centreZ),
+                                               Vec3(0.065f, 0.075f, 0.085f));
+    }
+    /* Submental under-chin / neck junction AO + labiomental under-lip groove AO. */
+    out->occlusion *= 1.0f - 0.26f * mask3(p, Vec3(0.0f, m.y.chinY - headH * 0.03f, -m.head.rz * 0.38f),
+                                           Vec3(m.jaw.rx * 0.92f, headH * 0.11f, m.head.rz * 0.62f));
+    out->occlusion *= 1.0f - 0.20f * mask3(p, Vec3(0.0f, m.mouthY - headH * 0.042f, faceFrontZ * 0.94f),
+                                           Vec3(m.mouthWidth * 0.55f, headH * 0.032f, m.head.rz * 0.22f));
     out->occlusion *= 1.0f - 0.18f * saturate(mask3(p, Vec3(0, m.y.waistY - 0.10f, 0), Vec3(0.22f, 0.06f, 0.16f)));
     out->occlusion *= 1.0f - 0.20f * saturate(mask3(p, Vec3(m.bustSep * 0.5f, m.y.bustY - 0.02f, -m.chest.rz * 0.8f),
                                                     Vec3(0.10f, 0.09f, 0.10f)));
-    out->occlusion = saturate(out->occlusion);
+    out->occlusion = clampf(out->occlusion, 0.24f, 1.0f);
 
     /* Micro-relief gradient: pores + fine creases. 0.4 mm pores on the face, coarser elsewhere. */
     if (s.region == REGION_SKIN) {
@@ -322,47 +408,65 @@ void evaluateEye(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut*
         albedo = Vec3(0.008f, 0.007f, 0.008f);    /* pupil */
         roughness = 0.08f;
     } else if (radial < rIris) {
-        /* Iris: radial fibre striations around the average iris colour, darker at the limbus.
-           Use world-space (y, x) azimuth so radial fibres never seam across UV charts. */
+        /* Photorealistic multi-layer iris stroma:
+           1. Deep radial trabeculae fibers (two harmonic frequencies with gentle angular warp)
+           2. Lacy dark Fuchs' crypts & concentric peripheral contraction furrows
+           3. Warm amber/gold central heterochromia collarette ring around the pupil
+           4. Crisp dark feathered limbal ring */
         const float angle = std::atan2(radialVec.y, radialVec.x);
         const float t = (radial - rPupil) / std::max(1e-6f, rIris - rPupil);
-        /* Iris colour is not a separate spec field: it is derived from the same melanin that
-           drives skin and hair, plus a deterministic per-avatar hue shift, which is what the
-           photogrammetry literature reports as the real population correlation (light eyes
-           appear with low melanin, and the hue varies by a few degrees between individuals). */
         const float hueShift = ctx.noise.hash3f(101, which, 7) - 0.5f;
         const float eumelanin = ctx.spec->skin_melanin;
-        const Vec3 base = Vec3(0.34f + 0.30f * (1.0f - eumelanin) + hueShift * 0.06f,
-                               0.30f + 0.28f * (1.0f - eumelanin) + hueShift * 0.03f,
-                               0.20f + 0.34f * (1.0f - eumelanin) - hueShift * 0.02f).lerp(
-            Vec3(0.20f, 0.11f, 0.05f), saturate(eumelanin * 1.25f));
-        const float fibres = fbm(ctx.noise, Vec3(std::cos(angle), std::sin(angle), t * 6.0f) * 40.0f, 3, 2.5f, 0.55f);
-        const float limbal = saturate((t - 0.72f) / 0.28f);
-        const float collarette = 1.0f - saturate(std::fabs(t - 0.48f) * 5.0f);
-        albedo = base * (0.72f + 0.55f * fibres);
-        albedo = albedo.lerp(base * Vec3(0.35f, 0.32f, 0.30f), limbal * 0.88f);
-        albedo = albedo * (1.0f + collarette * 0.24f);
-        albedo = albedo.lerp(Vec3(0.015f, 0.015f, 0.02f), saturate((rPupil * 1.15f - radial) / (rPupil * 0.3f)));
-        roughness = 0.22f;
+        const Vec3 base = Vec3(0.32f + 0.34f * (1.0f - eumelanin) + hueShift * 0.06f,
+                               0.30f + 0.30f * (1.0f - eumelanin) + hueShift * 0.03f,
+                               0.22f + 0.38f * (1.0f - eumelanin) - hueShift * 0.02f).lerp(
+            Vec3(0.19f, 0.10f, 0.045f), saturate(eumelanin * 1.25f));
+        const float angWarp = (fbm(ctx.noise, Vec3(std::cos(angle) * 6.0f, std::sin(angle) * 6.0f, t * 5.0f), 2) - 0.5f) * 0.14f;
+        const float aW = angle + angWarp;
+        const float primarySpokes = 0.5f + 0.5f * std::sin(aW * 54.0f + fbm(ctx.noise, Vec3(std::cos(aW), std::sin(aW), t * 2.5f) * 18.0f, 2) * 3.2f);
+        const float fineFibres = fbm(ctx.noise, Vec3(std::cos(aW), std::sin(aW), t * 4.5f) * 44.0f, 3, 2.4f, 0.55f);
+        const float stroma = 0.55f * fineFibres + 0.45f * primarySpokes;
+        /* Lacy dark Fuchs' crypts near the mid-collarette and concentric contraction rings near the limbus. */
+        const float cryptNoise = fbm(ctx.noise, Vec3(std::cos(angle) * 14.0f, std::sin(angle) * 14.0f, t * 14.0f), 3);
+        const float crypts = saturate((0.36f - cryptNoise) * 4.2f) * (1.0f - std::fabs(t - 0.44f) * 1.8f);
+        const float furrows = (0.5f + 0.5f * std::sin(t * 28.0f + angWarp * 6.0f)) * smoothstepf(0.45f, 0.85f, t);
+        const float limbal = smoothstepf(0.68f, 0.99f, t);
+        const float collarette = std::exp(-std::pow((t - 0.32f) / 0.15f, 2.0f));
+        const Vec3 amberHalo = Vec3(0.56f, 0.36f, 0.14f).lerp(Vec3(0.32f, 0.18f, 0.07f), saturate(eumelanin));
+
+        albedo = base * (0.64f + 0.68f * stroma);
+        albedo = albedo.lerp(amberHalo * (0.85f + 0.35f * primarySpokes), collarette * 0.42f);
+        albedo = albedo * (1.0f - 0.42f * saturate(crypts)) * (1.0f - 0.12f * furrows);
+        albedo = albedo.lerp(base * Vec3(0.22f, 0.21f, 0.22f), limbal * 0.90f);
+        albedo = albedo.lerp(Vec3(0.012f, 0.012f, 0.016f), saturate((rPupil * 1.18f - radial) / (rPupil * 0.32f)));
+        roughness = 0.20f;
+        /* Subtle stroma fibre micro-relief in normal map so raking catchlights glint off iris fibres. */
+        const float fibreGrad = std::cos(aW * 54.0f) * (1.0f - limbal) * 0.22f;
+        out->reliefGradient = Vec3(fibreGrad * -std::sin(angle), fibreGrad * std::cos(angle), 0.0f);
     } else {
-        /* Sclera: warm ivory white with soft limbal transition and subtle peripheral episcleral vessels. */
+        /* Sclera: warm ivory white with soft limbal transition, subtle pink inner-canthus
+           conjunctival warmth, and fine branching peripheral episcleral vessels. */
         const float t = saturate((radial - rIris) / maxf(r * 0.55f, 1e-4f));
-        const float limbusBlend = saturate((radial - rIris) / maxf(r * 0.055f, 1e-4f));
-        const Vec3 limbusTint = Vec3(0.55f, 0.56f, 0.58f);
-        const Vec3 scleraBase = Vec3(0.92f, 0.90f, 0.88f) * (1.0f - 0.09f * t);
+        const float limbusBlend = saturate((radial - rIris) / maxf(r * 0.060f, 1e-4f));
+        const Vec3 limbusTint = Vec3(0.50f, 0.52f, 0.56f);
+        const Vec3 scleraBase = Vec3(0.93f, 0.91f, 0.89f) * (1.0f - 0.10f * t);
         albedo = limbusTint.lerp(scleraBase, limbusBlend);
-        const float veins = saturate((fbm(ctx.noise, rel * 260.0f, 3, 2.4f, 0.55f) - 0.54f) * 6.5f);
-        const float veinDensity = saturate((t - 0.18f) * 1.35f);
-        albedo = albedo.lerp(Vec3(0.72f, 0.26f, 0.26f), veins * veinDensity * 0.45f);
-        roughness = 0.14f;
+        const float cornerPink = smoothstepf(0.35f, 0.95f, t) * (1.0f - saturate(std::fabs(radialVec.y) / maxf(r * 0.55f, 1e-4f)));
+        albedo = albedo.lerp(Vec3(0.86f, 0.64f, 0.62f), cornerPink * 0.35f);
+        const float veins = saturate((fbm(ctx.noise, rel * 280.0f, 3, 2.4f, 0.55f) - 0.53f) * 6.8f);
+        const float veinDensity = saturate((t - 0.16f) * 1.35f);
+        albedo = albedo.lerp(Vec3(0.72f, 0.24f, 0.24f), veins * veinDensity * 0.48f);
+        roughness = 0.12f;
     }
+    /* Upper-eyelid ambient occlusion shadow across the superior globe so eyes sit naturally inside the lids. */
+    const float lidShadow = smoothstepf(r * 0.22f, r * 0.78f, radialVec.y);
     out->albedo = albedo;
     out->roughness = roughness;
     out->metallic = 0.0f;
     out->thickness = 0.15f;
     out->scatterRadius = 0.05f;
     out->tint = 0.0f;
-    out->occlusion = 1.0f;
+    out->occlusion = clampf(1.0f - 0.32f * lidShadow, 0.62f, 1.0f);
 }
 
 void evaluateCornea(const MaterialContext& /*ctx*/, const SurfaceSample& /*s*/, SurfaceOut* out) {
@@ -410,17 +514,30 @@ void evaluateLips(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
     const float t = s.position.y - m.mouthY;
     const float halfH = m.lipWidth * 0.42f;
     const float lipT = saturate(1.0f - std::fabs(t) / std::max(1e-5f, halfH));
-    Vec3 albedo = ctx.skinAlbedo.lerp(Vec3(0.66f, 0.24f, 0.24f), 0.65f + 0.3f * lipT);
-    /* Vermilion border and vertical lip lines */
-    const float lines = saturate((fbm(ctx.noise, Vec3(s.position.x * 420.0f, s.position.y * 60.0f, s.position.z * 60.0f), 2) - 0.5f) * 5.0f);
-    albedo = albedo * (1.0f - 0.12f * lines * lipT);
-    albedo = albedo * (1.0f - 0.25f * saturate(std::fabs(t) / halfH - 0.55f));   /* darker vermilion edge */
+    const float cornerFade = saturate(1.0f - std::fabs(s.position.x) / maxf(m.mouthWidth * 0.52f, 1e-4f));
+    /* Rich natural lip colour: transitions from skin-blended outer vermilion to deeper vascular
+       moist inner lip, with subtle melanin adaptation so dark and light skin tones both look natural. */
+    const Vec3 lipTarget = Vec3(0.64f, 0.23f, 0.24f).lerp(Vec3(0.36f, 0.15f, 0.16f), saturate(ctx.spec->skin_melanin * 0.75f));
+    Vec3 albedo = ctx.skinAlbedo.lerp(lipTarget, 0.58f + 0.36f * lipT);
+    /* Vertical lip micro-creases baked into BOTH albedo and tangent-space normal map. */
+    const float xPhase = s.position.x * 520.0f + fbm(ctx.noise, s.position * 140.0f, 2) * 3.5f;
+    const float creaseWave = std::sin(xPhase);
+    const float lines = saturate((0.5f - 0.5f * creaseWave) * (0.45f + 0.55f * lipT));
+    albedo = albedo * (1.0f - 0.11f * lines * cornerFade);
+    /* Crisp vermilion edge shading & dark mouth-parting line. */
+    albedo = albedo * (1.0f - 0.22f * saturate(std::fabs(t) / halfH - 0.58f));
+    const float partingLine = std::exp(-std::pow(t / maxf(halfH * 0.12f, 1e-4f), 2.0f));
+    albedo = albedo * (1.0f - 0.28f * partingLine * cornerFade);
     out->albedo = albedo;
-    out->roughness = 0.30f - 0.08f * lipT;
+    /* Moist glossy inner lip (0.20) transitioning to satin outer vermilion (0.34). */
+    out->roughness = clampf(0.34f - 0.14f * lipT * cornerFade + 0.04f * lines, 0.18f, 0.42f);
     out->thickness = 0.010f;
-    out->scatterRadius = 0.012f;
-    out->tint = 0.4f;
-    out->occlusion = saturate(0.55f + 0.5f * s.curvature);
+    out->scatterRadius = 0.016f;
+    out->tint = 0.45f;
+    out->occlusion = clampf(saturate(0.58f + 0.48f * s.curvature) * (1.0f - 0.35f * partingLine * cornerFade), 0.30f, 1.0f);
+    /* Analytic tangent-space normal ridge for vertical lip lines. */
+    const float creaseSlope = std::cos(xPhase) * 0.26f * lipT * cornerFade;
+    out->reliefGradient = Vec3(creaseSlope, 0.0f, 0.0f);
 }
 
 void evaluateNail(const MaterialContext&, const SurfaceSample& s, SurfaceOut* out) {
@@ -433,32 +550,47 @@ void evaluateNail(const MaterialContext&, const SurfaceSample& s, SurfaceOut* ou
 
 void evaluateCloth(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out, bool upper,
                    const MaterialDef& mat) {
-    /* A woven twill: two interleaved thread systems. The pattern is aligned to the body frame
-       (world X/Z for horizontal fabrics) which keeps the weave coherent across the torso. */
-    /* Keep the weave above the atlas' practical sampling floor. The former 3.5 mm
-       high-contrast pattern plus 900 cycles/metre fuzz aliased into moire bands on the
-       generated garment. A softer 6.5 mm weave reads as fabric without overpowering it. */
-    const float yarn = 0.0065f;
+    /* Diagonal 2x2 twill weave (denim/cotton feel) plus subtle garment seam & fold AO.
+       Kept at 6.2 mm pitch so threads read crisply without moire aliasing after atlas mips. */
+    const float yarn = 0.0062f;
     const Vec3 q = s.position / yarn;
-    const float warp = std::sin(q.x * 6.2831853f) * 0.5f + 0.5f;
-    const float weft = std::sin(q.z * 6.2831853f) * 0.5f + 0.5f;
-    const float twill = (warp + weft) * 0.5f;
-    const float fuzz = fbm(ctx.noise, s.position * 240.0f, 2, 2.1f, 0.5f);
-    Vec3 albedo = mat.baseColor * (0.94f + 0.08f * twill) * (0.98f + 0.04f * fuzz);
-    /* Restrained dye variation; keep the garment colour coherent at full-body viewing distance. */
-    albedo *= 1.0f + 0.025f * fbm(ctx.noise, s.position * 8.0f, 3);
+    const float diagPhase = (q.x + q.y * 0.85f + q.z) * 6.2831853f;
+    const float crossPhase = (q.x - q.z) * 6.2831853f;
+    const float twill = 0.62f * (std::sin(diagPhase) * 0.5f + 0.5f) +
+                        0.38f * (std::sin(crossPhase) * 0.5f + 0.5f);
+    const float fuzz = fbm(ctx.noise, s.position * 220.0f, 2, 2.1f, 0.5f);
+    const float macroFolds = fbm(ctx.noise, Vec3(s.position.x * 16.0f, s.position.y * 28.0f, s.position.z * 16.0f), 3);
+
+    /* Subtle stitched seam darkening near collar, waist tuck, and trouser inseam/outseam. */
+    const BodyMetrics& m = *ctx.m;
+    float seam = 0.0f;
+    const float waistDist = std::fabs(s.position.y - (m.y.waistY - 0.04f));
+    seam = maxf(seam, std::exp(-std::pow(waistDist / 0.006f, 2.0f)) * 0.55f);
+    if (!upper) {
+        /* Trouser side-seam & center-fly crease line. */
+        const float flyDist = std::fabs(s.position.x);
+        const float flyMask = smoothstepf(m.y.crotchY - 0.02f, m.y.waistY - 0.02f, s.position.y);
+        seam = maxf(seam, std::exp(-std::pow(flyDist / 0.005f, 2.0f)) * flyMask * 0.45f);
+    } else {
+        /* Subtle shoulder/collar neckline seam. */
+        const float neckDist = std::fabs(s.position.y - (m.y.neckBaseY - 0.025f));
+        seam = maxf(seam, std::exp(-std::pow(neckDist / 0.0055f, 2.0f)) * 0.42f);
+    }
+
+    Vec3 albedo = mat.baseColor * (0.93f + 0.10f * twill) * (0.97f + 0.05f * fuzz);
+    albedo *= 0.96f + 0.07f * macroFolds;
+    albedo *= 1.0f - 0.20f * seam;
     out->albedo = albedo;
-    out->roughness = saturate(mat.roughness - 0.035f * twill + 0.02f * fuzz);
+    out->roughness = clampf(mat.roughness - 0.045f * twill + 0.03f * fuzz + 0.05f * seam, 0.35f, 0.96f);
     out->metallic = 0.0f;
     out->thickness = 0.008f;
     out->scatterRadius = 0.004f;
     out->tint = 0.0f;
-    out->occlusion = saturate(0.5f + 0.6f * s.curvature);
-    /* Subtle weave relief; avoid sub-millimetre normals that shimmer after atlas filtering. */
-    const float amp = 0.00010f;
-    out->reliefGradient = Vec3(std::cos(q.x * 6.2831853f) * amp * 6.2831853f / yarn,
-                               std::cos(q.z * 6.2831853f) * amp * 6.2831853f / yarn * 0.5f, 0.0f);
-    (void)upper;
+    out->occlusion = clampf(saturate(0.52f + 0.58f * s.curvature) * (1.0f - 0.22f * seam) * (0.92f + 0.08f * macroFolds), 0.28f, 1.0f);
+    /* Diagonal twill micro-relief + gentle seam indentation. */
+    const float amp = 0.00013f;
+    out->reliefGradient = Vec3(std::cos(diagPhase) * amp * 6.2831853f / yarn,
+                               std::cos(crossPhase) * amp * 6.2831853f / yarn * 0.65f - seam * 0.20f, 0.0f);
 }
 
 void evaluateShoe(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out) {
@@ -656,10 +788,13 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
                             ? Vec3(-dhDu * 0.55f, -dhDv, 1.0f).normalizedOr(Vec3(0, 0, 1))
                             : Vec3(0, 0, 1);
 
-                        /* Root-to-tip melanin brightness + per-strand natural tonal breakup. */
-                        const float rootToTip = lerpf(0.74f, 1.08f, smoothstepf(0.05f, 0.88f, cardV));
-                        const float strandValue = clampf(rootToTip * (0.78f + 0.34f * fibreHeight), 0.35f, 1.15f);
-                        const Vec3 albedoLinear(strandValue, strandValue * 0.99f, strandValue * 0.97f);
+                        /* Root-to-tip melanin brightness + natural per-strand highlight/lowlight breakup. */
+                        const float rootToTip = lerpf(0.70f, 1.12f, smoothstepf(0.05f, 0.88f, cardV));
+                        const float strandTintVar = 0.5f + 0.5f * std::sin(uFlow * (17.0f + 3.0f * static_cast<float>(variant)) * 6.2831853f + vPhase * 3.7f);
+                        const float strandValue = clampf(rootToTip * (0.72f + 0.42f * fibreHeight) * (0.90f + 0.22f * strandTintVar), 0.30f, 1.18f);
+                        const Vec3 albedoLinear(strandValue * (1.0f + 0.04f * strandTintVar),
+                                                strandValue * (0.985f + 0.02f * strandTintVar),
+                                                strandValue * (0.955f - 0.02f * strandTintVar));
 
                         /* Feathered multi-strand alpha mask: solid root anchor, soft lateral edges,
                            and staggered wispy strand lengths tapering cleanly to zero at tips. */

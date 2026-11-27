@@ -339,6 +339,29 @@ float BodyField::torso(const Vec3& p) const {
                                      m_.trapeziusBulge * 0.42f + 0.016f), 0.032f);
     }
 
+    /* --- clavicles & suprasternal notch (high-value upper-portrait anatomical landmarks) --- */
+    {
+        const float clavVis = saturate(1.15f - m_.bodyFat * 2.4f);
+        if (clavVis > 0.10f) {
+            const float clavR = (0.0068f + 0.0022f * clavVis) * (H / 1.75f);
+            const float clavY = lerpf(m_.y.shoulderY, m_.y.neckBaseY, 0.35f);
+            const float chestFrontZ = m_.chest.centreZ - m_.chest.rz * 0.84f;
+            for (int s = 0; s < 2; ++s) {
+                const float sx = (s == 0) ? 1.0f : -1.0f;
+                const Vec3 sternal(sx * 0.018f, clavY - 0.006f, chestFrontZ - 0.003f);
+                const Vec3 mid(sx * m_.biacromialHalf * 0.52f, clavY + 0.004f, chestFrontZ + 0.002f);
+                const Vec3 acrom(sx * m_.biacromialHalf * 0.90f, m_.y.shoulderY + 0.003f, -0.004f);
+                d = smin(d, sdTaperedCapsule(p, sternal, mid, clavR, clavR * 0.92f), 0.015f);
+                d = smin(d, sdTaperedCapsule(p, mid, acrom, clavR * 0.92f, clavR * 0.80f), 0.016f);
+            }
+            /* Subtle jugular (suprasternal) hollow between the sternal heads of the clavicles. */
+            const float notch = sdEllipsoid(
+                p - Vec3(0.0f, clavY - 0.003f, chestFrontZ - 0.011f),
+                Vec3(0.015f, 0.013f, 0.012f));
+            d = smax(d, -notch, 0.010f);
+        }
+    }
+
     /* --- latissimus / ribs (only visibly present on muscular builds) -------------------- */
     if (m_.latBulge > 1e-4f) {
         const Vec3 radii(m_.chest.rx * 0.34f, (m_.y.armpitY - m_.y.waistY) * 0.42f, m_.chest.rz * 0.46f);
@@ -702,10 +725,21 @@ float BodyField::lipsShape(const Vec3& p) const {
     const Vec3 m = mouthCentre_;
     const float upThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.20f : 0.16f);
     const float loThick = lw * (m_.sex == AF_SEX_FEMALE ? 0.26f : 0.20f);
-    float lips = sdEllipsoid(p - Vec3(m.x, m.y + upThick * 0.60f, m.z), Vec3(lw * 0.50f, upThick, lw * 0.26f));
-    lips = smin(lips, sdEllipsoid(p - Vec3(m.x, m.y - loThick * 0.55f, m.z), Vec3(lw * 0.46f, loThick, lw * 0.28f)), 0.010f);
+    float lips = sdEllipsoid(p - Vec3(m.x, m.y + upThick * 0.56f, m.z), Vec3(lw * 0.48f, upThick * 0.92f, lw * 0.25f));
+    /* Cupid's bow: subtle twin philtral peaks + central upper tubercle for realistic lip profile. */
     for (int side = 0; side < 2; ++side) {
         const float sx = (side == 0) ? 1.0f : -1.0f;
+        lips = smin(lips, blob(p, Vec3(m.x + sx * lw * 0.135f, m.y + upThick * 0.92f, m.z - lw * 0.045f),
+                               Vec3(lw * 0.125f, upThick * 0.55f, lw * 0.14f)), 0.0045f);
+    }
+    lips = smin(lips, blob(p, Vec3(m.x, m.y + upThick * 0.28f, m.z - lw * 0.065f),
+                           Vec3(lw * 0.115f, upThick * 0.48f, lw * 0.13f)), 0.0045f);
+    /* Lower lip: twin fuller lateral pillows framing a soft central dip. */
+    lips = smin(lips, sdEllipsoid(p - Vec3(m.x, m.y - loThick * 0.55f, m.z), Vec3(lw * 0.45f, loThick, lw * 0.28f)), 0.010f);
+    for (int side = 0; side < 2; ++side) {
+        const float sx = (side == 0) ? 1.0f : -1.0f;
+        lips = smin(lips, blob(p, Vec3(m.x + sx * lw * 0.14f, m.y - loThick * 0.52f, m.z - lw * 0.055f),
+                               Vec3(lw * 0.16f, loThick * 0.62f, lw * 0.16f)), 0.0055f);
         lips = smin(lips, blob(p, Vec3(m.x + sx * lw * 0.50f, m.y - lw * 0.02f, m.z - lw * 0.04f),
                                Vec3(lw * 0.10f, lw * 0.14f, lw * 0.12f)), 0.008f);
     }
@@ -899,6 +933,9 @@ float BodyField::skull(const Vec3& p) const {
         float ear = sdEllipsoid(er, Vec3(m_.head.rx * 0.075f, m_.earLength * 0.52f, m_.head.rz * 0.30f));
         ear = smax(ear, -sdEllipsoid(er - Vec3(sx * m_.head.rx * 0.03f, 0, -m_.head.rz * 0.03f),
                                      Vec3(m_.head.rx * 0.055f, m_.earLength * 0.34f, m_.head.rz * 0.20f)) - 0.004f, 0.010f);
+        /* Sculpted tragus & antihelix ridge so side/3-4 profiles show real auricular structure. */
+        ear = smin(ear, blob(er, Vec3(sx * m_.head.rx * 0.024f, -m_.earLength * 0.06f, -m_.head.rz * 0.14f),
+                             Vec3(m_.head.rx * 0.028f, m_.earLength * 0.11f, m_.head.rz * 0.065f)), 0.005f);
         d = smin(d, ear, 0.016f);
     }
     return d;
@@ -924,11 +961,17 @@ float BodyField::faceFeatures(const Vec3& p) const {
                                             Vec3(width * 0.30f, width * 0.28f, width * 0.26f));
             nose = smax(nose, -notch - 0.003f, 0.008f);
         }
+        /* Columella ridge between nostrils + soft nasion saddle at top of nasal bridge. */
+        nose = smin(nose, sdCapsule(p, tip + Vec3(0, -headH * 0.016f, width * 0.02f),
+                                    tip + Vec3(0, -headH * 0.026f, width * 0.45f), width * 0.18f), 0.004f);
         /* Philtrum groove. */
         const float philtrum = sdCapsule(p, tip + Vec3(0, -headH * 0.022f, -width * 0.20f),
                                          mouthCentre_ + Vec3(0, headH * 0.020f, -headH * 0.005f), width * 0.16f);
         nose = smax(nose, -philtrum - 0.002f, 0.010f);
         d = smin(d, nose, 0.018f);
+        const float nasion = sdEllipsoid(p - (bridge + Vec3(0, headH * 0.022f, -width * 0.55f)),
+                                         Vec3(width * 0.72f, headH * 0.018f, width * 0.48f));
+        d = smax(d, -nasion, 0.010f);
     }
 
     /* Lips: the shared vermilion envelope (see lipsShape) blended into the face. */
@@ -946,6 +989,13 @@ float BodyField::faceFeatures(const Vec3& p) const {
         /* Upper lid. */
         d = smin(d, sdEllipsoid(p - (e + Vec3(0, r * 0.62f, -r * 0.22f)),
                                 Vec3(r * 1.42f, r * 0.72f, r * 0.95f)), 0.010f);
+        /* Supratarsal upper-eyelid crease: delicate recessed fold above the tarsal plate. */
+        const float upperCrease = sdCapsule(
+            p,
+            e + Vec3(-sx * r * 0.92f, r * 0.88f, -r * 0.82f),
+            e + Vec3( sx * r * 1.08f, r * 0.82f, -r * 0.76f),
+            r * 0.16f);
+        d = smax(d, -upperCrease, 0.0045f);
         /* Lower lid. */
         d = smin(d, sdEllipsoid(p - (e + Vec3(0, -r * 0.66f, -r * 0.20f)),
                                 Vec3(r * 1.38f, r * 0.60f, r * 0.92f)), 0.010f);

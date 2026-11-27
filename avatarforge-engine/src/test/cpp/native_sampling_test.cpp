@@ -470,6 +470,53 @@ int main() {
         require(darkPupilVerts > 0 && midIrisVerts > 0 && brightScleraVerts > 20,
                 "baked eye texture must contain distinct pupil, iris, and bright sclera zones");
 
+        // Photorealism PBR material & micro-relief verification:
+        // 1. Skin must exhibit real anatomical T-zone sebum roughness contrast (glossy nose/forehead
+        //    vs satin cheeks/limbs) and facial/body cavity AO contrast, not uniform clay.
+        // 2. Lips must bake non-flat vertical micro-crease normals into the tangent-space normal map.
+        // 3. Eye occlusion must include superior upper-eyelid ambient shadow.
+        {
+            float skinRoughMin = 1.0f, skinRoughMax = 0.0f;
+            float skinAoMin = 1.0f, skinAoMax = 0.0f;
+            float lipNormalMaxTilt = 0.0f;
+            float eyeAoMin = 1.0f, eyeAoMax = 0.0f;
+            for (size_t i = 0; i < eyeTestMesh.positions.size(); ++i) {
+                const int r = eyeTestMesh.regions[i];
+                const float u = eyeTestMesh.uvs[i * 2];
+                const float v = eyeTestMesh.uvs[i * 2 + 1];
+                const int px = std::clamp(static_cast<int>(u * eyeTex.width), 0, eyeTex.width - 1);
+                const int py = std::clamp(static_cast<int>(v * eyeTex.height), 0, eyeTex.height - 1);
+                const size_t idx4 = (static_cast<size_t>(py) * eyeTex.width + px) * 4;
+                const size_t idx1 = static_cast<size_t>(py) * eyeTex.width + px;
+                if (r == af::REGION_SKIN) {
+                    const float rough = eyeTex.metallicRoughness[idx4 + 1] / 255.0f;
+                    const float ao = eyeTex.occlusion[idx1] / 255.0f;
+                    if (rough >= 0.20f) { // ignore chart-edge gutter texels adjacent to cornea/eye
+                        skinRoughMin = std::min(skinRoughMin, rough);
+                        skinRoughMax = std::max(skinRoughMax, rough);
+                    }
+                    skinAoMin = std::min(skinAoMin, ao);
+                    skinAoMax = std::max(skinAoMax, ao);
+                } else if (r == af::REGION_LIPS) {
+                    const float nx = (eyeTex.normal[idx4 + 0] / 255.0f) * 2.0f - 1.0f;
+                    const float ny = (eyeTex.normal[idx4 + 1] / 255.0f) * 2.0f - 1.0f;
+                    lipNormalMaxTilt = std::max(lipNormalMaxTilt, std::sqrt(nx * nx + ny * ny));
+                } else if (r == af::REGION_EYE_L) {
+                    const float ao = eyeTex.occlusion[idx1] / 255.0f;
+                    eyeAoMin = std::min(eyeAoMin, ao);
+                    eyeAoMax = std::max(eyeAoMax, ao);
+                }
+            }
+            require(skinRoughMin < 0.36f && skinRoughMax > 0.48f && (skinRoughMax - skinRoughMin) > 0.14f,
+                    "skin roughness map lacks anatomical T-zone sebum contrast");
+            require(skinAoMin < 0.72f && skinAoMax > 0.90f && (skinAoMax - skinAoMin) > 0.25f,
+                    "skin occlusion map lacks anatomical facial/body cavity AO contrast");
+            require(lipNormalMaxTilt > 0.05f,
+                    "lip normal map must contain baked vertical lip micro-crease relief");
+            require(eyeAoMin < 0.85f && eyeAoMax > 0.95f,
+                    "eye occlusion map must include superior upper-eyelid shadow");
+        }
+
         // Rigging: eye_L/eye_R joints must align with the analytic eyeballs within 1 mm and
         // bind both inner eye and outer cornea vertices 100% rigidly to their eye joint.
         af::Rig eyeRig;
