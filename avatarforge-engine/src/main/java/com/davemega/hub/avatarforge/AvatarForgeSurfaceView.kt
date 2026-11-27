@@ -222,6 +222,8 @@ class AvatarForgeSurfaceView(
                     "Unexpected AvatarForge backend information: $rendererInfo"
                 }
                 val apiVersion = rendererInfo.substringAfter('|').substringBefore('|')
+                val firstPresentBudgetNanos = RendererFrameBudget.firstPresentBudgetNanos(rendererInfo)
+                val firstPresentBudgetSeconds = firstPresentBudgetNanos / 1_000_000_000L
                 recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion)
                 onStatus("AvatarForge GLES renderer active · $apiVersion · ${glbFile.name}")
                 var lastFrame = System.nanoTime()
@@ -278,8 +280,8 @@ class AvatarForgeSurfaceView(
                                 presentedFrames, boundsInFrustum, outsideCorners, glError, eglError)
                             Log.i(TAG, "FRAME_PRESENTED api=$apiVersion frames=$frames presented=$presentedFrames draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum")
                             onStatus("EGL frame presented · $presentedFrames successful swaps · $drawCalls draw calls · $triangles triangles")
-                        } else if (System.nanoTime() - frameWaitStarted > 15_000_000_000L) {
-                            error("No drawable EGL-presented model frame within 15 seconds " +
+                        } else if (System.nanoTime() - frameWaitStarted > firstPresentBudgetNanos) {
+                            error("No drawable EGL-presented model frame within $firstPresentBudgetSeconds seconds " +
                                 "(frames=$frames presented=$presentedFrames framePresented=$framePresented " +
                                 "draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
                                 "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)})")
