@@ -127,6 +127,7 @@ public:
 private:
     /* ---- setup steps (each returns false and fills error on failure) ---- */
     bool createInstance(std::string* error);
+    bool probeHardwareDevice(std::string* error);
     bool createSurface(ANativeWindow* window, std::string* error);
     bool pickPhysicalDevice(std::string* error);
     bool createDevice(std::string* error);
@@ -364,6 +365,9 @@ private:
 bool VulkanRenderer::init(ANativeWindow* window, const RendererOptions& options, std::string* error) {
     options_ = options;
     if (!createInstance(error)) return false;
+    /* Reject CPU/software Vulkan devices BEFORE calling vkCreateAndroidSurfaceKHR so
+       ANativeWindow stays completely untouched when falling back to OpenGL ES 3.1. */
+    if (!probeHardwareDevice(error)) return false;
     if (!createSurface(window, error)) return false;
     if (!pickPhysicalDevice(error)) return false;
     if (!createDevice(error)) return false;
@@ -440,6 +444,52 @@ bool VulkanRenderer::createInstance(std::string* error) {
     return true;
 }
 
+namespace {
+bool isSoftwareVulkanDevice(const VkPhysicalDeviceProperties& p) {
+    if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) return true;
+    std::string lower = p.deviceName;
+    for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return lower.find("swiftshader") != std::string::npos ||
+           lower.find("lavapipe") != std::string::npos ||
+           lower.find("llvmpipe") != std::string::npos ||
+           lower.find("subzero") != std::string::npos;
+}
+} /* namespace */
+
+bool VulkanRenderer::probeHardwareDevice(std::string* error) {
+    uint32_t count = 0;
+    vkEnumeratePhysicalDevices(instance_, &count, nullptr);
+    if (count == 0) {
+        *error = "no Vulkan device present";
+        return false;
+    }
+    std::vector<VkPhysicalDevice> devices(count);
+    vkEnumeratePhysicalDevices(instance_, &count, devices.data());
+    std::string skippedSoftwareDevice;
+    for (VkPhysicalDevice dev : devices) {
+        VkPhysicalDeviceProperties p{};
+        vkGetPhysicalDeviceProperties(dev, &p);
+        if (isSoftwareVulkanDevice(p)) {
+            skippedSoftwareDevice = p.deviceName;
+            continue;
+        }
+        uint32_t qcount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qcount, nullptr);
+        std::vector<VkQueueFamilyProperties> queues(qcount);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qcount, queues.data());
+        for (uint32_t q = 0; q < qcount; ++q) {
+            if (queues[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) return true;
+        }
+    }
+    if (!skippedSoftwareDevice.empty()) {
+        *error = "skipping CPU/software Vulkan device (" + skippedSoftwareDevice +
+                 ") so GLES 3.1 fallback handles emulator rendering";
+    } else {
+        *error = "no hardware Vulkan graphics device present";
+    }
+    return false;
+}
+
 bool VulkanRenderer::createSurface(ANativeWindow* window, std::string* error) {
     VkAndroidSurfaceCreateInfoKHR ci{};
     ci.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
@@ -466,15 +516,6 @@ bool VulkanRenderer::pickPhysicalDevice(std::string* error) {
     int bestScore = -1;
     uint32_t bestFamily = 0;
     std::string skippedSoftwareDevice;
-    auto isSoftwareVkDevice = [](const VkPhysicalDeviceProperties& p) {
-        if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) return true;
-        std::string lower = p.deviceName;
-        for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        return lower.find("swiftshader") != std::string::npos ||
-               lower.find("lavapipe") != std::string::npos ||
-               lower.find("llvmpipe") != std::string::npos ||
-               lower.find("subzero") != std::string::npos;
-    };
     for (VkPhysicalDevice dev : devices) {
         uint32_t qcount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(dev, &qcount, nullptr);
@@ -487,7 +528,7 @@ bool VulkanRenderer::pickPhysicalDevice(std::string* error) {
             if (!present) continue;
             VkPhysicalDeviceProperties p{};
             vkGetPhysicalDeviceProperties(dev, &p);
-            if (isSoftwareVkDevice(p)) {
+            if (isSoftwareVulkanDevice(p)) {
                 skippedSoftwareDevice = p.deviceName;
                 break;
             }
@@ -3044,7 +3085,14 @@ void VulkanRenderer::destroyPipelines() {
 
 void VulkanRenderer::destroyAll() {
     if (!device_) {
-        if (instance_) vkDestroyInstance(instance_, nullptr);
+        if (surface_ && instance_) {
+            vkDestroySurfaceKHR(instance_, surface_, nullptr);
+            surface_ = VK_NULL_HANDLE;
+        }
+        if (instance_) {
+            vkDestroyInstance(instance_, nullptr);
+            instance_ = VK_NULL_HANDLE;
+        }
         return;
     }
     vkDeviceWaitIdle(device_);

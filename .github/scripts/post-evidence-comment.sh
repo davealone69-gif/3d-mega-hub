@@ -27,8 +27,8 @@ for x in glob.glob("app/build/outputs/androidTest-results/connected/**/*.xml", r
         for f in list(tc.iter("failure")) + list(tc.iter("error")):
             found = True
             print(f"TEST {tc.get('classname')}.{tc.get('name')}")
-            print((f.get("message") or "")[:700])
-            print((f.text or "")[:300])
+            print((f.get("message") or "")[:1200])
+            print((f.text or "")[:1200])
 if not found:
     print("no JUnit failure node found (crash before reporting?)")
 EOF
