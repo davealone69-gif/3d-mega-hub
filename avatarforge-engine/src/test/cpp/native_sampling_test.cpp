@@ -675,6 +675,70 @@ int main() {
             }
             require(std::fabs(wSum - 1.0f) < 1e-3f, "hair card skin weights must sum to 1.0");
         }
+
+        // 3D Eyebrow & Eyelash Cards verification (even on bald AF_HAIR_NONE avatars):
+        //   - Watertight manifold ribbons in REGION_HAIR_CARD
+        //   - Bound 100% to head joint
+        //   - Eyelashes blink with eyeBlinkLeft (not eyeLookOutLeft) and brows respond to browDownLeft.
+        af::BodyField facialField(qualityMetrics);
+        af::ApparelOptions facialApp{};
+        facialApp.hair = 0; // AF_HAIR_NONE
+        facialField.setApparel(facialApp);
+        af::Mesh facialOnly;
+        const af::HairCardReport facialRep = af::appendProceduralFacialHairCards(facialField, 0.0f, &facialOnly);
+        require(facialRep.browCardCount == 12 && facialRep.lashCardCount == 16 && facialRep.cardCount == 28,
+                "facial hair cards must generate 12 brow cards and 16 upper/lower lash cards");
+        const af::Mesh::ManifoldReport facialAudit = facialOnly.audit();
+        require(facialAudit.openEdges == 0 && facialAudit.nonManifoldEdges == 0,
+                "3D eyebrow and eyelash cards must be watertight and manifold");
+
+        af::Mesh baldAvatar;
+        af::BodyBuildReport baldRep;
+        require(af::buildBodyMesh(facialField, coarseOptions, &baldAvatar, &baldRep),
+                "bald body mesh build with facial hair cards failed");
+        require(baldRep.openEdgesAfterRepair == 0 && baldRep.nonManifoldEdges == 0,
+                "bald avatar with 3D brows and lashes must remain watertight and manifold");
+        af::Rig facialRig;
+        require(facialRig.build(facialField, baldAvatar), "facial hair card rig build failed");
+
+        int blinkLeftIdx = -1, lookOutLeftIdx = -1, browDownLeftIdx = -1;
+        for (int c = 0; c < af::kBlendshapeCount; ++c) {
+            if (std::string(af::kBlendshapeNames[c]) == "eyeBlinkLeft") blinkLeftIdx = c;
+            if (std::string(af::kBlendshapeNames[c]) == "eyeLookOutLeft") lookOutLeftIdx = c;
+            if (std::string(af::kBlendshapeNames[c]) == "browDownLeft") browDownLeftIdx = c;
+        }
+        require(blinkLeftIdx >= 0 && lookOutLeftIdx >= 0 && browDownLeftIdx >= 0,
+                "expected facial ARKit blendshapes missing");
+
+        float maxLashBlinkDown = 0.0f, maxFacialLookDelta = 0.0f, maxBrowDown = 0.0f;
+        size_t facialCardVerts = 0;
+        const auto& blinkDeltas = facialRig.blendshapeDeltas(blinkLeftIdx);
+        const auto& lookDeltas = facialRig.blendshapeDeltas(lookOutLeftIdx);
+        const auto& browDeltas = facialRig.blendshapeDeltas(browDownLeftIdx);
+        for (size_t i = 0; i < baldAvatar.positions.size(); ++i) {
+            if (baldAvatar.regions[i] != af::REGION_HAIR_CARD) continue;
+            ++facialCardVerts;
+            const af::SkinWeights& sw = facialRig.weights()[i];
+            for (int k = 0; k < 4; ++k) {
+                if (sw.weights[k] > 0.0f) {
+                    require(facialRig.joints()[sw.joints[k]].name == "head",
+                            "facial brow/lash card vertex must bind to head joint");
+                }
+            }
+            if (baldAvatar.positions[i].x > 0.0f) {
+                maxLashBlinkDown = std::max(maxLashBlinkDown, -blinkDeltas[i].y);
+                maxBrowDown = std::max(maxBrowDown, -browDeltas[i].y);
+            }
+            maxFacialLookDelta = std::max(maxFacialLookDelta, lookDeltas[i].length());
+        }
+        require(facialCardVerts >= static_cast<size_t>(facialRep.vertexCount),
+                "bald avatar must preserve all 3D eyebrow and eyelash card vertices");
+        require(maxLashBlinkDown > 0.002f,
+                "3D upper eyelash cards must move downward with eyeBlinkLeft");
+        require(maxBrowDown > 0.001f,
+                "3D eyebrow cards must move downward with browDownLeft");
+        require(maxFacialLookDelta < 1e-6f,
+                "eyeLookOutLeft must rotate eyeball/cornea without pulling 3D eyelashes or brows");
     }
 
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
@@ -682,6 +746,7 @@ int main() {
     std::puts("PASS: GLB export omits KHR_materials_sheen and exports wet cornea with BLEND + clearcoat");
     std::puts("PASS: dual-mesh eyes pass geometry, sclera/iris texture, rigid skinning, and blendshape checks");
     std::puts("PASS: procedural hair cards pass watertightness, UV sheet, alpha/normal bake, GLB MASK, and rigging checks");
+    std::puts("PASS: 3D eyebrow and eyelash cards pass watertightness, head skinning, and blink/brow blendshape checks");
 
     std::puts("PASS: 40 repeated single-thread, parallel, and block-skipped sampling comparisons");
     return 0;

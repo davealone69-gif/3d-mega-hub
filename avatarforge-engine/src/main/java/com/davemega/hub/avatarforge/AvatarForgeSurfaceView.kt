@@ -45,9 +45,54 @@ class AvatarForgeSurfaceView(
     private var pendingPitchDeg = 0f
     private var pendingZoomScale = 1f
     private var pendingCameraReset = false
+    private var pendingCameraPresetId: Int? = null
+    private var pendingLightingPresetId: Int? = null
+    private var pendingInspectionDirty = false
+    private var showSkeleton = false
+    private var flatShading = false
+    @Volatile private var autoTurntable = false
+    @Volatile private var userInteracting = false
     private var lastTouchX = 0f
     private var lastTouchY = 0f
     private var activePointerId = MotionEvent.INVALID_POINTER_ID
+
+    fun setCameraPreset(preset: CameraPreset) {
+        synchronized(cameraLock) {
+            pendingYawDeg = 0f
+            pendingPitchDeg = 0f
+            pendingZoomScale = 1f
+            pendingCameraReset = false
+            pendingCameraPresetId = preset.nativeId
+        }
+    }
+
+    fun setLightingPreset(preset: LightingPreset) {
+        synchronized(cameraLock) {
+            pendingLightingPresetId = preset.nativeId
+        }
+    }
+
+    fun setSkeletonVisible(visible: Boolean) {
+        synchronized(cameraLock) {
+            if (showSkeleton != visible) {
+                showSkeleton = visible
+                pendingInspectionDirty = true
+            }
+        }
+    }
+
+    fun setFlatShading(enabled: Boolean) {
+        synchronized(cameraLock) {
+            if (flatShading != enabled) {
+                flatShading = enabled
+                pendingInspectionDirty = true
+            }
+        }
+    }
+
+    fun setAutoTurntable(enabled: Boolean) {
+        autoTurntable = enabled
+    }
 
     private val scaleDetector = ScaleGestureDetector(
         context,
@@ -97,6 +142,7 @@ class AvatarForgeSurfaceView(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                userInteracting = true
                 activePointerId = event.getPointerId(0)
                 lastTouchX = event.x
                 lastTouchY = event.y
@@ -131,6 +177,7 @@ class AvatarForgeSurfaceView(
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                userInteracting = false
                 activePointerId = MotionEvent.INVALID_POINTER_ID
                 parent?.requestDisallowInterceptTouchEvent(false)
             }
@@ -250,24 +297,50 @@ class AvatarForgeSurfaceView(
                     var deltaPitch = 0f
                     var zoomScale = 1f
                     var resetCam = false
+                    var cameraPresetId: Int? = null
+                    var lightingPresetId: Int? = null
+                    var applyInspection = false
+                    var skeletonNow = false
+                    var flatNow = false
                     synchronized(cameraLock) {
                         deltaYaw = pendingYawDeg
                         deltaPitch = pendingPitchDeg
                         zoomScale = pendingZoomScale
                         resetCam = pendingCameraReset
+                        cameraPresetId = pendingCameraPresetId
+                        lightingPresetId = pendingLightingPresetId
+                        applyInspection = pendingInspectionDirty
+                        skeletonNow = showSkeleton
+                        flatNow = flatShading
                         pendingYawDeg = 0f
                         pendingPitchDeg = 0f
                         pendingZoomScale = 1f
                         pendingCameraReset = false
-                    }
-                    if (resetCam) {
-                        nativeResetCamera(nativeHandle)
-                    } else if (deltaYaw != 0f || deltaPitch != 0f || zoomScale != 1f) {
-                        nativeOrbitCamera(nativeHandle, deltaYaw, deltaPitch, zoomScale)
+                        pendingCameraPresetId = null
+                        pendingLightingPresetId = null
+                        pendingInspectionDirty = false
                     }
                     val now = System.nanoTime()
                     val delta = ((now - lastFrame).toDouble() / 1_000_000_000.0).coerceIn(0.001, 0.1).toFloat()
                     lastFrame = now
+                    if (lightingPresetId != null) {
+                        nativeSetLightingPreset(nativeHandle, lightingPresetId!!)
+                    }
+                    if (applyInspection) {
+                        nativeSetInspectionModes(nativeHandle, skeletonNow, flatNow)
+                    }
+                    if (cameraPresetId != null) {
+                        nativeSetCameraPreset(nativeHandle, cameraPresetId!!)
+                    } else if (resetCam) {
+                        nativeResetCamera(nativeHandle)
+                    } else {
+                        if (autoTurntable && !userInteracting && reportedFrame) {
+                            deltaYaw += delta * 24.0f
+                        }
+                        if (deltaYaw != 0f || deltaPitch != 0f || zoomScale != 1f) {
+                            nativeOrbitCamera(nativeHandle, deltaYaw, deltaPitch, zoomScale)
+                        }
+                    }
                     val presentedThisFrame = nativeRender(nativeHandle, delta)
                     val stats = nativeGetStats(nativeHandle)
                     check(stats.size == 9) { "AvatarForge returned ${stats.size} renderer statistics; expected 9." }
@@ -617,6 +690,9 @@ class AvatarForgeSurfaceView(
     private external fun nativeResize(handle: Long, width: Int, height: Int)
     private external fun nativeOrbitCamera(handle: Long, deltaYawDeg: Float, deltaPitchDeg: Float, zoomScale: Float)
     private external fun nativeResetCamera(handle: Long)
+    private external fun nativeSetCameraPreset(handle: Long, presetId: Int)
+    private external fun nativeSetLightingPreset(handle: Long, presetId: Int)
+    private external fun nativeSetInspectionModes(handle: Long, showSkeleton: Boolean, flatShading: Boolean)
     private external fun nativeRender(handle: Long, deltaSeconds: Float): Boolean
     private external fun nativeWaitIdle(handle: Long)
     private external fun nativeGetInfo(handle: Long): String

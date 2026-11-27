@@ -5,15 +5,18 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.net.Uri
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -32,14 +35,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.compose.ui.viewinterop.AndroidView
+import com.davemega.hub.avatarforge.AvatarCustomizationState
 import com.davemega.hub.avatarforge.AvatarForgeEngine
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
 import com.davemega.hub.avatarforge.AvatarSpec
 import com.davemega.hub.avatarforge.Build
+import com.davemega.hub.avatarforge.CameraPreset
 import com.davemega.hub.avatarforge.HairStyle
+import com.davemega.hub.avatarforge.LightingPreset
 import com.davemega.hub.avatarforge.Outfit
 import com.davemega.hub.avatarforge.Sex
 import java.io.File
+import kotlin.math.roundToInt
+import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -62,18 +70,22 @@ fun AvatarStudioScreen(
     var pixelDiagnosticPath by remember { mutableStateOf<String?>(null) }
     var diagnosticScreenshot by remember { mutableStateOf<File?>(null) }
     var remoteGlbUrl by remember { mutableStateOf("") }
-    var generationPrompt by remember {
-        mutableStateOf("Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans")
-    }
+    var customization by remember { mutableStateOf(AvatarCustomizationState()) }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
-    var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
+    var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge or Filament preview surface.") }
     // Route external animated GLBs to the Filament gltfio preview so skeletal clips can play.
     // AvatarForge-generated avatars, diagnostics, and static GLBs default to AvatarForgeSurfaceView
-    // (native GLES) so they do not trigger Filament's morph-storage or ubershader blockers.
+    // (Vulkan-first with GLES 3.1 fallback) so they do not trigger Filament's morph-storage blockers.
     var useFilamentAnimationPreview by remember(avatarUri, pixelDiagnosticPath) {
         val isActiveDiagnostic = pixelDiagnosticPath != null && avatarUri?.path == pixelDiagnosticPath
         mutableStateOf(!isActiveDiagnostic && GlbPreviewRouter.shouldDefaultToFilament(avatarUri))
     }
+    var avatarForgeSurfaceView by remember { mutableStateOf<AvatarForgeSurfaceView?>(null) }
+    var selectedCameraPreset by remember(avatarUri) { mutableStateOf(CameraPreset.FULL_BODY) }
+    var selectedLightingPreset by remember(avatarUri) { mutableStateOf(LightingPreset.STUDIO) }
+    var autoTurntable by remember(avatarUri) { mutableStateOf(false) }
+    var showSkeleton by remember(avatarUri) { mutableStateOf(false) }
+    var flatShading by remember(avatarUri) { mutableStateOf(false) }
     var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
     var animationCount by remember { mutableStateOf(0) }
     var selectedAnimation by remember { mutableStateOf(0) }
@@ -155,7 +167,16 @@ fun AvatarStudioScreen(
                                             .getString("screenshot_path", null)
                                         diagnosticScreenshot = savedPath?.let(::File)?.takeIf { it.isFile }
                                     }
+                                }.also { created ->
+                                    avatarForgeSurfaceView = created
+                                    created.setLightingPreset(selectedLightingPreset)
+                                    created.setSkeletonVisible(showSkeleton)
+                                    created.setFlatShading(flatShading)
+                                    created.setAutoTurntable(autoTurntable)
                                 }
+                            },
+                            update = { view ->
+                                avatarForgeSurfaceView = view
                             },
                             modifier = Modifier.fillMaxWidth().height(420.dp)
                         )
@@ -190,6 +211,70 @@ fun AvatarStudioScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (hasImportedFile && !useFilamentAnimationPreview) {
+                    Text("Camera", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        CameraPreset.entries.forEach { preset ->
+                            FilterChip(
+                                selected = selectedCameraPreset == preset,
+                                onClick = {
+                                    selectedCameraPreset = preset
+                                    avatarForgeSurfaceView?.setCameraPreset(preset)
+                                },
+                                label = { Text(preset.label) }
+                            )
+                        }
+                    }
+                    Text("Studio lighting", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        LightingPreset.entries.forEach { preset ->
+                            FilterChip(
+                                selected = selectedLightingPreset == preset,
+                                onClick = {
+                                    selectedLightingPreset = preset
+                                    avatarForgeSurfaceView?.setLightingPreset(preset)
+                                },
+                                label = { Text(preset.label) }
+                            )
+                        }
+                    }
+                    Text("Inspect", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = autoTurntable,
+                            onClick = {
+                                autoTurntable = !autoTurntable
+                                avatarForgeSurfaceView?.setAutoTurntable(autoTurntable)
+                            },
+                            label = { Text("Turntable") }
+                        )
+                        FilterChip(
+                            selected = showSkeleton,
+                            onClick = {
+                                showSkeleton = !showSkeleton
+                                avatarForgeSurfaceView?.setSkeletonVisible(showSkeleton)
+                            },
+                            label = { Text("Skeleton") }
+                        )
+                        FilterChip(
+                            selected = flatShading,
+                            onClick = {
+                                flatShading = !flatShading
+                                avatarForgeSurfaceView?.setFlatShading(flatShading)
+                            },
+                            label = { Text("Clay") }
+                        )
+                    }
+                }
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
                 if (hasImportedFile) {
                     OutlinedButton(
@@ -199,11 +284,13 @@ fun AvatarStudioScreen(
                                 filamentPreviewView = null
                                 animationCount = 0
                                 animationPosition = 0f
+                            } else {
+                                avatarForgeSurfaceView = null
                             }
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open animation-capable Filament preview")
+                        Text(if (useFilamentAnimationPreview) "Use AvatarForge native preview" else "Open animation-capable Filament preview")
                     }
                 }
                 if (useFilamentAnimationPreview) {
@@ -328,24 +415,110 @@ fun AvatarStudioScreen(
                 } else {
                     Text("UNAVAILABLE: ${engineHealth.problem ?: "native engine health check failed"}")
                 }
-                OutlinedTextField(
-                    value = generationPrompt,
-                    onValueChange = { generationPrompt = it.take(500) },
-                    label = { Text("Describe your avatar") },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 3
+                Text("Sex", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(Sex.FEMALE, Sex.MALE, Sex.UNSPECIFIED).forEach { option ->
+                        FilterChip(
+                            selected = customization.sex == option,
+                            onClick = { customization = customization.copy(sex = option) },
+                            label = { Text(AvatarCustomizationState.displayName(option)) }
+                        )
+                    }
+                }
+                Text("Build", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Build.entries.forEach { option ->
+                        FilterChip(
+                            selected = customization.build == option,
+                            onClick = { customization = customization.copy(build = option) },
+                            label = { Text(AvatarCustomizationState.displayName(option)) }
+                        )
+                    }
+                }
+                Text("Hairstyle (3D strand cards)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    HairStyle.entries.forEach { option ->
+                        FilterChip(
+                            selected = customization.hairStyle == option,
+                            onClick = { customization = customization.copy(hairStyle = option) },
+                            label = { Text(AvatarCustomizationState.displayName(option)) }
+                        )
+                    }
+                }
+                Text("Outfit", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    AvatarCustomizationState.SELECTABLE_OUTFITS.forEach { option ->
+                        FilterChip(
+                            selected = customization.outfit == option,
+                            onClick = { customization = customization.copy(outfit = option) },
+                            label = { Text(AvatarCustomizationState.displayName(option)) }
+                        )
+                    }
+                }
+                Text("Height: ${customization.heightCm} cm", style = MaterialTheme.typography.labelMedium)
+                Slider(
+                    value = customization.heightCm.toFloat(),
+                    onValueChange = { customization = customization.copy(heightCm = it.roundToInt()) },
+                    valueRange = 150f..205f
                 )
-                Text("Generation uses AvatarForge's deterministic prompt/measurement parser. It is not photo-to-identity reconstruction or an embedded LLM.", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Skin tone melanin: ${(customization.skinMelanin * 100f).roundToInt()}%",
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Slider(
+                    value = customization.skinMelanin,
+                    onValueChange = { customization = customization.copy(skinMelanin = it) },
+                    valueRange = 0.08f..0.90f
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Seed: ${customization.seed}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f).padding(top = 10.dp)
+                    )
+                    OutlinedButton(
+                        onClick = { customization = customization.copy(seed = Random.nextInt(100, 999_999)) },
+                        enabled = !generating
+                    ) {
+                        Text("Randomize seed")
+                    }
+                }
+                OutlinedTextField(
+                    value = customization.customNotes,
+                    onValueChange = { customization = customization.copy(customNotes = it.take(300)) },
+                    label = { Text("Extra style or color notes (optional)") },
+                    placeholder = { Text("e.g. auburn hair, dark navy jacket, emerald eyes") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2
+                )
+                Text(
+                    "Spec prompt: ${customization.buildPrompt()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Button(
                     onClick = {
                         generationJob = scope.launch {
                             generationStatus = "Running native generation on this device. Resource and thermal gates are checked before work begins."
                             try {
                                 pixelDiagnosticPath = null
+                                val spec = customization.toAvatarSpec()
                                 val result = AvatarForgeEngine.generate(
                                     context = context,
-                                    spec = AvatarSpec(prompt = generationPrompt.trim()),
-                                    prompt = generationPrompt.trim()
+                                    spec = spec,
+                                    prompt = spec.prompt
                                 )
                                 onGenerated(Uri.fromFile(result.file), result.file.name)
                                 val warning = result.promptMatchWarning?.let { " · WARNING: $it" }.orEmpty()
@@ -359,7 +532,7 @@ fun AvatarStudioScreen(
                             }
                         }
                     },
-                    enabled = engineHealth.usable && !generating && !isImporting && generationPrompt.isNotBlank(),
+                    enabled = engineHealth.usable && !generating && !isImporting,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (generating) "Generating…" else "Generate avatar")

@@ -24,6 +24,10 @@ struct NativeAvatarSession {
     int height = 0;
     af::CameraState camera{};
     af::CameraState initialCamera{};
+    af::RendererOptions baseOptions{};
+    bool allForeignSubmeshes = false;
+    float boundsMin[3] = {0.0f, 0.0f, 0.0f};
+    float boundsMax[3] = {0.0f, 1.75f, 0.0f};
     float minDistance = 0.05f;
     float maxDistance = 100.0f;
     std::string verificationReport;
@@ -197,6 +201,12 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     camera.targetZ = cz;
     camera.fovDeg = 28.0f;
     camera.distance = std::max(fitDistH, fitDistV) * 1.12f;
+    session->baseOptions = options;
+    session->allForeignSubmeshes = allForeignSubmeshes;
+    for (int axis = 0; axis < 3; ++axis) {
+        session->boundsMin[axis] = boundsMin[axis];
+        session->boundsMax[axis] = boundsMax[axis];
+    }
     session->camera = camera;
     session->initialCamera = camera;
     session->minDistance = std::max(0.02f, radius * 0.25f);
@@ -544,6 +554,103 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResetCamera(
     if (!session || !session->renderer) return;
     session->camera = session->initialCamera;
     session->renderer->setCamera(session->camera);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetCameraPreset(
+    JNIEnv*, jobject, jlong handle, jint presetId) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    af::CameraState cam = session->initialCamera;
+    const float baseYaw = session->initialCamera.yawDeg;
+    const float dy = std::max(0.05f, session->boundsMax[1] - session->boundsMin[1]);
+    const float dz = std::max(0.05f, session->boundsMax[2] - session->boundsMin[2]);
+    switch (presetId) {
+        case 1: { // Portrait / Face close-up (frames dual-mesh eyes, 3D brows/lashes, hair cards)
+            cam.targetY = session->boundsMin[1] + dy * 0.875f;
+            cam.yawDeg = std::fmod(baseYaw - 12.0f + 360.0f, 360.0f);
+            cam.pitchDeg = 2.0f;
+            cam.fovDeg = 26.0f;
+            cam.distance = std::max(session->minDistance, std::max(dy * 0.36f, dz * 1.45f));
+            break;
+        }
+        case 2: { // 3/4 Hero
+            cam.yawDeg = std::fmod(baseYaw - 34.0f + 360.0f, 360.0f);
+            cam.pitchDeg = 6.0f;
+            cam.distance = std::max(session->minDistance, session->initialCamera.distance * 0.88f);
+            break;
+        }
+        case 3: { // Side Profile
+            cam.yawDeg = std::fmod(baseYaw + 90.0f, 360.0f);
+            cam.pitchDeg = 3.0f;
+            cam.distance = std::max(session->minDistance, session->initialCamera.distance * 0.92f);
+            break;
+        }
+        case 4: { // Back View
+            cam.yawDeg = std::fmod(baseYaw + 180.0f, 360.0f);
+            cam.pitchDeg = 4.0f;
+            cam.distance = std::max(session->minDistance, session->initialCamera.distance * 0.96f);
+            break;
+        }
+        default: // 0 = Full Body
+            break;
+    }
+    cam.distance = std::max(session->minDistance, std::min(session->maxDistance, cam.distance));
+    session->camera = cam;
+    session->renderer->setCamera(session->camera);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLightingPreset(
+    JNIEnv*, jobject, jlong handle, jint presetId) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    af::RendererOptions opt = session->baseOptions;
+    const float baseAz = session->baseOptions.sunAzimuthDeg;
+    switch (presetId) {
+        case 1: { // Golden Hour
+            opt.sunAzimuthDeg = std::fmod(baseAz + 32.0f, 360.0f);
+            opt.sunElevationDeg = 12.0f;
+            opt.sunIntensity = 1.85f;
+            opt.turbidity = 4.2f;
+            opt.environmentIntensity = 0.72f;
+            opt.exposure = 0.88f;
+            opt.enableBloom = true;
+            break;
+        }
+        case 2: { // Dramatic Rim
+            opt.sunAzimuthDeg = std::fmod(baseAz + 138.0f, 360.0f);
+            opt.sunElevationDeg = 22.0f;
+            opt.sunIntensity = 2.10f;
+            opt.turbidity = 2.2f;
+            opt.environmentIntensity = 0.36f;
+            opt.exposure = 0.78f;
+            opt.enableBloom = true;
+            break;
+        }
+        case 3: { // Soft Overcast
+            opt.sunAzimuthDeg = baseAz;
+            opt.sunElevationDeg = 62.0f;
+            opt.sunIntensity = 0.78f;
+            opt.turbidity = 5.2f;
+            opt.environmentIntensity = 1.15f;
+            opt.exposure = 0.86f;
+            opt.enableBloom = false;
+            break;
+        }
+        default: // 0 = Studio
+            break;
+    }
+    session->renderer->setOptions(opt);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetInspectionModes(
+    JNIEnv*, jobject, jlong handle, jboolean showSkeleton, jboolean flatShading) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->renderer->setSkeletonVisible(showSkeleton == JNI_TRUE);
+    session->renderer->setFlatShading(flatShading == JNI_TRUE);
 }
 
 extern "C" JNIEXPORT void JNICALL

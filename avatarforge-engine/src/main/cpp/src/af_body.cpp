@@ -957,10 +957,11 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
     appendAnalyticDualMeshEyes(field, floorShiftY, &mesh);
 
     /* Append watertight layered strand hair cards with authored root-to-tip UVs when a non-bald
-       hairstyle is selected. Cards drape over the SDF scalp base without penetrating skin. */
+       hairstyle is selected, plus 3D eyebrow cards and curved eyelash fans for every avatar. */
     if (field.apparel().hair > 0) {
         appendProceduralHairCards(field, floorShiftY, &mesh);
     }
+    appendProceduralFacialHairCards(field, floorShiftY, &mesh);
 
     mesh.computeCurvature(1);
     if (options.computeTangents && mesh.uvs.size() >= mesh.vertexCount() * 2) mesh.computeTangents();

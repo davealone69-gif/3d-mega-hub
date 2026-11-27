@@ -20,6 +20,8 @@ constexpr int kHairCardVariants = 4;
 
 struct HairCardReport {
     int cardCount = 0;
+    int browCardCount = 0;
+    int lashCardCount = 0;
     int vertexCount = 0;
     int triangleCount = 0;
 };
@@ -30,6 +32,14 @@ struct HairCardReport {
  * Does nothing when `field.apparel().hair == 0` (bald).
  */
 HairCardReport appendProceduralHairCards(const BodyField& field, float floorShiftY, Mesh* mesh);
+
+/**
+ * Appends watertight 3D eyebrow hair cards (hugging the supraorbital ridge) and curved
+ * upper/lower eyelash fans (anchored along the palpebral margins) in REGION_HAIR_CARD.
+ * Always generated for every avatar (including bald) so close-up portraits have real 3D
+ * facial framing that deforms naturally with ARKit eyeBlink / eyeWide / brow* blendshapes.
+ */
+HairCardReport appendProceduralFacialHairCards(const BodyField& field, float floorShiftY, Mesh* mesh);
 
 } // namespace af
 

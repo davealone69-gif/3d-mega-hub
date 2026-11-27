@@ -156,7 +156,7 @@ void appendWatertightRibbon(Mesh* mesh, const std::vector<Vec3>& spine,
         /* Smooth width profile: slightly wider through mid-body, gracefully tapered to tip. */
         const float wRootMid = lerpf(rp.rootWidth, rp.midWidth, smoothstepf(0.0f, 0.30f, v));
         const float w = lerpf(wRootMid, rp.tipWidth, smoothstepf(0.55f, 1.0f, v));
-        const float halfW = maxf(w * 0.5f, 0.0012f);
+        const float halfW = maxf(w * 0.5f, 0.00025f);
         const float taperT = lerpf(1.0f, 0.35f, v);
         const float halfT = maxf(rp.thickness * 0.5f * taperT, 0.00035f);
         const float arch = rp.archHeight * taperT;
@@ -699,6 +699,206 @@ HairCardReport appendProceduralHairCards(const BodyField& field, float floorShif
 
         default:
             break;
+    }
+
+    return report;
+}
+
+namespace {
+
+/** Projects a facial anchor onto the anterior skull/face SDF plus `offset` metres outward. */
+Vec3 projectOntoFaceSurface(const BodyField& field, Vec3 p, float offset) {
+    /* Start slightly forward of the face (-Z is anterior) and march onto field.head == 0. */
+    Vec3 q(p.x, p.y, p.z - 0.032f);
+    for (int step = 0; step < 36; ++step) {
+        const float d = field.head(q);
+        if (d <= offset) {
+            /* Bisect back slightly for sub-millimetre surface lock. */
+            const Vec3 n = collisionNormal(field, q);
+            q += n * (offset - d);
+            return q;
+        }
+        q.z += clampf(d * 0.72f, 0.0008f, 0.006f);
+    }
+    /* Fallback: push clear along normal from nominal anchor. */
+    for (int iter = 0; iter < 4; ++iter) {
+        const float d = field.head(p);
+        const Vec3 n = collisionNormal(field, p);
+        p += n * (offset - d);
+    }
+    return p;
+}
+
+} // namespace
+
+HairCardReport appendProceduralFacialHairCards(const BodyField& field, float floorShiftY, Mesh* mesh) {
+    HairCardReport report{};
+    if (!mesh) return report;
+
+    if (mesh->uvs.size() < mesh->positions.size() * 2) {
+        mesh->uvs.resize(mesh->positions.size() * 2, 0.0f);
+    }
+
+    const BodyMetrics& m = field.metrics();
+    const float r = maxf(m.eyeRadius, 0.009f);
+    const bool feminine = (m.sex == AF_SEX_FEMALE);
+    const float browLift = feminine ? 1.15f : 1.00f;
+    uint32_t seed = 4813u;
+    auto nextVariant = [&]() -> int {
+        seed = seed * 1664525u + 1013904223u;
+        return static_cast<int>((seed >> 24) % static_cast<uint32_t>(kHairCardVariants));
+    };
+
+    for (int sideIdx = 0; sideIdx < 2; ++sideIdx) {
+        const int side = (sideIdx == 0) ? 1 : -1;
+        const float sx = static_cast<float>(side);
+        const Vec3 eye = field.eyeCentre(side);
+
+        /* ---- 1. 3D Layered Eyebrow Cards (6 overlapping cards per eye) --------------------
+           Bezier arch matching BodyField::browShape: medial head -> arched peak -> tapered tail. */
+        const Vec3 browInner(eye.x - sx * r * 1.24f, eye.y + r * 1.28f * browLift, eye.z - r * 0.60f);
+        const Vec3 browPeak (eye.x + sx * r * 0.42f, eye.y + r * (feminine ? 1.56f : 1.44f) * browLift,
+                             eye.z - r * 0.68f);
+        const Vec3 browOuter(eye.x + sx * r * 1.60f, eye.y + r * 1.08f * browLift, eye.z - r * 0.36f);
+
+        auto evalBrowCurve = [&](float t) -> Vec3 {
+            const float omt = 1.0f - t;
+            return browInner * (omt * omt) + browPeak * (2.0f * omt * t) + browOuter * (t * t);
+        };
+
+        constexpr int kBrowCards = 6;
+        constexpr int kBrowSegs = 4;
+        for (int b = 0; b < kBrowCards; ++b) {
+            const float t0 = static_cast<float>(b) / static_cast<float>(kBrowCards) * 0.84f;
+            const float span = 0.24f - 0.05f * (static_cast<float>(b) / static_cast<float>(kBrowCards - 1));
+            const float t1 = minf(1.0f, t0 + span);
+            const float lateralBias = static_cast<float>(b) / static_cast<float>(kBrowCards - 1);
+
+            std::vector<Vec3> spine;
+            std::vector<Vec3> outs;
+            spine.reserve(kBrowSegs + 1);
+            outs.reserve(kBrowSegs + 1);
+            for (int s = 0; s <= kBrowSegs; ++s) {
+                const float frac = static_cast<float>(s) / static_cast<float>(kBrowSegs);
+                const float tc = lerpf(t0, t1, frac);
+                Vec3 pt = evalBrowCurve(tc);
+                /* Natural brow hair direction: inner hairs sweep gently upward, outer tail sweeps down. */
+                const float upLift = lerpf(0.0022f, -0.0010f, lateralBias) * frac;
+                pt.y += upLift;
+                const float lift = 0.0013f + 0.0005f * frac + 0.00025f * static_cast<float>(b & 1);
+                pt = projectOntoFaceSurface(field, pt, lift);
+                const Vec3 outN = collisionNormal(field, pt);
+                spine.push_back(pt);
+                outs.push_back(outN);
+            }
+
+            const float fullness = feminine ? 0.84f : 1.08f;
+            const float archTaper = lerpf(1.0f, 0.56f, lateralBias);
+            RibbonParams rp{};
+            rp.rootWidth = r * 0.32f * fullness * archTaper;
+            rp.midWidth  = r * 0.36f * fullness * archTaper;
+            rp.tipWidth  = r * 0.11f * fullness * archTaper;
+            rp.thickness = 0.00055f;
+            rp.archHeight = 0.00080f;
+            rp.variant = nextVariant();
+            appendWatertightRibbon(mesh, spine, outs, rp, floorShiftY, &report);
+            ++report.browCardCount;
+        }
+
+        /* ---- 2. 3D Curved Upper Eyelash Fan (5 overlapping lash clusters per eye) ---------
+           Rooted snugly along the upper palpebral margin (matching af_rig.cpp lidUpper anchor
+           so eyeBlink* and eyeWide* blendshapes carry the eyelashes naturally over the globe). */
+        constexpr int kUpperLashCards = 5;
+        constexpr int kLashSegs = 4;
+        for (int l = 0; l < kUpperLashCards; ++l) {
+            const float u = lerpf(0.14f, 0.92f, static_cast<float>(l) / static_cast<float>(kUpperLashCards - 1));
+            const float archSin = std::sin(kPi * u);
+            /* Upper lid margin coordinates matching af_rig.cpp's lidUpperL/R anchor frame. */
+            Vec3 root(
+                eye.x + sx * lerpf(-r * 0.82f, r * 0.92f, u),
+                eye.y + r * (0.44f + 0.24f * archSin),
+                eye.z - r * (1.04f + 0.16f * archSin)
+            );
+            /* Ensure root sits just outside the corneal dome so lashes never poke inside the eye. */
+            const Vec3 fromEye = root - eye;
+            const float minEyeClear = r * 1.14f;
+            const float eyeDist = fromEye.length();
+            if (eyeDist < minEyeClear && eyeDist > 1e-5f) {
+                root = eye + fromEye * (minEyeClear / eyeDist);
+            }
+
+            /* Lashes lengthen gracefully toward the outer third (cat-eye taper on female). */
+            const float lenProfile = lerpf(0.72f, feminine ? 1.18f : 0.96f, u);
+            const float lashLen = r * (feminine ? 0.62f : 0.44f) * lenProfile;
+            /* Fan outward laterally away from the nose and curl upward toward the tips. */
+            const Vec3 fanDir = Vec3(sx * lerpf(-0.12f, 0.48f, u), 0.18f, -1.0f).normalizedOr(Vec3(0, 0, -1));
+            const Vec3 curlUp = Vec3(sx * 0.12f * u, 1.0f, 0.12f).normalizedOr(Vec3(0, 1, 0));
+
+            std::vector<Vec3> spine;
+            std::vector<Vec3> outs;
+            spine.reserve(kLashSegs + 1);
+            outs.reserve(kLashSegs + 1);
+            for (int s = 0; s <= kLashSegs; ++s) {
+                const float frac = static_cast<float>(s) / static_cast<float>(kLashSegs);
+                const float curl = frac * frac * (feminine ? 0.62f : 0.42f);
+                const Vec3 pt = root + fanDir * (lashLen * frac) + curlUp * (lashLen * curl);
+                spine.push_back(pt);
+                outs.push_back(Vec3(sx * 0.15f * u, 0.92f, -0.35f).normalizedOr(Vec3(0, 1, 0)));
+            }
+
+            RibbonParams rp{};
+            rp.rootWidth = r * 0.34f;
+            rp.midWidth  = r * 0.38f;
+            rp.tipWidth  = r * 0.10f;
+            rp.thickness = 0.00032f;
+            rp.archHeight = 0.00045f;
+            rp.variant = nextVariant();
+            appendWatertightRibbon(mesh, spine, outs, rp, floorShiftY, &report);
+            ++report.lashCardCount;
+        }
+
+        /* ---- 3. 3D Delicate Lower Eyelash Fringe (3 shorter cards per eye) ---------------- */
+        constexpr int kLowerLashCards = 3;
+        for (int l = 0; l < kLowerLashCards; ++l) {
+            const float u = lerpf(0.24f, 0.84f, static_cast<float>(l) / static_cast<float>(kLowerLashCards - 1));
+            const float archSin = std::sin(kPi * u);
+            Vec3 root(
+                eye.x + sx * lerpf(-r * 0.68f, r * 0.78f, u),
+                eye.y - r * (0.48f + 0.14f * archSin),
+                eye.z - r * (1.02f + 0.12f * archSin)
+            );
+            const Vec3 fromEye = root - eye;
+            const float minEyeClear = r * 1.13f;
+            const float eyeDist = fromEye.length();
+            if (eyeDist < minEyeClear && eyeDist > 1e-5f) {
+                root = eye + fromEye * (minEyeClear / eyeDist);
+            }
+
+            const float lashLen = r * (feminine ? 0.28f : 0.22f) * lerpf(0.82f, 1.08f, u);
+            const Vec3 fanDir = Vec3(sx * lerpf(-0.08f, 0.32f, u), -0.32f, -0.94f).normalizedOr(Vec3(0, 0, -1));
+            const Vec3 droop  = Vec3(0.0f, -1.0f, 0.15f).normalizedOr(Vec3(0, -1, 0));
+
+            std::vector<Vec3> spine;
+            std::vector<Vec3> outs;
+            spine.reserve(kLashSegs + 1);
+            outs.reserve(kLashSegs + 1);
+            for (int s = 0; s <= kLashSegs; ++s) {
+                const float frac = static_cast<float>(s) / static_cast<float>(kLashSegs);
+                const Vec3 pt = root + fanDir * (lashLen * frac) + droop * (lashLen * 0.22f * frac * frac);
+                spine.push_back(pt);
+                outs.push_back(Vec3(0.0f, -0.85f, -0.52f).normalizedOr(Vec3(0, -1, 0)));
+            }
+
+            RibbonParams rp{};
+            rp.rootWidth = r * 0.36f;
+            rp.midWidth  = r * 0.32f;
+            rp.tipWidth  = r * 0.08f;
+            rp.thickness = 0.00028f;
+            rp.archHeight = 0.00032f;
+            rp.variant = nextVariant();
+            appendWatertightRibbon(mesh, spine, outs, rp, floorShiftY, &report);
+            ++report.lashCardCount;
+        }
     }
 
     return report;

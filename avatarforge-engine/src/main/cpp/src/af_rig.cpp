@@ -282,12 +282,25 @@ void Rig::computeWeights(const BodyField& field, const Mesh& mesh) {
     }
 
     const float falloff = 3.2f;   /* higher = tighter, more local weights */
+    const BodyMetrics& m = field.metrics();
+    const int headJoint = jointIndex("head");
     const int threads = defaultThreadCount();
     parallelFor(static_cast<int>(vcount), threads, [&](int i0, int i1) {
         std::vector<std::pair<float, int>> scored;
         for (int vi = i0; vi < i1; ++vi) {
             const Vec3 p = mesh.positions[static_cast<size_t>(vi)];
             const int region = (vi < static_cast<int>(mesh.regions.size())) ? mesh.regions[static_cast<size_t>(vi)] : REGION_SKIN;
+            /* Eyebrow and eyelash hair cards sit on the anterior orbital zone and must track
+               the head bone rigidly without neck/clavicle bleed during head turns. */
+            if (region == REGION_HAIR_CARD && headJoint >= 0 &&
+                p.z < -m.head.rz * 0.45f &&
+                p.y > m.y.eyeY - m.eyeRadius * 3.5f &&
+                p.y < m.y.eyeY + m.eyeRadius * 3.8f &&
+                std::fabs(p.x) < m.head.rx * 1.15f) {
+                weights_[static_cast<size_t>(vi)].joints = {static_cast<uint16_t>(headJoint), 0, 0, 0};
+                weights_[static_cast<size_t>(vi)].weights = {1.0f, 0.0f, 0.0f, 0.0f};
+                continue;
+            }
             scored.clear();
             for (const BoneSeg& s : segs) {
                 const Joint& j = joints_[static_cast<size_t>(s.joint)];
