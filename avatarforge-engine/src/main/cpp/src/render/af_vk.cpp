@@ -2404,14 +2404,18 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmd) {
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
         if (indirectBuffer_ != VK_NULL_HANDLE && indirectCommandCount_ >= uint32_t(n)) {
-            for (int i = 0; i < n; ++i)
+            for (int i = 0; i < n; ++i) {
+                if (submeshes && isCorneaRegion(submeshes[i].region)) continue;
                 vkCmdDrawIndexedIndirect(cmd, indirectBuffer_,
                                          VkDeviceSize(i) * sizeof(VkDrawIndexedIndirectCommand), 1,
                                          sizeof(VkDrawIndexedIndirectCommand));
+            }
         } else {
-            for (int i = 0; i < n; ++i)
+            for (int i = 0; i < n; ++i) {
+                if (submeshes && isCorneaRegion(submeshes[i].region)) continue;
                 vkCmdDrawIndexed(cmd, uint32_t(submeshes[i].index_count), 1,
                                  uint32_t(submeshes[i].index_offset), 0, 0);
+            }
         }
     }
     vkCmdEndRenderPass(cmd);
@@ -2486,6 +2490,10 @@ void VulkanRenderer::recordForwardPass(VkCommandBuffer cmd, uint32_t imageIndex)
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
         for (int i = 0; i < n; ++i) {
+            /* Vulkan's embedded SPIR-V forward pipeline is opaque-only (no blended cornea
+               pipeline yet); skip the outer cornea dome here so the recessed inner sclera/iris
+               renders cleanly with its built-in afEyeShading specular instead of being occluded. */
+            if (submeshes && isCorneaRegion(submeshes[i].region)) continue;
             if (materialSet_ != VK_NULL_HANDLE) {
                 const uint32_t matOffset = uint32_t(i) * materialStride_;
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, avatarLayout_, 1, 1,

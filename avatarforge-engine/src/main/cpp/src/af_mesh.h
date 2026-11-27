@@ -31,7 +31,9 @@ enum Region : int32_t {
     REGION_CLOTH_LOWER = 10,
     REGION_SHOE = 11,
     REGION_GEAR = 12,         /* armour plates, hardware, metal                            */
-    REGION_COUNT = 13
+    REGION_CORNEA_L = 13,     /* outer transparent wet corneal dome (left)                 */
+    REGION_CORNEA_R = 14,     /* outer transparent wet corneal dome (right)                */
+    REGION_COUNT = 15
 };
 
 inline const char* regionName(int r) {
@@ -49,6 +51,8 @@ inline const char* regionName(int r) {
         case REGION_CLOTH_LOWER: return "cloth_lower";
         case REGION_SHOE: return "footwear";
         case REGION_GEAR: return "equipment";
+        case REGION_CORNEA_L: return "cornea_L";
+        case REGION_CORNEA_R: return "cornea_R";
         default: return "unknown";
     }
 }

@@ -960,14 +960,11 @@ float BodyField::faceFeatures(const Vec3& p) const {
     }
 
     /*
-     * Eyeballs, added LAST: the socket carve above is subtractive, so an eyeball unioned before it
-     * would be scooped out along with the orbit. Sclera + cornea sit inside the socket with the
-     * lids overlapping the corneal bulge, which is what gives the renderer a refraction volume and
-     * an eye that does not look painted on.
+     * Eyeballs are NOT unioned into the head SDF: smooth-unioning them fused the sclera into
+     * the eyelids with a 3 mm fillet and prevented independent eye rotation and wet-cornea
+     * layering. Instead, the orbital sockets remain cleanly carved here and af_body.cpp appends
+     * watertight analytic dual-mesh eyes (inner sclera + recessed iris bowl + outer corneal dome).
      */
-    for (int side = 0; side < 2; ++side) {
-        d = smin(d, eyeballShape(p, side), 0.003f);
-    }
 
     /* Fine facial micro-relief. Amplitude is deliberately tiny (0.35 mm) - it exists to give
        the normal map something real to agree with, and to break up specular highlights. */
@@ -1568,10 +1565,11 @@ int BodyField::classifyRegion(const Vec3& p) const {
     if (tongueShape(p) < kOnSurface) return REGION_TONGUE;
     if (lipsShape(p) < kOnSurface) return REGION_LIPS;
     if (browShape(p) < kOnSurface) return REGION_LASH;
-    // eyeballShape accepts anatomical side values (+1 = left, -1 = right).
-    // Passing loop indices 0/1 silently reversed the eye material assignment.
+    /* Interior eyeball core queries classify as REGION_EYE_L/R for anatomical probes; the body
+       mesh builder maps SDF socket skin away from eye regions and appends analytic dual-mesh
+       eyeball + cornea shells with explicit REGION_EYE_* and REGION_CORNEA_* labels. */
     for (int side : {-1, 1}) {
-        if (eyeballShape(p, side) < kOnSurface) {
+        if (eyeballShape(p, side) < -m_.eyeRadius * 0.5f) {
             return (side > 0) ? REGION_EYE_L : REGION_EYE_R;
         }
     }

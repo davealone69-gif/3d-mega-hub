@@ -438,6 +438,144 @@ size_t dropVolumeDebris(Mesh* mesh, float minVolumeM3) {
     return droppedFaces;
 }
 
+/*
+ * Appends one watertight, outward-wound analytic eye shell aligned with the optical axis (-Z).
+ * Inner shells (isCornea == false) form the sclera sphere with a smooth C1-continuous concave
+ * iris bowl recess (~1.4 mm). Outer shells (isCornea == true) wrap the sclera with +0.35 mm
+ * tear-film clearance and protrude forward into an anatomical corneal dome (+1.8 mm), giving
+ * real ~3.5 mm anterior-chamber depth for Fresnel catchlights and refraction.
+ */
+void appendAnalyticEyeShell(Mesh* mesh, const Vec3& centre, float eyeRadius, float irisRadius,
+                            bool isCornea, int32_t region, int rings, int segs) {
+    const float kPi = 3.14159265358979323846f;
+    const float thetaIris = std::asin(clampf(irisRadius / maxf(eyeRadius, 1e-4f), 0.10f, 0.85f));
+    const float thetaCornea = thetaIris * 1.12f;
+    const float irisRecess = eyeRadius * 0.115f;
+    const float corneaClearance = eyeRadius * 0.028f;
+    const float corneaBulge = eyeRadius * 0.145f;
+
+    auto radiusAndDeriv = [&](float theta, float* outRho, float* outDrho) {
+        if (!isCornea) {
+            if (theta < thetaIris) {
+                const float u = theta / thetaIris;
+                const float oneMinusU2 = 1.0f - u * u;
+                const float bowl = oneMinusU2 * oneMinusU2;
+                const float dbowlDtheta = -4.0f * u * oneMinusU2 / thetaIris;
+                *outRho = eyeRadius - irisRecess * bowl;
+                *outDrho = -irisRecess * dbowlDtheta;
+            } else {
+                *outRho = eyeRadius;
+                *outDrho = 0.0f;
+            }
+        } else {
+            if (theta < thetaCornea) {
+                const float u = theta / thetaCornea;
+                const float oneMinusU2 = 1.0f - u * u;
+                const float dome = oneMinusU2 * oneMinusU2;
+                const float ddomeDtheta = -4.0f * u * oneMinusU2 / thetaCornea;
+                *outRho = eyeRadius + corneaClearance + corneaBulge * dome;
+                *outDrho = corneaBulge * ddomeDtheta;
+            } else {
+                *outRho = eyeRadius + corneaClearance;
+                *outDrho = 0.0f;
+            }
+        }
+    };
+
+    const uint32_t baseVertex = static_cast<uint32_t>(mesh->positions.size());
+    const bool keepUvs = !mesh->uvs.empty();
+
+    auto pushVertex = [&](const Vec3& pos, const Vec3& normal) {
+        mesh->positions.push_back(pos);
+        mesh->normals.push_back(normal);
+        mesh->regions.push_back(region);
+        if (keepUvs) {
+            mesh->uvs.push_back(0.0f);
+            mesh->uvs.push_back(0.0f);
+        }
+    };
+
+    /* Anterior pole (theta = 0, facing -Z). */
+    float rhoFront = eyeRadius, drhoFront = 0.0f;
+    radiusAndDeriv(0.0f, &rhoFront, &drhoFront);
+    pushVertex(centre + Vec3(0.0f, 0.0f, -rhoFront), Vec3(0.0f, 0.0f, -1.0f));
+
+    /* Latitude rings: uniform polar spacing keeps anterior cap triangles well-conditioned for
+       UV rasterisation (no sub-pixel pole slivers that could miss the pupil texel centres). */
+    for (int r = 1; r < rings; ++r) {
+        const float theta = kPi * static_cast<float>(r) / static_cast<float>(rings);
+        const float sinT = std::sin(theta);
+        const float cosT = std::cos(theta);
+        float rho = eyeRadius, drho = 0.0f;
+        radiusAndDeriv(theta, &rho, &drho);
+
+        for (int s = 0; s < segs; ++s) {
+            const float phi = (2.0f * kPi * static_cast<float>(s)) / static_cast<float>(segs);
+            const float cosP = std::cos(phi);
+            const float sinP = std::sin(phi);
+            const Vec3 d(sinT * cosP, sinT * sinP, -cosT);
+            const Vec3 dTheta(cosT * cosP, cosT * sinP, sinT);
+            const Vec3 n = (d * rho - dTheta * drho).normalizedOr(d);
+            pushVertex(centre + d * rho, n);
+        }
+    }
+
+    /* Posterior pole (theta = pi, facing +Z). */
+    float rhoBack = eyeRadius, drhoBack = 0.0f;
+    radiusAndDeriv(kPi, &rhoBack, &drhoBack);
+    const uint32_t botIdx = static_cast<uint32_t>(mesh->positions.size());
+    pushVertex(centre + Vec3(0.0f, 0.0f, rhoBack), Vec3(0.0f, 0.0f, 1.0f));
+
+    auto ringVertex = [&](int r, int s) -> uint32_t {
+        const int wrapped = ((s % segs) + segs) % segs;
+        return baseVertex + 1u + static_cast<uint32_t>((r - 1) * segs + wrapped);
+    };
+
+    /* Anterior cap: outward CCW winding. */
+    for (int s = 0; s < segs; ++s) {
+        mesh->indices.push_back(baseVertex);
+        mesh->indices.push_back(ringVertex(1, s + 1));
+        mesh->indices.push_back(ringVertex(1, s));
+    }
+
+    /* Middle quads: outward CCW winding. */
+    for (int r = 1; r < rings - 1; ++r) {
+        for (int s = 0; s < segs; ++s) {
+            const uint32_t a = ringVertex(r, s);
+            const uint32_t b = ringVertex(r, s + 1);
+            const uint32_t c = ringVertex(r + 1, s);
+            const uint32_t d = ringVertex(r + 1, s + 1);
+            mesh->indices.push_back(a);
+            mesh->indices.push_back(b);
+            mesh->indices.push_back(c);
+            mesh->indices.push_back(b);
+            mesh->indices.push_back(d);
+            mesh->indices.push_back(c);
+        }
+    }
+
+    /* Posterior cap: outward CCW winding. */
+    const int lastRing = rings - 1;
+    for (int s = 0; s < segs; ++s) {
+        mesh->indices.push_back(ringVertex(lastRing, s));
+        mesh->indices.push_back(ringVertex(lastRing, s + 1));
+        mesh->indices.push_back(botIdx);
+    }
+}
+
+void appendAnalyticDualMeshEyes(const BodyField& field, float floorShiftY, Mesh* mesh) {
+    const BodyMetrics& m = field.metrics();
+    constexpr int kRings = 16;
+    constexpr int kSegs = 24;
+    for (int side : {1, -1}) {
+        const Vec3 centre = field.eyeCentre(side) + Vec3(0.0f, floorShiftY, 0.0f);
+        const int32_t innerRegion = (side > 0) ? REGION_EYE_L : REGION_EYE_R;
+        const int32_t corneaRegion = (side > 0) ? REGION_CORNEA_L : REGION_CORNEA_R;
+        appendAnalyticEyeShell(mesh, centre, m.eyeRadius, m.irisRadius, false, innerRegion, kRings, kSegs);
+        appendAnalyticEyeShell(mesh, centre, m.eyeRadius, m.irisRadius, true, corneaRegion, kRings, kSegs);
+    }
+}
+
 bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
                    Mesh* outMesh, BodyBuildReport* outReport) {
     if (!outMesh) return false;
@@ -453,7 +591,12 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
        definition at the bottom of this file for why the two sides are combined with a hard min. */
     auto unionField = [&field](const Vec3& p) { return bodyUnionField(field, p); };
 
-    auto regionFn = [&field](const Vec3& p) { return field.classifyRegion(p); };
+    auto regionFn = [&field](const Vec3& p) {
+        const int r = field.classifyRegion(p);
+        /* Eyeballs and corneas are appended as analytic dual-mesh shells after SDF extraction;
+           keep orbital-socket and eyelid skin strictly in REGION_SKIN. */
+        return (r == REGION_EYE_L || r == REGION_EYE_R) ? static_cast<int>(REGION_SKIN) : r;
+    };
 
     /* ------------------------------------------------------------------ bounds ----------------- */
     Vec3 lo, hi, tlo, thi;
@@ -577,7 +720,7 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
     std::vector<DetailRegion> micro;
     micro.push_back({Vec3(0.0f, m.mouthY, m.head.centreZ - m.head.rz * 0.35f),
                      Vec3(m.mouthWidth * 0.80f, m.lipWidth * 0.58f, m.head.rz * 0.62f)});
-    for (int side = 0; side < 2; ++side) {
+    for (int side : {-1, 1}) {
         const Vec3 e = field.eyeCentre(side);
         micro.push_back({e, Vec3(m.eyeRadius * 2.3f, m.eyeRadius * 2.3f, m.eyeRadius * 2.3f)});
     }
@@ -758,12 +901,13 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
         });
     }
 
+    float floorShiftY = 0.0f;
     if (options.dropToFloor) {
         Vec3 mn, mx;
         mesh.computeBounds(&mn, &mx);
         if (std::fabs(mn.y) > 1e-5f) {
-            const float dy = -mn.y;
-            for (Vec3& p : mesh.positions) p.y += dy;
+            floorShiftY = -mn.y;
+            for (Vec3& p : mesh.positions) p.y += floorShiftY;
         }
     }
 
@@ -806,6 +950,10 @@ bool buildBodyMesh(const BodyField& field, const BodyBuildOptions& optionsIn,
             }
         }
     }
+
+    /* Append watertight analytic dual-mesh eyes (inner sclera + recessed iris bowl, outer wet
+       corneal dome) after body SDF normals so each eye shell keeps exact analytic curvature. */
+    appendAnalyticDualMeshEyes(field, floorShiftY, &mesh);
 
     mesh.computeCurvature(1);
     if (options.computeTangents && mesh.uvs.size() >= mesh.vertexCount() * 2) mesh.computeTangents();

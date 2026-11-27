@@ -16,10 +16,10 @@ const uint8_t kUnbakedRGBA[4] = {255, 0, 255, 255};
 const MaterialDef& materialForRegion(int region) {
     /* Values are physical: roughness is measured BRDF roughness, ior is the index of refraction,
        metallic is 0 for every biological tissue (only metal armour goes above 0). */
-    static const MaterialDef kMaterials[13] = {
+    static const MaterialDef kMaterials[REGION_COUNT] = {
         /* SKIN            */ {"skin",        {0.80f, 0.62f, 0.55f}, 0.00f, 0.52f, 1.40f, 0.10f, 0.50f, 1.00f, 0.00f, 0.020f},
-        /* EYE_L           */ {"eye_left",    {0.94f, 0.94f, 0.93f}, 0.00f, 0.07f, 1.38f, 0.00f, 0.50f, 0.35f, 0.00f, 0.006f},
-        /* EYE_R           */ {"eye_right",   {0.94f, 0.94f, 0.93f}, 0.00f, 0.07f, 1.38f, 0.00f, 0.50f, 0.35f, 0.00f, 0.006f},
+        /* EYE_L           */ {"eye_left",    {0.94f, 0.94f, 0.93f}, 0.00f, 0.14f, 1.38f, 0.00f, 0.50f, 0.35f, 0.00f, 0.006f},
+        /* EYE_R           */ {"eye_right",   {0.94f, 0.94f, 0.93f}, 0.00f, 0.14f, 1.38f, 0.00f, 0.50f, 0.35f, 0.00f, 0.006f},
         /* TEETH           */ {"teeth",       {0.92f, 0.90f, 0.86f}, 0.00f, 0.25f, 1.55f, 0.00f, 0.50f, 0.60f, 0.00f, 0.010f},
         /* TONGUE          */ {"tongue",      {0.72f, 0.30f, 0.30f}, 0.00f, 0.45f, 1.36f, 0.05f, 0.50f, 1.00f, 0.00f, 0.012f},
         /* LIPS            */ {"lips",        {0.62f, 0.24f, 0.24f}, 0.00f, 0.36f, 1.38f, 0.15f, 0.50f, 1.00f, 0.00f, 0.010f},
@@ -30,8 +30,10 @@ const MaterialDef& materialForRegion(int region) {
         /* CLOTH_LOWER     */ {"cloth_lower", {0.20f, 0.22f, 0.28f}, 0.00f, 0.82f, 1.45f, 0.40f, 0.50f, 0.00f, 0.25f, 0.012f},
         /* SHOE            */ {"shoe",        {0.12f, 0.12f, 0.13f}, 0.00f, 0.55f, 1.50f, 0.20f, 0.50f, 0.00f, 0.20f, 0.008f},
         /* GEAR            */ {"gear",        {0.62f, 0.60f, 0.55f}, 0.85f, 0.35f, 2.20f, 0.05f, 0.50f, 0.00f, 0.15f, 0.014f},
+        /* CORNEA_L        */ {"cornea_left", {1.00f, 1.00f, 1.00f}, 0.00f, 0.032f, 1.376f, 0.00f, 0.50f, 0.00f, 0.00f, 0.002f},
+        /* CORNEA_R        */ {"cornea_right",{1.00f, 1.00f, 1.00f}, 0.00f, 0.032f, 1.376f, 0.00f, 0.50f, 0.00f, 0.00f, 0.002f},
     };
-    if (region < 0 || region >= 13) return kMaterials[0];
+    if (region < 0 || region >= REGION_COUNT) return kMaterials[0];
     return kMaterials[region];
 }
 
@@ -305,20 +307,23 @@ void evaluateEye(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut*
     const float along = rel.dot(axis);
     const Vec3 radialVec = rel - axis * along;
     const float radial = radialVec.length();
-    const float rIris = r * 1.62f;
-    const float rPupil = rIris * 0.36f;
+    /* Anatomical iris radius (~0.52 * eyeRadius ≈ 6.4 mm) leaves a crisp, visible sclera ring
+       surrounding the limbus instead of painting the entire eyeball as iris. */
+    const float rIris = (ctx.m && ctx.m->irisRadius > 1e-4f) ? ctx.m->irisRadius : (r * 0.52f);
+    const float rPupil = rIris * 0.34f;
 
     Vec3 albedo;
     float roughness;
-    if (along < -r * 0.2f) {
-        albedo = Vec3(0.02f, 0.02f, 0.02f);       /* inside the globe / cup: not visible */
+    if (along < -r * 0.15f) {
+        albedo = Vec3(0.02f, 0.02f, 0.02f);       /* posterior hemisphere inside the orbit */
         roughness = 0.5f;
     } else if (radial < rPupil) {
         albedo = Vec3(0.008f, 0.007f, 0.008f);    /* pupil */
-        roughness = 0.06f;
+        roughness = 0.08f;
     } else if (radial < rIris) {
-        /* Iris: radial fibre striations around the average iris colour, darker at the limbus. */
-        const float angle = std::atan2(radialVec.dot(s.bitangent), radialVec.dot(s.tangent));
+        /* Iris: radial fibre striations around the average iris colour, darker at the limbus.
+           Use world-space (y, x) azimuth so radial fibres never seam across UV charts. */
+        const float angle = std::atan2(radialVec.y, radialVec.x);
         const float t = (radial - rPupil) / std::max(1e-6f, rIris - rPupil);
         /* Iris colour is not a separate spec field: it is derived from the same melanin that
            drives skin and hair, plus a deterministic per-avatar hue shift, which is what the
@@ -334,18 +339,21 @@ void evaluateEye(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut*
         const float limbal = saturate((t - 0.72f) / 0.28f);
         const float collarette = 1.0f - saturate(std::fabs(t - 0.48f) * 5.0f);
         albedo = base * (0.72f + 0.55f * fibres);
-        albedo = albedo.lerp(base * Vec3(0.45f, 0.42f, 0.40f), limbal * 0.85f);
-        albedo = albedo * (1.0f + collarette * 0.22f);
-        albedo = albedo.lerp(Vec3(0.02f, 0.02f, 0.025f), saturate((rPupil * 1.15f - radial) / (rPupil * 0.3f)));
-        roughness = 0.18f;
+        albedo = albedo.lerp(base * Vec3(0.35f, 0.32f, 0.30f), limbal * 0.88f);
+        albedo = albedo * (1.0f + collarette * 0.24f);
+        albedo = albedo.lerp(Vec3(0.015f, 0.015f, 0.02f), saturate((rPupil * 1.15f - radial) / (rPupil * 0.3f)));
+        roughness = 0.22f;
     } else {
-        /* Sclera: off-white with limbic and episcleral vessels that thicken towards rotation. */
-        const float t = saturate((radial - rIris) / (r * 1.6f));
-        albedo = Vec3(0.90f, 0.88f, 0.86f) * (1.0f - 0.10f * t);
-        const float veins = saturate((fbm(ctx.noise, rel * 260.0f, 3, 2.4f, 0.55f) - 0.52f) * 7.0f);
-        const float veinDensity = saturate(t * 1.4f);
-        albedo = albedo.lerp(Vec3(0.70f, 0.22f, 0.22f), veins * veinDensity * 0.55f);
-        roughness = 0.12f;
+        /* Sclera: warm ivory white with soft limbal transition and subtle peripheral episcleral vessels. */
+        const float t = saturate((radial - rIris) / maxf(r * 0.55f, 1e-4f));
+        const float limbusBlend = saturate((radial - rIris) / maxf(r * 0.055f, 1e-4f));
+        const Vec3 limbusTint = Vec3(0.55f, 0.56f, 0.58f);
+        const Vec3 scleraBase = Vec3(0.92f, 0.90f, 0.88f) * (1.0f - 0.09f * t);
+        albedo = limbusTint.lerp(scleraBase, limbusBlend);
+        const float veins = saturate((fbm(ctx.noise, rel * 260.0f, 3, 2.4f, 0.55f) - 0.54f) * 6.5f);
+        const float veinDensity = saturate((t - 0.18f) * 1.35f);
+        albedo = albedo.lerp(Vec3(0.72f, 0.26f, 0.26f), veins * veinDensity * 0.45f);
+        roughness = 0.14f;
     }
     out->albedo = albedo;
     out->roughness = roughness;
@@ -354,6 +362,19 @@ void evaluateEye(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut*
     out->scatterRadius = 0.05f;
     out->tint = 0.0f;
     out->occlusion = 1.0f;
+}
+
+void evaluateCornea(const MaterialContext& /*ctx*/, const SurfaceSample& /*s*/, SurfaceOut* out) {
+    /* Outer wet corneal dome: optically clear, mirror-smooth tear film. Opacity and Fresnel
+       catchlights are driven by the material's alphaMode/clearcoat and AF_KIND_CORNEA shader. */
+    out->albedo = Vec3(1.0f, 1.0f, 1.0f);
+    out->roughness = 0.032f;
+    out->metallic = 0.0f;
+    out->thickness = 0.05f;
+    out->scatterRadius = 0.0f;
+    out->tint = 0.0f;
+    out->occlusion = 1.0f;
+    out->reliefGradient = Vec3(0.0f, 0.0f, 0.0f);
 }
 
 void evaluateTeeth(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut* out) {
@@ -489,8 +510,9 @@ void evaluateSurface(const MaterialContext& ctx, const SurfaceSample& s, Surface
     out->reliefGradient = Vec3(0, 0, 0);
 
     switch (s.region) {
-        case REGION_EYE_L: case REGION_EYE_R: evaluateEye(ctx, s, out); break;
-        case REGION_TEETH:                    evaluateTeeth(ctx, s, out); break;
+        case REGION_EYE_L: case REGION_EYE_R:       evaluateEye(ctx, s, out); break;
+        case REGION_CORNEA_L: case REGION_CORNEA_R: evaluateCornea(ctx, s, out); break;
+        case REGION_TEETH:                          evaluateTeeth(ctx, s, out); break;
         case REGION_TONGUE:                   evaluateTongue(ctx, s, out); break;
         case REGION_LIPS:                     evaluateLips(ctx, s, out); break;
         case REGION_NAIL:                     evaluateNail(ctx, s, out); break;
@@ -548,14 +570,30 @@ bool bakeTextures(const Mesh& mesh, const UVLayout& layout, const BodyMetrics& m
     ctx.skinAlbedo = skinAlbedoFromMelanin(spec.skin_melanin, ctx.undertone);
     ctx.ageFactor = saturate((spec.age_years - 18.0f) / 60.0f);
     ctx.eyeRadius = metrics.eyeRadius;
-    ctx.eyeCentre[0] = Vec3(metrics.eyeSeparation * 0.5f, metrics.y.eyeY, metrics.eyeZ);
-    ctx.eyeCentre[1] = Vec3(-metrics.eyeSeparation * 0.5f, metrics.y.eyeY, metrics.eyeZ);
-    /* Chains for landmark features. They are the same arm/leg chains the geometry was built
-       from, obtained by rebuilding the (cheap, analytic) field for this metric set. */
+    /* Chains and true eye centres from the same BodyField that constructed the geometry,
+       refined to the exact post-dropToFloor vertex bounds of each analytic eyeball shell. */
     {
         const BodyField fieldForChains(metrics);
         ctx.chains[0] = fieldForChains.chain(1);
         ctx.chains[1] = fieldForChains.chain(-1);
+        ctx.eyeCentre[0] = fieldForChains.eyeCentre(1);
+        ctx.eyeCentre[1] = fieldForChains.eyeCentre(-1);
+    }
+    for (int which = 0; which < 2; ++which) {
+        const int targetRegion = (which == 0) ? REGION_EYE_L : REGION_EYE_R;
+        Vec3 mn(1e30f, 1e30f, 1e30f), mx(-1e30f, -1e30f, -1e30f);
+        bool found = false;
+        for (size_t vi = 0; vi < mesh.positions.size() && vi < mesh.regions.size(); ++vi) {
+            if (mesh.regions[vi] != targetRegion) continue;
+            mn = mn.minv(mesh.positions[vi]);
+            mx = mx.maxv(mesh.positions[vi]);
+            found = true;
+        }
+        if (found) {
+            ctx.eyeCentre[which] = Vec3((mn.x + mx.x) * 0.5f,
+                                        (mn.y + mx.y) * 0.5f,
+                                        mx.z - metrics.eyeRadius);
+        }
     }
     ctx.axis = buildMedialAxis(metrics, ctx.chains);
 

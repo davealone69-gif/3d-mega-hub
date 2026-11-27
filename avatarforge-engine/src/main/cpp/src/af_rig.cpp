@@ -72,6 +72,26 @@ bool Rig::build(const BodyField& field, const Mesh& mesh) {
     joints_.clear();
     buildSkeleton(field);
     if (joints_.empty()) return false;
+    /* Snap eye_L and eye_R joints to the actual post-dropToFloor analytic eyeball centres so
+       eye rotation pivots on the exact optical centre of both inner eye and cornea shells. */
+    const BodyMetrics& m = field.metrics();
+    for (int side : {1, -1}) {
+        const int targetRegion = (side > 0) ? REGION_EYE_L : REGION_EYE_R;
+        const int ji = jointIndex((side > 0) ? "eye_L" : "eye_R");
+        if (ji < 0) continue;
+        Vec3 mn(1e30f, 1e30f, 1e30f), mx(-1e30f, -1e30f, -1e30f);
+        bool found = false;
+        for (size_t vi = 0; vi < mesh.positions.size() && vi < mesh.regions.size(); ++vi) {
+            if (mesh.regions[vi] != targetRegion) continue;
+            mn = mn.minv(mesh.positions[vi]);
+            mx = mx.maxv(mesh.positions[vi]);
+            found = true;
+        }
+        if (found) {
+            joints_[static_cast<size_t>(ji)].worldPosition =
+                Vec3((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, mx.z - m.eyeRadius);
+        }
+    }
     finaliseRestPose();
     computeWeights(field, mesh);
     buildBlendshapes(field, mesh);
@@ -113,8 +133,8 @@ void Rig::buildSkeleton(const BodyField& field) {
     const int neck2 = add("neck_02", neck, Vec3(0, m.y.jawY - (m.y.crownY - m.y.jawY) * 0.045f, m.neck.centreZ * 0.5f), m.neck.rx * 1.35f);
     const int head = add("head", neck2, Vec3(0, m.y.jawY + (m.y.crownY - m.y.jawY) * 0.42f, 0), m.head.rx * 1.6f);
     const int jaw = add("jaw", head, Vec3(0, m.y.chinY + (m.y.crownY - m.y.chinY) * 0.06f, -m.head.rz * 0.45f), m.head.rx * 0.75f, AF_JOINT_FACE);
-    add("eye_L", head, Vec3(m.eyeSeparation * 0.5f, m.y.eyeY, -m.head.rz * 0.78f), m.eyeRadius * 2.0f, AF_JOINT_FACE);
-    add("eye_R", head, Vec3(-m.eyeSeparation * 0.5f, m.y.eyeY, -m.head.rz * 0.78f), m.eyeRadius * 2.0f, AF_JOINT_FACE);
+    add("eye_L", head, field.eyeCentre(1), m.eyeRadius * 2.0f, AF_JOINT_FACE, REGION_EYE_L);
+    add("eye_R", head, field.eyeCentre(-1), m.eyeRadius * 2.0f, AF_JOINT_FACE, REGION_EYE_R);
 
     /* Arms */
     for (int s = 0; s < 2; ++s) {
@@ -212,8 +232,13 @@ bool boneAppliesToRegion(const Joint& j, int vertexRegion) {
     const bool isHeadBone = j.name == "head" || j.name == "neck_01";
 
     switch (vertexRegion) {
-        case REGION_EYE_L: case REGION_EYE_R: case REGION_TEETH: case REGION_LIPS:
-        case REGION_TONGUE:
+        case REGION_EYE_L:
+        case REGION_CORNEA_L:
+            return j.name == "eye_L";
+        case REGION_EYE_R:
+        case REGION_CORNEA_R:
+            return j.name == "eye_R";
+        case REGION_TEETH: case REGION_LIPS: case REGION_TONGUE:
             return isFace || isHeadBone || j.name == "jaw";
         case REGION_HAIR: case REGION_LASH:
             return isHeadBone || isFace;
@@ -407,8 +432,12 @@ void Rig::buildBlendshapes(const BodyField& field, const Mesh& mesh) {
     const BodyMetrics& m = field.metrics();
     const float headH = m.y.crownY - m.y.chinY;
     const float faceZ = -m.head.rz * 0.98f;
-    const Vec3 eyeL(m.eyeSeparation * 0.5f, m.y.eyeY, faceZ * 0.80f);
-    const Vec3 eyeR(-m.eyeSeparation * 0.5f, m.y.eyeY, faceZ * 0.80f);
+    const int jiEyeL = jointIndex("eye_L");
+    const int jiEyeR = jointIndex("eye_R");
+    const Vec3 eyeTrueL = (jiEyeL >= 0) ? joints_[static_cast<size_t>(jiEyeL)].worldPosition : field.eyeCentre(1);
+    const Vec3 eyeTrueR = (jiEyeR >= 0) ? joints_[static_cast<size_t>(jiEyeR)].worldPosition : field.eyeCentre(-1);
+    const Vec3 eyeL = eyeTrueL;
+    const Vec3 eyeR = eyeTrueR;
     const Vec3 mouth(0.0f, m.mouthY, faceZ * 0.94f);
     const float lip = m.lipWidth;
     const float jawR = headH * 0.16f;
@@ -434,8 +463,6 @@ void Rig::buildBlendshapes(const BodyField& field, const Mesh& mesh) {
     const Vec3 browSkinL = surfaceAnchor(field, m.eyeSeparation * 0.5f, m.y.eyeY + rEye * 1.9f);
     const Vec3 browSkinR(-browSkinL.x, browSkinL.y, browSkinL.z);
     const Vec3 browSkinC = surfaceAnchor(field, 0.0f, eyeL.y + rEye * 2.25f);
-    const Vec3 eyeTrueL = field.eyeCentre(0);
-    const Vec3 eyeTrueR = field.eyeCentre(1);
     const Vec3 lidUpperL = eyeTrueL + Vec3(0.0f, rEye * 0.62f, -rEye * 1.17f);
     const Vec3 lidUpperR = eyeTrueR + Vec3(0.0f, rEye * 0.62f, -rEye * 1.17f);
     const Vec3 lidLowerL = eyeTrueL + Vec3(0.0f, -rEye * 0.66f, -rEye * 1.12f);
@@ -514,47 +541,67 @@ void Rig::buildBlendshapes(const BodyField& field, const Mesh& mesh) {
             } else if (n == "mouthClose") {
                 d.y = -stamp(p, Vec3(0, mouth.y, mouthSkinZ), Vec3(lip * 0.7f, lip * 0.6f, lip * 0.8f)) * lip * 0.10f;
             } else if (n.rfind("eyeBlink", 0) == 0) {
-                /* The upper lid rotates down over the globe: the lid surface moves furthest, the
-                   canthi least, so the displacement is stamped with a wide, flat mask whose
-                   vertical extent spans the whole lid. */
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 lid = left ? lidUpperL : lidUpperR;
-                const float s = stamp(p, lid, Vec3(rEye * 2.4f, rEye * 1.5f, rEye * 2.6f));
-                d.y = -s * rEye * 1.55f;
-                d.z = s * rEye * 0.30f;
+                /* The upper lid rotates down over the globe without squashing the eyeball/cornea. */
+                const int region = (vi < mesh.regions.size()) ? mesh.regions[vi] : REGION_SKIN;
+                if (region != REGION_EYE_L && region != REGION_EYE_R &&
+                    region != REGION_CORNEA_L && region != REGION_CORNEA_R) {
+                    const bool left = n.find("Left") != std::string::npos;
+                    const Vec3 lid = left ? lidUpperL : lidUpperR;
+                    const float s = stamp(p, lid, Vec3(rEye * 2.4f, rEye * 1.5f, rEye * 2.6f));
+                    d.y = -s * rEye * 1.55f;
+                    d.z = s * rEye * 0.30f;
+                }
             } else if (n.rfind("eyeWide", 0) == 0) {
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 lidU = left ? lidUpperL : lidUpperR;
-                const Vec3 lidD = left ? lidLowerL : lidLowerR;
-                const float su = stamp(p, lidU, Vec3(rEye * 2.4f, rEye * 1.6f, rEye * 2.6f));
-                const float sl = stamp(p, lidD, Vec3(rEye * 2.2f, rEye * 1.4f, rEye * 2.4f));
-                d.y = su * rEye * 0.95f - sl * rEye * 0.45f;
+                const int region = (vi < mesh.regions.size()) ? mesh.regions[vi] : REGION_SKIN;
+                if (region != REGION_EYE_L && region != REGION_EYE_R &&
+                    region != REGION_CORNEA_L && region != REGION_CORNEA_R) {
+                    const bool left = n.find("Left") != std::string::npos;
+                    const Vec3 lidU = left ? lidUpperL : lidUpperR;
+                    const Vec3 lidD = left ? lidLowerL : lidLowerR;
+                    const float su = stamp(p, lidU, Vec3(rEye * 2.4f, rEye * 1.6f, rEye * 2.6f));
+                    const float sl = stamp(p, lidD, Vec3(rEye * 2.2f, rEye * 1.4f, rEye * 2.4f));
+                    d.y = su * rEye * 0.95f - sl * rEye * 0.45f;
+                }
             } else if (n.rfind("eyeSquint", 0) == 0) {
                 /* Squint = lower lid up + cheek raised towards the outer canthus. */
-                const bool left = n.find("Left") != std::string::npos;
-                const Vec3 lidD = left ? lidLowerL : lidLowerR;
-                const float s = stamp(p, lidD, Vec3(rEye * 2.6f, rEye * 1.6f, rEye * 2.6f));
-                d.y = s * rEye * 0.75f;
-                const float sx = left ? 1.0f : -1.0f;
-                d.z = -s * rEye * 0.20f;
-                (void)sx;
+                const int region = (vi < mesh.regions.size()) ? mesh.regions[vi] : REGION_SKIN;
+                if (region != REGION_EYE_L && region != REGION_EYE_R &&
+                    region != REGION_CORNEA_L && region != REGION_CORNEA_R) {
+                    const bool left = n.find("Left") != std::string::npos;
+                    const Vec3 lidD = left ? lidLowerL : lidLowerR;
+                    const float s = stamp(p, lidD, Vec3(rEye * 2.6f, rEye * 1.6f, rEye * 2.6f));
+                    d.y = s * rEye * 0.75f;
+                    d.z = -s * rEye * 0.20f;
+                }
             } else if (n.rfind("eyeLook", 0) == 0) {
-                /* Gaze channels only move the eyeball islands; the lids react through the
-                   corresponding eyeBlink/eyeWide channels, exactly as ARKit does. */
+                /* Gaze channels rigidly rotate both the inner eyeball and outer cornea shells
+                   around the optical centre so the cornea stays locked to the iris and the
+                   surrounding eyelid skin is never pulled. */
+                const int region = (vi < mesh.regions.size()) ? mesh.regions[vi] : REGION_SKIN;
                 const bool left = n.find("Left") != std::string::npos;
-                const Vec3 e = left ? eyeL : eyeR;
-                /*
-                 * Amplitude: the mask peaks on the globe's surface (the stamp falls off over
-                 * 1.6 radii, so the skin at 1.6r gets nothing and the sclera at 1.0r gets most of
-                 * it). 0.9 * radius of movement at the surface is about 7 degrees of gaze for a
-                 * 12 mm eye - the range ARKit's eyeLook channels are authored for. A smaller
-                 * figure looks like a twitch; a larger one tears the island away from the lid.
-                 */
-                const float s = stamp(p, e, Vec3(m.eyeRadius * 1.6f, m.eyeRadius * 1.6f, m.eyeRadius * 1.6f));
-                if (n.find("LookUp") != std::string::npos) d.y += s * m.eyeRadius * 0.90f;
-                if (n.find("LookDown") != std::string::npos) d.y -= s * m.eyeRadius * 0.90f;
-                if (n.find("LookOut") != std::string::npos) d.x += (left ? 1.0f : -1.0f) * s * m.eyeRadius * 0.90f;
-                if (n.find("LookIn") != std::string::npos) d.x -= (left ? 1.0f : -1.0f) * s * m.eyeRadius * 0.90f;
+                const bool matchesEye = left
+                    ? (region == REGION_EYE_L || region == REGION_CORNEA_L)
+                    : (region == REGION_EYE_R || region == REGION_CORNEA_R);
+                if (matchesEye) {
+                    const Vec3 e = left ? eyeL : eyeR;
+                    const Vec3 rel = p - e;
+                    const float angle = radians(22.0f);
+                    const float ca = std::cos(angle);
+                    const float sa = std::sin(angle);
+                    Vec3 rot = rel;
+                    if (n.find("LookUp") != std::string::npos) {
+                        rot = Vec3(rel.x, rel.y * ca - rel.z * sa, rel.y * sa + rel.z * ca);
+                    } else if (n.find("LookDown") != std::string::npos) {
+                        rot = Vec3(rel.x, rel.y * ca + rel.z * sa, -rel.y * sa + rel.z * ca);
+                    } else if (n.find("LookOut") != std::string::npos) {
+                        const float sx = left ? 1.0f : -1.0f;
+                        rot = Vec3(rel.x * ca - sx * rel.z * sa, rel.y, sx * rel.x * sa + rel.z * ca);
+                    } else if (n.find("LookIn") != std::string::npos) {
+                        const float sx = left ? -1.0f : 1.0f;
+                        rot = Vec3(rel.x * ca - sx * rel.z * sa, rel.y, sx * rel.x * sa + rel.z * ca);
+                    }
+                    d = rot - rel;
+                }
             } else if (n.rfind("browDown", 0) == 0) {
                 const bool left = n.find("Left") != std::string::npos;
                 const Vec3 b = left ? browSkinL : browSkinR;

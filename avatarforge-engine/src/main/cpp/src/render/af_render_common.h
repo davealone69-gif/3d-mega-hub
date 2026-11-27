@@ -178,11 +178,16 @@ static_assert(offsetof(af_vertex, weights) == VertexLayout::weightsOffset, "weig
 /* Local copies of the shader-side constants, so af_render_common.h does not depend on GLSL. */
 enum {
     AF_KIND_GENERIC = 0, AF_KIND_SKIN = 1, AF_KIND_EYE = 2, AF_KIND_HAIR = 3,
-    AF_KIND_CLOTH = 4, AF_KIND_METAL = 5, AF_KIND_TEETH = 6, AF_KIND_NAIL = 7
+    AF_KIND_CLOTH = 4, AF_KIND_METAL = 5, AF_KIND_TEETH = 6, AF_KIND_NAIL = 7,
+    AF_KIND_CORNEA = 8
 };
 
+inline bool isCorneaRegion(int region) {
+    return region == 13 || region == 14;
+}
+
 /* ------------------------------------------------------------------ material mapping ------- */
-/* af_region -> AfSurface kind. The region ids are the kernel's (0..12) and are part of the ABI. */
+/* af_region -> AfSurface kind. The region ids are the kernel's (0..14) and are part of the ABI. */
 inline int materialKindForRegion(int region, float metallic) {
     switch (region) {
         case 0:  return AF_KIND_SKIN;    /* skin            */
@@ -198,6 +203,8 @@ inline int materialKindForRegion(int region, float metallic) {
         case 10: return AF_KIND_CLOTH;   /* cloth_upper / cloth_lower */
         case 11: return AF_KIND_CLOTH;   /* shoe: leather is cloth-like with less sheen */
         case 12: return (metallic > 0.35f) ? AF_KIND_METAL : AF_KIND_CLOTH;   /* gear */
+        case 13:
+        case 14: return AF_KIND_CORNEA;  /* cornea_left / cornea_right */
         default: return AF_KIND_GENERIC;
     }
 }

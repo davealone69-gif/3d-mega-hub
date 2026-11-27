@@ -114,7 +114,7 @@ const std::vector<std::string>& materialNames() {
     static std::vector<std::string> names;
     if (names.empty()) {
         std::map<std::string, int> seen;
-        for (int r = 0; r < 13; ++r) {
+        for (int r = 0; r < REGION_COUNT; ++r) {
             const std::string n = materialForRegion(r).name;
             if (!seen.count(n)) {
                 seen[n] = static_cast<int>(names.size());
@@ -136,7 +136,7 @@ int materialIndexForRegion(int region) {
 
 /* The first region that maps to a given material, used for the material's own properties. */
 int representativeRegion(int material) {
-    for (int r = 0; r < 13; ++r) {
+    for (int r = 0; r < REGION_COUNT; ++r) {
         if (materialIndexForRegion(r) == material) return r;
     }
     return 0;
@@ -289,7 +289,7 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
         int region = 0;
         if (!mesh.regions.empty()) {
             const int32_t r = mesh.regions[mesh.indices[t * 3]];
-            region = (r >= 0 && r < 13) ? r : 0;
+            region = (r >= 0 && r < REGION_COUNT) ? r : 0;
         }
         std::vector<uint32_t>& g = groups[materialIndexForRegion(region)];
         g.push_back(mesh.indices[t * 3 + 0]);
@@ -663,37 +663,43 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
         j += "\"materials\":[";
         for (size_t mi = 0; mi < names.size(); ++mi) {
             const int materialRegion = representativeRegion(static_cast<int>(mi));
+            const bool isCornea = (materialRegion == REGION_CORNEA_L || materialRegion == REGION_CORNEA_R);
             const MaterialDef& md = materialForRegion(materialRegion);
             const Vec3 baseColor = materialRegion == REGION_HAIR
                 ? hairBaseColorForSpec(spec) : md.baseColor;
             if (mi) j += ',';
             j += "{\"name\":\"";
             jsonEscape(j, names[mi]);
-            j += "\",\"doubleSided\":false,\"pbrMetallicRoughness\":{\"baseColorFactor\":[";
+            j += "\",\"doubleSided\":false";
+            if (isCornea) {
+                j += ",\"alphaMode\":\"BLEND\"";
+            }
+            j += ",\"pbrMetallicRoughness\":{\"baseColorFactor\":[";
             jsonNum(j, baseColor.x); j += ',';
             jsonNum(j, baseColor.y); j += ',';
-            jsonNum(j, baseColor.z);
-            j += ",1],\"metallicFactor\":";
+            jsonNum(j, baseColor.z); j += ',';
+            jsonNum(j, isCornea ? 0.04 : 1.0);
+            j += "],\"metallicFactor\":";
             jsonNum(j, md.metallic);
             j += ",\"roughnessFactor\":";
             jsonNum(j, md.roughness);
-            if (texBaseColor >= 0) {
+            if (!isCornea && texBaseColor >= 0) {
                 j += ",\"baseColorTexture\":{\"index\":";
                 j += std::to_string(texBaseColor);
                 j += "}";
             }
-            if (texMR >= 0) {
+            if (!isCornea && texMR >= 0) {
                 j += ",\"metallicRoughnessTexture\":{\"index\":";
                 j += std::to_string(texMR);
                 j += "}";
             }
             j += '}';
-            if (texNormal >= 0) {
+            if (!isCornea && texNormal >= 0) {
                 j += ",\"normalTexture\":{\"index\":";
                 j += std::to_string(texNormal);
                 j += ",\"scale\":1}";
             }
-            if (texAO >= 0) {
+            if (!isCornea && texAO >= 0) {
                 j += ",\"occlusionTexture\":{\"index\":";
                 j += std::to_string(texAO);
                 j += ",\"strength\":1}";
@@ -701,6 +707,9 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             j += ",\"extensions\":{\"KHR_materials_ior\":{\"ior\":";
             jsonNum(j, md.ior);
             j += '}';
+            if (isCornea) {
+                j += ",\"KHR_materials_clearcoat\":{\"clearcoatFactor\":1,\"clearcoatRoughnessFactor\":0.035}";
+            }
             if (shouldEmitGlbSheen(materialRegion, md, texSheen)) {
                 const float sheenColor = clampf(md.sheen * md.sheenTint, 0.0f, 1.0f);
                 const float sheenRoughness = clampf(1.0f - 0.5f * md.sheen, 0.0f, 1.0f);
@@ -871,14 +880,16 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
     /* extensionsUsed: only those actually emitted. */
     {
         std::string used = "\"extensionsUsed\":[\"KHR_materials_ior\"";
-        bool sheen = false, sss = false;
+        bool clearcoat = false, sheen = false, sss = false;
         const std::vector<std::string>& names = materialNames();
         for (size_t mi = 0; mi < names.size(); ++mi) {
             const int materialRegion = representativeRegion(static_cast<int>(mi));
             const MaterialDef& md = materialForRegion(materialRegion);
+            if (materialRegion == REGION_CORNEA_L || materialRegion == REGION_CORNEA_R) clearcoat = true;
             if (shouldEmitGlbSheen(materialRegion, md, texSheen)) sheen = true;
             if (texSSS >= 0 && md.subsurface > 1e-3f) sss = true;
         }
+        if (clearcoat) used += ",\"KHR_materials_clearcoat\"";
         if (sheen) used += ",\"KHR_materials_sheen\"";
         if (sss) used += ",\"AF_subsurface\"";
         used += "]";

@@ -3,7 +3,9 @@
 #include "af_anatomy.h"
 #include "af_body.h"
 #include "af_glb.h"
+#include "af_rig.h"
 #include "af_texture.h"
+#include "af_uv.h"
 
 #include <algorithm>
 #include <cmath>
@@ -381,11 +383,161 @@ int main() {
                 "exported GLB is missing KHR_materials_ior");
         require(glbJson.find("KHR_materials_sheen") == std::string::npos,
                 "exported GLB must not emit KHR_materials_sheen without an authored sheen texture");
+        require(glbJson.find("\"cornea_left\"") != std::string::npos &&
+                glbJson.find("\"cornea_right\"") != std::string::npos,
+                "exported GLB is missing cornea_left/cornea_right materials");
+        require(glbJson.find("\"alphaMode\":\"BLEND\"") != std::string::npos,
+                "exported GLB cornea material is missing alphaMode BLEND");
+        require(glbJson.find("KHR_materials_clearcoat") != std::string::npos,
+                "exported GLB cornea material is missing KHR_materials_clearcoat");
+    }
+
+    // Dual-Mesh Eyes end-to-end verification: watertight analytic shells, concave iris bowl +
+    // protruding wet corneal dome, sclera/iris/pupil texture split, rigid single-joint skinning,
+    // aligned eye joints, and rigid gaze / non-swapped blink blendshapes.
+    {
+        require(coarseReport.openEdgesAfterRepair == 0 && coarseReport.nonManifoldEdges == 0,
+                "body mesh with analytic dual-mesh eyes must remain watertight and manifold");
+
+        size_t regionCounts[af::REGION_COUNT] = {0};
+        af::Vec3 eyeLMin(1e30f, 1e30f, 1e30f), eyeLMax(-1e30f, -1e30f, -1e30f);
+        af::Vec3 corneaLMin(1e30f, 1e30f, 1e30f), corneaLMax(-1e30f, -1e30f, -1e30f);
+        for (size_t i = 0; i < coarseMesh.positions.size(); ++i) {
+            const int r = coarseMesh.regions[i];
+            require(r >= 0 && r < af::REGION_COUNT, "vertex region out of range");
+            ++regionCounts[r];
+            if (r == af::REGION_EYE_L) {
+                eyeLMin = eyeLMin.minv(coarseMesh.positions[i]);
+                eyeLMax = eyeLMax.maxv(coarseMesh.positions[i]);
+            } else if (r == af::REGION_CORNEA_L) {
+                corneaLMin = corneaLMin.minv(coarseMesh.positions[i]);
+                corneaLMax = corneaLMax.maxv(coarseMesh.positions[i]);
+            }
+        }
+        require(regionCounts[af::REGION_EYE_L] > 100 && regionCounts[af::REGION_EYE_R] > 100,
+                "analytic inner eye shells missing");
+        require(regionCounts[af::REGION_CORNEA_L] > 100 && regionCounts[af::REGION_CORNEA_R] > 100,
+                "analytic outer cornea shells missing");
+        require(regionCounts[af::REGION_EYE_L] == regionCounts[af::REGION_EYE_R] &&
+                regionCounts[af::REGION_CORNEA_L] == regionCounts[af::REGION_CORNEA_R],
+                "left/right dual-mesh eye vertex counts are not symmetric");
+
+        // Anterior chamber depth: outer cornea apex must sit 2.5-4.5 mm ahead (-Z) of the
+        // recessed inner iris bowl, and wrap the posterior sclera with positive clearance.
+        const float chamberDepth = eyeLMin.z - corneaLMin.z;
+        const float scleraClearance = corneaLMax.z - eyeLMax.z;
+        require(chamberDepth > 0.0020f && chamberDepth < 0.0055f,
+                "cornea anterior chamber depth outside anatomical 2.0-5.5 mm range");
+        require(scleraClearance > 0.00015f && scleraClearance < 0.0012f,
+                "cornea sclera clearance outside 0.15-1.2 mm range");
+
+        // UV unwrap + 512x512 texture bake must produce pupil, iris, and bright sclera texels.
+        af::Mesh eyeTestMesh = coarseMesh;
+        af::UVLayout eyeLayout;
+        require(af::unwrapAtlas(&eyeTestMesh, 512, 512, &eyeLayout),
+                "unwrapAtlas failed on dual-mesh eye avatar");
+        eyeTestMesh.computeTangents();
+
+        af::TextureSet eyeTex;
+        af::BakeOptions bakeOpt;
+        bakeOpt.width = 512;
+        bakeOpt.height = 512;
+        bakeOpt.threads = 2;
+        require(af::bakeTextures(eyeTestMesh, eyeLayout, qualityMetrics, qualitySpec, bakeOpt, &eyeTex),
+                "bakeTextures failed on dual-mesh eye avatar");
+
+        int darkPupilVerts = 0, midIrisVerts = 0, brightScleraVerts = 0;
+        for (size_t i = 0; i < eyeTestMesh.positions.size(); ++i) {
+            if (eyeTestMesh.regions[i] != af::REGION_EYE_L) continue;
+            const float u = eyeTestMesh.uvs[i * 2];
+            const float v = eyeTestMesh.uvs[i * 2 + 1];
+            const int px = std::clamp(static_cast<int>(u * eyeTex.width), 0, eyeTex.width - 1);
+            const int py = std::clamp(static_cast<int>(v * eyeTex.height), 0, eyeTex.height - 1);
+            const size_t idx = (static_cast<size_t>(py) * eyeTex.width + px) * 4;
+            const float lum = (0.2126f * eyeTex.baseColor[idx + 0] +
+                               0.7152f * eyeTex.baseColor[idx + 1] +
+                               0.0722f * eyeTex.baseColor[idx + 2]) / 255.0f;
+            const af::Vec3 rel = eyeTestMesh.positions[i] -
+                af::Vec3((eyeLMin.x + eyeLMax.x) * 0.5f,
+                         (eyeLMin.y + eyeLMax.y) * 0.5f,
+                         eyeLMax.z - qualityMetrics.eyeRadius);
+            if (rel.z > 0.0f) continue; // check visible anterior hemisphere
+            if (lum < 0.14f) ++darkPupilVerts;
+            else if (lum < 0.72f) ++midIrisVerts;
+            else ++brightScleraVerts;
+        }
+        require(darkPupilVerts > 0 && midIrisVerts > 0 && brightScleraVerts > 20,
+                "baked eye texture must contain distinct pupil, iris, and bright sclera zones");
+
+        // Rigging: eye_L/eye_R joints must align with the analytic eyeballs within 1 mm and
+        // bind both inner eye and outer cornea vertices 100% rigidly to their eye joint.
+        af::Rig eyeRig;
+        require(eyeRig.build(qualityField, eyeTestMesh), "Rig::build failed on dual-mesh eye avatar");
+        const int jiEyeL = eyeRig.jointIndex("eye_L");
+        const int jiEyeR = eyeRig.jointIndex("eye_R");
+        require(jiEyeL >= 0 && jiEyeR >= 0, "eye_L / eye_R joints missing from rig");
+        const af::Vec3 expectedEyeLCentre((eyeLMin.x + eyeLMax.x) * 0.5f,
+                                          (eyeLMin.y + eyeLMax.y) * 0.5f,
+                                          eyeLMax.z - qualityMetrics.eyeRadius);
+        const af::Vec3 jointEyeLPos = eyeRig.joints()[static_cast<size_t>(jiEyeL)].worldPosition;
+        require((jointEyeLPos - expectedEyeLCentre).length() < 0.001f,
+                "eye_L joint position drifted more than 1 mm from the analytic eyeball centre");
+
+        for (size_t i = 0; i < eyeTestMesh.positions.size(); ++i) {
+            const int r = eyeTestMesh.regions[i];
+            if (r == af::REGION_EYE_L || r == af::REGION_CORNEA_L) {
+                const af::SkinWeights& sw = eyeRig.weights()[i];
+                require(sw.joints[0] == static_cast<uint16_t>(jiEyeL) && sw.weights[0] > 0.999f,
+                        "left eye/cornea vertex is not 100% rigidly bound to eye_L");
+            } else if (r == af::REGION_EYE_R || r == af::REGION_CORNEA_R) {
+                const af::SkinWeights& sw = eyeRig.weights()[i];
+                require(sw.joints[0] == static_cast<uint16_t>(jiEyeR) && sw.weights[0] > 0.999f,
+                        "right eye/cornea vertex is not 100% rigidly bound to eye_R");
+            }
+        }
+
+        // Blendshapes: eyeLookOutLeft moves eye_L + cornea_L rigidly and leaves skin untouched;
+        // eyeBlinkLeft moves +X (left) upper eyelid skin and leaves eye/cornea untouched.
+        int lookOutLeftIdx = -1, blinkLeftIdx = -1;
+        for (int c = 0; c < af::kBlendshapeCount; ++c) {
+            if (std::string(af::kBlendshapeNames[c]) == "eyeLookOutLeft") lookOutLeftIdx = c;
+            if (std::string(af::kBlendshapeNames[c]) == "eyeBlinkLeft") blinkLeftIdx = c;
+        }
+        require(lookOutLeftIdx >= 0 && blinkLeftIdx >= 0, "eye blendshape channels missing");
+        const auto& lookDeltas = eyeRig.blendshapeDeltas(lookOutLeftIdx);
+        const auto& blinkDeltas = eyeRig.blendshapeDeltas(blinkLeftIdx);
+        float maxLookEyeL = 0.0f, maxLookCorneaL = 0.0f, maxLookSkin = 0.0f;
+        float maxBlinkLeftSkin = 0.0f, maxBlinkRightSkin = 0.0f, maxBlinkEye = 0.0f;
+        for (size_t i = 0; i < eyeTestMesh.positions.size(); ++i) {
+            const int r = eyeTestMesh.regions[i];
+            const float lmag = lookDeltas[i].length();
+            const float bmag = blinkDeltas[i].length();
+            if (r == af::REGION_EYE_L) maxLookEyeL = std::max(maxLookEyeL, lmag);
+            else if (r == af::REGION_CORNEA_L) maxLookCorneaL = std::max(maxLookCorneaL, lmag);
+            else if (r == af::REGION_SKIN) maxLookSkin = std::max(maxLookSkin, lmag);
+
+            if (r == af::REGION_EYE_L || r == af::REGION_CORNEA_L ||
+                r == af::REGION_EYE_R || r == af::REGION_CORNEA_R) {
+                maxBlinkEye = std::max(maxBlinkEye, bmag);
+            } else if (r == af::REGION_SKIN) {
+                if (eyeTestMesh.positions[i].x > 0.0f) maxBlinkLeftSkin = std::max(maxBlinkLeftSkin, bmag);
+                else maxBlinkRightSkin = std::max(maxBlinkRightSkin, bmag);
+            }
+        }
+        require(maxLookEyeL > 0.002f && maxLookCorneaL > 0.002f,
+                "eyeLookOutLeft must rotate both inner eye and outer cornea shells");
+        require(maxLookSkin < 1e-6f,
+                "eyeLookOutLeft must not pull surrounding eyelid skin");
+        require(maxBlinkLeftSkin > 0.002f && maxBlinkLeftSkin > maxBlinkRightSkin * 2.0f,
+                "eyeBlinkLeft must deform the left (+X) eyelid rather than the right (-X) eyelid");
+        require(maxBlinkEye < 1e-6f,
+                "eyeBlinkLeft must not squash the eyeball or cornea meshes");
     }
 
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
     std::puts("PASS: long hairstyle has measurable volumetric depth behind the skull");
-    std::puts("PASS: GLB export omits KHR_materials_sheen when no sheen texture is authored");
+    std::puts("PASS: GLB export omits KHR_materials_sheen and exports wet cornea with BLEND + clearcoat");
+    std::puts("PASS: dual-mesh eyes pass geometry, sclera/iris texture, rigid skinning, and blendshape checks");
 
     std::puts("PASS: 40 repeated single-thread, parallel, and block-skipped sampling comparisons");
     return 0;

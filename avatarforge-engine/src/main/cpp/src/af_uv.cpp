@@ -206,6 +206,14 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
         Chart2D& p2 = projected[c];
         basisFromNormal(n, &p2.axisU, &p2.axisV);
 
+        /* Hero texel-density weighting: eyes carry high-frequency iris/limbus/sclera detail on a
+           24 mm globe, so give inner eye charts 6x linear texel density (~2.5% of the atlas for
+           crisp iris fibres and pupil edges). Outer cornea charts use scalar Fresnel/clearcoat
+           and need minimal atlas area. */
+        float uvScale = 1.0f;
+        if (ch.material == REGION_EYE_L || ch.material == REGION_EYE_R) uvScale = 6.0f;
+        else if (ch.material == REGION_CORNEA_L || ch.material == REGION_CORNEA_R) uvScale = 0.25f;
+
         /* Project relative to the chart's own first vertex: keeps the numbers small and makes
            the packing resolution-independent. */
         p2.origin = mesh->positions[faces[chartFaces[static_cast<size_t>(ch.firstFace)]][0]];
@@ -214,12 +222,12 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
             const uint32_t f = static_cast<uint32_t>(chartFaces[static_cast<size_t>(ch.firstFace + i)]);
             for (int k = 0; k < 3; ++k) {
                 const Vec3 rel = mesh->positions[faces[f][static_cast<size_t>(k)]] - p2.origin;
-                const Vec2 uv(p2.axisU.dot(rel), p2.axisV.dot(rel));
+                const Vec2 uv(p2.axisU.dot(rel) * uvScale, p2.axisV.dot(rel) * uvScale);
                 p2.uvs.push_back(uv);
                 p2.bounds.add(uv);
             }
             const Vec3 a = mesh->positions[faces[f][0]], b = mesh->positions[faces[f][1]], cc = mesh->positions[faces[f][2]];
-            p2.area += triangleArea(a, b, cc);
+            p2.area += triangleArea(a, b, cc) * uvScale * uvScale;
         }
         charts[c].areaSqMeters = p2.area;
 

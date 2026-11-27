@@ -1336,6 +1336,7 @@ void GlRenderer::drawShadowPass() {
         const int submeshCount = af_engine_submesh_count(engine_);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lodIndexIbo_);
         for (int i = 0; i < submeshCount && static_cast<size_t>(i) < shadowRanges.size(); ++i) {
+            if (submeshes && isCorneaRegion(submeshes[i].region)) continue;
             const AvatarLodRange& range = shadowRanges[static_cast<size_t>(i)];
             if (range.indexCount == 0 || range.indexCount % 3 != 0) continue;
             if (range.firstIndex > avatarLods_.indices().size() ||
@@ -1350,8 +1351,20 @@ void GlRenderer::drawShadowPass() {
         }
     } else {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexIbo_);
-        glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
-        ++drawCalls_;
+        const af_submesh* submeshes = af_engine_submeshes(engine_);
+        const int submeshCount = af_engine_submesh_count(engine_);
+        if (submeshes && submeshCount > 0) {
+            for (int i = 0; i < submeshCount; ++i) {
+                if (isCorneaRegion(submeshes[i].region)) continue;
+                if (submeshes[i].index_offset < 0 || submeshes[i].index_count <= 0) continue;
+                glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(submeshes[i].index_count), GL_UNSIGNED_INT,
+                               reinterpret_cast<const void*>(static_cast<uintptr_t>(submeshes[i].index_offset) * sizeof(uint32_t)));
+                ++drawCalls_;
+            }
+        } else {
+            glDrawElements(GL_TRIANGLES, indexCount_, GL_UNSIGNED_INT, nullptr);
+            ++drawCalls_;
+        }
     }
     glDisable(GL_POLYGON_OFFSET_FILL);
 }
@@ -1426,84 +1439,109 @@ void GlRenderer::drawForwardPass() {
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
         const int drawCount = visibilityReady_ ? static_cast<int>(visibility_.size()) : n;
-        for (int draw = 0; draw < drawCount; ++draw) {
-            const af_scene_draw* visibleItem = visibilityReady_ ? &visibility_[static_cast<size_t>(draw)] : nullptr;
-            const int i = visibleItem ? visibleItem->instance : draw;
-            if (i < 0 || i >= n) continue;
-            const af_submesh& sm = submeshes[i];
-            size_t drawIndexOffset = visibleItem ? static_cast<size_t>(visibleItem->index_offset)
-                                                  : static_cast<size_t>(sm.index_offset < 0 ? 0 : sm.index_offset);
-            size_t drawIndexCount = visibleItem ? static_cast<size_t>(visibleItem->index_count)
-                                                : static_cast<size_t>(sm.index_count < 0 ? 0 : sm.index_count);
-            if (useLodIndices && avatarLods_.levelCount() > 1 &&
-                static_cast<size_t>(i) < avatarLods_.level(0).submeshes.size() && sm.index_count >= 768) {
-                const float cx = 0.5f * (sm.bounds_min[0] + sm.bounds_max[0]);
-                const float cy = 0.5f * (sm.bounds_min[1] + sm.bounds_max[1]);
-                const float cz = 0.5f * (sm.bounds_min[2] + sm.bounds_max[2]);
-                const float dx = cx - scene_.eye.x, dy = cy - scene_.eye.y, dz = cz - scene_.eye.z;
-                const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-                const int selectedLod = distance >= 16.0f && avatarLods_.levelCount() > 2 ? 2
-                                       : distance >= 8.0f ? 1 : 0;
-                const auto& ranges = avatarLods_.level(selectedLod).submeshes;
-                if (static_cast<size_t>(i) < ranges.size() && ranges[static_cast<size_t>(i)].indexCount > 0) {
-                    drawIndexOffset = ranges[static_cast<size_t>(i)].firstIndex;
-                    drawIndexCount = ranges[static_cast<size_t>(i)].indexCount;
+        /* Two-pass forward draw: pass 0 draws opaque anatomy/sclera/iris with depth writes on;
+           pass 1 composites the transparent wet corneal dome shells with premultiplied alpha
+           blending and depth writes disabled so catchlights float cleanly above the iris. */
+        const int passCount = debugMagenta ? 1 : 2;
+        for (int pass = 0; pass < passCount; ++pass) {
+            const bool corneaPass = (pass == 1);
+            if (corneaPass) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+            }
+            for (int draw = 0; draw < drawCount; ++draw) {
+                const af_scene_draw* visibleItem = visibilityReady_ ? &visibility_[static_cast<size_t>(draw)] : nullptr;
+                const int i = visibleItem ? visibleItem->instance : draw;
+                if (i < 0 || i >= n) continue;
+                const af_submesh& sm = submeshes[i];
+                const bool isCornea = isCorneaRegion(sm.region);
+                if (!debugMagenta && isCornea != corneaPass) continue;
+                size_t drawIndexOffset = visibleItem ? static_cast<size_t>(visibleItem->index_offset)
+                                                      : static_cast<size_t>(sm.index_offset < 0 ? 0 : sm.index_offset);
+                size_t drawIndexCount = visibleItem ? static_cast<size_t>(visibleItem->index_count)
+                                                    : static_cast<size_t>(sm.index_count < 0 ? 0 : sm.index_count);
+                if (!corneaPass && useLodIndices && avatarLods_.levelCount() > 1 &&
+                    static_cast<size_t>(i) < avatarLods_.level(0).submeshes.size() && sm.index_count >= 768) {
+                    const float cx = 0.5f * (sm.bounds_min[0] + sm.bounds_max[0]);
+                    const float cy = 0.5f * (sm.bounds_min[1] + sm.bounds_max[1]);
+                    const float cz = 0.5f * (sm.bounds_min[2] + sm.bounds_max[2]);
+                    const float dx = cx - scene_.eye.x, dy = cy - scene_.eye.y, dz = cz - scene_.eye.z;
+                    const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+                    const int selectedLod = distance >= 16.0f && avatarLods_.levelCount() > 2 ? 2
+                                           : distance >= 8.0f ? 1 : 0;
+                    const auto& ranges = avatarLods_.level(selectedLod).submeshes;
+                    if (static_cast<size_t>(i) < ranges.size() && ranges[static_cast<size_t>(i)].indexCount > 0) {
+                        drawIndexOffset = ranges[static_cast<size_t>(i)].firstIndex;
+                        drawIndexCount = ranges[static_cast<size_t>(i)].indexCount;
+                    }
+                } else if (corneaPass && useLodIndices && avatarLods_.levelCount() > 0 &&
+                           static_cast<size_t>(i) < avatarLods_.level(0).submeshes.size()) {
+                    const auto& ranges = avatarLods_.level(0).submeshes;
+                    if (ranges[static_cast<size_t>(i)].indexCount > 0) {
+                        drawIndexOffset = ranges[static_cast<size_t>(i)].firstIndex;
+                        drawIndexCount = ranges[static_cast<size_t>(i)].indexCount;
+                    }
                 }
-            }
-            /* Re-check immediately before converting the element offset to a byte pointer. */
-            if (sm.index_offset < 0 || sm.index_count < 0 ||
-                drawIndexOffset > static_cast<size_t>(indexCount_) ||
-                drawIndexCount > static_cast<size_t>(indexCount_) - drawIndexOffset) {
-                geometryValid_ = false;
-                std::fprintf(stderr, "[AvatarForge] skipped invalid submesh draw range %d\n", i);
-                continue;
-            }
-            if (!debugMagenta) {
-                if (sm.region == -2) {
-                    glDisable(GL_CULL_FACE);
-                } else if (cullingWasEnabled) {
-                    glEnable(GL_CULL_FACE);
+                /* Re-check immediately before converting the element offset to a byte pointer. */
+                if (sm.index_offset < 0 || sm.index_count < 0 ||
+                    drawIndexOffset > static_cast<size_t>(indexCount_) ||
+                    drawIndexCount > static_cast<size_t>(indexCount_) - drawIndexOffset) {
+                    geometryValid_ = false;
+                    std::fprintf(stderr, "[AvatarForge] skipped invalid submesh draw range %d\n", i);
+                    continue;
                 }
-                glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
-                                  sizeof(MaterialUbo));
-            }
-            const size_t byteOffset = drawIndexOffset * sizeof(uint32_t);
-            if (!drawDumpLogged_) {
-                AF_GL_LOGI("DrawElements submesh=%d mode=TRIANGLES count=%d indexType=UNSIGNED_INT indexOffset=%d byteOffset=%zu vertexRange=[%d,%d)",
-                           i, sm.index_count, sm.index_offset, byteOffset, sm.vertex_offset,
-                           sm.vertex_offset + sm.vertex_count);
-                drawDumpLogged_ = true;
-            }
-            GLenum preDrawError = GL_NO_ERROR;
-            for (int drain = 0; drain < 16; ++drain) {
-                const GLenum pending = glGetError();
-                if (pending == GL_NO_ERROR) break;
-                if (preDrawError == GL_NO_ERROR) preDrawError = pending;
-            }
-            if (preDrawError != GL_NO_ERROR) {
-                if (preDrawError != lastDrawError_ || stats_.frames % 120 == 0) {
-                    AF_GL_LOGE("GLES state error before avatar draw: error=0x%x submesh=%d frame=%llu",
-                               static_cast<unsigned int>(preDrawError), i,
-                               static_cast<unsigned long long>(stats_.frames));
+                if (!debugMagenta) {
+                    if (sm.region == -2) {
+                        glDisable(GL_CULL_FACE);
+                    } else if (cullingWasEnabled) {
+                        glEnable(GL_CULL_FACE);
+                    }
+                    glBindBufferRange(GL_UNIFORM_BUFFER, 1, materialUbo_, GLintptr(i) * materialStride_,
+                                      sizeof(MaterialUbo));
                 }
-                lastDrawError_ = preDrawError;
-                continue;
-            }
-            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndexCount), GL_UNSIGNED_INT,
-                           reinterpret_cast<const void*>(byteOffset));
-            const GLenum drawError = glGetError();
-            if (drawError != GL_NO_ERROR) {
-                if (drawError != lastDrawError_ || stats_.frames % 120 == 0) {
-                    AF_GL_LOGE("glDrawElements failed: error=0x%x submesh=%d count=%d offset=%d vao=%d",
-                               static_cast<unsigned int>(drawError), i, sm.index_count, sm.index_offset,
-                               static_cast<int>(avatarVao_));
+                const size_t byteOffset = drawIndexOffset * sizeof(uint32_t);
+                if (!drawDumpLogged_) {
+                    AF_GL_LOGI("DrawElements submesh=%d mode=TRIANGLES count=%d indexType=UNSIGNED_INT indexOffset=%d byteOffset=%zu vertexRange=[%d,%d)",
+                               i, sm.index_count, sm.index_offset, byteOffset, sm.vertex_offset,
+                               sm.vertex_offset + sm.vertex_count);
+                    drawDumpLogged_ = true;
                 }
-                lastDrawError_ = drawError;
-                continue;
+                GLenum preDrawError = GL_NO_ERROR;
+                for (int drain = 0; drain < 16; ++drain) {
+                    const GLenum pending = glGetError();
+                    if (pending == GL_NO_ERROR) break;
+                    if (preDrawError == GL_NO_ERROR) preDrawError = pending;
+                }
+                if (preDrawError != GL_NO_ERROR) {
+                    if (preDrawError != lastDrawError_ || stats_.frames % 120 == 0) {
+                        AF_GL_LOGE("GLES state error before avatar draw: error=0x%x submesh=%d frame=%llu",
+                                   static_cast<unsigned int>(preDrawError), i,
+                                   static_cast<unsigned long long>(stats_.frames));
+                    }
+                    lastDrawError_ = preDrawError;
+                    continue;
+                }
+                glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndexCount), GL_UNSIGNED_INT,
+                               reinterpret_cast<const void*>(byteOffset));
+                const GLenum drawError = glGetError();
+                if (drawError != GL_NO_ERROR) {
+                    if (drawError != lastDrawError_ || stats_.frames % 120 == 0) {
+                        AF_GL_LOGE("glDrawElements failed: error=0x%x submesh=%d count=%d offset=%d vao=%d",
+                                   static_cast<unsigned int>(drawError), i, sm.index_count, sm.index_offset,
+                                   static_cast<int>(avatarVao_));
+                    }
+                    lastDrawError_ = drawError;
+                    continue;
+                }
+                lastDrawError_ = GL_NO_ERROR;
+                ++drawCalls_;
+                triangles_ += sm.index_count / 3;
             }
-            lastDrawError_ = GL_NO_ERROR;
-            ++drawCalls_;
-            triangles_ += sm.index_count / 3;
+            if (corneaPass) {
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+            }
         }
         if (cullingWasEnabled) glEnable(GL_CULL_FACE);
     }
