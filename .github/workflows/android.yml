@@ -101,6 +101,9 @@ jobs:
     name: AvatarForge GLES GLB render smoke (instrumented)
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v6
@@ -135,4 +138,9 @@ jobs:
           path: avatarforge-render-smoke-evidence/
           if-no-files-found: warn
           retention-days: 14
+      - name: Post failure diagnostics to PR
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/post-smoke-failure.sh
 

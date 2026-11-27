@@ -134,6 +134,7 @@ object AvatarForgeEngine {
                 memoryBudgetBytes = budget,
                 adultModeConfirmed = spec.adultModeConfirmed,
                 cancellationToken = NativeCancellationToken(),
+                preserveLiveRig = preserveLiveRig,
             ).also { result ->
                 check(result.size == 11) { "AvatarForge returned ${result.size} result fields; expected 11" }
                 check(result.all { it >= 0L }) { "AvatarForge returned a negative statistic." }
@@ -201,6 +202,7 @@ private object NativeMethods {
         memoryBudgetBytes: Long,
         adultModeConfirmed: Boolean,
         cancellationToken: NativeCancellationToken,
+        preserveLiveRig: Boolean,
     ): LongArray
     external fun bindLiveRigPath(publishedPath: String)
     external fun clearLiveRig()

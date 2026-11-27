@@ -358,7 +358,8 @@ Java_com_davemega_hub_avatarforge_NativeMethods_generate(
     jstring outputPath,
     jlong memoryBudgetBytes,
     jboolean adultModeConfirmed,
-    jobject cancellationToken) {
+    jobject cancellationToken,
+    jboolean preserveLiveRig) {
     if (outputPath == nullptr || cancellationToken == nullptr || memoryBudgetBytes <= 0) {
         throwIllegalArgument(env, "output path, cancellation token, and positive memory budget are required");
         return nullptr;
@@ -453,9 +454,13 @@ Java_com_davemega_hub_avatarforge_NativeMethods_generate(
 
     // Detach stack-allocated CancelContext callbacks before retaining the live rigged engine
     // for interactive animation & ARKit facial expression playback in AvatarForgeSurfaceView.
-    af_engine_clear_callbacks(engine.get());
-    af::LiveRigRegistry::stageGenerated(
-        std::shared_ptr<af_engine>(engine.release(), &af_engine_destroy));
+    if (preserveLiveRig == JNI_TRUE) {
+        af_engine_clear_callbacks(engine.get());
+        af::LiveRigRegistry::stageGenerated(
+            std::shared_ptr<af_engine>(engine.release(), &af_engine_destroy));
+    } else {
+        af::LiveRigRegistry::clear();
+    }
 
     const jlong values[] = {
         static_cast<jlong>(stats.vertex_count),
