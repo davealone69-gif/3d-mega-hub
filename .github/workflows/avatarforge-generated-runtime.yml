@@ -1,6 +1,8 @@
 name: AvatarForge generated-avatar runtime verification
 
 on:
+  push:
+    branches: ["arena/**", "integration/**"]
   pull_request:
     branches:
       - main
@@ -33,8 +35,31 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: "emulator platform-tools platforms;android-30 platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
 
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
@@ -60,23 +85,69 @@ jobs:
           disable-animations: true
           script: |
             set +e
-            ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace
-            test_status=$?
+            ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.avatarforge.GeneratedAvatarRuntimeTest --stacktrace 2>&1 | tee instrumentation.log
+            test_status=${PIPESTATUS[0]}
             mkdir -p artifacts/avatarforge/runtime-captures
-            # Capture the emulator display independently of app storage as a fallback.
-            # The instrumentation test's actual avatar PNGs/JSON live in internal app files;
-            # retrieve them through run-as, which works with the debuggable test APK and
-            # avoids Android 11+ scoped-storage restrictions on /Android/data.
-            adb exec-out screencap -p > artifacts/avatarforge/runtime-captures/emulator-screen.png || true
-            adb shell pm list packages | grep -F com.davemega.hub > artifacts/avatarforge/runtime-captures/installed-packages.txt || true
+            # Capture independently of app-private storage: the test runner may remove the
+            # target package after instrumentation, making run-as unavailable. Public Downloads
+            # is already where renderer_diagnostics.json is exported by the app.
+            adb exec-out screencap -p > artifacts/avatarforge/runtime-captures/emulator-screen.png 2> artifacts/avatarforge/runtime-captures/screencap-error.txt || true
+            adb shell pm list packages > artifacts/avatarforge/runtime-captures/installed-packages.txt 2>&1 || true
             adb exec-out sh -c 'run-as com.davemega.hub sh -c "cd files/avatarforge-diagnostics && tar -cf - ."' > artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar 2> artifacts/avatarforge/runtime-captures/run-as-error.txt || true
-            test ! -s artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar || tar -xf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar -C artifacts/avatarforge/runtime-captures/
-            find artifacts/avatarforge/runtime-captures -type f -printf '%p %s bytes\\n'
+            if [ -s artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar ] && tar -tf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar >/dev/null 2>&1; then
+              tar -xf artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar -C artifacts/avatarforge/runtime-captures/
+            else
+              echo "App-private archive unavailable after instrumentation; see run-as-error.txt. This does not change the instrumentation verdict." > artifacts/avatarforge/runtime-captures/private-capture-status.txt
+              rm -f artifacts/avatarforge/runtime-captures/avatarforge-diagnostics.tar
+            fi
+            adb pull "/sdcard/Download/3D Mega Hub Diagnostics" artifacts/avatarforge/runtime-captures/download-diagnostics > artifacts/avatarforge/runtime-captures/adb-pull.log 2>&1 || true
+            find artifacts/avatarforge/runtime-captures -type f -printf '%p %s bytes\\n' || true
             echo "build_commit=${GITHUB_SHA}" > artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             echo "capture_time_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             find artifacts/avatarforge/runtime-captures -type f ! -name evidence-manifest.txt -print0 | sort -z | xargs -0 -r sha256sum >> artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             cat artifacts/avatarforge/runtime-captures/evidence-manifest.txt
             exit $test_status
+
+      - name: Publish the outcome where it can be read
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          {
+            echo "### Generated-avatar runtime verification"
+            echo
+            echo "commit: \`${GITHUB_SHA}\` · run: ${GITHUB_RUN_ID}"
+            echo
+            if grep -qE "FAILURES|Process crashed" instrumentation.log 2>/dev/null; then
+              echo "**Instrumentation failed.** Tail of the run:"
+              echo '```text'
+              grep -E "FAILURES|Process crashed|Tests on|INSTRUMENTATION" instrumentation.log | tail -6
+              echo '```'
+            else
+              echo "Instrumentation output tail:"
+              echo '```text'
+              tail -5 instrumentation.log 2>/dev/null || echo "no instrumentation log"
+              echo '```'
+            fi
+            EXC=artifacts/avatarforge/runtime-captures/crash-excerpt.txt
+            if [ -s "$EXC" ]; then
+              echo
+              echo "**Native/Java crash excerpt:**"
+              echo '```text'
+              head -30 "$EXC"
+              echo '```'
+            fi
+          } > runtime-comment.md
+          cat runtime-comment.md
+          # Push-triggered runs carry no pull_request payload; resolve the PR from the branch.
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER=$(gh pr list --head "${GITHUB_REF_NAME}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file runtime-comment.md
+          fi
 
       - name: Upload instrumentation reports and screenshots
         if: always()
@@ -88,4 +159,5 @@ jobs:
             app/build/reports/androidTests/connected/
             app/build/outputs/androidTest-results/connected/
             artifacts/avatarforge/
+
 

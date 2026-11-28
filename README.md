@@ -1,8 +1,191 @@
 # 3D Mega Hub
 
+## Renderer compatibility experiment — 2026-11-19
+
+**PARTIAL / UNVERIFIED:** PR #14 now pins all three Filament Android artifacts to **1.79.0** as a controlled rollback from 1.80.1. This isolates the reported `sheenColorIndex` native abort against the last pre-1.80 release line; it is an experiment, not a claimed fix. Exact-head Android build and the same imported-GLB emulator test must pass before accepting the pin. If 1.79.0 still aborts, restore the prior pin and proceed with a feature-level-aware/custom `MaterialProvider` investigation. Do not infer Samsung behaviour from the x86_64 feature-level-1 emulator.
+
+An Android app for offline avatar authoring and local-model interaction. It combines the AvatarForge
+engine (native C++ signed-distance-field generation, texture baking and GLB export), an OpenGL ES
+renderer with a GLES static preview path and a Filament live preview, a local Ollama chat page, and an
+Android text-to-speech page. No cloud service is used for generation, chat or speech.
+
 **Project status: integration and validation in progress. Not yet approved for merge to `main`.**
+Production signing is BLOCKED until the release keystore gate is satisfied.
+
+## Quality-first direction — 2026-11-17
+
+The objective is one thing done well: a character that looks convincing, moves naturally, speaks,
+listens and holds a conversation. Feature breadth is not the goal. Everything below is written to make
+the next engineering decision obvious, and every capability carries a status from this vocabulary:
+
+**REAL + VERIFIED** · **UNVERIFIED** · **PARTIAL** · **MISSING** · **BLOCKED**
+
+### What exists, honestly
+
+| Capability | Status | Evidence / reason |
+| --- | --- | --- |
+| Build, unit tests, lint, R8 | **REAL + VERIFIED** | 46 JVM tests, `lintDebug`, `minifyReleaseWithR8`, 6/6 native suites |
+| Install + launch on emulator | **REAL + VERIFIED** | cold start 1353 ms, `MainActivity` resumed |
+| Frames rendered by the app | **REAL + VERIFIED** | 1080×1920 capture, 93.6 % non-black, 117 colours |
+| Stability under interaction | **REAL + VERIFIED** | 150 monkey events, no crash, PSS 133,929 KB |
+| Generated avatar → GLB → production SurfaceView → visible pixels | **REAL + VERIFIED** (emulator) | `GeneratedAvatarRuntimeTest` `OK (4 tests)`, 473 s |
+| Filament live preview | **BLOCKED** | gltfio aborts at 1.71.6, 1.79.0 and 1.80.1; now disabled at runtime so the app survives |
+| Imported animation playback | **BLOCKED** | depends on the Filament path; the GLES path does not animate imports |
+| GLES GLB render smoke (3 tests, pixel-verified) | **REAL + VERIFIED** (emulator) | `run finished: 3 tests, 0 failed`, `PIXELS_VERIFIED`, 549 ms load, commit `009e986` |
+| Facial rig / blendshape driven expressions | **PARTIAL** | generated avatars carry joints and blendshapes; nothing drives them from conversation |
+| Blinking, eye movement, gaze | **MISSING** | no implementation |
+| Lip synchronisation / visemes | **MISSING** | no viseme extraction; the Voice page states this in-app |
+| Microphone capture / speech recognition | **MISSING** | no `RECORD_AUDIO` permission, no `SpeechRecognizer` or `AudioRecord` |
+| Text-to-speech | **REAL (compiles, unit-tested) + UNVERIFIED on device** | rate/pitch/voice selection, persisted |
+| Unified conversation controller | **MISSING** | chat lives in `MainActivity`, voice is a separate page, no shared state machine |
+| Phone-call and video-call modes | **MISSING** | not implemented, deliberately deferred behind the character experience |
+| Physical SM-S921B behaviour | **UNVERIFIED** | no device run exists |
+
+### The blocker that gates the character experience (scoped, not solved)
+
+**Measured, not assumed:** the abort reproduces in our app on Filament **1.71.6, 1.79.0 and 1.80.1**
+(`getFieldInfo:169` on the older build, `:175` on the newer, same `uniform named "sheenColorIndex" not
+found`). The version rollback is therefore refuted and was reverted; the pin is back at 1.79.0.
+
+**What changed:** the Studio screen used to open *into* that renderer, so merely opening the app
+aborted the process — which is what killed the GLES smoke job before its tests ran. Imported files now
+always render through the verified AvatarForge GLES path, the no-file case explains itself instead of
+constructing a crashing view, and the animation-preview control is disabled with the reason. The next
+run of Android CI passed: **3 tests, 0 failed, `PIXELS_VERIFIED`, 549 ms asset load** (`009e986`).
+
+**What that does not give us:** clip playback, morph targets or skinned animation of imported assets —
+that still needs a working gltfio path.
+
+### The one blocker that gates the character experience
+
+The Filament preview aborts the process on load:
+
+```
+utils::PreconditionPanic: in getFieldInfo:175
+reason: uniform named "sheenColorIndex" not found
+#15 filament::gltfio::AssetLoader::createAsset(...)
+```
+
+gltfio writes a sheen uniform the material does not declare; Filament panics; the app dies. The app
+uses the stock `UbershaderProvider` and stock `AssetLoader` on internally consistent 1.80.1 artifacts,
+and the bundled GLB is a plain two-material metallic-roughness asset with no extensions. The emulator
+reports Filament **feature level 1**, where material features are stripped. Full analysis, ruled-out
+causes and the four options:
+[`docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md`](docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md).
+
+Consequence: no animation, no expressions and no lip-sync can be built or measured until either the
+phone (feature level ≥ 2) is proven to load it, or we ship our own `MaterialProvider` backed by
+materials we compile ourselves. Building that provider requires Filament's `matc`, which this
+environment cannot obtain — it is the highest-priority next task.
+
+### Asset and rig inventory
+
+- `app/src/main/assets/models/female.glb` — 418,312 bytes, 1 mesh, 1 primitive
+  (POSITION/NORMAL/TEXCOORD_0, 16,560 indices), 2 metallic-roughness materials, **0 animations**,
+  **0 skins**, no morph targets, no extensions.
+- Generated avatars — produced by the native AvatarForge generator; the runtime test asserts live
+  vertex, triangle, **joint** and **blendshape** counts, so generated output is skinned and
+  morph-target capable. Clips are not authored.
+- Filament preview — `Animator` playback (`applyAnimation`, duration, seek) is implemented; it is
+  unreachable while the loader aborts.
+
+### Rendering path
+
+`AvatarForgeSurfaceView` (native OpenGL ES 3.x, our own GLB loader, pixel-verified) is the proven path
+and stays the default. The Filament path exists for features only Filament can provide (glTF clip
+playback, PBR materials, morph targets) and is blocked as described. No third renderer is being added.
+
+### Voice and conversation state
+
+Text chat is bounded multi-turn context against a local Ollama endpoint (`ChatTranscript`, 12 turns /
+24k characters). Voice is Android TTS with rate/pitch/voice control (`SpeechSettings`). The two do not
+share a conversation object, and nothing yet drives the face from speech. The unified controller the
+product needs — one identity, one history, explicit states (`IDLE`, `LISTENING`, `PROCESSING`,
+`RESPONDING`, `SPEAKING`, `INTERRUPTED`, `PAUSED`, `ERROR`) — does not exist yet.
+
+### Latest verified build and runtime evidence
+
+| Item | Value |
+| --- | --- |
+| Branch / commit | `arena/25bd4008-3d-mega-hub` @ `d3a1a25` |
+| Variant | debug (`assembleDebug`) |
+| APK size | 72,437,192 bytes |
+| APK SHA-256 | `3883ad35ae44625f1a3ff199f717ac305958b193500207aac25ca267ba179e1b` (that run's artifact; builds are not byte-reproducible, so this identifies one artifact, not a reproducible hash) |
+| Signer | `C=US, O=Android, CN=Android Debug` — SHA-256 `3481f500ef4b1aeff33fbbdf2fdc57640152a2947067be57ac9824b5d6540ec9` |
+| Native libraries packaged | 22 |
+| Compile + unit tests + lint + R8 | PASS (46 JVM tests) |
+| Install and launch | PASS on emulator; cold start 1353 ms |
+| GLES GLB render smoke | PASS at `009e986`: 3/3 tests, `PIXELS_VERIFIED`, no native crash |
+| Generated-avatar render gate | last recorded pass `OK (4 tests)` in 473 s; currently red for unrelated harness reasons |
+| Still red | diagnostic APK lane, release-preview emulator boot, generated-avatar runtime lane |
+
+Evidence lives in PR #14 comments, because this repository's workflow logs and artifacts are served
+from hosts that are not always reachable.
+
+### Measured performance (emulator, not the phone)
+
+Cold start 1353 ms · frame 1080×1920 analysed post-launch · TOTAL PSS 133,929 KB (Java 18,112 KB,
+native 65,412 KB) · instrumentation suite 473 s · 150 monkey events with no crash. Frame rate on
+hardware has **not** been measured and is not claimed.
+
+### Implementation priorities, in order
+
+1. Prove or disprove the Filament loader on the SM-S921B; if it fails there too, build our own
+   `MaterialProvider` (needs `matc`) — this unblocks animation, expressions and lip-sync together.
+2. Build the unified conversation controller with explicit states, so chat and voice share one
+   identity and history.
+3. Drive the face from real speech timing: visemes or audio analysis, never arbitrary motion; blinking
+   and gaze as continuous behaviours, not effects.
+4. Add microphone capture and speech recognition behind a proper permission flow, then interruption
+   handling.
+5. Only then the optional call modes, and release hardening with signed artifacts.
+
+### Outstanding work, stated plainly
+
+No lip-sync, no blinking, no gaze, no expressions driven by conversation, no speech input, no shared
+conversation state, no phone-call mode, no signed release, no hardware measurement. The app installs,
+launches, draws and survives interaction; it is not yet the character experience described above, and
+nothing in this file claims otherwise.
+
+### Toolchain
+
+Gradle 9.9.1 · AGP 9.5.1 · Kotlin 2.4.21 (built-in Kotlin, no `kotlin-android` plugin) · compileSdk 37 ·
+targetSdk 36 · minSdk 26 · Compose BOM 2026.09.00 · Filament 1.80.1 · coroutines 1.11.0 ·
+NDK 26.1.10909125 and CMake 3.22.1 (deliberately pinned).
+
+### App features
+
+- **Avatar Studio** — prompt-to-avatar generation with full appearance controls: sex, build, all ten
+  hair styles, seven hair colours, nine clothed outfits, six cloth colours, skin melanin and height.
+  Choices persist locally and are summarised before generation. `Outfit.NONE` is filtered out of the
+  UI, and every generation still passes the adult gate (`requireGeneratable`, `adultModeConfirmed`,
+  age ≥ 18, minor-prompt rejection).
+- **Local model chat** — talks to a user-configured Ollama `/api/chat` endpoint with bounded multi-turn
+  context (12 turns, 24,000 characters, 8,000 per message). Failed requests are shown but excluded from
+  the context so a transport error cannot poison later turns.
+- **Speech** — Android text-to-speech with rate and pitch (0.5×–2.0× inside the engine's 0.25×–4×
+  contract) and voice selection over the voices the device actually reports.
+- **Import and diagnostics** — imported GLBs are copied to app-private storage, validated, and rendered
+  with a published state machine (`ASSET_LOADING`, `FRAME_PRESENTED`, `PIXELS_VERIFIED`) plus GLB clip
+  inventories. Viseme extraction and lip-sync are not connected.
+
+### How this repository is verified
+
+```bash
+./gradlew :app:compileDebugKotlin :app:compileDebugUnitTestKotlin :app:testDebugUnitTest
+```
+
+CI runs that through `.github/workflows/kotlin-compile-gate.yml`, added because `Android CI` does not
+trigger on `arena/**` and the full runtime workflow's logs and artifacts are not reachable from every
+environment. The gate republishes Gradle diagnostics as check-run annotations and as a comment on the
+pull request. The native suites build and run under the host compiler with `-DAVATARFORGE_HOST_TEST`.
+
+Everything in this repository that claims a result states where the result came from. Where no such
+evidence exists, the code is described as **unverified** rather than working.
 
 ## Avatar quality implementation handover — procedural hair
+
+> Historical record from an earlier head. The current status is in the table near the top of this file.
 
 **Work branch:** `integration/avatarforge-renderer-port`  
 **Implementation commits:**
@@ -23,6 +206,29 @@ The implementation remains in the existing AvatarForge signed-distance-field, te
 
 Every README update changes the branch head. Collect all final verification against the resulting exact head, and do not reuse older workflow results as exact-head evidence.
 
+
+## Upgrade pass: 2026-11-16
+
+Full matrix, migration notes and the ranked risk list: [`docs/UPGRADE_2026-11-16.md`](docs/UPGRADE_2026-11-16.md).
+
+**Verification status.** The authoring workspace has no JDK, Gradle, Kotlin or Android SDK, so the first draft of this pass was written blind. A compile gate now exists (`.github/workflows/kotlin-compile-gate.yml`, run from PR #14) and on commit `26911d8` it is **green**: `:app:compileDebugKotlin`, `:app:compileDebugUnitTestKotlin` and `:app:testDebugUnitTest` all pass, **46 JVM tests**. That gate found four real defects that inspection had missed — the AGP 9 built-in-Kotlin migration, the `compileSdk 37` requirement, `Scene.removeEntity` in Filament 1.80.1, and a genuine bug in the new voice cycling. The emulator runtime workflow (`connectedDebugAndroidTest`) is still red, so **nothing here has run on a device or emulator**.
+
+- **Toolchain:** Gradle 8.11.1 → 9.9.1, AGP 8.7.3 → 9.5.1, Kotlin 2.1.0 → 2.4.21, compileSdk 35 → **37**, targetSdk 35 → 36, CI `platforms;android-36`/`android-37.0` + `build-tools;36.0.0`. Two AGP 9 migrations were required and are done: `kotlinOptions` → `kotlin { compilerOptions { jvmTarget } }`, and the `org.jetbrains.kotlin.android` plugin **removed entirely** because AGP 9 compiles Kotlin itself (KGP is raised to 2.4.21 through the documented `buildscript` classpath).
+- **Dependencies:** Compose BOM 2024.12.01 → 2026.09.00, core-ktx 1.15.0 → 1.19.1, activity-compose 1.9.3 → 1.13.0, Filament 1.71.6 → 1.80.1, coroutines 1.8.1 → 1.11.0, androidx.test runner/core 1.7.0, ext-junit 1.3.0, uiautomator 2.4.1, moved into the version catalog. NDK 26.1 and CMake 3.22.1 are deliberately pinned — their package versions could not be verified here.
+- **Filament preview memory:** one exact-size allocation when the source length is known, instead of a `ByteArrayOutputStream` plus a second `toByteArray()` copy. That doubling produced the CI emulator's 134,217,744-byte `OutOfMemoryError`.
+- **Frame budget:** 15 s on hardware, 180 s only for software rasterisers/emulators (`RendererTimeBudget`). Assertions unchanged — this fixes the 2-frames-in-15-seconds failure that was measuring SwiftShader, not the renderer.
+- **Load phase:** new `ASSET_LOADING` state plus `assetLoadMs` in every report, so the 13.9 s `nativeCreate()` gap seen in the device diagnostics is no longer invisible.
+- **Hair LOD:** hair and lashes keep 55 % / 28 % of their triangles at LOD1 / LOD2 while skin and cloth stay at 12 % / 5 % (`af_avatar_lod.cpp`), so braid, coil and clump detail survive distance switching. Native `avatar_lod_test` extended with region-retention and determinism cases.
+
+## Device renderer evidence supplied by the owner: 2026-11-16
+
+The owner exported the app's own renderer diagnostics from the physical phone (15 `renderer_diagnostics*.json` snapshots and 4 PNG captures, 15:13–15:20 UTC). Full analysis: [`docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md`](docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md).
+
+- **Production `AvatarForgeSurfaceView` OpenGL ES path — DEVICE VERIFIED for one imported GLB.** `imported-1794842029545-b69f92bf.glb` (13,221,520 bytes) reached `PIXELS_VERIFIED` in **three of three** runs on OpenGL ES 3.2 (driver 25.6.4), 912 × 1260: 3 presented frames, 11 draw calls, 144,073 triangles, bounds in frustum, `glError` `0x0`, `eglError` `0x0`, and 401,066 / 401,066 / 401,062 background-subtracted geometry pixels against a 5,000 minimum, with the matching `imported_glb_diagnostic.png` saved and exported. This supersedes the earlier blanket "phone visible pixels UNVERIFIED" line **for this one asset only**; the device build's APK hash and source commit are not recorded in any artifact, so nothing here may be attributed to a branch head.
+- **Large remote-URL GLB — RENDERED, NOT PIXEL-VERIFIED.** `ink-1794842238556-077e8cf1.glb` (103,566,844 bytes, 98.8 MiB) reached `FRAME_PRESENTED` (3 swaps, 59 draw calls, 872 triangles, no GL/EGL errors) but never produced `PIXELS_VERIFIED` or `FAILED`, and no capture. It also spent **13.9 s** between `STARTING` and `RENDERER_ACTIVE` — GLB parse and upload inside `nativeCreate()`, on the render thread, outside every deadline. The 15 s `FRAME_PRESENTED` clock starts after that call, so the gate itself was never at risk; what has no bound, and no diagnostic state, is the load phase.
+- **Diagnostic-integrity defect found and fixed in this change.** That incomplete report advertised `screenshotDownloadsUri content://media/external/downloads/1000202987`, the capture of the previously verified 12.6 MiB asset, because `recordSmokeResult()` read the screenshot key from preferences that are never cleared between assets. `STARTING` now clears the inherited screenshot and report-error keys, so a report can only name a capture its own session produced.
+- **"No animation controls" — explained by these artifacts.** Every report says `backend: OpenGL ES`, and `FilamentPreviewView` writes no renderer diagnostics at all, so the owner's asset was drawn by the **AvatarForge GLES static path**, which does not apply imported skeletal animation and has no clip controls by design. The asset is 13,221,520 bytes, exactly the size of the preserved rigged `mylove_rig_prepared.glb` (Dropbox rev `016604839bc64a40000000368f04ea3`; size equality, not a byte comparison), so the rigged reference was loaded into the one preview path that cannot play it. The GLES preview now says so on screen, and Avatar Studio now reports the GLB's own clip table (`GlbValidator.inspectAnimations`) so "file has no clips" is distinguishable from "Filament has not published them" or a failed preview load. Playback itself remains **UNVERIFIED**.
+- **Not superseded:** the exact-head CI failures. No artifact here exercises the Filament gltfio preview path, so the emulator `OutOfMemoryError` in `FilamentPreviewView.readBounded()` and the 2-frames-in-15-seconds production-gate failure both remain open. The emulator was also rendering a generated 1,626,176-triangle GLB, so device and emulator figures are not like-for-like.
 
 ## Single source of truth
 
@@ -320,7 +526,9 @@ Do not merge PR #9 to `main`. Do not send a readiness notification until all fiv
 - The AvatarForge donor pin is `9e36197ace3b18faa6c566d93f8fce89b185c45d` from `work/android-engine-dev`. It is divergent, not a fast-forward ancestor, of the standalone AvatarForge RB-01 line (`0e782166…` / `fc30efd0…`). Several generation-core files differ in both directions. No wholesale replacement was attempted; any core-only port needs a file-by-file API review and native tests. AvatarForge remains a separate project.
 - Prompt generation is deterministic native parsing, not photo-to-identity reconstruction and not an embedded LLM.
 - External-resource `.gltf` is unsupported; the current viewer path is self-contained GLB.
-- Voice lip-sync/visemes are missing.
+- Voice lip-sync/visemes are missing, so the speech page cannot drive avatar mouths.
+- Appearance and speech controls exist in source and are unit-tested, but their device behaviour has
+  not been observed; the same is true of the chat context changes.
 - The bundled fixture is not a rigged/animated model.
 - Samsung SM-S921B visible rendering, real-device generation, import lifecycle, memory and thermal behaviour remain **UNVERIFIED** until the phone test is completed.
 
@@ -412,11 +620,15 @@ Do not mark avatar quality improved without matched before/after GLB and rendere
 - The source-level hair presets are in `avatarforge-engine/src/main/java/com/davemega/hub/avatarforge/AvatarSpec.kt`: `NONE`, `BUZZ`, `SHORT`, `MEDIUM`, `LONG`, `PONYTAIL`, `BUN`, `BRAIDS`, `AFRO`, `MOHAWK`.
 - The source-level outfit presets in the same file are `NONE`, `TSHIRT`, `DRESS`, `SUIT`, `JEANS_JACKET`, `ARMOR_PLATE`, `ARMOR_LEATHER`, `SPACESUIT`, `ATHLETIC`, `COAT`. Skin melanin/tone, hair tone, cloth tone and material roughness are also represented in `AvatarSpec`.
 - These are **engine options/spec fields**, not proof that the app currently presents a complete clickable wardrobe, thumbnail catalogue or swatch picker. The current Avatar Studio UI exposes prompt-driven generation; independent skin-tone and hair-style/colour changes remain **NOT YET TESTED**.
+- **Speech controls added 2026-11-16 (compiles, unit-tested, not device-tested).** The Voice page previously spoke every utterance at the engine's defaults with no way to pick a voice, change speed or change pitch. It now has rate and pitch sliders (0.5x–2.0x), a voice cycler over the voices the installed engine actually reports, a settings summary, and a Reset. `SpeechSettings` clamps to the documented `TextToSpeech` range (0.25x–4x), repairs NaN rather than clamping it to an edge, persists as `rate|pitch|voice` under the `speech_settings` key, and falls back to the engine default when a saved voice is no longer reported — the engine's own initial voice is captured so "engine default" stays reachable after a change. `SpeechSettingsTest` covers the clamps, NaN repair, persistence round-trip, garbage fallback, voice resolution/cycling/labels. Device behaviour is **NOT YET TESTED**.
+- **Chat context added 2026-11-16 (compiles, unit-tested, not device-tested).** The Ollama chat page used to send exactly one user message per request, so the local model answered every follow-up with no memory of the conversation. It now sends bounded multi-turn history via `ChatTranscript.messages()`: newest 12 turns, 24,000 characters of transcript total, 8,000 per message, oldest dropped first. Failed requests are shown in the chat but are deliberately **not** added to the model's context, so a transport error cannot poison later turns. The page also gained a pending-reply indicator, a line stating how much context the next request carries, and a **New chat** button that clears both the transcript and the history. `ChatTranscriptTest` covers role mapping, blank-line dropping, truncation, both caps and the always-keep-the-newest rule. Device behaviour is **NOT YET TESTED**.
+- **Appearance controls added 2026-11-16 (compiles, unit-tested, not device-tested).** Avatar Studio now has an Appearance card that edits the attributes the prompt parser previously had to guess: sex, build, hair style (all ten `HairStyle` values), hair colour (seven presets), outfit (all nine clothed `Outfit` values — `NONE` stays behind the adult-mode gate and is not offered), cloth colour (six presets), skin melanin and height. `AvatarAppearance.toSpec()` is the single translation into `AvatarSpec`, `describe()` is what the studio prints so the user sees exactly what will be generated, and `AppearanceStore` persists the choices in `mega_hub` preferences. All presets are linear sRGB, and `HairColour.NATURAL` / `ClothColour.NEUTRAL` stay all-zero so the engine keeps deriving those colours from melanin and material defaults. JVM unit tests are in `app/src/test/java/com/davemega/hub/AvatarAppearanceTest.kt`; the device behaviour of these controls is **NOT YET TESTED**.
 
 ### Animation status, separated by path
 
 - The native engine source contains a built-in authored clip library in `avatarforge-engine/src/main/cpp/src/af_rig.cpp`: `idle`, `breathe`, `walk`, `jog`, `run`, `squat`, `jump`, `wave`, `punch`, `kick`, `pushup`, `t_pose`, `a_pose`, `sit`, and `turn_360` (plus the identity `rest` pose). The rig source also defines 52 facial blendshape channels.
 - Imported file-based GLBs default to the Filament gltfio preview. Source code now exposes animation-clip selection, play/pause, stop/reset, loop, 0.5x–2.0x speed and timeline seeking when the selected GLB reports clips. This is **IMPLEMENTED IN SOURCE; runtime playback on the preserved rigged reference asset remains UNVERIFIED**.
+- **Why controls can be missing (2026-11-16).** Controls render only when Filament reports `animationCount > 0`, and the app previously had no way to say whether the *file* had no clips or the *viewer* published none. `GlbValidator.inspectAnimations()` now reads the GLB's JSON chunk and returns the declared clip count, clip names and skin count; Avatar Studio displays that verdict and the GLES preview states that it cannot animate imported rigs. The device diagnostics supplied on 2026-11-16 show the 13,221,520-byte rigged reference being rendered by the **GLES static path**, which by design has no animation controls. See [`docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md`](docs/DEVICE_RENDERER_DIAGNOSTICS_2026-11-16.md).
 - The native AvatarForge GLES importer is still a **static imported-GLB path**: it does not yet apply imported skeletal animation/skin data. Do not switch to that preview expecting imported clips to play.
 - Preserved animation test asset: private Dropbox `/3d-mega-hub-diagnostics/3d-mega-hub/mylove_rig_prepared.glb`, 13,221,520 bytes, SHA-256 `656cf2446eefbffc92cf569ce1a2f52b6d0ad449c282fc5a4d911abfef576d14`. Keep read-only and private. Its binary clip/joint inventory and playback have not been freshly verified in this workspace.
 
@@ -502,6 +714,29 @@ The required test exists in source as `GeneratedAvatarRuntimeTest#generatedAvata
 
 This monitor update is documentation-only. It does not modify application source, merge PR #9, or modify `main`. The README commit itself will create a new branch head and invalidates all evidence above as proof for that new head; the next check must fetch the new exact PR/branch SHA and inspect only its associated workflow runs and artifacts.
 
+
+## Renderer verification update — 2026-11-19
+
+- **REAL + VERIFIED on CI emulator, exact test commit `392ea220c6b5d8fc25a989be58f78148e514e40a`:** the generated-avatar instrumentation report records 4 tests, 0 failures, 0 errors. This includes `generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView`, whose assertions require visible-pixel verification, the minimum pixel threshold, draw calls, at least three presented frames, and a saved screenshot. Its log records GLES 3.1, 3 presented frames, 29 draw calls, and 1,642,936 triangles.
+- **PARTIAL:** the workflow job was marked failed after the tests because its post-test artifact collector ran `run-as` against a package that was no longer installed (`run-as: unknown package`) and then tried to extract the resulting non-tar text. The instrumentation XML itself records all four tests passing; the workflow status is therefore a capture-script failure, not a renderer-test failure.
+- **UNVERIFIED:** physical Samsung SM-S921B runtime. Emulator GLES evidence is not phone evidence.
+- **UNVERIFIED:** Filament preview compatibility. This test exercises the production AvatarForge GLES SurfaceView, not Filament gltfio; the 1.79.0 rollback remains an experiment until the Filament imported-GLB crash is tested directly.
+- CI workflow pull-request filters now include the integration base branch. The runtime collector now treats unavailable app-private data as optional and pulls exported diagnostics from Downloads without allowing a missing archive to overwrite the test result.
+
+Do not mark the app READY or merge on this emulator result alone. The exact new head must pass the re-triggered workflows, and the physical phone check remains outstanding.
+
+
+## Android build gate correction — 2026-11-19
+
+- **FIXED IN SOURCE:** the four Android Actions workflows that install a fixed SDK platform were requesting API 36 while both Android modules declare `compileSdk = 37`. Updated `.github/workflows/android.yml`, `avatarforge-diagnostic-apk.yml`, `avatarforge-generated-runtime.yml`, and `release-preview.yml` to install `platforms;android-37`. Build-tools remain pinned at 36.0.0; emulator system images remain API 30 where intended.
+- **UNVERIFIED:** this workflow correction has not yet been exercised. The current PR head has no associated Actions runs or commit status checks. Do not call it a successful build until the exact new head completes CI.
+- **UNRESOLVED:** Filament imported-GLB preview previously aborted in native gltfio with `sheenColorIndex` missing. The branch now pins Filament 1.79.0 as a rollback experiment, but no exact-head runtime test proves the abort is gone. Do not describe the root cause as confirmed upstream or as fixed.
+- **REAL + VERIFIED on prior exact CI emulator commit only:** the production AvatarForge GLES generated-GLB SurfaceView test passed all four instrumentation tests on commit `392ea220c6b5d8fc25a989be58f78148e514e40a`. That evidence does not transfer to the newer PR head and does not cover Filament.
+- **BLOCKED:** PR #14 is still open and GitHub reports it not mergeable. Production signing remains blocked until the owner supplies a production keystore through protected CI secrets. Physical Samsung SM-S921B runtime remains unverified.
+- Changes are isolated to the PR #14 arena branch. `main` has not been modified or merged.
+
+- **IMPLEMENTED, RUNTIME UNVERIFIED:** Filament session creation now queries the selected backend's supported feature level and activates that reported level before creating gltfio loaders/materials. This avoids silently staying at Filament's default feature level 1 on hardware that reports a higher supported level. It does not force an unsupported level and is not yet proven to resolve the historical `sheenColorIndex` abort.
+## Historical monitor record — 2026-11-18 (retained from the base branch)
 
 ## Exact-head Android test APK readiness monitor (2026-11-18)
 

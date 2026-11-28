@@ -20,12 +20,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -36,13 +38,16 @@ import com.davemega.hub.avatarforge.AvatarForgeEngine
 import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
 import com.davemega.hub.avatarforge.AvatarSpec
 import com.davemega.hub.avatarforge.Build
+import com.davemega.hub.avatarforge.GlbValidator
 import com.davemega.hub.avatarforge.HairStyle
 import com.davemega.hub.avatarforge.Outfit
 import com.davemega.hub.avatarforge.Sex
 import java.io.File
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun AvatarStudioScreen(
@@ -67,11 +72,11 @@ fun AvatarStudioScreen(
     }
     var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
     var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
-    // Imported GLBs open in the animation-capable gltfio preview by default.
-    // The native AvatarForge GLES renderer currently does not skin imported GLBs.
-    var useFilamentAnimationPreview by remember(avatarUri) {
-        mutableStateOf(avatarUri != null && avatarUri.scheme == "file")
-    }
+    // The gltfio preview is NOT the default: it aborts the process on load in every Filament
+    // version this project has tested (1.71.6, 1.79.0, 1.80.1), see
+    // docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md. Opening a screen must never kill the app, so
+    // the GLES renderer stays the default until that is resolved.
+    var useFilamentAnimationPreview by remember(avatarUri) { mutableStateOf(false) }
     var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
     var animationCount by remember { mutableStateOf(0) }
     var selectedAnimation by remember { mutableStateOf(0) }
@@ -83,6 +88,30 @@ fun AvatarStudioScreen(
     val hasImportedFile = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.isFile == true
     var generationJob by remember { mutableStateOf<Job?>(null) }
     val generating = generationJob?.isActive == true
+    // Structural clip inventory read from the GLB's own JSON chunk. Filament can only publish
+    // clips the file declares, so this is what separates "the asset has no clips" from "the
+    // viewer has not published them" when no animation controls appear.
+    var clipInventory by remember(avatarUri) { mutableStateOf<GlbValidator.AnimationInventory?>(null) }
+    var clipInventoryError by remember(avatarUri) { mutableStateOf<String?>(null) }
+    val appearancePrefs = remember { context.getSharedPreferences("mega_hub", Context.MODE_PRIVATE) }
+    var appearance by remember {
+        mutableStateOf(AppearanceStore.decode { key -> appearancePrefs.getString(key, null) })
+    }
+    fun applyAppearance(next: AvatarAppearance) {
+        appearance = next
+        val editor = appearancePrefs.edit()
+        AppearanceStore.encode(next).forEach { (key, value) -> editor.putString(key, value) }
+        editor.apply()
+    }
+    LaunchedEffect(avatarUri) {
+        clipInventory = null
+        clipInventoryError = null
+        val selected = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.takeIf { it.isFile }
+            ?: return@LaunchedEffect
+        withContext(Dispatchers.IO) { runCatching { GlbValidator.inspectAnimations(selected) } }
+            .onSuccess { clipInventory = it }
+            .onFailure { clipInventoryError = it.message ?: it.javaClass.simpleName }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Avatar studio", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
@@ -143,7 +172,7 @@ fun AvatarStudioScreen(
                 Text("3D viewport", style = MaterialTheme.typography.titleMedium)
                 key(avatarUri, useFilamentAnimationPreview) {
                     val importedGlb = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)
-                    if (importedGlb != null && importedGlb.isFile && !useFilamentAnimationPreview) {
+                    if (importedGlb != null && importedGlb.isFile) {
                         AndroidView(
                             factory = { viewContext ->
                                 AvatarForgeSurfaceView(viewContext, importedGlb, verifyVisiblePixels = isDebuggable) { status ->
@@ -158,28 +187,13 @@ fun AvatarStudioScreen(
                             modifier = Modifier.fillMaxWidth().height(420.dp)
                         )
                     } else {
-                        AndroidView(
-                            factory = { viewContext ->
-                                FilamentPreviewView(viewContext).apply {
-                                    setStatusListener { rendererStatus = it }
-                                    setAnimationInfoListener { count, index, playing, loop, speed, duration, position ->
-                                        animationCount = count
-                                        selectedAnimation = index
-                                        animationPlaying = playing
-                                        animationLoop = loop
-                                        animationSpeed = speed
-                                        animationDuration = duration
-                                        animationPosition = position
-                                    }
-                                    setModel(avatarUri)
-                                    filamentPreviewView = this
-                                }
-                            },
-                            update = { view ->
-                                filamentPreviewView = view
-                                view.setModel(avatarUri)
-                            },
-                            modifier = Modifier.fillMaxWidth().height(420.dp)
+                        Text(
+                            "No model is loaded. Import a GLB to preview it through the AvatarForge " +
+                                "GLES renderer. The animation-capable Filament preview is disabled in " +
+                                "this build because gltfio aborts on load; see " +
+                                "docs/BLOCKER_FILAMENT_PREVIEW_GLTFIO_PANIC.md.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -189,19 +203,25 @@ fun AvatarStudioScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
+                if (hasImportedFile && !useFilamentAnimationPreview) {
+                    Text(
+                        "AvatarForge GLES preview: the imported model is drawn through the native " +
+                            "static path, which does not apply imported skeletal animation. Expect the bind " +
+                            "pose and no animation controls here — switch to the Filament preview below for " +
+                            "clip playback.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 if (hasImportedFile) {
+                    // Disabled rather than removed: the control is real work that becomes usable the
+                    // moment the loader is fixed, but offering a button that aborts the process would
+                    // be worse than offering none.
                     OutlinedButton(
-                        onClick = {
-                            useFilamentAnimationPreview = !useFilamentAnimationPreview
-                            if (!useFilamentAnimationPreview) {
-                                filamentPreviewView = null
-                                animationCount = 0
-                                animationPosition = 0f
-                            }
-                        },
+                        onClick = { },
+                        enabled = false,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open animation-capable Filament preview")
+                        Text("Animation preview (Filament) unavailable: gltfio aborts on load")
                     }
                 }
                 if (useFilamentAnimationPreview) {
@@ -247,7 +267,27 @@ fun AvatarStudioScreen(
                             }
                         }
                     } else {
-                        Text("Waiting for GLB animation tracks. If this reports zero animations, the file has no playable clip for Filament.")
+                        val declared = clipInventory
+                        val clipLabel = declared?.animationNames?.take(6)?.joinToString(", ").orEmpty()
+                        val moreClips = (declared?.animationCount ?: 0) > 6
+                        Text(
+                            when {
+                                clipInventoryError != null ->
+                                    "Could not read this GLB's clip table ($clipInventoryError), so the Filament " +
+                                        "preview cannot be told apart from a file that simply has no clips."
+                                declared == null -> "Reading this GLB's clip table…"
+                                declared.declaresClips ->
+                                    "This GLB declares ${declared.animationCount} clip(s) and ${declared.skinCount} " +
+                                        "skin(s) — $clipLabel${if (moreClips) ", …" else ""} — but Filament has not " +
+                                        "published them yet. If the status line above reports a load failure, that is why " +
+                                        "no controls appeared."
+                                else ->
+                                    "This GLB declares no animation clips and ${declared.skinCount} skin(s), so there " +
+                                        "is nothing to play and this file will never produce animation controls. Import a " +
+                                        "GLB that contains an animations array."
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
                 Text(
@@ -319,6 +359,87 @@ fun AvatarStudioScreen(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Appearance", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Applied to Generate avatar. The prompt still drives measurements and detail; these controls " +
+                        "set the attributes the prompt parser would otherwise have to guess.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                AppearanceCycler(
+                    label = "Sex",
+                    value = appearance.sex.label(),
+                    onPrevious = { applyAppearance(appearance.copy(sex = Sex.entries.cycle(appearance.sex, false))) },
+                    onNext = { applyAppearance(appearance.copy(sex = Sex.entries.cycle(appearance.sex, true))) }
+                )
+                AppearanceCycler(
+                    label = "Build",
+                    value = appearance.build.label(),
+                    onPrevious = { applyAppearance(appearance.copy(build = Build.entries.cycle(appearance.build, false))) },
+                    onNext = { applyAppearance(appearance.copy(build = Build.entries.cycle(appearance.build, true))) }
+                )
+                AppearanceCycler(
+                    label = "Hair style",
+                    value = appearance.hairStyle.label(),
+                    onPrevious = {
+                        applyAppearance(appearance.copy(hairStyle = HairStyle.entries.cycle(appearance.hairStyle, false)))
+                    },
+                    onNext = {
+                        applyAppearance(appearance.copy(hairStyle = HairStyle.entries.cycle(appearance.hairStyle, true)))
+                    }
+                )
+                AppearanceCycler(
+                    label = "Hair colour",
+                    value = appearance.hairColour.label,
+                    onPrevious = {
+                        applyAppearance(appearance.copy(hairColour = HairColour.entries.cycle(appearance.hairColour, false)))
+                    },
+                    onNext = {
+                        applyAppearance(appearance.copy(hairColour = HairColour.entries.cycle(appearance.hairColour, true)))
+                    }
+                )
+                AppearanceCycler(
+                    label = "Outfit",
+                    value = appearance.outfit.label(),
+                    onPrevious = {
+                        applyAppearance(appearance.copy(outfit = AvatarAppearance.selectableOutfits.cycle(appearance.outfit, false)))
+                    },
+                    onNext = {
+                        applyAppearance(appearance.copy(outfit = AvatarAppearance.selectableOutfits.cycle(appearance.outfit, true)))
+                    }
+                )
+                AppearanceCycler(
+                    label = "Cloth colour",
+                    value = appearance.clothColour.label,
+                    onPrevious = {
+                        applyAppearance(appearance.copy(clothColour = ClothColour.entries.cycle(appearance.clothColour, false)))
+                    },
+                    onNext = {
+                        applyAppearance(appearance.copy(clothColour = ClothColour.entries.cycle(appearance.clothColour, true)))
+                    }
+                )
+                Text("Skin tone · melanin ${"%.2f".format(appearance.normalized().skinMelanin)}")
+                Slider(
+                    value = appearance.normalized().skinMelanin,
+                    onValueChange = { applyAppearance(appearance.copy(skinMelanin = it)) },
+                    valueRange = 0f..1f
+                )
+                Text("Height · ${"%.0f".format(appearance.normalized().heightCm)} cm")
+                Slider(
+                    value = appearance.normalized().heightCm,
+                    onValueChange = { applyAppearance(appearance.copy(heightCm = it)) },
+                    valueRange = 140f..220f
+                )
+                Text(
+                    "Will generate: ${appearance.describe()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("AvatarForge engine", style = MaterialTheme.typography.titleMedium)
                 if (engineHealth.usable) {
                     Text("Native library loaded · ABI ${engineHealth.abiVersion} · ${engineHealth.engineVersion}")
@@ -342,12 +463,12 @@ fun AvatarStudioScreen(
                                 pixelDiagnosticPath = null
                                 val result = AvatarForgeEngine.generate(
                                     context = context,
-                                    spec = AvatarSpec(prompt = generationPrompt.trim()),
+                                    spec = appearance.toSpec(prompt = generationPrompt.trim()),
                                     prompt = generationPrompt.trim()
                                 )
                                 onGenerated(Uri.fromFile(result.file), result.file.name)
                                 val warning = result.promptMatchWarning?.let { " · WARNING: $it" }.orEmpty()
-                                generationStatus = "Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB · deformed mesh validated=${result.deformedMeshValidated}$warning"
+                                generationStatus = "${appearance.describe()} · Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB · deformed mesh validated=${result.deformedMeshValidated}$warning"
                             } catch (cancelled: CancellationException) {
                                 generationStatus = "Generation cancelled."
                             } catch (failure: Exception) {
@@ -374,3 +495,33 @@ fun AvatarStudioScreen(
     }
 }
 
+/** Human-facing label for an engine enum constant. */
+private fun Enum<*>.label(): String = name.lowercase().replace('_', ' ')
+
+/** Wraps around the list so the cyclers can never land outside the valid values. */
+private fun <T> List<T>.cycle(current: T, forward: Boolean): T {
+    if (isEmpty()) return current
+    val index = indexOf(current).takeIf { it >= 0 } ?: 0
+    val step = if (forward) 1 else -1
+    return this[(index + step + size) % size]
+}
+
+/** Previous / value / next row used by the appearance controls. */
+@Composable
+private fun AppearanceCycler(
+    label: String,
+    value: String,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        OutlinedButton(onClick = onPrevious) { Text("←") }
+        Text(value, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1.2f))
+        OutlinedButton(onClick = onNext) { Text("→") }
+    }
+}

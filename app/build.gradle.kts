@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
@@ -41,14 +40,17 @@ val releaseSigningPreflight = tasks.register("validateReleaseSigning") {
 
 android {
     namespace = "com.davemega.hub"
-    compileSdk = 35
+    // Compose 1.12.1 (BOM 2026.09.00) publishes AAR metadata requiring compilation against API 37.
+    // targetSdk stays 36 deliberately: raising it changes runtime behaviour, which no device here
+    // has verified.
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.davemega.hub"
         minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        targetSdk = 36
+        versionCode = 2
+        versionName = "0.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -75,8 +77,15 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+}
+
+// AGP 9 removed the `kotlinOptions` DSL; Kotlin 2.4 configures the JVM target through the Kotlin
+// Gradle plugin's compilerOptions instead.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
 
 tasks.configureEach {
@@ -102,8 +111,8 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)
     testImplementation("org.json:json:20240303")
-    androidTestImplementation("androidx.test:runner:1.6.2")
-    androidTestImplementation("androidx.test:core:1.6.1")
-    androidTestImplementation("androidx.test.ext:junit:1.2.1")
-    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.uiautomator)
 }

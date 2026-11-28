@@ -2,9 +2,9 @@ name: Android CI
 
 on:
   push:
-    branches: [main, "work/**", "fix/**", "integration/**"]
+    branches: [main, "work/**", "fix/**", "integration/**", "arena/**"]
   pull_request:
-    branches: [main, "work/**", "fix/**"]
+    branches: [main, "work/**", "fix/**", "integration/**"]
   workflow_dispatch:
 
 concurrency:
@@ -13,6 +13,7 @@ concurrency:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   native-regression:
@@ -38,8 +39,31 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon testDebugUnitTest --stacktrace
 
@@ -54,8 +78,31 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon assembleDebug --stacktrace
       - uses: actions/upload-artifact@v7
@@ -76,8 +123,31 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon minifyReleaseWithR8 --stacktrace
 
@@ -92,8 +162,31 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "platform-tools platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
       - run: chmod +x ./gradlew
       - run: ./gradlew --no-daemon lintDebug --stacktrace
 
@@ -109,8 +202,31 @@ jobs:
           java-version: "21"
       - uses: android-actions/setup-android@v4
         with:
-          packages: "emulator platform-tools platforms;android-30 platforms;android-35 build-tools;35.0.0 ndk;26.1.10909125 cmake;3.22.1"
           accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
       - name: Enable KVM hardware acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -127,6 +243,54 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           script: bash .github/scripts/avatarforge-render-smoke.sh
+      - name: Publish the smoke verdict where it can be read
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set +e
+          E=avatarforge-render-smoke-evidence
+          {
+            echo "### AvatarForge GLES GLB render smoke"
+            echo
+            echo "commit: \`${GITHUB_SHA}\`"
+            echo
+            echo "**Renderer test result:**"
+            echo '```text'
+            grep -E "Tests on |run finished:|^FAIL|^PASS|Process crashed|INSTRUMENTATION_" "$E/gradle.txt" "$E/logcat.txt" 2>/dev/null | tail -8
+            echo '```'
+            if [ -s "$E/gradle.txt" ]; then
+              echo "**Instrumentation failure detail:**"
+              echo '```text'
+              grep -E "FAILED|AssertionError|junit|Caused by|expected|Expected" "$E/gradle.txt" | head -25
+              echo '--- tail ---'
+              tail -18 "$E/gradle.txt"
+              echo '```'
+            fi
+            if [ -s "$E/logcat.txt" ] && grep -qE "uncaught exception|Abort message" "$E/logcat.txt"; then
+              echo "**Native crash excerpt:**"
+              echo '```text'
+              grep -m2 -A6 -E "uncaught exception|Abort message" "$E/logcat.txt"
+              echo '```'
+            fi
+            if [ -s "$E/renderer_diagnostics.json" ]; then
+              echo "**Persisted renderer status:**"
+              echo '```json'
+              head -c 600 "$E/renderer_diagnostics.json"
+              echo '```'
+            else
+              echo "No renderer_diagnostics.json was exported."
+            fi
+            ls -l "$E"/imported_glb_diagnostic.png "$E"/failed_render.png 2>/dev/null
+          } > smoke-comment.md
+          cat smoke-comment.md
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --head "${GITHUB_REF_NAME}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
+          if [ -n "$PR" ]; then gh pr comment "$PR" --body-file smoke-comment.md; fi
+
       - name: Upload AvatarForge renderer evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -136,3 +300,91 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  runtime-evidence:
+    name: App install, launch and runtime evidence (instrumented-adjacent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: true
+
+      - name: Install the SDK packages this image actually offers
+        shell: bash
+        run: |
+          set +e
+          # Never hand a hard-coded package list to the SDK action: one package the image does not
+          # offer (platforms;android-37 has been absent on this runner) aborts the setup step, and
+          # the job dies before compiling or booting anything. Install what exists, log what does not.
+          sdkmanager --list > /tmp/sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" /tmp/sdk-list.txt | sort -u > /tmp/avail-platforms.txt
+          tail -12 /tmp/avail-platforms.txt
+          want="emulator platform-tools build-tools;36.0.0 ndk;26.1.10909125 cmake;3.22.1 platforms;android-30"
+          newest=$(grep -E "platforms;android-3[6-9]" /tmp/avail-platforms.txt | sort -V | tail -1)
+          if [ -n "$newest" ]; then want="$want $newest"; fi
+          echo "wanted: $want"
+          for pkg in $want; do
+            if ! grep -qF "$pkg" /tmp/sdk-list.txt; then
+              echo "not offered by this image: $pkg"
+              continue
+            fi
+            sdkmanager "$pkg" > "/tmp/sdk-install-$(echo "$pkg" | tr ';' '-').log" 2>&1
+            echo "$pkg exit=$?"
+          done
+          exit 0
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+      - name: Build app and test APKs
+        run: ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest --console=plain
+      - name: Enable KVM hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install, launch and capture runtime evidence
+        id: capture
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -no-audio -no-boot-anim -gpu swangle -memory 4096 -cores 2 -no-snapshot -wipe-data
+          emulator-boot-timeout: 900
+          disable-animations: true
+          script: bash tools/ci/emulator_runtime_capture.sh
+      - name: Post the runtime evidence as a pull request comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          PR="$EVENT_PR"
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
+          if [ -s runtime-evidence/summary.md ]; then
+            head -c 55000 runtime-evidence/summary.md > runtime-comment.md
+          else
+            {
+              echo "### Runtime evidence"
+              echo
+              echo "The capture script produced nothing, so the emulator never booted; that happens before any device-side step runs."
+            } > runtime-comment.md
+          fi
+          if [ -n "$PR" ]; then gh pr comment "$PR" --body-file runtime-comment.md; else cat runtime-comment.md; fi
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-evidence
+          path: runtime-evidence/
+          if-no-files-found: warn
+          retention-days: 14

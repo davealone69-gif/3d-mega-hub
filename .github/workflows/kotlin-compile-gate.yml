@@ -1,0 +1,197 @@
+name: Kotlin compile gate
+
+# Compiles the app and its JVM tests without an emulator, and republishes Gradle's diagnostics as
+# check-run annotations and a pull-request comment. It exists because the full runtime workflow hides
+# its log behind hosts that are not always reachable, while annotations and comments are.
+
+on:
+  push:
+    branches: ["arena/**", "integration/**"]
+  pull_request:
+    branches: [main, integration/avatarforge-renderer-port, "fix/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: kotlin-compile-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    name: Compile Kotlin and run JVM unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          # build-tools brings apksigner, which is what turns the APK into a signed artifact with a
+          # reportable certificate fingerprint.
+          packages: "platform-tools build-tools;36.0.0"
+          accept-android-sdk-licenses: true
+
+      - name: Resolve and install SDK packages
+        shell: bash
+        run: |
+          set +e
+          # Discover what this image can actually install instead of hard-coding a platform name.
+          sdkmanager --list > sdk-list.txt 2>&1
+          grep -oE "platforms;android-[0-9.]+" sdk-list.txt | sort -u > avail-platforms.txt
+          grep -oE "build-tools;[0-9.]+" sdk-list.txt | sort -u | tail -10 > avail-buildtools.txt
+          echo "--- available platforms ---"
+          tail -10 avail-platforms.txt
+          sdkmanager "platform-tools" "build-tools;36.0.0" "ndk;26.1.10909125" "cmake;3.22.1" > install-base.log 2>&1
+          echo "base install exit: $?"
+          tail -3 install-base.log
+          PLATFORM=$(grep -E "platforms;android-3[7-9]" avail-platforms.txt | sort -V | tail -1)
+          echo "chosen platform: ${PLATFORM:-none}"
+          if [ -n "$PLATFORM" ]; then
+            sdkmanager "$PLATFORM" > install-platform.log 2>&1
+            echo "platform install exit: $?"
+            tail -5 install-platform.log
+          fi
+          sdkmanager "platforms;android-36" > install-36.log 2>&1
+          echo "android-36 install exit: $?"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compile and test
+        shell: bash
+        run: |
+          set +e
+          ./gradlew --no-daemon \
+            :app:compileDebugKotlin \
+            :app:compileDebugUnitTestKotlin \
+            :app:testDebugUnitTest \
+            :app:assembleDebug \
+            --console=plain --stacktrace > build.log 2>&1
+          status=$?
+
+          # Artifact identity belongs in the readable channel: workflow artifacts and logs are
+          # served from hosts that are not always reachable, comments always are.
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          {
+            if [ -f "$APK" ]; then
+              echo "size_bytes=$(stat -c%s "$APK")"
+              echo "sha256=$(sha256sum "$APK" | cut -d' ' -f1)"
+              apksigner verify --print-certs "$APK" 2>/dev/null \
+                | grep -E "Signer #1 certificate (DN|SHA-256)" \
+                || "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" 2>/dev/null \
+                | grep -E "Signer #1 certificate (DN|SHA-256)" \
+                || echo "signing: apksigner unavailable"
+              unzip -l "$APK" | grep -cE "lib/.*\\.so" | sed 's/^/native_libraries=/'
+            else
+              echo "no APK produced"
+            fi
+          } > apk-identity.txt 2>&1
+          echo "gradle exit code: $status"
+
+          grep -E "^e: " build.log | head -8 | while IFS= read -r line; do
+            echo "::error title=Kotlin::$line"
+          done
+          grep -E "FAILED|What went wrong|Caused by: " build.log | head -8 | while IFS= read -r line; do
+            echo "::error title=Gradle::$line"
+          done
+          grep -hE "tests? (completed|passed)" build.log | tail -5 | while IFS= read -r line; do
+            echo "::notice::$line"
+          done || true
+          echo "decided exit: ${status:-1}"
+          if [ "${status:-1}" -eq 0 ]; then
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Post the diagnostic excerpt to the pull request
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          {
+            echo "### Kotlin compile gate"
+            if [ -f avail-platforms.txt ]; then
+              echo "<details><summary>SDK platforms this image can install</summary>"
+              echo
+              echo '```text'
+              tail -12 avail-platforms.txt
+              echo '```'
+              echo "</details>"
+              echo
+            fi
+            echo '```text'
+            if [ -f build.log ] && grep -q "What went wrong" build.log; then
+              sed -n '/What went wrong/,/BUILD FAILED/p' build.log | head -45
+            elif [ -f build.log ]; then
+              grep -E "^(e: |w: )" build.log | head -40
+            else
+              echo "No Gradle log: a setup step failed before the build ran."
+              tail -15 install-base.log 2>/dev/null
+              tail -15 install-platform.log 2>/dev/null
+            fi
+            echo '```'
+            if [ -f build.log ] && grep -qE " > .* FAILED" build.log; then
+              echo
+              echo "**Failing tests:**"
+              echo '```text'
+              grep -A4 -E " > .* FAILED" build.log | head -50
+              echo '```'
+            fi
+            if [ -f build.log ] && grep -qE "^e: " build.log; then
+              echo
+              echo "**Every Kotlin diagnostic in this run:**"
+              echo '```text'
+              grep -E "^e: " build.log | head -30
+              echo '```'
+            fi
+            if [ -f apk-identity.txt ]; then
+              echo
+              echo "**Debug APK identity:**"
+              echo '```text'
+              cat apk-identity.txt
+              echo '```'
+            fi
+            [ -f build.log ] && grep -E "BUILD (FAILED|SUCCESSFUL)" build.log | tail -1
+          } > excerpt.md
+          # Push-triggered runs have no pull_request payload, so resolve the PR from the branch
+          # name instead of silently skipping the post and leaving a red run undiagnosable.
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --head "${GITHUB_REF_NAME}" --state open --json number --jq '.[0].number' 2>/dev/null)
+          fi
+          if [ -z "$PR" ]; then
+            echo "No open pull request for ${GITHUB_REF_NAME}; excerpt:"
+            cat excerpt.md
+            exit 0
+          fi
+          # A failed comment must never masquerade as a failed build.
+          gh pr comment "$PR" --body-file excerpt.md || echo "could not post the excerpt (non-fatal)"
+
+      - name: Keep the Gradle log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-compile-log
+          path: |
+            build.log
+            apk-identity.txt
+            sdk-list.txt
+            install-base.log
+            install-platform.log
+            avail-platforms.txt
+          if-no-files-found: warn

@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -114,6 +115,9 @@ private fun MegaHubApp(
     var busy by remember { mutableStateOf(false) }
     var prompt by remember { mutableStateOf("") }
     var chat by remember { mutableStateOf(listOf<ChatLine>()) }
+    var pendingReply by remember { mutableStateOf(false) }
+    /* What the model actually said, i.e. the display transcript minus failed requests. */
+    var history by remember { mutableStateOf(listOf<ChatTurn>()) }
     var avatarUri by remember { mutableStateOf(prefs.getString("avatar_uri", null)?.let(Uri::parse)) }
     var avatarName by remember { mutableStateOf(prefs.getString("avatar_name", "Built-in sample model") ?: "Built-in sample model") }
     var avatarImporting by remember { mutableStateOf(false) }
@@ -122,13 +126,45 @@ private fun MegaHubApp(
     var voiceStatus by remember { mutableStateOf("Android text-to-speech is available on this device.") }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
     var ttsReady by remember { mutableStateOf(false) }
+    var speech by remember {
+        mutableStateOf(SpeechSettings.decode(prefs.getString("speech_settings", null)))
+    }
+    var availableVoices by remember { mutableStateOf(listOf<String>()) }
+    /* The engine's own starting voice, so "engine default" is still reachable after a change. */
+    var defaultVoice by remember { mutableStateOf<String?>(null) }
+
+    /* Rate, pitch and voice are pushed to the engine whenever they change, and re-applied on the
+       callback path below because a freshly constructed engine starts at its own defaults. */
+    fun applySpeech(engine: TextToSpeech?, settings: SpeechSettings) {
+        val clean = settings.normalized()
+        engine?.setSpeechRate(clean.rate)
+        engine?.setPitch(clean.pitch)
+        val voices = engine?.voices?.map { it.name }.orEmpty().sorted()
+        availableVoices = voices
+        if (defaultVoice == null) defaultVoice = engine?.voice?.name?.takeIf { it in voices }
+        val resolved = SpeechVoices.resolve(voices, clean.voiceName)
+            ?: defaultVoice?.takeIf { it in voices }
+        if (resolved != null) {
+            engine?.voices?.firstOrNull { it.name == resolved }?.let { engine.voice = it }
+        }
+    }
+
+    fun updateSpeech(updated: SpeechSettings) {
+        speech = updated.normalized()
+        applySpeech(tts, speech)
+        prefs.edit().putString("speech_settings", SpeechSettings.encode(speech)).apply()
+    }
 
     DisposableEffect(context) {
         val engine = TextToSpeech(context) { result ->
             ttsReady = result == TextToSpeech.SUCCESS
             voiceStatus = if (ttsReady) "Speech engine ready" else "Speech engine failed to initialise"
+            /* `engine` is not in scope inside its own initialiser, and the callback is asynchronous,
+               so the state holder is already populated by the time this runs. */
+            if (ttsReady) applySpeech(tts, speech)
         }
         tts = engine
+        applySpeech(engine, speech)
         onDispose { engine.stop(); engine.shutdown(); tts = null }
     }
 
@@ -328,15 +364,18 @@ private fun MegaHubApp(
         model = modelName
         prefs.edit().putString("ollama_url", baseUrl).putString("ollama_model", modelName).apply()
         chat = chat + ChatLine(true, question)
+        history = history + ChatTurn(true, question)
         prompt = ""
         busy = true
-        chat = chat + ChatLine(false, "Thinking…")
+        pendingReply = true
         thread(name = "MegaHubOllamaChat") {
-            val result = try {
+            val outcome = try {
                 val payload = JSONObject()
                     .put("model", modelName)
                     .put("stream", false)
-                    .put("messages", org.json.JSONArray().put(JSONObject().put("role", "user").put("content", question)))
+                    /* Bounded multi-turn history: the local model previously saw only the newest
+                       message, so every follow-up was answered without context. */
+                    .put("messages", ChatTranscript.messages(history))
                 val conn = (URL("$baseUrl/api/chat").openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8_000
                     readTimeout = 120_000
@@ -353,16 +392,20 @@ private fun MegaHubApp(
                     val stream = if (code in 200..299) conn.inputStream else conn.errorStream
                     val body = stream?.use { readLimitedResponse(it, 4_194_304) }.orEmpty()
                     if (code !in 200..299) error("Ollama returned HTTP $code: ${body.take(2_048)}")
-                    JSONObject(body).optJSONObject("message")?.optString("content").orEmpty()
+                    true to JSONObject(body).optJSONObject("message")?.optString("content").orEmpty()
                         .ifBlank { "Ollama returned an empty response." }
                 } finally {
                     conn.disconnect()
                 }
             } catch (error: Exception) {
-                "Request failed: ${error.message ?: error.javaClass.simpleName}"
+                /* Shown in the chat but never stored as context: a transport error is not something
+                   the model said, and feeding it back would poison every later turn. */
+                false to "Request failed: ${error.message ?: error.javaClass.simpleName}"
             }
             (context as? ComponentActivity)?.runOnUiThread {
-                chat = chat.dropLast(1) + ChatLine(false, result)
+                chat = chat + ChatLine(false, outcome.second)
+                if (outcome.first) history = history + ChatTurn(false, outcome.second)
+                pendingReply = false
                 busy = false
             }
         }
@@ -431,7 +474,18 @@ private fun MegaHubApp(
                         Button(onClick = { checkOllama() }, enabled = !busy) { Text("Test connection") }
                         Text(connection, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     }
-                    Text("Chat", style = MaterialTheme.typography.titleLarge)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Chat", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                        OutlinedButton(
+                            onClick = {
+                                chat = emptyList()
+                                history = emptyList()
+                                pendingReply = false
+                                connection = "Conversation cleared."
+                            },
+                            enabled = chat.isNotEmpty() && !busy
+                        ) { Text("New chat") }
+                    }
                     chat.forEach { line ->
                         Card(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(12.dp)) {
@@ -440,6 +494,19 @@ private fun MegaHubApp(
                             }
                         }
                     }
+                    if (pendingReply) {
+                        Card(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text("ASSISTANT", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                                Text("Thinking…")
+                            }
+                        }
+                    }
+                    Text(
+                        ChatTranscript.describe(history),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     OutlinedTextField(prompt, { prompt = it }, label = { Text("Message your local model") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
                     Button(onClick = { sendPrompt() }, enabled = !busy && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text(if (busy) "Working…" else "Send to Ollama") }
                     Text("This sends requests directly to the configured Ollama /api/chat endpoint. It does not use a cloud AI service.", style = MaterialTheme.typography.bodySmall)
@@ -448,11 +515,44 @@ private fun MegaHubApp(
                     Text("Voice output", style = MaterialTheme.typography.headlineSmall)
                     Text(voiceStatus)
                     OutlinedTextField(voiceText, { voiceText = it }, label = { Text("Text to speak") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                    HubCard(
+                        "Voice settings",
+                        speech.describe(),
+                        "${availableVoices.size} voice(s) reported by this device's speech engine."
+                    )
+                    Text("Speech rate ${format(speech.rate)}x", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = speech.rate.coerceIn(0.5f, 2.0f),
+                        onValueChange = { updateSpeech(speech.copy(rate = it)) },
+                        valueRange = 0.5f..2.0f,
+                        steps = 5
+                    )
+                    Text("Pitch ${format(speech.pitch)}", style = MaterialTheme.typography.bodySmall)
+                    Slider(
+                        value = speech.pitch.coerceIn(0.5f, 2.0f),
+                        onValueChange = { updateSpeech(speech.copy(pitch = it)) },
+                        valueRange = 0.5f..2.0f
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            updateSpeech(speech.copy(voiceName = SpeechVoices.cycle(availableVoices, speech.voiceName)))
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Voice: ${SpeechVoices.label(speech.voiceName, availableVoices)}") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { updateSpeech(SpeechSettings()) },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Reset") }
+                        OutlinedButton(
+                            onClick = { tts?.stop() },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("Stop speech") }
+                    }
                     Button(onClick = {
                         if (ttsReady) tts?.speak(voiceText, TextToSpeech.QUEUE_FLUSH, null, "mega-hub-voice")
                         else Toast.makeText(context, "Speech engine is not ready", Toast.LENGTH_SHORT).show()
                     }, enabled = ttsReady, modifier = Modifier.fillMaxWidth()) { Text("Speak") }
-                    OutlinedButton(onClick = { tts?.stop() }, modifier = Modifier.fillMaxWidth()) { Text("Stop speech") }
                     Text("Speech uses the Android voices installed on this phone. Viseme extraction and avatar lip-sync are not connected yet.")
                 }
                 HubPage.SETTINGS -> {
