@@ -228,13 +228,15 @@ BodyField::BodyField(const BodyMetrics& metrics) : m_(metrics), noise_(metrics.s
     mouthCentre_ = {0.0f, m_.mouthY, zFront * 0.94f};
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
-        jawCorner_[s] = {sx * m_.jaw.rx * 1.02f, m_.y.chinY + headH * 0.20f, zFront * 0.42f};
-        cheek_[s] = {sx * m_.head.rx * 0.90f, m_.y.chinY + headH * 0.30f, zFront * 0.70f};
+        jawCorner_[s] = {sx * m_.jaw.rx * (female ? 0.86f : 0.96f), m_.y.chinY + headH * 0.20f, zFront * 0.44f};
+        /* Place zygomatic cheekbones cleanly inside the cranial oval rather than bulging
+           laterally past the skull silhouette. */
+        cheek_[s] = {sx * m_.head.rx * (female ? 0.54f : 0.60f), m_.y.eyeY - headH * 0.105f, zFront * 0.78f};
         /* Bring the globe slightly through the orbital plane. At 0.80 * skull depth,
            the default eye radius was almost entirely buried by the cranium, leaving a blank
            face in full-body captures. Keep the same spacing/height but expose a readable
            corneal silhouette without enlarging the eyes into a caricature. */
-        eyeCentre_[s] = {sx * m_.eyeSeparation * 0.5f, m_.y.eyeY, -m_.head.rz * 0.91f};
+        eyeCentre_[s] = {sx * m_.eyeSeparation * 0.5f, m_.y.eyeY, -m_.head.rz * 0.92f};
         earCentre_[s] = {sx * m_.head.rx * 1.05f, m_.y.eyeY - headH * 0.055f, zFront * 0.10f};
     }
     (void)headC; (void)neckBase; (void)neckTop;
@@ -665,31 +667,32 @@ float BodyField::handShape(const Vec3& p, const Chain& c) const {
     /* Wrist stump for the cut plane. */
     d = smin(d, sdCapsule(p, c.wrist - dirDown * 0.02f, c.wrist + dirDown * 0.012f, m_.wristR), 0.012f);
 
-    /* Fingers: three phalanges each, with joint capsules that keep the silhouette round. */
+    /* Fingers: three phalanges each, with joint capsules that keep the silhouette round.
+       Floor radii so delicate female fingers stay thicker than the initial 8 mm extraction
+       cell and refine smoothly instead of fracturing into jagged spikes. */
     for (int i = 0; i < 5; ++i) {
         const Vec3 j0 = c.fingerKnuckle[i];
         const Vec3 j1 = c.fingerJoints[i][0];
         const Vec3 j2 = c.fingerJoints[i][1];
         const Vec3 j3 = c.fingerJoints[i][2];
-        const float r0 = m_.fingerRadius[i];
-        const float r1 = r0 * (i == 0 ? 0.96f : 0.90f);
-        const float r2 = r0 * (i == 0 ? 0.92f : 0.80f);
-        const float r3 = r0 * (i == 0 ? 0.88f : 0.68f);
-        /* Blend radius kept small (2.5 mm): adjacent fingers are only ~2 mm apart at the base,
-           and a blend comparable to that gap would fuse them into a mitten. The phalanges of
-           one finger overlap along their axis, so the small radius still reads as a smooth joint. */
-        d = smin(d, sdTaperedCapsule(p, j0, j1, r0, r1), 0.0025f);
-        d = smin(d, sdTaperedCapsule(p, j1, j2, r1, r2), 0.0025f);
-        d = smin(d, sdTaperedCapsule(p, j2, j3, r2, r3), 0.0025f);
+        const float r0 = maxf(m_.fingerRadius[i], 0.0072f);
+        const float r1 = r0 * (i == 0 ? 0.96f : 0.94f);
+        const float r2 = r0 * (i == 0 ? 0.92f : 0.88f);
+        const float r3 = maxf(r0 * (i == 0 ? 0.88f : 0.80f), 0.0058f);
+        /* Blend radius kept small (2.8 mm): adjacent fingers stay clearly separated at the base
+           while phalanges along the same finger join smoothly. */
+        d = smin(d, sdTaperedCapsule(p, j0, j1, r0, r1), 0.0028f);
+        d = smin(d, sdTaperedCapsule(p, j1, j2, r1, r2), 0.0028f);
+        d = smin(d, sdTaperedCapsule(p, j2, j3, r2, r3), 0.0028f);
         /* Knuckle and inter-phalangeal joint bulges. */
-        d = smin(d, blob(p, j1, Vec3(r1 * 1.10f, r1 * 1.10f, r1 * 1.10f)), 0.0025f);
-        d = smin(d, blob(p, j2, Vec3(r2 * 1.08f, r2 * 1.08f, r2 * 1.08f)), 0.0022f);
+        d = smin(d, blob(p, j1, Vec3(r1 * 1.08f, r1 * 1.08f, r1 * 1.08f)), 0.0026f);
+        d = smin(d, blob(p, j2, Vec3(r2 * 1.06f, r2 * 1.06f, r2 * 1.06f)), 0.0024f);
         /* Fingertip pad + nail bed on the dorsal side. */
-        d = smin(d, blob(p, j3 + (j3 - j2).normalizedOr({0, -1, 0}) * (r3 * 0.35f),
-                         Vec3(r3 * 0.90f, r3 * 0.90f, r3 * 0.90f)), 0.0022f);
+        d = smin(d, blob(p, j3 + (j3 - j2).normalizedOr({0, -1, 0}) * (r3 * 0.32f),
+                         Vec3(r3 * 0.94f, r3 * 0.94f, r3 * 0.94f)), 0.0024f);
         const Vec3 dorsal = (j3 - j2).normalizedOr({0, -1, 0}).cross(across).normalizedOr(palmNormal);
-        d = smin(d, blob(p, j3 - dorsal * (r3 * 0.35f) + (j3 - j2).normalizedOr({0, -1, 0}) * (r3 * 0.75f),
-                         Vec3(r3 * 0.68f, r3 * 0.20f, r3 * 0.55f)), 0.0020f);
+        d = smin(d, blob(p, j3 - dorsal * (r3 * 0.35f) + (j3 - j2).normalizedOr({0, -1, 0}) * (r3 * 0.72f),
+                         Vec3(r3 * 0.68f, r3 * 0.22f, r3 * 0.56f)), 0.0022f);
     }
     return d;
 }
@@ -894,31 +897,30 @@ float BodyField::skull(const Vec3& p) const {
                      Vec3(m_.jaw.rx * 1.02f, headH * 0.14f, m_.jaw.rz * 1.02f)), 0.032f);
     d = smin(d, blob(p, chin_, Vec3(m_.head.rx * 0.34f, headH * 0.07f, m_.head.rz * 0.34f)), 0.022f);
     for (int s = 0; s < 2; ++s) {
-        d = smin(d, blob(p, jawCorner_[s], Vec3(m_.jaw.rx * 0.34f, headH * 0.09f, m_.jaw.rz * 0.42f)), 0.024f);
-        d = smin(d, blob(p, cheek_[s], Vec3(m_.head.rx * 0.34f, headH * 0.11f, m_.head.rz * 0.30f)), 0.026f);
+        d = smin(d, blob(p, jawCorner_[s], Vec3(m_.jaw.rx * 0.28f, headH * 0.085f, m_.jaw.rz * 0.36f)), 0.024f);
+        d = smin(d, blob(p, cheek_[s], Vec3(m_.head.rx * 0.26f, headH * 0.085f, m_.head.rz * 0.22f)), 0.022f);
         /* Zygomatic arch. */
-        d = smin(d, sdCapsule(p, {cheek_[s].x * 1.02f, m_.y.eyeY - headH * 0.03f, cheek_[s].z * 0.86f},
-                              earCentre_[s] + Vec3(0, 0, -m_.head.rz * 0.30f), m_.head.rx * 0.06f), 0.020f);
+        d = smin(d, sdCapsule(p, {cheek_[s].x * 1.04f, m_.y.eyeY - headH * 0.04f, cheek_[s].z * 0.86f},
+                              earCentre_[s] + Vec3(0, 0, -m_.head.rz * 0.30f), m_.head.rx * 0.055f), 0.020f);
     }
     /* Brow ridge (subtle: strong ridges read as male, the amplitude comes from sex/build). */
     {
-        const float ridgeAmp = (m_.sex == AF_SEX_FEMALE) ? 0.62f : 1.0f;
-        d = smin(d, sdCapsule(p, {browRidge_.x - m_.head.rx * 0.78f * ridgeAmp, browRidge_.y, browRidge_.z},
-                              {browRidge_.x + m_.head.rx * 0.78f * ridgeAmp, browRidge_.y, browRidge_.z},
-                              m_.head.rx * 0.13f * ridgeAmp), 0.024f);
+        const float ridgeAmp = (m_.sex == AF_SEX_FEMALE) ? 0.55f : 1.0f;
+        d = smin(d, sdCapsule(p, {browRidge_.x - m_.head.rx * 0.74f * ridgeAmp, browRidge_.y, browRidge_.z},
+                              {browRidge_.x + m_.head.rx * 0.74f * ridgeAmp, browRidge_.y, browRidge_.z},
+                              m_.head.rx * 0.11f * ridgeAmp), 0.024f);
     }
-    /* Temple hollows and cheek hollows (subtractive). The carve volumes are centred slightly
-       OUTSIDE the skull surface, so only their inner wall intersects the head and the result
-       is a shallow dish rather than a bite taken out of the face. */
+    /* Temple hollows and cheek hollows (subtractive). Keep them restrained so the head
+       maintains a smooth human oval instead of a pinched hourglass silhouette. */
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
-        d = smax(d, -sdEllipsoid(p - Vec3(sx * m_.head.rx * 1.16f, m_.y.eyeY + headH * 0.06f,
-                                          -m_.head.rz * 0.28f),
-                                 Vec3(m_.head.rx * 0.42f, headH * 0.10f, m_.head.rz * 0.40f)), 0.026f);
-        if (m_.bodyFat < 0.26f) {
-            d = smax(d, -sdEllipsoid(p - Vec3(sx * m_.head.rx * 0.94f, m_.y.chinY + headH * 0.30f,
-                                              -m_.head.rz * 0.92f),
-                                     Vec3(m_.head.rx * 0.34f, headH * 0.115f, m_.head.rz * 0.34f)), 0.024f);
+        d = smax(d, -sdEllipsoid(p - Vec3(sx * m_.head.rx * 1.24f, m_.y.eyeY + headH * 0.07f,
+                                          -m_.head.rz * 0.24f),
+                                 Vec3(m_.head.rx * 0.34f, headH * 0.085f, m_.head.rz * 0.34f)), 0.022f);
+        if (m_.bodyFat < 0.24f) {
+            d = smax(d, -sdEllipsoid(p - Vec3(sx * m_.head.rx * 1.06f, m_.y.chinY + headH * 0.28f,
+                                              -m_.head.rz * 0.90f),
+                                     Vec3(m_.head.rx * 0.28f, headH * 0.095f, m_.head.rz * 0.28f)), 0.020f);
         }
     }
     /* Ears: flattened, slightly rotated discs with a concha cavity. */
@@ -978,35 +980,41 @@ float BodyField::faceFeatures(const Vec3& p) const {
     d = smin(d, lipsShape(p), 0.012f);
 
     /* Eye sockets: subtract so an eyeball placed at eyeCentre_ sits inside a real orbit with
-       a visible lid margin. The lids themselves are added back as thin crescents. */
+       a visible lid margin. Upper and lower lids frame an open almond palpebral fissure so
+       analytic dual-mesh eyes (sclera + iris + wet cornea) are never sealed behind solid skin. */
     for (int s = 0; s < 2; ++s) {
         const float sx = (s == 0) ? 1.0f : -1.0f;
         const Vec3 e = eyeCentre_[s];
         const float r = m_.eyeRadius;
-        const float socket = sdEllipsoid(p - (e + Vec3(0, 0, r * 0.30f)),
-                                         Vec3(r * 1.55f, r * 1.35f, r * 1.25f));
-        d = smax(d, -socket, 0.014f);
-        /* Upper lid. */
-        d = smin(d, sdEllipsoid(p - (e + Vec3(0, r * 0.62f, -r * 0.22f)),
-                                Vec3(r * 1.42f, r * 0.72f, r * 0.95f)), 0.010f);
+        const float socket = sdEllipsoid(p - (e + Vec3(0, 0, r * 0.20f)),
+                                         Vec3(r * 1.52f, r * 1.32f, r * 1.35f));
+        d = smax(d, -socket, 0.012f);
+        /* Upper lid crest positioned cleanly above the pupil/upper iris. */
+        d = smin(d, sdEllipsoid(p - (e + Vec3(0, r * 0.84f, -r * 0.16f)),
+                                Vec3(r * 1.38f, r * 0.44f, r * 0.78f)), 0.008f);
         /* Supratarsal upper-eyelid crease: delicate recessed fold above the tarsal plate. */
         const float upperCrease = sdCapsule(
             p,
-            e + Vec3(-sx * r * 0.92f, r * 0.88f, -r * 0.82f),
-            e + Vec3( sx * r * 1.08f, r * 0.82f, -r * 0.76f),
-            r * 0.16f);
-        d = smax(d, -upperCrease, 0.0045f);
-        /* Lower lid. */
-        d = smin(d, sdEllipsoid(p - (e + Vec3(0, -r * 0.66f, -r * 0.20f)),
-                                Vec3(r * 1.38f, r * 0.60f, r * 0.92f)), 0.010f);
+            e + Vec3(-sx * r * 0.92f, r * 0.98f, -r * 0.78f),
+            e + Vec3( sx * r * 1.08f, r * 0.92f, -r * 0.72f),
+            r * 0.14f);
+        d = smax(d, -upperCrease, 0.004f);
+        /* Lower lid rim positioned cleanly below the iris. */
+        d = smin(d, sdEllipsoid(p - (e + Vec3(0, -r * 0.80f, -r * 0.14f)),
+                                Vec3(r * 1.32f, r * 0.40f, r * 0.74f)), 0.008f);
         /* Inner canthus (epicanthic fold) and outer canthus. */
-        d = smin(d, blob(p, e + Vec3(-sx * r * 1.28f, r * 0.10f, -r * 0.10f),
-                         Vec3(r * 0.55f, r * 0.62f, r * 0.72f)), 0.008f);
+        d = smin(d, blob(p, e + Vec3(-sx * r * 1.26f, r * 0.06f, -r * 0.12f),
+                         Vec3(r * 0.46f, r * 0.48f, r * 0.62f)), 0.006f);
+        /* Almond palpebral fissure cutout: keeps the front corneal aperture 100% open
+           so neither smooth-union fillets nor lid margins ever cover the eyeball. */
+        const float aperture = sdEllipsoid(p - (e + Vec3(0, r * 0.02f, -r * 0.42f)),
+                                           Vec3(r * 1.12f, r * 0.50f, r * 1.25f));
+        d = smax(d, -aperture, 0.003f);
         /* Eyebrow ridge mass - thin, wide, angled with regard to sex. */
-        const float browLift = (m_.sex == AF_SEX_FEMALE) ? 1.15f : 1.0f;
-        const Vec3 inner = {e.x - sx * r * 1.30f, e.y + r * 1.25f * browLift, e.z + r * 0.12f};
-        const Vec3 outer = {e.x + sx * r * 1.70f, e.y + r * 1.05f * browLift, e.z - r * 0.10f};
-        d = smin(d, sdTaperedCapsule(p, inner, outer, r * 0.30f, r * 0.20f), 0.014f);
+        const float browLift = (m_.sex == AF_SEX_FEMALE) ? 1.18f : 1.0f;
+        const Vec3 inner = {e.x - sx * r * 1.30f, e.y + r * 1.30f * browLift, e.z + r * 0.12f};
+        const Vec3 outer = {e.x + sx * r * 1.70f, e.y + r * 1.12f * browLift, e.z - r * 0.10f};
+        d = smin(d, sdTaperedCapsule(p, inner, outer, r * 0.26f, r * 0.18f), 0.014f);
     }
 
     /*
@@ -1191,21 +1199,41 @@ float BodyField::clothUpper(const Vec3& p) const {
     const float radial = (kk - 1.0f) * minf(rx, rz);
     float domain = smax(radial, maxf(hemY - p.y, p.y - topY), 0.010f);
 
-    /* Arms out of the band, then the sleeves back in. */
+    /* Arms out of the band, then the sleeves back in ONLY when the garment has sleeves.
+       Calling sleeveSolid() with sleeveReach == 0 previously unioned the upper half of
+       the shoulder joint sphere onto sleeveless dresses, creating floating shoulder pads. */
     domain = smax(domain, -armsCut(p, thickness), 0.008f);
-    domain = smin(domain, sleeveSolid(p, thickness, sleeveReach), 0.012f);
+    if (sleeveReach > 0.005f) {
+        domain = smin(domain, sleeveSolid(p, thickness, sleeveReach), 0.012f);
+    }
 
-    /* A dress skirt must be a real volume outside the body. Previously the cone was
-       only unioned into the clipping domain for body(p)-thickness, so points beyond the body
-       were still rejected and the supposed flare never existed. Build the skirt as the volume
-       inside its flared cone but outside the body, then union it with the fitted upper garment. */
+    /* Sculpted anatomical neckline cutout (scoop neck for dress, crew neck for tops) so the
+       upper collar curves smoothly around the throat and clavicles instead of slicing flat. */
+    {
+        const bool isDress = (apparel_.outfit == 2);
+        const float neckDrop = isDress ? (0.042f * H) : (0.024f * H);
+        const float neckHalfW = m_.neck.rx * (isDress ? 1.55f : 1.18f);
+        const Vec3 neckCenter(0.0f, m_.y.neckBaseY - neckDrop * 0.45f,
+                              m_.neck.centreZ - m_.chest.rz * (isDress ? 0.55f : 0.35f));
+        const float neckCut = sdEllipsoid(p - neckCenter,
+                                          Vec3(neckHalfW, neckDrop, m_.chest.rz * 1.15f));
+        domain = smax(domain, -neckCut, 0.008f);
+    }
+
+    /* A dress skirt must be a real volume outside the body. Start smoothly at waistY and
+       flare into an A-line silhouette with subtle vertical drapery folds so it drapes like
+       woven cloth instead of a stiff cone with a sharp shelf at the hips. */
     float skirtShell = 1e9f;
     if (skirtHemY > 0.0f) {
-        const float waistY = m_.y.hipY;
+        const float waistY = m_.y.waistY;
+        const float t = saturate((waistY - p.y) / maxf(1e-3f, waistY - skirtHemY));
         const float kw = m_.waist.rx * 1.16f;
-        const float flare = 1.0f + 1.35f * saturate((waistY - p.y) / maxf(1e-3f, waistY - skirtHemY));
+        const float smoothFlare = std::pow(t, 0.85f);
+        const float angle = std::atan2(p.x, p.z - m_.waist.centreZ);
+        const float pleat = 1.0f + 0.024f * t * std::sin(7.0f * angle);
+        const float flare = (1.0f + 1.15f * smoothFlare) * pleat;
         const float krx = kw * flare;
-        const float krz = m_.waist.rz * 1.30f * flare;
+        const float krz = m_.waist.rz * 1.26f * flare;
         const float nkx = p.x / krx;
         const float nkz = (p.z - m_.waist.centreZ) / krz;
         const float k2 = std::pow(std::pow(std::fabs(nkx), e) + std::pow(std::fabs(nkz), e), 1.0f / e);
@@ -1213,10 +1241,10 @@ float BodyField::clothUpper(const Vec3& p) const {
         skirtShell = smax(skirt, -body(p), 0.004f);
     }
 
-    /* The fitted upper garment remains an offset of the body. The independent skirt shell
-       is unioned afterwards so its silhouette can extend beyond the body. */
+    /* The fitted upper garment remains an offset of the body. Smooth-union the skirt into
+       the bodice at the waist so the silhouette transitions cleanly without a hard ledge. */
     const float upperGarment = smax(body(p) - thickness, domain, 0.0018f);
-    return minf(upperGarment, skirtShell);
+    return (skirtHemY > 0.0f) ? smin(upperGarment, skirtShell, 0.014f) : upperGarment;
 }
 
 float BodyField::clothLower(const Vec3& p) const {
@@ -1225,7 +1253,7 @@ float BodyField::clothLower(const Vec3& p) const {
     float thickness = 0.0f;
     float hemY = 0.0f;
     switch (apparel_.outfit) {
-        case 2:  thickness = 0.004f; hemY = m_.y.soleY + 0.010f * H; break; /* full-length dress lining */
+        case 2:  return 1e9f; /* full-length dress skirt in clothUpper covers legs cleanly */
         case 3:  thickness = 0.010f; hemY = m_.y.ankleY + 0.045f; break;             /* trousers      */
         case 4:  thickness = 0.014f; hemY = m_.y.ankleY + 0.030f; break;             /* jeans         */
         case 5:  thickness = 0.018f; hemY = m_.y.ankleY + 0.10f; break;              /* greaves       */
@@ -1385,14 +1413,14 @@ float BodyField::hairShape(const Vec3& p) const {
            The skull offset above already supplies the hair cap; this is only a restrained
            silhouette allowance for the temples and crown. Distinct hanging shapes are built
            below from their own curves. */
-        case 2: thickness = 0.010f; volume = 0.0025f; break;                 /* short      */
-        case 3: thickness = 0.012f; volume = 0.0030f; length = headH * 0.55f; break;
-        case 4: thickness = 0.014f; volume = 0.0035f; length = headH * 2.6f; break; /* long */
-        case 5: thickness = 0.011f; volume = 0.0025f; tail = 0.30f; break;   /* ponytail   */
-        case 6: thickness = 0.011f; volume = 0.0025f; bun = 0.055f; break;   /* bun        */
-        case 7: thickness = 0.011f; volume = 0.0025f; braids = 0.36f; break; /* braids     */
-        case 8: thickness = 0.030f; volume = 0.032f; break;                  /* afro       */
-        case 9: thickness = 0.018f; volume = 0.0020f; crest = 0.030f; break; /* mohawk     */
+        case 2: thickness = 0.0075f; volume = 0.0012f; break;                /* short      */
+        case 3: thickness = 0.0080f; volume = 0.0014f; length = headH * 0.55f; break;
+        case 4: thickness = 0.0085f; volume = 0.0015f; length = headH * 2.6f; break; /* long */
+        case 5: thickness = 0.0080f; volume = 0.0012f; tail = 0.30f; break;  /* ponytail   */
+        case 6: thickness = 0.0080f; volume = 0.0012f; bun = 0.055f; break;  /* bun        */
+        case 7: thickness = 0.0080f; volume = 0.0012f; braids = 0.36f; break; /* braids    */
+        case 8: thickness = 0.028f; volume = 0.030f; break;                  /* afro       */
+        case 9: thickness = 0.016f; volume = 0.0018f; crest = 0.030f; break; /* mohawk     */
         default: return 1e9f;
     }
 
@@ -1401,12 +1429,14 @@ float BodyField::hairShape(const Vec3& p) const {
     float d = head(p) - thickness;
 
     /*
-     * The hairline: a plane tilted back from the brow. Everything in FRONT of it - the forehead,
-     * the eyes, the whole face - is cut away, so the hair sits where hair sits and the face stays
-     * clear. The tilt follows the brow ridge, which is already an anatomical anchor.
+     * The hairline: a plane tilted back from the upper forehead. Because -Z is forward (face)
+     * and +Z is backward (occiput), the crown/occiput half-space is
+     *   (p - hp).y * cos(tilt) + (p - hp).z * sin(tilt) > 0.
+     * Everything in front of the plane (forehead, brows, eyes, nose, face) has front < 0
+     * and is cleanly clipped away by smax(d, -front, ...).
      */
-    const float tilt = 0.30f + 0.20f * (m_.sex == AF_SEX_FEMALE ? 1.0f : 0.0f);
-    const Vec3 hp(0.0f, browRidge_.y + headH * 0.05f, browRidge_.z + m_.head.rz * 0.10f);
+    const float tilt = 0.42f + 0.12f * (m_.sex == AF_SEX_FEMALE ? 1.0f : 0.0f);
+    const Vec3 hp(0.0f, browRidge_.y + headH * 0.145f, browRidge_.z + m_.head.rz * 0.18f);
     /*
      * A hairline is not a circle or a flat plane. Recede it gently at the temples and
      * bring a shallow widow's point down at the centre. The normalized lateral coordinate
@@ -1414,14 +1444,14 @@ float BodyField::hairShape(const Vec3& p) const {
      */
     const float temple = smoothstepf(0.34f, 0.96f,
         std::fabs(p.x) / maxf(m_.head.rx, 1e-4f));
-    const float templeRecession = headH * 0.024f * temple;
-    const float widowPeak = headH * 0.014f *
+    const float templeRecession = headH * 0.022f * temple;
+    const float widowPeak = headH * 0.012f *
         maxf(0.0f, 1.0f - std::fabs(p.x) / maxf(m_.head.rx * 0.42f, 1e-4f));
-    const float front = (p - hp).y * std::cos(tilt) -
+    const float front = (p - hp).y * std::cos(tilt) +
                         (p - hp).z * std::sin(tilt) -
                         templeRecession + widowPeak;
-    /* With -Z forward, this plane is positive over the crown and negative at the face.
-       Keep the crown side and clip the facial side so the eyes and forehead stay exposed. */
+    /* With -Z forward, front > 0 over the crown/occiput and front < 0 across the face.
+       Keep the scalp side and clip the facial side so forehead, brows and eyes stay exposed. */
     d = smax(d, -front, 0.004f);
     /* Below the ears the head is bare; the mass must not wrap the jaw. */
     const float jawCut = eyeCentre_[0].y - headH * 0.14f - p.y;

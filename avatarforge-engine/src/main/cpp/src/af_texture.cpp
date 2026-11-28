@@ -23,8 +23,8 @@ const MaterialDef& materialForRegion(int region) {
         /* TEETH           */ {"teeth",       {0.92f, 0.90f, 0.86f}, 0.00f, 0.25f, 1.55f, 0.00f, 0.50f, 0.60f, 0.00f, 0.010f},
         /* TONGUE          */ {"tongue",      {0.72f, 0.30f, 0.30f}, 0.00f, 0.45f, 1.36f, 0.05f, 0.50f, 1.00f, 0.00f, 0.012f},
         /* LIPS            */ {"lips",        {0.62f, 0.24f, 0.24f}, 0.00f, 0.36f, 1.38f, 0.15f, 0.50f, 1.00f, 0.00f, 0.010f},
-        /* HAIR            */ {"hair",        {0.09f, 0.06f, 0.05f}, 0.00f, 0.34f, 1.55f, 0.55f, 0.62f, 0.00f, 0.85f, 0.004f},
-        /* LASH            */ {"lash",        {0.04f, 0.03f, 0.03f}, 0.00f, 0.28f, 1.55f, 0.40f, 0.40f, 0.00f, 0.70f, 0.003f},
+        /* HAIR            */ {"hair",        {0.09f, 0.06f, 0.05f}, 0.00f, 0.58f, 1.55f, 0.45f, 0.62f, 0.00f, 0.42f, 0.004f},
+        /* LASH            */ {"lash",        {0.04f, 0.03f, 0.03f}, 0.00f, 0.34f, 1.55f, 0.35f, 0.40f, 0.00f, 0.62f, 0.003f},
         /* NAIL            */ {"nail",        {0.88f, 0.80f, 0.78f}, 0.00f, 0.22f, 1.50f, 0.25f, 0.60f, 0.70f, 0.10f, 0.008f},
         /* CLOTH_UPPER     */ {"cloth_upper", {0.30f, 0.34f, 0.42f}, 0.00f, 0.78f, 1.45f, 0.45f, 0.55f, 0.00f, 0.30f, 0.010f},
         /* CLOTH_LOWER     */ {"cloth_lower", {0.20f, 0.22f, 0.28f}, 0.00f, 0.82f, 1.45f, 0.40f, 0.50f, 0.00f, 0.25f, 0.012f},
@@ -32,7 +32,7 @@ const MaterialDef& materialForRegion(int region) {
         /* GEAR            */ {"gear",        {0.62f, 0.60f, 0.55f}, 0.85f, 0.35f, 2.20f, 0.05f, 0.50f, 0.00f, 0.15f, 0.014f},
         /* CORNEA_L        */ {"cornea_left", {1.00f, 1.00f, 1.00f}, 0.00f, 0.032f, 1.376f, 0.00f, 0.50f, 0.00f, 0.00f, 0.002f},
         /* CORNEA_R        */ {"cornea_right",{1.00f, 1.00f, 1.00f}, 0.00f, 0.032f, 1.376f, 0.00f, 0.50f, 0.00f, 0.00f, 0.002f},
-        /* HAIR_CARD       */ {"hair_cards",  {0.09f, 0.06f, 0.05f}, 0.00f, 0.30f,  1.55f,  0.60f, 0.65f, 0.00f, 0.92f, 0.003f},
+        /* HAIR_CARD       */ {"hair_cards",  {0.09f, 0.06f, 0.05f}, 0.00f, 0.36f,  1.55f,  0.50f, 0.65f, 0.00f, 0.78f, 0.003f},
     };
     if (region < 0 || region >= REGION_COUNT) return kMaterials[0];
     return kMaterials[region];
@@ -253,11 +253,12 @@ void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
     orbitalShade = saturate(orbitalShade);
     albedo = albedo.lerp(albedo * Vec3(0.84f, 0.78f, 0.80f), orbitalShade * 0.34f);
 
-    /* Freckles and naevi: sparse, denser on sun-exposed skin. */
+    /* Subtle facial freckles only across nose/cheeks; keep arms and torso clean and blemish-free. */
     const float freckleField = fbm(n, p * 90.0f + Vec3(3.1f, 7.7f, 1.3f), 2);
-    const float exposure = blush * 0.8f + 0.35f;
-    const float freckle = saturate((freckleField - 0.62f) * 6.0f) * exposure * (0.25f + 0.55f * ctx.spec->skin_melanin);
-    albedo = albedo.lerp(albedo * Vec3(0.52f, 0.34f, 0.26f) * 1.25f, saturate(freckle * 0.9f));
+    const float faceSunMask = mask3(p, Vec3(0.0f, m.y.eyeY - headH * 0.07f, -m.head.rz * 0.88f),
+                                    Vec3(m.faceWidth * 0.50f, headH * 0.12f, m.head.rz * 0.45f));
+    const float freckle = saturate((freckleField - 0.66f) * 5.0f) * faceSunMask * (0.18f + 0.30f * ctx.spec->skin_melanin);
+    albedo = albedo.lerp(albedo * Vec3(0.68f, 0.52f, 0.44f), saturate(freckle * 0.45f));
 
     /* Age: gradual desaturation, more visible veins and creases over time. */
     const float age = ctx.ageFactor;
@@ -347,8 +348,8 @@ void evaluateSkin(const MaterialContext& ctx, const SurfaceSample& s, SurfaceOut
         /* Keep pores resolvable after atlas filtering and mobile mip selection. Sub-texel
            relief at the previous 0.55 mm / 0.22 mm settings became high-frequency normal-map
            sparkle at full-body viewing distance instead of skin texture. */
-        const float poreCell = face ? 0.0012f : 0.0020f;
-        const float poreDepth = face ? 0.00007f : 0.00005f;
+        const float poreCell = face ? 0.0014f : 0.0024f;
+        const float poreDepth = face ? 0.000045f : 0.000022f;
         const float pores = poreNoise(n, p, poreCell);
         const float crease = fbm(n, p * 130.0f, 3);
         /* Joint creases: grooves perpendicular to the limb axis near elbows/knees. */

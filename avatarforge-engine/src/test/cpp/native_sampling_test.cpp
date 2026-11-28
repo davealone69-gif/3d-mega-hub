@@ -788,12 +788,64 @@ int main() {
                 "eyeLookOutLeft must rotate eyeball/cornea without pulling 3D eyelashes or brows");
     }
 
+    // Visual-quality anatomy & apparel regression guards (female dress + long hair):
+    //   1. Hairline plane must clip the facial side (-Z) so forehead, brows, eyes & nose are 100% clear.
+    //   2. Eyelid palpebral aperture must leave both corneal front poles unobstructed by skin.
+    //   3. Zygomatic cheeks must stay cleanly inside the cranial silhouette (no chipmunk bulge).
+    //   4. Sleeveless dress (AF_OUTFIT_DRESS) must have no detached pauldron cap over the outer deltoid.
+    //   5. Solid scalp cap (REGION_HAIR) stays matte (roughness >= 0.50) to avoid metallic chrome glare.
+    {
+        af_spec fSpec{};
+        af_spec_init(&fSpec);
+        fSpec.sex = AF_SEX_FEMALE;
+        const af::BodyMetrics fm = af::Anatomy::solve(fSpec);
+        af::BodyField fField(fm);
+        af::ApparelOptions fApp{};
+        fApp.outfit = 2; // AF_OUTFIT_DRESS
+        fApp.hair = 4;   // AF_HAIR_LONG
+        fApp.latticeCell = 0.008f;
+        fField.setApparel(fApp);
+
+        const float fHeadH = fm.y.crownY - fm.y.chinY;
+        const af::Vec3 browFront(0.0f, fm.y.eyeY + fHeadH * 0.03f, -fm.head.rz * 1.02f);
+        const af::Vec3 foreheadMid(0.0f, fm.y.eyeY + fHeadH * 0.09f, -fm.head.rz * 1.02f);
+        const af::Vec3 crownTop(0.0f, fm.y.crownY + 0.002f, fm.head.centreZ);
+        require(fField.hairPublic(browFront) > 0.010f,
+                "hairline must not droop over the brow ridge / eyes");
+        require(fField.hairPublic(foreheadMid) > 0.005f,
+                "hairline must keep the forehead exposed");
+        require(fField.hairPublic(crownTop) < 0.0f,
+                "hair cap must cover the cranial crown");
+
+        for (int side : {-1, 1}) {
+            const af::Vec3 ec = fField.eyeCentre(side);
+            const af::Vec3 corneaFront(ec.x, ec.y, ec.z - fm.eyeRadius * 0.95f);
+            require(fField.head(corneaFront) > 0.0f,
+                    "eyelid palpebral fissure must leave the front cornea unobstructed by skin");
+            require(fField.hairPublic(corneaFront) > 0.015f,
+                    "hair volume must never cover the eyes");
+
+            const af::Vec3 wideCheek(static_cast<float>(side) * fm.head.rx * 1.12f,
+                                     fm.y.chinY + fHeadH * 0.30f, -fm.head.rz * 0.65f);
+            require(fField.head(wideCheek) > 0.0f,
+                    "cheek geometry must not bulge laterally past the cranial oval");
+
+            const af::Vec3 deltoidCap(static_cast<float>(side) * (fm.biacromialHalf + fm.deltoidR * 0.85f),
+                                      fm.y.shoulderY + fm.deltoidR * 0.55f, 0.0f);
+            require(fField.clothUpperPublic(deltoidCap) > 0.0f,
+                    "sleeveless dress must not attach floating pauldron caps on the outer deltoids");
+        }
+        require(af::materialForRegion(af::REGION_HAIR).roughness >= 0.50f,
+                "REGION_HAIR scalp cap must remain matte under layered hair cards");
+    }
+
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
     std::puts("PASS: long hairstyle has measurable volumetric depth behind the skull");
     std::puts("PASS: GLB export omits KHR_materials_sheen and exports wet cornea with BLEND + clearcoat");
     std::puts("PASS: dual-mesh eyes pass geometry, sclera/iris texture, rigid skinning, and blendshape checks");
     std::puts("PASS: procedural hair cards pass watertightness, UV sheet, alpha/normal bake, GLB MASK, and rigging checks");
     std::puts("PASS: 3D eyebrow and eyelash cards pass watertightness, head skinning, and blink/brow blendshape checks");
+    std::puts("PASS: female dress + long hair hairline, open eyelids, cheek oval, sleeveless shoulders, and matte scalp checks");
 
     std::puts("PASS: 40 repeated single-thread, parallel, and block-skipped sampling comparisons");
     return 0;
