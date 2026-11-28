@@ -7,7 +7,9 @@ import kotlin.math.roundToInt
  */
 enum class CameraPreset(val nativeId: Int, val label: String) {
     FULL_BODY(0, "Full"),
+    BUST(5, "Bust"),
     PORTRAIT(1, "Portrait"),
+    EYES_MACRO(6, "Eyes"),
     THREE_QUARTER(2, "3/4"),
     PROFILE(3, "Side"),
     BACK(4, "Back"),
@@ -18,8 +20,10 @@ enum class CameraPreset(val nativeId: Int, val label: String) {
  */
 enum class LightingPreset(val nativeId: Int, val label: String) {
     STUDIO(0, "Studio"),
+    REMBRANDT(4, "Rembrandt"),
     GOLDEN_HOUR(1, "Golden Hour"),
     DRAMATIC_RIM(2, "Dramatic Rim"),
+    NOIR_RIM(5, "Noir Rim"),
     OVERCAST(3, "Overcast"),
 }
 

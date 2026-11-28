@@ -5,6 +5,7 @@
  */
 #include "af_render_common.h"
 #include "avatarforge_live_rig.h"
+#include "avatarforge_studio_life.h"
 
 #include <cmath>
 #include <cstdio>
@@ -158,6 +159,58 @@ int main() {
             check("LiveRigRegistry clear releases cached engine",
                   af::LiveRigRegistry::acquireForPath("/tmp/live_rig_test.glb") == nullptr);
         }
+    }
+
+    // Regression: critically-damped cinematic camera glide + living digital human micro-life engine.
+    {
+        check("wrapAngleDeltaDeg takes shortest arc across 360/0 seam",
+              std::fabs(af::wrapAngleDeltaDeg(10.0f, 350.0f) - 20.0f) < 1e-3f &&
+              std::fabs(af::wrapAngleDeltaDeg(350.0f, 10.0f) - (-20.0f)) < 1e-3f);
+
+        af::CameraState cam{};
+        cam.yawDeg = 350.0f;
+        cam.pitchDeg = 0.0f;
+        cam.distance = 3.0f;
+        cam.targetY = 0.9f;
+        cam.fovDeg = 28.0f;
+
+        af::CameraState dst = cam;
+        dst.yawDeg = 10.0f;
+        dst.pitchDeg = 4.0f;
+        dst.distance = 0.7f;
+        dst.targetY = 1.55f;
+        dst.fovDeg = 22.0f;
+
+        bool gliding = true;
+        for (int f = 0; f < 120 && gliding; ++f) {
+            gliding = af::stepCameraGlide(&cam, dst, 1.0f / 60.0f);
+        }
+        check("stepCameraGlide converges cleanly to macro eye preset",
+              !gliding && std::fabs(cam.distance - dst.distance) < 1e-3f &&
+              std::fabs(cam.targetY - dst.targetY) < 1e-3f);
+
+        af::StudioMicroLifeState life{};
+        std::array<float, 52> w{};
+        float peakBlink = 0.0f;
+        for (int f = 0; f < 240; ++f) { // 4.0 seconds @ 60fps
+            life.step(1.0f / 60.0f, 24.0f, 8.0f, &w);
+            peakBlink = std::max(peakBlink, std::min(w[8], w[9]));
+        }
+        check("StudioMicroLifeState fires autonomous physiological blink",
+              peakBlink > 0.85f);
+        check("StudioMicroLifeState tracks camera to character's left with eyeLookOutLeft + eyeLookInRight",
+              w[14] > 0.45f && w[13] > 0.45f && w[16] > 0.15f);
+
+        life.step(1.0f / 60.0f, 150.0f, 0.0f, &w);
+        check("StudioMicroLifeState relaxes eye gaze when camera orbits behind character",
+              w[14] < 0.12f && w[13] < 0.12f && w[12] < 0.12f && w[15] < 0.12f);
+
+        life.setExpressionPreset(1); // Smile
+        life.step(0.05f, 0.0f, 0.0f, &w);
+        const float midSmile = w[43];
+        for (int f = 0; f < 60; ++f) life.step(1.0f / 60.0f, 0.0f, 0.0f, &w);
+        check("StudioMicroLifeState smoothly morphs facial muscles into Smile preset",
+              midSmile > 0.25f && midSmile < 0.78f && w[43] > 0.82f && w[44] > 0.82f);
     }
 
     std::printf("%s (%d failure%s)\n", failures ? "FAILED" : "ALL PASSED",

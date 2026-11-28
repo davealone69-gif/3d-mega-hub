@@ -4,6 +4,7 @@
 
 #include "afcore.h"
 #include "avatarforge_live_rig.h"
+#include "avatarforge_studio_life.h"
 #include "render/af_render.h"
 #include "render/af_render_common.h"
 
@@ -26,8 +27,13 @@ struct NativeAvatarSession {
     int width = 0;
     int height = 0;
     af::CameraState camera{};
+    af::CameraState targetCamera{};
     af::CameraState initialCamera{};
+    bool cameraGliding = false;
     af::RendererOptions baseOptions{};
+    int32_t activeLightingPreset = 0;
+    float lightRotationOffsetDeg = 0.0f;
+    af::StudioMicroLifeState microLife{};
     bool allForeignSubmeshes = false;
     bool isLiveRig = false;
     int32_t highlightedRegion = -1;
@@ -227,7 +233,9 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
         session->boundsMax[axis] = boundsMax[axis];
     }
     session->camera = camera;
+    session->targetCamera = camera;
     session->initialCamera = camera;
+    session->cameraGliding = false;
     session->minDistance = std::max(0.02f, radius * 0.25f);
     session->maxDistance = std::max(session->minDistance * 8.0f, camera.distance * 6.0f);
     // buildCameraUbo derives near/far from the imported model bounds each frame.
@@ -512,6 +520,21 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeRender(
     JNIEnv*, jobject, jlong handle, jfloat deltaSeconds) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return JNI_FALSE;
+    if (session->cameraGliding) {
+        session->cameraGliding = af::stepCameraGlide(&session->camera, session->targetCamera, deltaSeconds);
+        session->renderer->setCamera(session->camera);
+    }
+    if (session->isLiveRig && session->engine && af_engine_joint_count(session->engine) > 0) {
+        const float relYaw = session->allForeignSubmeshes
+            ? af::wrapAngleDeltaDeg(session->camera.yawDeg, session->initialCamera.yawDeg)
+            : af::wrapAngleDeltaDeg(session->initialCamera.yawDeg, session->camera.yawDeg);
+        std::array<float, 52> weights{};
+        if (session->microLife.step(deltaSeconds, relYaw, session->camera.pitchDeg, &weights)) {
+            if (af_engine_apply_blendshapes(session->engine, weights.data(), 52) == AF_OK) {
+                session->renderer->invalidateMesh();
+            }
+        }
+    }
     session->renderer->renderFrame(deltaSeconds);
     return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
 }
@@ -553,8 +576,9 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeOrbitCamera(
     JNIEnv*, jobject, jlong handle, jfloat deltaYawDeg, jfloat deltaPitchDeg, jfloat zoomScale) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return;
+    session->cameraGliding = false;
     if (std::isfinite(deltaYawDeg)) {
-        session->camera.yawDeg = std::fmod(session->camera.yawDeg + deltaYawDeg, 360.0f);
+        session->camera.yawDeg = std::fmod(session->camera.yawDeg + deltaYawDeg + 360.0f, 360.0f);
     }
     if (std::isfinite(deltaPitchDeg)) {
         session->camera.pitchDeg = std::max(-85.0f, std::min(85.0f, session->camera.pitchDeg + deltaPitchDeg));
@@ -563,6 +587,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeOrbitCamera(
         session->camera.distance = std::max(session->minDistance,
                                             std::min(session->maxDistance, session->camera.distance * zoomScale));
     }
+    session->targetCamera = session->camera;
     session->renderer->setCamera(session->camera);
 }
 
@@ -571,8 +596,8 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResetCamera(
     JNIEnv*, jobject, jlong handle) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return;
-    session->camera = session->initialCamera;
-    session->renderer->setCamera(session->camera);
+    session->targetCamera = session->initialCamera;
+    session->cameraGliding = true;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -611,24 +636,38 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetCameraPreset(
             cam.distance = std::max(session->minDistance, session->initialCamera.distance * 0.96f);
             break;
         }
+        case 5: { // Bust / Upper Portrait (showcases sculpted clavicles, neck, shoulders & face)
+            cam.targetY = session->boundsMin[1] + dy * 0.80f;
+            cam.yawDeg = std::fmod(baseYaw - 18.0f + 360.0f, 360.0f);
+            cam.pitchDeg = 3.5f;
+            cam.fovDeg = 26.0f;
+            cam.distance = std::max(session->minDistance, std::max(dy * 0.56f, dz * 1.85f));
+            break;
+        }
+        case 6: { // Eyes Macro (ultra close-up on corneal catchlights, refractive iris, 3D lashes & Cupid's bow)
+            cam.targetY = session->boundsMin[1] + dy * 0.895f;
+            cam.yawDeg = std::fmod(baseYaw - 6.0f + 360.0f, 360.0f);
+            cam.pitchDeg = 1.0f;
+            cam.fovDeg = 22.0f;
+            cam.distance = std::max(session->minDistance, std::max(dy * 0.24f, dz * 1.05f));
+            break;
+        }
         default: // 0 = Full Body
             break;
     }
     cam.distance = std::max(session->minDistance, std::min(session->maxDistance, cam.distance));
-    session->camera = cam;
-    session->renderer->setCamera(session->camera);
+    session->targetCamera = cam;
+    session->cameraGliding = true;
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLightingPreset(
-    JNIEnv*, jobject, jlong handle, jint presetId) {
-    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+namespace {
+void applyStudioLighting(NativeAvatarSession* session) {
     if (!session || !session->renderer) return;
     af::RendererOptions opt = session->baseOptions;
     const float baseAz = session->baseOptions.sunAzimuthDeg;
-    switch (presetId) {
+    switch (session->activeLightingPreset) {
         case 1: { // Golden Hour
-            opt.sunAzimuthDeg = std::fmod(baseAz + 32.0f, 360.0f);
+            opt.sunAzimuthDeg = baseAz + 32.0f;
             opt.sunElevationDeg = 12.0f;
             opt.sunIntensity = 1.85f;
             opt.turbidity = 4.2f;
@@ -638,7 +677,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLightingPreset
             break;
         }
         case 2: { // Dramatic Rim
-            opt.sunAzimuthDeg = std::fmod(baseAz + 138.0f, 360.0f);
+            opt.sunAzimuthDeg = baseAz + 138.0f;
             opt.sunElevationDeg = 22.0f;
             opt.sunIntensity = 2.10f;
             opt.turbidity = 2.2f;
@@ -657,10 +696,59 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLightingPreset
             opt.enableBloom = false;
             break;
         }
+        case 4: { // Rembrandt Portrait (classic 45° chiaroscuro key lighting sculpting cheek triangle)
+            opt.sunAzimuthDeg = baseAz + 48.0f;
+            opt.sunElevationDeg = 38.0f;
+            opt.sunIntensity = 1.75f;
+            opt.turbidity = 2.8f;
+            opt.environmentIntensity = 0.44f;
+            opt.exposure = 0.86f;
+            opt.enableBloom = true;
+            break;
+        }
+        case 5: { // Noir Rim (moody high-contrast silhouette rim & specular highlight showcase)
+            opt.sunAzimuthDeg = baseAz + 158.0f;
+            opt.sunElevationDeg = 16.0f;
+            opt.sunIntensity = 2.35f;
+            opt.turbidity = 2.0f;
+            opt.environmentIntensity = 0.24f;
+            opt.exposure = 0.76f;
+            opt.enableBloom = true;
+            break;
+        }
         default: // 0 = Studio
             break;
     }
+    opt.sunAzimuthDeg = std::fmod(opt.sunAzimuthDeg + session->lightRotationOffsetDeg + 720.0f, 360.0f);
     session->renderer->setOptions(opt);
+}
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLightingPreset(
+    JNIEnv*, jobject, jlong handle, jint presetId) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->activeLightingPreset = presetId;
+    applyStudioLighting(session);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLightRotation(
+    JNIEnv*, jobject, jlong handle, jfloat offsetDeg) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer || !std::isfinite(offsetDeg)) return;
+    session->lightRotationOffsetDeg = std::fmod(offsetDeg + 720.0f, 360.0f);
+    applyStudioLighting(session);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLiveMicroLife(
+    JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session) return;
+    session->microLife.enabled = (enabled == JNI_TRUE);
+    session->microLife.hasAppliedOnce = false;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -707,59 +795,11 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeApplyExpression(
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer || !session->engine) return;
     if (af_engine_joint_count(session->engine) <= 0) return;
-    // Matches kBlendshapeNames[52] in af_rig.cpp.
-    float w[52] = {};
-    switch (expressionId) {
-        case 1: // Smile
-            w[43] = 0.85f; // mouthSmileLeft
-            w[44] = 0.85f; // mouthSmileRight
-            w[6]  = 0.45f; // cheekSquintLeft
-            w[7]  = 0.45f; // cheekSquintRight
-            w[18] = 0.25f; // eyeSquintLeft
-            w[19] = 0.25f; // eyeSquintRight
-            w[27] = 0.30f; // mouthDimpleLeft
-            w[28] = 0.30f; // mouthDimpleRight
-            break;
-        case 2: // Blink
-            w[8]  = 1.00f; // eyeBlinkLeft
-            w[9]  = 1.00f; // eyeBlinkRight
-            break;
-        case 3: // Wink
-            w[8]  = 1.00f; // eyeBlinkLeft
-            w[6]  = 0.40f; // cheekSquintLeft
-            w[43] = 0.65f; // mouthSmileLeft
-            w[44] = 0.35f; // mouthSmileRight
-            w[4]  = 0.35f; // browOuterUpRight
-            break;
-        case 4: // Surprised
-            w[2]  = 0.85f; // browInnerUp
-            w[3]  = 0.80f; // browOuterUpLeft
-            w[4]  = 0.80f; // browOuterUpRight
-            w[20] = 0.90f; // eyeWideLeft
-            w[21] = 0.90f; // eyeWideRight
-            w[24] = 0.72f; // jawOpen
-            break;
-        case 5: // Frown
-            w[0]  = 0.80f; // browDownLeft
-            w[1]  = 0.80f; // browDownRight
-            w[29] = 0.75f; // mouthFrownLeft
-            w[30] = 0.75f; // mouthFrownRight
-            w[49] = 0.25f; // noseSneerLeft
-            w[50] = 0.25f; // noseSneerRight
-            break;
-        case 6: // Gaze Left (character's left: left eye out, right eye in)
-            w[14] = 0.90f; // eyeLookOutLeft
-            w[13] = 0.90f; // eyeLookInRight
-            break;
-        case 7: // Gaze Right (character's right: left eye in, right eye out)
-            w[12] = 0.90f; // eyeLookInLeft
-            w[15] = 0.90f; // eyeLookOutRight
-            break;
-        default: // 0 = Neutral
-            break;
-    }
-    if (af_engine_apply_blendshapes(session->engine, w, 52) == AF_OK) {
-        session->renderer->invalidateMesh();
+    session->microLife.setExpressionPreset(expressionId);
+    if (!session->isLiveRig) {
+        if (af_engine_apply_blendshapes(session->engine, session->microLife.targetExpression.data(), 52) == AF_OK) {
+            session->renderer->invalidateMesh();
+        }
     }
 }
 

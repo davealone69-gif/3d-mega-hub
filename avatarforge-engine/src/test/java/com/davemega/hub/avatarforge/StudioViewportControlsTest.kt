@@ -14,7 +14,11 @@ class StudioViewportControlsTest {
         assertEquals(LightingPreset.entries.size, lightIds.size)
         assertEquals(0, CameraPreset.FULL_BODY.nativeId)
         assertEquals(1, CameraPreset.PORTRAIT.nativeId)
+        assertEquals(5, CameraPreset.BUST.nativeId)
+        assertEquals(6, CameraPreset.EYES_MACRO.nativeId)
         assertEquals(0, LightingPreset.STUDIO.nativeId)
+        assertEquals(4, LightingPreset.REMBRANDT.nativeId)
+        assertEquals(5, LightingPreset.NOIR_RIM.nativeId)
     }
 
     @Test

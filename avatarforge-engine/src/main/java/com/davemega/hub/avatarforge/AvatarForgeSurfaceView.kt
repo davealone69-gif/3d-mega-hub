@@ -50,6 +50,8 @@ class AvatarForgeSurfaceView(
     private var pendingCameraReset = false
     private var pendingCameraPresetId: Int? = null
     private var pendingLightingPresetId: Int? = null
+    private var pendingLightRotationDeg: Float? = null
+    private var pendingLiveMicroLife: Boolean? = null
     private var pendingInspectionDirty = false
     private var showSkeleton = false
     private var flatShading = false
@@ -79,6 +81,60 @@ class AvatarForgeSurfaceView(
     fun setLightingPreset(preset: LightingPreset) {
         synchronized(cameraLock) {
             pendingLightingPresetId = preset.nativeId
+        }
+    }
+
+    fun setLightRotationDeg(offsetDeg: Float) {
+        synchronized(cameraLock) {
+            pendingLightRotationDeg = offsetDeg
+        }
+    }
+
+    fun setLiveMicroLife(enabled: Boolean) {
+        synchronized(cameraLock) {
+            pendingLiveMicroLife = enabled
+        }
+    }
+
+    /** Captures a lossless full-resolution PNG of the live 3D studio viewport via PixelCopy. */
+    fun captureStudioSnapshot(onResult: (Result<File>) -> Unit) {
+        val w = surfaceWidth
+        val h = surfaceHeight
+        if (!surfaceReady || !holder.surface.isValid || w <= 0 || h <= 0) {
+            onResult(Result.failure(IllegalStateException("3D viewport surface is not ready yet.")))
+            return
+        }
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        mainHandler.post {
+            try {
+                PixelCopy.request(this, bitmap, { copyResult ->
+                    if (copyResult != PixelCopy.SUCCESS) {
+                        bitmap.recycle()
+                        onResult(Result.failure(IllegalStateException("Studio snapshot PixelCopy failed ($copyResult).")))
+                        return@request
+                    }
+                    Thread({
+                        val saved = runCatching {
+                            val dir = context.getExternalFilesDir("snapshots") ?: File(context.filesDir, "snapshots")
+                            dir.mkdirs()
+                            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                                .format(java.util.Date())
+                            val outFile = File(dir, "avatar_studio_$stamp.png")
+                            FileOutputStream(outFile).use { stream ->
+                                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                            }
+                            outFile
+                        }.also { bitmap.recycle() }
+                        mainHandler.post { onResult(saved) }
+                    }, "AvatarForge-Snapshot").apply {
+                        isDaemon = true
+                        start()
+                    }
+                }, mainHandler)
+            } catch (failure: Throwable) {
+                bitmap.recycle()
+                onResult(Result.failure(failure))
+            }
         }
     }
 
@@ -354,6 +410,8 @@ class AvatarForgeSurfaceView(
                     var resetCam = false
                     var cameraPresetId: Int? = null
                     var lightingPresetId: Int? = null
+                    var lightRotationNow: Float? = null
+                    var liveMicroLifeNow: Boolean? = null
                     var applyInspection = false
                     var skeletonNow = false
                     var flatNow = false
@@ -371,6 +429,8 @@ class AvatarForgeSurfaceView(
                         resetCam = pendingCameraReset
                         cameraPresetId = pendingCameraPresetId
                         lightingPresetId = pendingLightingPresetId
+                        lightRotationNow = pendingLightRotationDeg
+                        liveMicroLifeNow = pendingLiveMicroLife
                         applyInspection = pendingInspectionDirty
                         skeletonNow = showSkeleton
                         flatNow = flatShading
@@ -387,6 +447,8 @@ class AvatarForgeSurfaceView(
                         pendingCameraReset = false
                         pendingCameraPresetId = null
                         pendingLightingPresetId = null
+                        pendingLightRotationDeg = null
+                        pendingLiveMicroLife = null
                         pendingInspectionDirty = false
                         pendingClipId = null
                         pendingExpressionId = null
@@ -399,6 +461,12 @@ class AvatarForgeSurfaceView(
                     lastFrame = now
                     if (lightingPresetId != null) {
                         nativeSetLightingPreset(nativeHandle, lightingPresetId!!)
+                    }
+                    if (lightRotationNow != null) {
+                        nativeSetLightRotation(nativeHandle, lightRotationNow!!)
+                    }
+                    if (liveMicroLifeNow != null) {
+                        nativeSetLiveMicroLife(nativeHandle, liveMicroLifeNow!!)
                     }
                     if (applyInspection) {
                         nativeSetInspectionModes(nativeHandle, skeletonNow, flatNow)
@@ -784,6 +852,8 @@ class AvatarForgeSurfaceView(
     private external fun nativeResetCamera(handle: Long)
     private external fun nativeSetCameraPreset(handle: Long, presetId: Int)
     private external fun nativeSetLightingPreset(handle: Long, presetId: Int)
+    private external fun nativeSetLightRotation(handle: Long, offsetDeg: Float)
+    private external fun nativeSetLiveMicroLife(handle: Long, enabled: Boolean)
     private external fun nativeSetInspectionModes(handle: Long, showSkeleton: Boolean, flatShading: Boolean)
     private external fun nativeGetCapabilities(handle: Long): IntArray
     private external fun nativeSetAnimationClip(handle: Long, clipId: Int, speed: Float, loop: Boolean)

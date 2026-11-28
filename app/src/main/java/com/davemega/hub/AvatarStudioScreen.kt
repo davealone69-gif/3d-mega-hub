@@ -86,6 +86,9 @@ fun AvatarStudioScreen(
     var avatarForgeSurfaceView by remember { mutableStateOf<AvatarForgeSurfaceView?>(null) }
     var selectedCameraPreset by remember(avatarUri) { mutableStateOf(CameraPreset.FULL_BODY) }
     var selectedLightingPreset by remember(avatarUri) { mutableStateOf(LightingPreset.STUDIO) }
+    var lightRotationDeg by remember(avatarUri) { mutableStateOf(0f) }
+    var liveMicroLife by remember(avatarUri) { mutableStateOf(true) }
+    var snapshotStatus by remember(avatarUri) { mutableStateOf("") }
     var autoTurntable by remember(avatarUri) { mutableStateOf(false) }
     var showSkeleton by remember(avatarUri) { mutableStateOf(false) }
     var flatShading by remember(avatarUri) { mutableStateOf(false) }
@@ -294,11 +297,34 @@ fun AvatarStudioScreen(
                             )
                         }
                     }
+                    Text(
+                        "Key light angle: ${lightRotationDeg.roundToInt()}°",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Slider(
+                        value = lightRotationDeg,
+                        onValueChange = { deg ->
+                            lightRotationDeg = deg
+                            avatarForgeSurfaceView?.setLightRotationDeg(deg)
+                        },
+                        valueRange = 0f..360f
+                    )
                     Text("Inspect", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        if (liveRigActive) {
+                            FilterChip(
+                                selected = liveMicroLife,
+                                onClick = {
+                                    liveMicroLife = !liveMicroLife
+                                    avatarForgeSurfaceView?.setLiveMicroLife(liveMicroLife)
+                                },
+                                label = { Text("Alive") }
+                            )
+                        }
                         FilterChip(
                             selected = autoTurntable,
                             onClick = {
@@ -322,6 +348,26 @@ fun AvatarStudioScreen(
                                 avatarForgeSurfaceView?.setFlatShading(flatShading)
                             },
                             label = { Text("Clay") }
+                        )
+                        FilterChip(
+                            selected = false,
+                            onClick = {
+                                snapshotStatus = "Capturing HD studio snapshot…"
+                                avatarForgeSurfaceView?.captureStudioSnapshot { result ->
+                                    snapshotStatus = result.fold(
+                                        onSuccess = { file -> "HD snapshot saved: ${file.name}" },
+                                        onFailure = { err -> "Snapshot failed: ${err.message ?: "unknown error"}" }
+                                    )
+                                }
+                            },
+                            label = { Text("HD Photo") }
+                        )
+                    }
+                    if (snapshotStatus.isNotBlank()) {
+                        Text(
+                            snapshotStatus,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
                     if (liveJointCount > 0) {
