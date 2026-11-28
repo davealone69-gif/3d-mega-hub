@@ -14,9 +14,14 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import com.davemega.hub.avatarforge.AvatarForgeRendererRuntime
+import com.davemega.hub.avatarforge.AvatarForgeSurfaceView
+import com.davemega.hub.avatarforge.RendererTelemetry
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -24,6 +29,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import org.junit.After
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,6 +37,30 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AvatarForgeRendererSmokeTest {
+    /**
+     * Every test hands the next one an idle GPU. A viewport left open keeps drawing; with a
+     * million-triangle avatar on a software-rendered emulator that is several seconds of GPU time
+     * per frame, which starved the next test's window until Android ended the run with an
+     * input-dispatch timeout (keyDispatchingTimedOut).
+     */
+    @After
+    fun closeTheAppAndWaitForTheRendererToBeReleased() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+            Stage.values().filter { it != Stage.DESTROYED }.forEach { stage ->
+                monitor.getActivitiesInStage(stage).forEach { it.finish() }
+            }
+        }
+        val deadline = SystemClock.elapsedRealtime() + 120_000L
+        var counters = AvatarForgeRendererRuntime.sessionCounters()
+        while (counters.live != 0L && SystemClock.elapsedRealtime() < deadline) {
+            SystemClock.sleep(250L)
+            counters = AvatarForgeRendererRuntime.sessionCounters()
+        }
+        android.util.Log.i("AvatarForge", "TEST_CLEANUP_EVIDENCE created=${counters.created} destroyed=${counters.destroyed} live=${counters.live}")
+    }
+
     @Test
     fun importedBundledGlbUsesAvatarForgeGlesAndProducesVisibleGeometry() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -50,8 +80,25 @@ class AvatarForgeRendererSmokeTest {
         val directory = File(context.filesDir, "avatars")
         assertTrue("Could not create app-private avatar test directory", directory.isDirectory || directory.mkdirs())
         val glb = File(directory, "avatarforge-webp-extension-smoke.glb")
-        writeRequiredWebpFixture(glb)
+        writeTexturedTriangleFixture(glb, webp = true)
         assertTrue("Generated WebP GLB fixture is empty", glb.length() > 0L)
+        verifyImportedGlbThroughTheApp(glb)
+    }
+
+    /**
+     * A plain JPEG base-colour texture, with no extension: what most downloaded models carry (all
+     * six GLB files of the owner's second reference folder do). The engine has its own PNG decoder
+     * only; JPEG goes through the Android platform decoder, like WebP. Until 2026-11-15 no test
+     * showed that a JPEG texture reaches the screen.
+     */
+    @Test
+    fun jpegTextureIsDecodedAndRenderedByAvatarForge() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.filesDir, "avatars")
+        assertTrue("Could not create app-private avatar test directory", directory.isDirectory || directory.mkdirs())
+        val glb = File(directory, "avatarforge-jpeg-texture-smoke.glb")
+        writeTexturedTriangleFixture(glb, webp = false)
+        assertTrue("Generated JPEG GLB fixture is empty", glb.length() > 0L)
         verifyImportedGlbThroughTheApp(glb)
     }
 
@@ -127,22 +174,54 @@ class AvatarForgeRendererSmokeTest {
             screenshot.isFile && screenshot.length() > 0L)
     }
 
-    private fun writeRequiredWebpFixture(file: File) {
+    /**
+     * One magenta-textured triangle. With [webp] the texture is WebP behind a REQUIRED
+     * EXT_texture_webp; without it the texture is a plain JPEG and the file uses no extension.
+     */
+    private fun writeTexturedTriangleFixture(file: File, webp: Boolean) {
+        val formatName = if (webp) "WebP" else "JPEG"
         val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
         val webpBytes = try {
             bitmap.eraseColor(Color.MAGENTA)
             ByteArrayOutputStream().use { output ->
                 assertTrue(
-                    "Android platform could not encode the WebP fixture",
-                    bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, 100, output)
+                    "Android platform could not encode the $formatName fixture",
+                    bitmap.compress(
+                        if (webp) Bitmap.CompressFormat.WEBP_LOSSY else Bitmap.CompressFormat.JPEG,
+                        100,
+                        output
+                    )
                 )
                 output.toByteArray()
             }
         } finally {
             bitmap.recycle()
         }
-        assertTrue("WebP fixture encoder returned invalid bytes", webpBytes.size >= 12 &&
-            webpBytes[0] == 'R'.code.toByte() && webpBytes[8] == 'W'.code.toByte())
+        if (webp) {
+            assertTrue("WebP fixture encoder returned invalid bytes", webpBytes.size >= 12 &&
+                webpBytes[0] == 'R'.code.toByte() && webpBytes[8] == 'W'.code.toByte())
+        } else {
+            assertTrue("JPEG fixture encoder returned invalid bytes", webpBytes.size >= 4 &&
+                webpBytes[0] == 0xFF.toByte() && webpBytes[1] == 0xD8.toByte())
+        }
+        // The JPEG fixture names a foreign exporter, as a downloaded model does, so the app's
+        // routing has to decide by content that a one-texture opaque model stays on this renderer.
+        val generatorJson = if (webp) {
+            "AvatarForge Android WebP smoke fixture"
+        } else {
+            "pygltflib test fixture (plain JPEG texture)"
+        }
+        val extensionJson = if (webp) {
+            "\"extensionsUsed\":[\"EXT_texture_webp\"],\"extensionsRequired\":[\"EXT_texture_webp\"],"
+        } else {
+            ""
+        }
+        val textureJson = if (webp) {
+            "{\"extensions\":{\"EXT_texture_webp\":{\"source\":0}}}"
+        } else {
+            "{\"source\":0}"
+        }
+        val mimeType = if (webp) "image/webp" else "image/jpeg"
 
         // POSITION(36) + NORMAL(36) + TEXCOORD_0(24) + indices(6) + 2-byte alignment.
         val imageOffset = 104
@@ -168,9 +247,8 @@ class AvatarForgeRendererSmokeTest {
 
         val json = """
             {
-              "asset":{"version":"2.0","generator":"AvatarForge Android WebP smoke fixture"},
-              "extensionsUsed":["EXT_texture_webp"],
-              "extensionsRequired":["EXT_texture_webp"],
+              "asset":{"version":"2.0","generator":"$generatorJson"},
+              $extensionJson
               "scene":0,
               "scenes":[{"nodes":[0]}],
               "nodes":[{"mesh":0}],
@@ -185,8 +263,8 @@ class AvatarForgeRendererSmokeTest {
                 "roughnessFactor":1,
                 "baseColorTexture":{"index":0}
               }}],
-              "textures":[{"extensions":{"EXT_texture_webp":{"source":0}}}],
-              "images":[{"mimeType":"image/webp","bufferView":4}],
+              "textures":[$textureJson],
+              "images":[{"mimeType":"$mimeType","bufferView":4}],
               "accessors":[
                 {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[-0.82,-0.82,0],"max":[0.82,0.82,0]},
                 {"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"},
@@ -362,13 +440,13 @@ class AvatarForgeRendererSmokeTest {
         }
         assertTrue("Captured renderer screenshot is missing", output.isFile && output.length() > 0L)
 
-        if (glb.name.contains("webp-extension")) {
+        if (glb.name.contains("webp-extension") || glb.name.contains("jpeg-texture")) {
             val texturedCenter = capturedImage.getPixel(crop.centerX(), crop.centerY())
             val red = (texturedCenter shr 16) and 0xff
             val green = (texturedCenter shr 8) and 0xff
             val blue = texturedCenter and 0xff
             assertTrue(
-                "Required WebP texture was not visible in PixelCopy SurfaceView buffer at the triangle centre: RGB=($red,$green,$blue)",
+                "The fixture's magenta WebP or JPEG texture was not visible in PixelCopy SurfaceView buffer at the triangle centre: RGB=($red,$green,$blue)",
                 red > green + 20 && blue > green + 20 && red > 40 && blue > 40
             )
         }
@@ -434,5 +512,138 @@ class AvatarForgeRendererSmokeTest {
             coverage >= 0.02f && centralChangedSamples >= 80 &&
                 maxChangedX - minChangedX >= 14 && maxChangedY - minChangedY >= 14
         )
+
+        /* ---- Camera controls: real injected touch input must move the native camera, the
+           renderer must keep presenting valid frames, and the picture must actually change. ---- */
+        val beforeDrag = waitForTelemetry("a measured snapshot of ${glb.name} before the camera drag", 30_000L) {
+            it.assetName == glb.name && it.framesPresented >= 3L
+        }
+        val location = IntArray(2)
+        instrumentation.runOnMainSync { surfaceView.getLocationOnScreen(location) }
+        val centreX = location[0] + surfaceView.width / 2
+        val centreY = location[1] + surfaceView.height / 2
+        val halfDrag = surfaceView.width / 8
+        repeat(3) {
+            device.swipe(centreX - halfDrag, centreY, centreX + halfDrag, centreY, 12)
+            SystemClock.sleep(300L)
+        }
+        val afterDrag = waitForTelemetry("the camera yaw to change after three horizontal drags on ${glb.name}", 45_000L) {
+            it.assetName == glb.name &&
+                kotlin.math.abs(it.cameraYawDeg - beforeDrag.cameraYawDeg) > 5.0 &&
+                it.framesPresented > beforeDrag.framesPresented
+        }
+        assertTrue("Renderer raised GL errors while orbiting: ${afterDrag.toJson()}", afterDrag.glErrorFrames == 0)
+        assertTrue("Renderer had EGL swap failures while orbiting: ${afterDrag.toJson()}", afterDrag.eglErrorFrames == 0)
+        assertTrue("Renderer had failed draw calls while orbiting: ${afterDrag.toJson()}", afterDrag.failedDrawCalls == 0)
+        assertTrue("Renderer stalled while orbiting: ${afterDrag.toJson()}", afterDrag.stallEvents == 0)
+        assertTrue("Renderer reported no draw calls after orbiting: ${afterDrag.toJson()}", afterDrag.drawCalls > 0)
+
+        // Let at least two more frames present with the moved camera, then compare the picture.
+        waitForTelemetry("two further presented frames after the camera drag", 45_000L) {
+            it.assetName == glb.name && it.framesPresented >= afterDrag.framesPresented + 2L
+        }
+        val orbited = captureSurface(surfaceView)
+        var differingSamples = 0
+        for (gy in 0 until gridHeight) {
+            val y = ((gy + 0.5f) * orbited.height / gridHeight).toInt().coerceIn(0, orbited.height - 1)
+            val referenceY = crop.top + ((gy + 0.5f) * crop.height() / gridHeight).toInt()
+            for (gx in 0 until gridWidth) {
+                val x = ((gx + 0.5f) * orbited.width / gridWidth).toInt().coerceIn(0, orbited.width - 1)
+                val referenceX = crop.left + ((gx + 0.5f) * crop.width() / gridWidth).toInt()
+                val first = capturedImage.getPixel(referenceX, referenceY)
+                val second = orbited.getPixel(x, y)
+                val channelDelta = maxOf(
+                    kotlin.math.abs(((first shr 16) and 0xff) - ((second shr 16) and 0xff)),
+                    kotlin.math.abs(((first shr 8) and 0xff) - ((second shr 8) and 0xff)),
+                    kotlin.math.abs((first and 0xff) - (second and 0xff))
+                )
+                if (channelDelta > 24) differingSamples++
+            }
+        }
+        FileOutputStream(File(externalDirectory, "avatarforge-renderer-smoke-orbited.png")).use { stream ->
+            orbited.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        }
+        val cameraEvidence = org.json.JSONObject()
+            .put("asset", glb.name)
+            .put("yawBeforeDeg", beforeDrag.cameraYawDeg)
+            .put("yawAfterDeg", afterDrag.cameraYawDeg)
+            .put("framesPresentedBefore", beforeDrag.framesPresented)
+            .put("framesPresentedAfter", afterDrag.framesPresented)
+            .put("differingGridSamples", differingSamples)
+            .put("gridSamples", gridWidth * gridHeight)
+            .put("telemetryAfterDrag", afterDrag.toJson())
+        android.util.Log.i("AvatarForge", "CAMERA_EVIDENCE $cameraEvidence")
+        assertTrue(
+            "Orbiting the camera did not change the rendered picture: $cameraEvidence",
+            differingSamples >= (gridWidth * gridHeight) / 100
+        )
+
+        /* ---- Native lifetime: closing the screen must release the renderer, engine and window. ---- */
+        instrumentation.runOnMainSync { activity.finish() }
+        val releaseDeadline = SystemClock.elapsedRealtime() + 60_000L
+        var counters = AvatarForgeRendererRuntime.sessionCounters()
+        while (counters.live != 0L && SystemClock.elapsedRealtime() < releaseDeadline) {
+            SystemClock.sleep(250L)
+            counters = AvatarForgeRendererRuntime.sessionCounters()
+        }
+        android.util.Log.i("AvatarForge", "SESSION_EVIDENCE asset=${glb.name} created=${counters.created} destroyed=${counters.destroyed} live=${counters.live}")
+        assertTrue(
+            "Native AvatarForge render sessions were not released after the Activity finished: $counters",
+            counters.live == 0L && counters.created > 0L
+        )
+
+        /* The worker publishes its last measured snapshot just after the native session is gone.
+           A frame Android cut off while closing is reported separately; anything else that failed
+           during the whole session is a renderer error and fails the test. */
+        SystemClock.sleep(500L)
+        val finalTelemetry = AvatarForgeSurfaceView.latestTelemetry
+        android.util.Log.i("AvatarForge", "FINAL_TELEMETRY ${finalTelemetry?.toJson()}")
+        assertTrue(
+            "The finished ${glb.name} session reported renderer errors or a stall: ${finalTelemetry?.toJson()}",
+            finalTelemetry != null && finalTelemetry.assetName == glb.name &&
+                finalTelemetry.errorCount == 0 && finalTelemetry.stallEvents == 0
+        )
+    }
+
+    private fun waitForTelemetry(
+        what: String,
+        timeoutMs: Long,
+        accept: (RendererTelemetry) -> Boolean
+    ): RendererTelemetry {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        var last: RendererTelemetry? = AvatarForgeSurfaceView.latestTelemetry
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val current = AvatarForgeSurfaceView.latestTelemetry
+            if (current != null) {
+                last = current
+                if (accept(current)) return current
+            }
+            SystemClock.sleep(250L)
+        }
+        throw AssertionError("Timed out after $timeoutMs ms waiting for $what. Last measured telemetry: ${last?.toJson()}")
+    }
+
+    /** PixelCopy of the SurfaceView's own buffer, retrying only the documented transient results. */
+    private fun captureSurface(surfaceView: SurfaceView): Bitmap {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        var lastResult = PixelCopy.ERROR_UNKNOWN
+        for (delayMs in longArrayOf(0L, 250L, 500L, 1_000L, 2_000L)) {
+            if (delayMs > 0L) SystemClock.sleep(delayMs)
+            val candidate = Bitmap.createBitmap(surfaceView.width, surfaceView.height, Bitmap.Config.ARGB_8888)
+            val latch = CountDownLatch(1)
+            var result = PixelCopy.ERROR_UNKNOWN
+            instrumentation.runOnMainSync {
+                PixelCopy.request(surfaceView, candidate, { copyResult ->
+                    result = copyResult
+                    latch.countDown()
+                }, Handler(Looper.getMainLooper()))
+            }
+            if (latch.await(5, TimeUnit.SECONDS)) {
+                lastResult = result
+                if (result == PixelCopy.SUCCESS) return candidate
+            }
+            candidate.recycle()
+        }
+        throw AssertionError("PixelCopy could not capture the AvatarForge SurfaceView after the camera drag; lastResult=$lastResult")
     }
 }

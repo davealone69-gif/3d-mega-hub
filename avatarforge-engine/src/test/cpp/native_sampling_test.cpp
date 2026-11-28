@@ -65,7 +65,17 @@ int main() {
     require(measured.sex == AF_SEX_FEMALE, "female prompt was not parsed");
     require(measured.build == AF_BUILD_ATHLETIC, "athletic build was not parsed");
     require(measured.hair_style == AF_HAIR_MEDIUM, "medium hair was not parsed");
-    require(measured.outfit == AF_OUTFIT_JEANS_JACKET, "jeans outfit was not parsed");
+    // "t-shirt and jeans" is the T-shirt outfit, which the engine builds with jeans as its lower
+    // garment. It used to parse as the jeans-and-JACKET outfit, so the avatar came out in a jacket
+    // nobody asked for.
+    require(measured.outfit == AF_OUTFIT_TSHIRT, "\"t-shirt and jeans\" must stay the T-shirt outfit");
+    {
+        af_spec jacket{};
+        af_spec_init(&jacket);
+        af::PromptParse jacketParse;
+        af::parsePrompt("Adult man in a denim jacket and jeans", &jacket, &jacketParse);
+        require(jacket.outfit == AF_OUTFIT_JEANS_JACKET, "a jeans jacket prompt was not parsed as the jacket outfit");
+    }
     require(std::fabs(measured.height_m - 1.75f) < 0.001f,
             "explicit 175 cm height was overwritten by the word tall");
 
@@ -128,10 +138,27 @@ int main() {
             std::fabs(leftEye.y - rightEye.y) < 1e-5f &&
             std::fabs(leftEye.z - rightEye.z) < 1e-5f,
             "eye anchors are not correctly mirrored across the facial midline");
-    require(qualityField.classifyRegion(leftEye) == af::REGION_EYE_L,
-            "left eyeball centre is missing or assigned to the wrong material region");
-    require(qualityField.classifyRegion(rightEye) == af::REGION_EYE_R,
-            "right eyeball centre is missing or assigned to the wrong material region");
+    // The material of an eye is asked where it can be seen: on the surface, straight in front of
+    // the eye's centre. (This used to ask at the centre of the globe, which is inside solid
+    // material; the classifier now answers "eye" only on the visible surface between the lids,
+    // because that is the only place the answer is used.)
+    const auto visibleEyePoint = [&](const af::Vec3& centre) {
+        af::Vec3 p(centre.x, centre.y, centre.z - 0.040f);
+        for (int i = 0; i < 4000; ++i) {
+            const float d = qualityField.skinUnion(p);
+            if (d < 0.00002f) break;
+            p.z += (d > 0.00002f ? d * 0.5f : 0.00001f);
+        }
+        return p;
+    };
+    const af::Vec3 leftEyeSurface = visibleEyePoint(leftEye);
+    const af::Vec3 rightEyeSurface = visibleEyePoint(rightEye);
+    require(leftEyeSurface.z < leftEye.z && leftEyeSurface.z > leftEye.z - 0.030f,
+            "no surface was found in front of the left eye");
+    require(qualityField.classifyRegion(leftEyeSurface) == af::REGION_EYE_L,
+            "the visible surface of the left eye is missing or assigned to the wrong material region");
+    require(qualityField.classifyRegion(rightEyeSurface) == af::REGION_EYE_R,
+            "the visible surface of the right eye is missing or assigned to the wrong material region");
 
     // Finger and toe centre-lines must remain inside their generated hand/foot SDFs.
     // This catches disconnected or collapsed extremity geometry before rendering.
@@ -281,19 +308,23 @@ int main() {
     longHair.latticeCell = 0.008f;
     hairField.setApparel(longHair);
     const float headHeight = qualityMetrics.y.crownY - qualityMetrics.y.chinY;
-    const float hairTop = qualityMetrics.y.crownY - headHeight * 0.05f;
-    const float hairBottom = qualityMetrics.y.crownY - headHeight * 2.6f;
-    const float hairMidY = (hairTop + hairBottom) * 0.5f;
-    const float hairBackZ = qualityMetrics.head.centreZ + qualityMetrics.head.rz * 0.625f;
-    const float hairDepth = std::max(qualityMetrics.head.rz * 0.34f, 0.022f);
-    const af::Vec3 hairCore(0.0f, hairMidY, hairBackZ + hairDepth);
-    require(hairField.hairPublic(hairCore) < -0.015f,
+    // Long hair hangs down the back. Somewhere behind the neck, between the nape and the shoulder
+    // blades, there must be hair with real thickness: at least 8 mm of it (4 mm deep at its
+    // middle). The probe searches for it rather than assuming where it is - this check used to
+    // sample one fixed point inside the 60 mm slab the hair was once made of, which was wider than
+    // the head and has been replaced by hair that follows the head and the back.
+    const float hairMidY = qualityMetrics.y.crownY - headHeight * 1.30f;
+    float deepestHair = 1.0f;
+    for (float z = qualityMetrics.head.centreZ; z < qualityMetrics.head.centreZ + 0.30f; z += 0.002f) {
+        deepestHair = std::min(deepestHair, hairField.hairPublic(af::Vec3(0.0f, hairMidY, z)));
+    }
+    require(deepestHair < -0.004f,
             "long hairstyle hanging section is not a solid 3D volume");
 
     // Every exposed procedural hairstyle must produce finite, non-empty geometry in
     // the same anatomical sampling envelope. This protects the generator while the
     // hairline, braid and coil fields evolve independently.
-    for (int style = 1; style <= 9; ++style) {
+    for (int style = 1; style <= 13; ++style) {
         af::BodyField styleField(qualityMetrics);
         af::ApparelOptions styleOptions;
         styleOptions.hair = style;
@@ -321,6 +352,189 @@ int main() {
         require(interiorSamples > 0,
                 "a selectable hairstyle produced no interior samples in the head envelope");
     }
+
+    // The shape controls appended to af_spec: bust, glute, the face offsets, and the curvy build.
+    {
+        af_spec base{};
+        af_spec_init(&base);
+        require(base.glute == 0.0f && base.eye_tone[0] == 0.0f && base.eye_tone[1] == 0.0f && base.eye_tone[2] == 0.0f,
+                "af_spec_init does not leave the appended fields at their default");
+        for (int i = 0; i < AF_FACE_PARAM_COUNT; ++i) {
+            require(base.face[i] == 0.0f, "af_spec_init does not leave the face offsets at zero");
+        }
+        base.sex = AF_SEX_FEMALE;
+        base.height_m = 1.70f;
+
+        // The body's surface along a line through the body, found by walking in from outside.
+        const auto surfaceZ = [](const af::BodyField& field, float x, float y, float fromZ, float step) {
+            float z = fromZ;
+            for (int i = 0; i < 700; ++i) {
+                if (field.body(af::Vec3(x, y, z)) < 0.0f) break;
+                z += step;
+            }
+            return z;
+        };
+
+        // Bust: a larger value stands further forward (forward is -Z), over the whole range.
+        float previousFront = 1.0f, flatFront = 0.0f, fullFront = 0.0f;
+        const float bustValues[5] = {0.04f, 0.24f, 0.45f, 0.70f, 1.00f};
+        for (int i = 0; i < 5; ++i) {
+            af_spec spec = base;
+            spec.bust = bustValues[i];
+            const af::BodyMetrics m = af::Anatomy::solve(spec);
+            require(std::fabs(m.bust - bustValues[i]) < 1e-6f, "af_spec.bust did not reach the anatomy");
+            const af::BodyField field(m);
+            float front = 1.0f;
+            // The apex moves down and outwards with size, so take the furthest-forward point of a patch.
+            for (int iy = -6; iy <= 2; ++iy) {
+                for (int ix = 4; ix <= 9; ++ix) {
+                    front = std::min(front, surfaceZ(field, m.chest.rx * 0.08f * static_cast<float>(ix),
+                                                     m.y.bustY + 0.010f * static_cast<float>(iy), -0.45f, 0.001f));
+                }
+            }
+            require(front < previousFront - 0.004f, "a larger af_spec.bust did not stand further forward");
+            previousFront = front;
+            if (i == 0) flatFront = front;
+            if (i == 4) fullFront = front;
+        }
+        require(flatFront - fullFront > 0.045f, "the bust range from flat to full is under 45 mm");
+
+        // Glute: a larger value stands further back, and the default lies between the two ends.
+        float previousBack = -1.0f, smallBack = 0.0f, largeBack = 0.0f;
+        const float gluteValues[5] = {-0.90f, -0.45f, 0.0f, 0.50f, 1.00f};
+        for (int i = 0; i < 5; ++i) {
+            af_spec spec = base;
+            spec.glute = gluteValues[i];
+            const af::BodyMetrics m = af::Anatomy::solve(spec);
+            require(std::fabs(m.glute - gluteValues[i]) < 1e-6f, "af_spec.glute did not reach the anatomy");
+            const af::BodyField field(m);
+            float back = -1.0f;
+            for (int iy = -5; iy <= 3; ++iy) {
+                back = std::max(back, surfaceZ(field, m.hip.rx * 0.45f,
+                                               m.y.hipY - m.hip.rz * 0.36f + 0.012f * static_cast<float>(iy), 0.45f, -0.001f));
+            }
+            require(back > previousBack + 0.004f, "a larger af_spec.glute did not stand further back");
+            previousBack = back;
+            if (i == 0) smallBack = back;
+            if (i == 4) largeBack = back;
+        }
+        require(largeBack - smallBack > 0.030f, "the glute range is under 30 mm");
+
+        // Both are for adults: under 18 the engine uses its defaults whatever was asked for.
+        af_spec young = base;
+        young.age_years = 17.0f;
+        young.bust = 1.0f;
+        young.glute = 1.0f;
+        const af::BodyMetrics youngMetrics = af::Anatomy::solve(young);
+        require(std::fabs(youngMetrics.bust - 0.40f) < 1e-6f && youngMetrics.glute == 0.0f,
+                "bust or glute was honoured for an age below 18");
+        af_spec adult = young;
+        adult.age_years = 18.0f;
+        const af::BodyMetrics adultMetrics = af::Anatomy::solve(adult);
+        require(adultMetrics.bust > 0.99f && adultMetrics.glute > 0.99f,
+                "bust or glute was not honoured for an adult");
+
+        // A measured bust girth still decides when the caller gives one.
+        af_spec measuredBust = base;
+        measuredBust.bust = 0.04f;
+        measuredBust.chest_cm = 104.0f;
+        measuredBust.underbust_cm = 76.0f;
+        require(af::Anatomy::solve(measuredBust).bust > 0.30f,
+                "a measured bust girth no longer decides the bust");
+
+        // Face offsets: clamped, never non-finite, and each end of each one still gives a head.
+        af_spec wild = base;
+        wild.face[AF_FACE_NOSE_WIDTH] = 9.0f;
+        wild.face[AF_FACE_LIP_FULLNESS] = -9.0f;
+        wild.face[AF_FACE_JAW_WIDTH] = std::nanf("");
+        const af::BodyMetrics wildMetrics = af::Anatomy::solve(wild);
+        require(wildMetrics.face[AF_FACE_NOSE_WIDTH] == 1.0f && wildMetrics.face[AF_FACE_LIP_FULLNESS] == -1.0f &&
+                wildMetrics.face[AF_FACE_JAW_WIDTH] == 0.0f,
+                "face offsets are not clamped to -1..+1 with non-finite values dropped");
+        for (int sign = -1; sign <= 1; sign += 2) {
+            af_spec spec = base;
+            for (int i = 0; i < AF_FACE_PARAM_COUNT; ++i) spec.face[i] = static_cast<float>(sign);
+            const af::BodyMetrics m = af::Anatomy::solve(spec);
+            const af::BodyField field(m);
+            int inside = 0;
+            for (int iy = 0; iy <= 14; ++iy) {
+                for (int ix = -7; ix <= 7; ++ix) {
+                    for (int iz = -8; iz <= 4; ++iz) {
+                        const af::Vec3 q(m.head.rx * 0.16f * static_cast<float>(ix),
+                                         m.y.chinY + (m.y.crownY - m.y.chinY) * static_cast<float>(iy) / 14.0f,
+                                         m.head.rz * 0.16f * static_cast<float>(iz));
+                        const float d = field.head(q);
+                        require(std::isfinite(d), "a face offset at its limit produced a non-finite head field");
+                        if (d < 0.0f) ++inside;
+                    }
+                }
+            }
+            require(inside > 200, "a face offset at its limit left almost no head");
+        }
+        // The widest nose is wider than the narrowest, measured at the wings.
+        {
+            float halfWidth[2] = {0.0f, 0.0f};
+            for (int k = 0; k < 2; ++k) {
+                af_spec spec = base;
+                spec.face[AF_FACE_NOSE_WIDTH] = k == 0 ? -1.0f : 1.0f;
+                const af::BodyMetrics m = af::Anatomy::solve(spec);
+                const af::BodyField field(m);
+                const float headH = m.y.crownY - m.y.chinY;
+                const float y = m.y.eyeY - headH * 0.197f;          // the level of the wings
+                const float z = -m.head.rz * 0.98f * 1.10f;         // a plane through them
+                float x = 0.0f;
+                while (x < 0.05f && field.head(af::Vec3(x, y, z)) < 0.0f) x += 0.0005f;
+                halfWidth[k] = x;
+            }
+            require(halfWidth[1] > halfWidth[0] + 0.0015f, "the nose-width offset does not change the width of the nose");
+        }
+
+        // Curvy: a smaller waist-to-hip ratio than the average build, on the same frame.
+        af_spec curvy = base;
+        curvy.build = AF_BUILD_CURVY;
+        const af::BodyMetrics curvyMetrics = af::Anatomy::solve(curvy);
+        const af::BodyMetrics averageMetrics = af::Anatomy::solve(base);
+        require(curvyMetrics.waist.rx / curvyMetrics.hip.rx < averageMetrics.waist.rx / averageMetrics.hip.rx - 0.05f,
+                "the curvy build does not have a smaller waist-to-hip ratio than the average build");
+
+        // Swimwear: cloth over the bust and over the pelvis, none at the waist; trunks only on a male body.
+        {
+            af_spec swim = base;
+            swim.outfit = AF_OUTFIT_SWIMWEAR;
+            const af::BodyMetrics m = af::Anatomy::solve(swim);
+            af::BodyField field(m);
+            af::ApparelOptions options;
+            options.outfit = AF_OUTFIT_SWIMWEAR;
+            options.latticeCell = 0.008f;
+            field.setApparel(options);
+            // A point two millimetres outside the skin, in front of the body at a given height.
+            const auto outsideFront = [&](float x, float y) {
+                return af::Vec3(x, y, surfaceZ(field, x, y, -0.45f, 0.001f) - 0.002f);
+            };
+            const af::Vec3 onBust = outsideFront(m.chest.rx * 0.45f, m.y.bustY);
+            const af::Vec3 onWaist = outsideFront(0.0f, m.y.waistY);
+            const af::Vec3 onPelvis = outsideFront(0.0f, m.y.crotchY + 0.035f * m.height);
+            require(field.clothUpperPublic(onBust) < 0.0f, "swimwear does not cover the bust");
+            require(field.clothUpperPublic(onWaist) > 0.0f && field.clothLowerPublic(onWaist) > 0.0f,
+                    "swimwear covers the waist; it is a two-piece");
+            require(field.clothLowerPublic(onPelvis) < 0.0f, "swimwear does not cover the pelvis");
+
+            af_spec trunks = swim;
+            trunks.sex = AF_SEX_MALE;
+            const af::BodyMetrics mm = af::Anatomy::solve(trunks);
+            af::BodyField maleField(mm);
+            maleField.setApparel(options);
+            require(maleField.clothUpperPublic(af::Vec3(mm.chest.rx * 0.45f, mm.y.bustY, -mm.chest.rz)) > 1e6f,
+                    "male swimwear has a top");
+            const float mx = mm.legSeparation;
+            const float my = mm.y.crotchY - mm.thighLen * 0.10f;
+            float mz = -0.45f;
+            for (int i = 0; i < 700 && maleField.body(af::Vec3(mx, my, mz)) >= 0.0f; ++i) mz += 0.001f;
+            require(maleField.clothLowerPublic(af::Vec3(mx, my, mz - 0.002f)) < 0.0f,
+                    "male swimwear does not cover the top of the thigh");
+        }
+    }
+    std::puts("PASS: bust, glute, face offsets and the curvy build change the body as specified; bust and glute are adult-only; swimwear covers what it should");
 
     std::puts("PASS: body refinement increases generated avatar mesh density with finite vertices");
     std::puts("PASS: long hairstyle has measurable volumetric depth behind the skull");

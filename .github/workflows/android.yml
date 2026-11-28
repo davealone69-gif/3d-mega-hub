@@ -27,6 +27,17 @@ jobs:
       - name: Run native regression tests
         run: ctest --test-dir build/native-tests --output-on-failure
 
+  model-tools:
+    name: Model tools self-test (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Convert a generated showcase file with figures_to_clips.py and check the result
+        run: |
+          python3 -m venv "$RUNNER_TEMP/model-tools-venv"
+          "$RUNNER_TEMP/model-tools-venv/bin/pip" install --quiet numpy
+          "$RUNNER_TEMP/model-tools-venv/bin/python" tools/glb_figures/test_figures_to_clips.py
+
   unit-tests:
     name: Unit tests
     runs-on: ubuntu-latest
@@ -101,6 +112,10 @@ jobs:
     name: AvatarForge GLES GLB render smoke (instrumented)
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    # checks: write is used by one step only, to attach screenshot copies to the commit.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-java@v6
@@ -127,6 +142,24 @@ jobs:
           emulator-boot-timeout: 900
           disable-animations: true
           script: bash .github/scripts/avatarforge-render-smoke.sh
+      - name: Store small screenshot copies as check runs (evidence only, readable through the API)
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # Evidence only: nothing here may fail the job.
+          python3 -m venv "$RUNNER_TEMP/screenshot-venv" || true
+          "$RUNNER_TEMP/screenshot-venv/bin/pip" install --quiet pillow || true
+          "$RUNNER_TEMP/screenshot-venv/bin/python" .github/scripts/publish_screenshot_check.py \
+            "generated avatar (GLES renderer)" \
+            avatarforge-render-smoke-evidence/generated_avatar_diagnostic.png \
+            "last imported GLB (GLES renderer)" \
+            avatarforge-render-smoke-evidence/imported_glb_diagnostic.png \
+            "rigged test figure, clip Wave at 0 s and at 1 s (glTF viewer)" \
+            avatarforge-render-smoke-evidence/gltf_viewer_clip_poses.png \
+            "Avatar Studio with the rigged test figure, clip strip and Motion section" \
+            avatarforge-render-smoke-evidence/gltf_viewer_clip_strip_screen.png || true
       - name: Upload AvatarForge renderer evidence
         if: always()
         uses: actions/upload-artifact@v7

@@ -50,6 +50,12 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Package exactly the ABIs the AvatarForge native engine is built for. Filament's AARs
+        // also ship armeabi-v7a and x86; without this filter those ABIs were packaged with the
+        // Filament libraries only, so a 32-bit install would start and then fail in
+        // System.loadLibrary("mega_hub_avatarforge"). arm64-v8a is the phone target; x86_64 is
+        // kept for the CI emulator. Must stay in step with :avatarforge-engine.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     signingConfigs {
@@ -77,6 +83,15 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
+
+    // The Android Gradle plugin stores an encrypted copy of the dependency list in the APK Signing
+    // Block for Google Play. It is encrypted with a fresh random key on every build, so two builds
+    // of the same commit can never be byte-identical. Play reads the list from the bundle, so keep
+    // it in the AAB and leave it out of the APK.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = true
+    }
 }
 
 tasks.configureEach {
@@ -94,10 +109,14 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
+    // Filament core + gltfio only. filament-utils-android (ModelViewer/Manipulator) is deliberately
+    // not a dependency: nothing in the app uses it, and its JNI library is the one whose missing
+    // System.loadLibrary produced "No implementation found for ... Manipulator.nCreateBuilder".
     implementation(libs.filament.android)
-    implementation(libs.filament.utils.android)
     implementation(libs.filament.gltfio.android)
     implementation(project(":avatarforge-engine"))
+    // Used directly by Avatar Studio (generation job) and by the instrumentation tests.
+    implementation(libs.kotlinx.coroutines.android)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     testImplementation(libs.junit)

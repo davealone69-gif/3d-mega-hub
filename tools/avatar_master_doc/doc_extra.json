@@ -1,0 +1,926 @@
+{
+ "generated": "2026-11-15 10:49 UTC",
+ "matrix": {
+  "hair_1_buzz": {
+   "rc": 0,
+   "secs": 45,
+   "triangles": 1072752,
+   "grade": "ok",
+   "note": "cropped to stubble over the whole scalp, in the hair colour; the shape of the head shows"
+  },
+  "hair_2_short": {
+   "rc": 0,
+   "secs": 42,
+   "triangles": 1079380,
+   "grade": "ok",
+   "note": "short cap, ears clear, clean hairline"
+  },
+  "hair_4_long": {
+   "rc": 0,
+   "secs": 51,
+   "triangles": 1164234,
+   "grade": "ok",
+   "note": "falls past the shoulders and down the back; shallow channels divide the back into locks"
+  },
+  "hair_5_ponytail": {
+   "rc": 0,
+   "secs": 44,
+   "triangles": 1087022,
+   "grade": "ok",
+   "note": "short cap with a thin tail down the back"
+  },
+  "hair_6_bun": {
+   "rc": 0,
+   "secs": 46,
+   "triangles": 1082722,
+   "grade": "ok",
+   "note": "short cap with a bun at the back of the head"
+  },
+  "hair_7_braids": {
+   "rc": 0,
+   "secs": 49,
+   "triangles": 1121014,
+   "grade": "ok",
+   "note": "hair drawn back into two plaits that hang in front of the shoulders to the chest; each plait is a row of beads, which reads as braiding"
+  },
+  "hair_8_afro": {
+   "rc": 0,
+   "secs": 48,
+   "triangles": 1155044,
+   "grade": "ok",
+   "note": "a round mass about twice the width of the head with a fine curl texture and, since the coil field, a slightly uneven outline; the hairline across the forehead is uneven"
+  },
+  "hair_9_mohawk": {
+   "rc": 0,
+   "secs": 43,
+   "triangles": 1078626,
+   "grade": "ok",
+   "note": "a crest along the top with bare sides"
+  },
+  "hair_10_bob": {
+   "rc": 0,
+   "secs": 47,
+   "triangles": 1118752,
+   "grade": "ok",
+   "note": "cut level at the jaw with a square edge, the nape clear"
+  },
+  "hair_11_bangs": {
+   "rc": 0,
+   "secs": 49,
+   "triangles": 1129014,
+   "grade": "ok",
+   "note": "to the shoulders with a level fringe to just above the brows; in three-quarter view the fringe reads as a solid band"
+  },
+  "hair_12_curly": {
+   "rc": 0,
+   "secs": 51,
+   "triangles": 1168424,
+   "grade": "ok",
+   "note": "a full mass to the shoulders with an uneven, coiled outline and a curl texture"
+  },
+  "hair_13_box_braids": {
+   "rc": 0,
+   "secs": 49,
+   "triangles": 1170960,
+   "grade": "ok",
+   "note": "long hair divided all round into ropes about 2 cm wide, each banded light and dark: reads as many braids. The bands are paint, not plaiting, and there is no parting on the scalp"
+  },
+  "outfit_10_swimwear": {
+   "rc": 0,
+   "secs": 39,
+   "triangles": 1075914,
+   "grade": "ok",
+   "note": "a black bandeau across the bust and briefs cut high at the hip; shoulders, waist and legs bare. The edges are drawn by the texture and are slightly ragged close up"
+  },
+  "hair_0_none": {
+   "rc": 0,
+   "secs": 38,
+   "triangles": 1070576,
+   "grade": "ok",
+   "note": "a bare scalp, ears clear; generated for the picture the creator shows"
+  },
+  "outfit_2_dress": {
+   "rc": 0,
+   "secs": 88,
+   "triangles": 1957312,
+   "grade": "ok",
+   "note": "a crimson gown: fitted bodice with cap sleeves and a scoop neck, a skirt that flares from the hips to the floor"
+  },
+  "outfit_3_suit": {
+   "rc": 0,
+   "secs": 53,
+   "triangles": 1217612,
+   "grade": "ok",
+   "note": "a navy jacket open in a V over a white shirt and red tie, front seam, two buttons, shirt cuffs, matching trousers. Lapels are a painted edge, not folded cloth"
+  },
+  "outfit_4_jeans_jacket": {
+   "rc": 0,
+   "secs": 53,
+   "triangles": 1222826,
+   "grade": "ok",
+   "note": "a waist-length denim jacket worn open over a white T-shirt, with tan stitching, a yoke, flap pockets and buttons, and darker jeans"
+  },
+  "outfit_5_armor_plate": {
+   "rc": 0,
+   "secs": 61,
+   "triangles": 1302752,
+   "grade": "ok",
+   "note": "a steel harness over black arming clothes: breastplate, hooped fauld and tassets, pauldrons, arm and leg plates, knee and elbow cops. The plates are rounded and thick"
+  },
+  "outfit_6_armor_leather": {
+   "rc": 0,
+   "secs": 71,
+   "triangles": 1298564,
+   "grade": "ok",
+   "note": "a brown studded jerkin, belt with a brass buckle, a skirt of straps, shoulder caps and strapped bracers over an olive tunic and brown trousers"
+  },
+  "outfit_7_spacesuit": {
+   "rc": 0,
+   "secs": 63,
+   "triangles": 1624658,
+   "grade": "ok",
+   "note": "a white pressure suit with a neck ring, chest control unit, life-support pack, grey gloves, joint bands, red stripes and its own boots. There is no helmet"
+  },
+  "outfit_8_athletic": {
+   "rc": 0,
+   "secs": 46,
+   "triangles": 1124146,
+   "grade": "ok",
+   "note": "short-sleeved top, shorts and trainers; uneven shading behind the knees"
+  },
+  "outfit_9_coat": {
+   "rc": 0,
+   "secs": 63,
+   "triangles": 1373156,
+   "grade": "ok",
+   "note": "a camel coat to the knee, open in a V over a dark layer, three buttons, dark trousers"
+  },
+  "footwear_0_none": {
+   "rc": 0,
+   "secs": 41,
+   "triangles": 1035148,
+   "grade": "ok",
+   "note": "bare feet with five toes and pale nails"
+  },
+  "footwear_1_sneaker": {
+   "rc": 0,
+   "secs": 42,
+   "triangles": 1077568,
+   "grade": "ok",
+   "note": "a navy canvas trainer with a white rubber toe cap, white sole and laces"
+  },
+  "footwear_2_boot": {
+   "rc": 0,
+   "secs": 45,
+   "triangles": 1090762,
+   "grade": "ok",
+   "note": "a brown leather boot to mid-calf with a dark sole and welt"
+  },
+  "footwear_3_sabaton": {
+   "rc": 0,
+   "secs": 36,
+   "triangles": 1092074,
+   "grade": "ok",
+   "note": "steel plates over the foot with a pointed toe, lames across the instep and hoops round the ankle"
+  },
+  "footwear_4_heel": {
+   "rc": 0,
+   "secs": 28,
+   "triangles": 1037330,
+   "grade": "ok",
+   "note": "a black court shoe on a block heel about 6 cm high; the foot is pitched and the toes are flat. The ankle is raised 4.6 cm and the leg shortened by as much, so stature stays as asked"
+  },
+  "hair_3_medium": {
+   "rc": 0,
+   "secs": 42,
+   "triangles": 1148034,
+   "grade": "ok",
+   "note": "falls to the shoulders (the default; figures are from the diagnostic run, which also wrote the GLB)"
+  },
+  "outfit_1_tshirt": {
+   "rc": 0,
+   "secs": 42,
+   "triangles": 1148034,
+   "grade": "ok",
+   "note": "T-shirt and jeans with a clean collar and a stitched waistband"
+  }
+ },
+ "joints": [
+  [
+   "root",
+   -1
+  ],
+  [
+   "hips",
+   0
+  ],
+  [
+   "spine_01",
+   1
+  ],
+  [
+   "spine_02",
+   2
+  ],
+  [
+   "spine_03",
+   3
+  ],
+  [
+   "spine_04",
+   4
+  ],
+  [
+   "chest",
+   5
+  ],
+  [
+   "neck_01",
+   6
+  ],
+  [
+   "neck_02",
+   7
+  ],
+  [
+   "head",
+   8
+  ],
+  [
+   "jaw",
+   9
+  ],
+  [
+   "eye_L",
+   9
+  ],
+  [
+   "eye_R",
+   9
+  ],
+  [
+   "clavicle_L",
+   6
+  ],
+  [
+   "upperarm_01_L",
+   13
+  ],
+  [
+   "upperarm_02_L",
+   14
+  ],
+  [
+   "forearm_01_L",
+   15
+  ],
+  [
+   "forearm_02_L",
+   16
+  ],
+  [
+   "hand_L",
+   17
+  ],
+  [
+   "upperarm_twist_L",
+   14
+  ],
+  [
+   "forearm_twist_L",
+   16
+  ],
+  [
+   "thumb_00_L",
+   18
+  ],
+  [
+   "thumb_01_L",
+   21
+  ],
+  [
+   "thumb_02_L",
+   22
+  ],
+  [
+   "thumb_03_L",
+   23
+  ],
+  [
+   "index_01_L",
+   18
+  ],
+  [
+   "index_02_L",
+   25
+  ],
+  [
+   "index_03_L",
+   26
+  ],
+  [
+   "middle_01_L",
+   18
+  ],
+  [
+   "middle_02_L",
+   28
+  ],
+  [
+   "middle_03_L",
+   29
+  ],
+  [
+   "ring_01_L",
+   18
+  ],
+  [
+   "ring_02_L",
+   31
+  ],
+  [
+   "ring_03_L",
+   32
+  ],
+  [
+   "pinky_01_L",
+   18
+  ],
+  [
+   "pinky_02_L",
+   34
+  ],
+  [
+   "pinky_03_L",
+   35
+  ],
+  [
+   "clavicle_R",
+   6
+  ],
+  [
+   "upperarm_01_R",
+   37
+  ],
+  [
+   "upperarm_02_R",
+   38
+  ],
+  [
+   "forearm_01_R",
+   39
+  ],
+  [
+   "forearm_02_R",
+   40
+  ],
+  [
+   "hand_R",
+   41
+  ],
+  [
+   "upperarm_twist_R",
+   38
+  ],
+  [
+   "forearm_twist_R",
+   40
+  ],
+  [
+   "thumb_00_R",
+   42
+  ],
+  [
+   "thumb_01_R",
+   45
+  ],
+  [
+   "thumb_02_R",
+   46
+  ],
+  [
+   "thumb_03_R",
+   47
+  ],
+  [
+   "index_01_R",
+   42
+  ],
+  [
+   "index_02_R",
+   49
+  ],
+  [
+   "index_03_R",
+   50
+  ],
+  [
+   "middle_01_R",
+   42
+  ],
+  [
+   "middle_02_R",
+   52
+  ],
+  [
+   "middle_03_R",
+   53
+  ],
+  [
+   "ring_01_R",
+   42
+  ],
+  [
+   "ring_02_R",
+   55
+  ],
+  [
+   "ring_03_R",
+   56
+  ],
+  [
+   "pinky_01_R",
+   42
+  ],
+  [
+   "pinky_02_R",
+   58
+  ],
+  [
+   "pinky_03_R",
+   59
+  ],
+  [
+   "thigh_L",
+   1
+  ],
+  [
+   "shin_L",
+   61
+  ],
+  [
+   "foot_L",
+   62
+  ],
+  [
+   "toe_L",
+   63
+  ],
+  [
+   "thigh_twist_L",
+   61
+  ],
+  [
+   "thigh_R",
+   1
+  ],
+  [
+   "shin_R",
+   66
+  ],
+  [
+   "foot_R",
+   67
+  ],
+  [
+   "toe_R",
+   68
+  ],
+  [
+   "thigh_twist_R",
+   66
+  ]
+ ],
+ "ci": [
+  {
+   "workflow": "Android CI",
+   "id": 43704287027,
+   "status": "completed",
+   "conclusion": "success",
+   "event": "workflow_dispatch",
+   "jobs": [
+    [
+     "Android lint",
+     "success"
+    ],
+    [
+     "Debug APK build",
+     "success"
+    ],
+    [
+     "AvatarForge GLES GLB render smoke (instrumented)",
+     "success"
+    ],
+    [
+     "Native C++ sampling regression",
+     "success"
+    ],
+    [
+     "Release R8/minification check (no APK/AAB)",
+     "success"
+    ],
+    [
+     "Unit tests",
+     "success"
+    ]
+   ]
+  },
+  {
+   "workflow": "AvatarForge diagnostic APK and tests",
+   "id": 43704289087,
+   "status": "completed",
+   "conclusion": "success",
+   "event": "workflow_dispatch",
+   "jobs": [
+    [
+     "Native host regression tests",
+     "success"
+    ],
+    [
+     "Build debug APK and verify generated avatar pixels",
+     "success"
+    ],
+    [
+     "Download the published debug APK and verify it",
+     "success"
+    ]
+   ]
+  },
+  {
+   "workflow": "AvatarForge generated-avatar runtime verification",
+   "id": 43704283240,
+   "status": "completed",
+   "conclusion": "success",
+   "event": "pull_request",
+   "jobs": [
+    [
+     "Generate, render and inspect real avatar pixels",
+     "success"
+    ]
+   ]
+  },
+  {
+   "workflow": "Publish phone-test APK",
+   "id": 43705538407,
+   "status": "completed",
+   "conclusion": "success",
+   "event": "workflow_dispatch",
+   "jobs": [
+    [
+     "Publishing rules self-test",
+     "success"
+    ],
+    [
+     "Check the readiness gate and publish the APK",
+     "success"
+    ]
+   ]
+  },
+  {
+   "workflow": "Publish phone-test APK",
+   "id": 43704283245,
+   "status": "completed",
+   "conclusion": "success",
+   "event": "pull_request",
+   "jobs": [
+    [
+     "Publishing rules self-test",
+     "success"
+    ],
+    [
+     "Check the readiness gate and publish the APK",
+     "skipped"
+    ]
+   ]
+  },
+  {
+   "workflow": "Release preview and Android emulator smoke",
+   "id": 43704291123,
+   "status": "completed",
+   "conclusion": "success",
+   "event": "workflow_dispatch",
+   "jobs": [
+    [
+     "Android emulator install and launch smoke",
+     "success"
+    ],
+    [
+     "Signed release preview (ephemeral CI key)",
+     "success"
+    ],
+    [
+     "Signed release APK install and launch on emulator",
+     "success"
+    ]
+   ]
+  }
+ ],
+ "ci_sha": "2920265ae822d08f6508e8eac917a9817e232e1e",
+ "defects": [
+  "The jaw line is hard and angular in three-quarter view.",
+  "Garment details are paint, not form: lapels, seams, stitching, buttons, studs, laces and the lames of the armour are drawn by the texture bake on smooth shapes.",
+  "The spacesuit has no helmet. The plates of the plate armour are rounded and thick.",
+  "Each outfit has its own colours only while the clothing colour is left at \"Engine default\"; a chosen colour replaces the main cloth colour and keeps the shirt, tie, buttons and stitching.",
+  "In heels the ankle is raised and the leg shortened by the same 2.7 % of stature, instead of the whole body standing taller.",
+  "No clip has been played or looked at on any of the reworked garments; how a long skirt or coat follows the legs is unknown.",
+  "Behind the knees the athletic outfit shows uneven shading.",
+  "The largest breast and butt sizes are plain rounded masses: smooth, symmetrical, with no weight or movement. The abdomen of the plus-size body is one broad swell.",
+  "The six starting looks differ in skin tone, hair and eye colour and in seven face measurements; the face underneath is the same stylised face.",
+  "Box braids have no parting on the scalp and their plaiting is painted bands; curls are a lumpy surface with a curl texture, not ringlets.",
+  "The creator's card pictures are all of a female body; a male body gets the same cards."
+ ],
+ "sheets": true,
+ "ctest": {
+  "passed": 9,
+  "total": 9,
+  "when": "2026-11-15T10:28:01Z",
+  "secs": 42,
+  "sha": "2920265"
+ },
+ "ci_prev": {
+  "sha": "a5e93a8d9762c836c8b6a5c23ada53afa23a9ea2",
+  "runs": [
+   {
+    "workflow": "Android CI",
+    "id": 43697152270,
+    "conclusion": "success"
+   },
+   {
+    "workflow": "AvatarForge diagnostic APK and tests",
+    "id": 43697155008,
+    "conclusion": "success"
+   },
+   {
+    "workflow": "AvatarForge generated-avatar runtime verification",
+    "id": 43697157414,
+    "conclusion": "success"
+   },
+   {
+    "workflow": "Release preview and Android emulator smoke",
+    "id": 43697157775,
+    "conclusion": "success"
+   },
+   {
+    "workflow": "Publish phone-test APK (rules self-test)",
+    "id": 43697157450,
+    "conclusion": "success"
+   }
+  ]
+ },
+ "donors": {
+  "scanned": 96,
+  "total_model_files": 18,
+  "entries": [
+   {
+    "repo": "AvatarForge",
+    "head": "40ef65ba74686a119d8a576d740a7981fad6f41c",
+    "path": "artifacts/avatarforge-sample.glb",
+    "bytes": 35188740,
+    "sha256": "7cbc16d0749992e9d37b16981f9a950670dcf78dee3e9dbb00f352726a355cda",
+    "generator": "AvatarForge 0.9.0",
+    "what": "A complete AvatarForge avatar written by engine 0.9.0: 271,155 vertices, 369,108 triangles, 10 primitives, 13 materials, 5 PNG maps, 1 skin with 71 joints, 52 morph targets, 15 animations (idle 4.0 s \u2026 turn_360 2.0 s).",
+    "licence": "The owner's own engine output. The AvatarForge repository has no LICENSE file.",
+    "lic_st": "unv",
+    "use": "Imported through the current engine on the host: skeleton adopted, 71 joints, 15 animations, every vertex weighted. A ready-made rigged and animated AvatarForge file for testing import and, once connected, native clip playback. Older generator: it shows the earlier face and garments.",
+    "also": []
+   },
+   {
+    "repo": "Grok-Girls",
+    "head": "fd638fde15ab8dae51bfeec8da320590128d1e49",
+    "path": "public/glb/CesiumMan.glb",
+    "bytes": 438044,
+    "sha256": "b7001eaeea8254bd44773bcd247e78696d94169388fbb2a1800fc69434e777d9",
+    "generator": "COLLADA2GLTF",
+    "what": "The Khronos sample \"CesiumMan\": 3,273 vertices, 4,672 triangles, 1 JPEG texture, 1 skin with 19 joints, 1 animation of 2.0 s (57 channels: a walk cycle). No morph targets.",
+    "licence": "Byte-identical to KhronosGroup/glTF-Sample-Assets Models/CesiumMan/glTF-Binary/CesiumMan.glb (same Git blob 8586c4e6). That repository states: \u00a9 2017 Cesium, CC BY 4.0; the Cesium logo in the texture is a trademark.",
+    "lic_st": "ok",
+    "use": "The best candidate for the first visible playback of an imported GLB: small, skinned, with a real clip. In the app it has clips and is not an AvatarForge file, so it opens in the Filament preview, where the animation controls appear. Through the native importer it is a static model; on the host its JPEG texture is not decoded, because the importer leaves JPEG to Android's image decoder (not checked on Android).",
+    "also": []
+   },
+   {
+    "repo": "3DDD",
+    "head": "186e54f05847d5e73ac40c9477a18d18108569dc",
+    "path": "app/src/androidTest/assets/test-rig.glb",
+    "bytes": 7524,
+    "sha256": "195e2ae0726509fbc30c628c68d1d03d665bfffc14b653126ad4671fa4a1a5a1",
+    "generator": "3DoubleD test fixture",
+    "what": "A tiny rigged fixture: 56 vertices, 96 triangles, 1 skin with 2 joints (Skeleton, Bone1), 1 animation \"Bend\" of 1.0 s, 1 morph target, one 8\u00d78 PNG. Generator string \"3DoubleD test fixture\".",
+    "licence": "The owner's own test file. 3DDD has no LICENSE file; its README releases the \"generated base rigs\" under CC0 and does not mention this fixture.",
+    "lic_st": "unv",
+    "use": "Small enough to live in this repository as an instrumented-test fixture for the Filament animation controls: skin, clip and morph target in 7.5 KB.",
+    "also": [
+     "app/src/test/resources/test-rig.glb"
+    ]
+   },
+   {
+    "repo": "3DDD",
+    "head": "186e54f05847d5e73ac40c9477a18d18108569dc",
+    "path": "app/src/main/assets/models/studio_avatar.glb",
+    "bytes": 28800,
+    "sha256": "7a322d35d43b89aecbbe4d2b762e2774a6fe9848fe59e478094da46ae05fd49a",
+    "generator": "aura-avatarstudio-test",
+    "what": "A small rigged test avatar: 204 vertices, 102 triangles, 4 skinned primitives, 4 materials, 5 PNG images, 1 skin with 4 joints (root, torso, neck, head), 1 animation \"idle\" of 3.0 s, 1 morph target. Generator string \"aura-avatarstudio-test\".",
+    "licence": "The owner's own test file, present with the same hash in four places. No licence stated.",
+    "lic_st": "unv",
+    "use": "A second small file with a skin and a clip. It is also the file that exposed a fault in this branch's import: because two of its joints are called \"root\" and \"head\" the engine adopted it as its own rig; corrected in 041e31d.",
+    "also": [
+     "3DDD: app/src/androidTest/assets/studio_avatar.glb",
+     "Grok-Girls: android/app/src/main/assets/avatars/my_avatar.glb",
+     "Grok-Girls: native/app/src/main/assets/avatars/my_avatar.glb",
+     "3d-models: app/src/main/assets/avatars/my_avatar.glb"
+    ]
+   },
+   {
+    "repo": "3DDD",
+    "head": "186e54f05847d5e73ac40c9477a18d18108569dc",
+    "path": "app/src/main/assets/models/male.glb",
+    "bytes": 376120,
+    "sha256": "dee39481f2482bad61de25d524de7afc06c4373562239fc2ddb3979e517afdd4",
+    "generator": "3DoubleD mesh forge",
+    "what": "A static base body: 5,412 vertices, 4,960 triangles, 2 materials, 7 body morph targets, no skin, no animation, no images. Generator string \"3DoubleD mesh forge\".",
+    "licence": "3DDD README: \"The generated base rigs are original work shipped under CC0.\" No LICENSE file.",
+    "lic_st": "ok",
+    "use": "A second sample model for the Filament preview, with the same seven morph targets as the bundled female.glb. Not a rig, despite the README's wording.",
+    "also": []
+   },
+   {
+    "repo": "3DDD",
+    "head": "186e54f05847d5e73ac40c9477a18d18108569dc",
+    "path": "app/src/main/assets/models/androgynous.glb",
+    "bytes": 376120,
+    "sha256": "9e2b3047ec508c9a00d96a67f73d82db6c606cd31dc81c176c55ddff2f574022",
+    "generator": "3DoubleD mesh forge",
+    "what": "A static base body: 5,412 vertices, 4,960 triangles, 2 materials, 7 body morph targets, no skin, no animation.",
+    "licence": "As male.glb.",
+    "lic_st": "ok",
+    "use": "As male.glb.",
+    "also": []
+   },
+   {
+    "repo": "3DDD",
+    "head": "186e54f05847d5e73ac40c9477a18d18108569dc",
+    "path": "app/src/main/assets/models/cyborg.glb",
+    "bytes": 487524,
+    "sha256": "f0c583c759e521593c405ac43dcb0ddade1b942f86e6e04b650485f4535bb4ae",
+    "generator": "3DoubleD mesh forge",
+    "what": "A static base body: 7,028 vertices, 6,432 triangles, 2 materials, 7 body morph targets, no skin, no animation.",
+    "licence": "As male.glb.",
+    "lic_st": "ok",
+    "use": "As male.glb.",
+    "also": []
+   },
+   {
+    "repo": "Grok-Girls",
+    "head": "fd638fde15ab8dae51bfeec8da320590128d1e49",
+    "path": "public/glb/AnimatedMorphCube.glb",
+    "bytes": 6752,
+    "sha256": "214ee56160a50dbf22543a1d66dbf860986e87f0efac3d89feac1359d0e6aeab",
+    "generator": "glTF Tools for Unity",
+    "what": "The Khronos sample \"AnimatedMorphCube\": 24 vertices, 2 morph targets, 1 animation \"Square\" of 4.2 s that drives the morph weights. No skin.",
+    "licence": "Byte-identical to KhronosGroup/glTF-Sample-Assets Models/AnimatedMorphCube (same Git blob 219d2ac5). That repository states: \u00a9 2017 Public, CC0 1.0, by Microsoft.",
+    "lic_st": "ok",
+    "use": "The smallest test of morph-target animation in the Filament preview.",
+    "also": []
+   },
+   {
+    "repo": "Grok-Girls",
+    "head": "fd638fde15ab8dae51bfeec8da320590128d1e49",
+    "path": "public/glb/BoxTextured.glb",
+    "bytes": 5956,
+    "sha256": "b510eca2e2ef33f62f9ed57d6e7ce2d10ebb2bdebc4a8e59d347719ba81abdf4",
+    "generator": "COLLADA2GLTF",
+    "what": "The Khronos sample \"BoxTextured\": a textured cube, static.",
+    "licence": "Byte-identical to the Khronos sample (same Git blob cfd92e78): \u00a9 2017 Cesium, CC BY 4.0; Cesium logo trademark.",
+    "lic_st": "ok",
+    "use": "A minimal static import test. Nothing for animation.",
+    "also": []
+   },
+   {
+    "repo": "Grok-Girls",
+    "head": "fd638fde15ab8dae51bfeec8da320590128d1e49",
+    "path": "public/glb/MorphBoxTest.glb",
+    "bytes": 6348,
+    "sha256": "7d457ea31b1f8903099fab905e99473c03621a6da8a9037c33104f4a4800aac1",
+    "generator": "Grok-Girls morph test",
+    "what": "A cube with 1 morph target and a PNG texture, static. Generator string \"Grok-Girls morph test\".",
+    "licence": "The owner's own test file. No licence stated.",
+    "lic_st": "unv",
+    "use": "A minimal morph-target import test.",
+    "also": []
+   },
+   {
+    "repo": "Grok-Girls",
+    "head": "fd638fde15ab8dae51bfeec8da320590128d1e49",
+    "path": "android/app/src/main/assets/avatars/hunyuan-test.glb",
+    "bytes": 16951520,
+    "sha256": "cb262ce41315e1909da5a0f21d795435ad9eb19b9df8847efefcce74a746425b",
+    "generator": "https://github.com/mikedh/trimesh",
+    "what": "A raw generated mesh written by trimesh: 290,913 vertices, 1,121,608 triangles, no material, no texture, no skin, no animation.",
+    "licence": "Output of the Hunyuan3D model; the terms of that model apply and were not checked.",
+    "lic_st": "unv",
+    "use": "A heavy static mesh for load and frame-rate tests. Nothing for appearance or animation.",
+    "also": []
+   },
+   {
+    "repo": "Hunyuan3D-2",
+    "head": "6c4e5fee0c63b2d5e395ebaf43822fa63f93ae6f",
+    "path": "assets/1.glb",
+    "bytes": 720764,
+    "sha256": "a9a3593d39fb1b4d444e4a57cd704c9eb659813ffce69e45ce90dc3c57e0cc03",
+    "generator": "https://github.com/mikedh/trimesh",
+    "what": "A demonstration mesh from the upstream project: 19,996 vertices, 40,000 triangles, static, no material.",
+    "licence": "Fork of Tencent-Hunyuan/Hunyuan3D-2; GitHub reports the licence as \"other\". Not the owner's asset.",
+    "lic_st": "blk",
+    "use": "Not for reuse without reading the upstream licence.",
+    "also": []
+   }
+  ],
+  "no_models": [
+   "3d4me",
+   "AetherFace-3D",
+   "AuraAvatarStudio",
+   "Aura-studio",
+   "Aura-Avatar",
+   "Aura-Studio-Avatar",
+   "https-github.com-davealone69-gif-Aura-Studio-Avatar",
+   "Morph-Lab",
+   "morph-lab-game-pages"
+  ],
+  "not_visible": [
+   "morph-lab-game (named as private in the README)",
+   "DD3-Intro (named in the README)"
+  ]
+ },
+ "anim": {
+  "run": 43704283240,
+  "job": 132781923393,
+  "workflow": "AvatarForge generated-avatar runtime verification",
+  "sha": "2920265ae822d08f6508e8eac917a9817e232e1e",
+  "clips": 15,
+  "played": "t_pose",
+  "frames": 3,
+  "changedPixels": 81407,
+  "model": "The avatar in that run: gown and long hair, 1,232,813 vertices, 2,125,600 triangles, 71 joints, 52 blendshapes, 8 submeshes, GLB 121,744,208 B; 323,702 geometry pixels in the rest pose; one frame every 8.7 to 10.8 s on this emulator, which draws in software. The 15 animation names it listed: idle, breathe, walk, jog, run, squat, jump, wave, punch, kick, pushup, t_pose, a_pose, sit, turn_360. No crash, ANR or fatal signal in its logcat."
+ },
+ "apk": {
+  "tag": "phone-test-2920265",
+  "file": "3D-Mega-Hub-debug-2920265.apk",
+  "bytes": 57787072,
+  "sha256": "dd180d6f4feddb61eed5b4d3e0200f49d5e3b54f73cbb0e9f7d24799bcf9a201",
+  "run": 43705538407,
+  "cert": "fa76837c8581c9f64c7c41aec2b6d5b96d0f82de5a013dbec4716396fc0a2d0a",
+  "built_by": 43704289087,
+  "published": "2026-11-15T10:44:58Z",
+  "sha": "2920265ae822d08f6508e8eac917a9817e232e1e"
+ },
+ "emu": {
+  "run": 43683037132,
+  "sha": "f90f326aae7b3555951e7f7c27af27e476ab2ae8",
+  "device": "sdk_gphone_x86_64, Android 11 (API 30)",
+  "gl": "OpenGL ES 3.1 through ANGLE on SwiftShader",
+  "spec": "prompt \"Adult woman, average build, warm medium-dark skin, long hair, floor-length dress\"; long hair, dress, seed 1337",
+  "glbBytes": 108173016,
+  "glbSha": "c5b98daac4b65b179d65993039fc36134eb6cdcac24d39d47ae8a0a0b2d7ed88",
+  "status": "PIXELS_VERIFIED",
+  "visiblePixels": 329824,
+  "presented": 3,
+  "drawCalls": 27,
+  "triangles": 1882578,
+  "vertices": 1085040,
+  "joints": 71,
+  "glbImportMs": 1438.417,
+  "initialPoseMs": 48.541,
+  "firstFrameMs": 11234.56,
+  "fps": 0.259,
+  "tests": "2 of 5 passed, this one among them; the other three stopped at a stale expectation in a test helper (it still required the jeans-and-jacket outfit for \"t-shirt and jeans\"), corrected in 0dd5bc8.",
+  "apkBytes": 57079246,
+  "apkSha": "163f64d8838cabd9df2ac9fea56beb6860cdd73bfc8779e066af63e106cd1ee8",
+  "later": [
+   [
+    "0dd5bc8",
+    43684059007,
+    "success"
+   ],
+   [
+    "041e31d",
+    43685731802,
+    "success"
+   ],
+   [
+    "9519eae",
+    43693466421,
+    "success"
+   ],
+   [
+    "a5e93a8",
+    43697157414,
+    "success"
+   ],
+   [
+    "2920265",
+    43704283240,
+    "success"
+   ]
+  ]
+ }
+}

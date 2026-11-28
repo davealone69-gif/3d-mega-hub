@@ -135,8 +135,67 @@ bool isGarmentWord(const std::string& w) {
 
 bool isHairWord(const std::string& w) {
     static const char* const k[] = {"hair", "braid", "braids", "ponytail", "bun", "afro", "mohawk",
-                                    "locks", "dreadlocks", "bald", "buzz"};
+                                    "locks", "dreadlocks", "bald", "buzz", "bob", "bangs", "fringe", "curls"};
     return anyOf(w, k, static_cast<int>(sizeof(k) / sizeof(k[0])));
+}
+
+bool isEyeWord(const std::string& w) {
+    return w == "eye" || w == "eyes" || w.rfind("eyed", 0) == 0;
+}
+
+/* Curated IRIS base reflectances (linear-sRGB) for the canonical eye-colour words, converted from
+   the 3D4ME display swatches (see docs/REFERENCE_3d4me_options.md). Used when a prompt names an eye
+   colour ("<colour> eyes"); any other colour word falls back to a lifted generic value at the call
+   site so unusual iris colours still resolve to something plausible. */
+struct NamedEyeColour { const char* word; float rgb[3]; };
+const NamedEyeColour kEyeColours[] = {
+    {"brown",  {0.125f, 0.060f, 0.029f}},
+    {"hazel",  {0.235f, 0.168f, 0.048f}},
+    {"green",  {0.070f, 0.216f, 0.115f}},
+    {"blue",   {0.095f, 0.205f, 0.372f}},
+    {"grey",   {0.242f, 0.278f, 0.333f}},
+    {"gray",   {0.242f, 0.278f, 0.333f}},
+    {"amber",  {0.450f, 0.240f, 0.020f}},
+    {"violet", {0.130f, 0.075f, 0.340f}},
+    {"black",  {0.030f, 0.020f, 0.015f}},
+};
+const int kEyeColourCount = static_cast<int>(sizeof(kEyeColours) / sizeof(kEyeColours[0]));
+bool eyeColourFor(const std::string& w, float rgb[3]) {
+    for (int i = 0; i < kEyeColourCount; ++i) {
+        if (w == kEyeColours[i].word) {
+            rgb[0] = kEyeColours[i].rgb[0];
+            rgb[1] = kEyeColours[i].rgb[1];
+            rgb[2] = kEyeColours[i].rgb[2];
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Clothing-fabric presets harvested from the 3D4ME donor (docs/REFERENCE_3d4me_options.md): each names a
+   garment surface finish as a roughness/metalness pair. They ride the existing cloth_roughness /
+   cloth_metalness spec scalars (<0 => material default), so a prompt that names no fabric keeps today's
+   bytes exactly. NOTE: "leather" is intentionally absent here -- it already drives the leather-armour
+   outfit path, and overloading it would change existing deterministic prompts. Leather garments still
+   read correctly through that outfit. */
+struct NamedFabric { const char* word; float roughness; float metalness; };
+const NamedFabric kFabrics[] = {
+    {"cotton", 0.90f, 0.00f},
+    {"silk",   0.32f, 0.02f},
+    {"satin",  0.22f, 0.05f},
+    {"denim",  0.84f, 0.00f},
+    {"latex",  0.12f, 0.08f},
+};
+const int kFabricCount = static_cast<int>(sizeof(kFabrics) / sizeof(kFabrics[0]));
+bool fabricValuesFor(const std::string& w, float* roughness, float* metalness) {
+    for (int i = 0; i < kFabricCount; ++i) {
+        if (w == kFabrics[i].word) {
+            *roughness = kFabrics[i].roughness;
+            *metalness = kFabrics[i].metalness;
+            return true;
+        }
+    }
+    return false;
 }
 
 /* Maps a body noun onto the af_spec field it names, writing `value` (centimetres). One table, so
@@ -192,6 +251,7 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
        or "68 cm waist, 96 cm hips" would set the waist twice. */
     std::vector<bool> consumed(words.size(), false);
     bool leatherModifier = false, plateModifier = false, spaceModifier = false;
+    bool sawTshirt = false;   /* a T-shirt named in THIS prompt; "jeans" then completes it */
     for (const Word& w0 : words) {
         if (w0.text == "leather") leatherModifier = true;
         if (w0.text == "plate" || w0.text == "cuirass" || w0.text == "breastplate") plateModifier = true;
@@ -201,6 +261,24 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
     for (size_t i = 0; i < words.size(); ++i) {
         const std::string& w = words[i].text;
         float rgb[3];
+
+        /* ---- fabrics (checked first) ----
+           A clothing-fabric word sets the garment's PBR response (roughness/metalness) from the donor's
+           measured values, independent of colour or outfit. It is detected at the TOP of the loop so a
+           same-word noun rule below cannot shadow it: "denim" is also the jeans keyword, so for it we set
+           the material but do NOT consume the token -- letting it flow on to take its jeans-outfit role too
+           ("denim trousers" reads as denim-finished jeans). Every other fabric is purely a material word and
+           is consumed here. Moving this ahead of the noun rules changes nothing for cotton/silk/satin/latex
+           (they have no competing meaning) and only ADDS the correct denim material where it was missing. */
+        {
+            float fr = 0.0f, fm = 0.0f;
+            if (fabricValuesFor(w, &fr, &fm)) {
+                spec->cloth_roughness = fr;
+                spec->cloth_metalness = fm;
+                record(out, w, "fabric", &matched);
+                if (w != "denim") continue;   /* denim keeps its jeans-outfit role further down */
+            }
+        }
 
         /* ---- measurements: "<number> cm | m | mm | inch | ft" and "5 foot 9" ---- */
         if (isNumber(w)) {
@@ -280,12 +358,13 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
         static const char* const kSlim[] = {"slim", "skinny", "thin", "lean", "slender", "petite", "lithe"};
         static const char* const kAthletic[] = {"athletic", "fit", "toned", "sporty", "swimmer"};
         static const char* const kMuscular[] = {"muscular", "buff", "ripped", "jacked", "bodybuilder", "strongman"};
-        static const char* const kHeavy[] = {"heavy", "stocky", "chubby", "plump", "curvy", "overweight", "burly"};
+        static const char* const kHeavy[] = {"heavy", "stocky", "chubby", "plump", "overweight", "burly"};
         static const char* const kAverage[] = {"average", "normal", "medium", "regular"};
         if (anyOf(w, kSlim, 7)) { spec->build = AF_BUILD_SLIM; spec->body_fat = 0.14f; spec->muscle = 0.35f; record(out, w, "build", &matched); continue; }
         if (anyOf(w, kAthletic, 5)) { spec->build = AF_BUILD_ATHLETIC; spec->muscle = 0.60f; spec->body_fat = 0.18f; record(out, w, "build", &matched); continue; }
         if (anyOf(w, kMuscular, 6)) { spec->build = AF_BUILD_MUSCULAR; spec->muscle = 0.85f; spec->body_fat = 0.16f; record(out, w, "build", &matched); continue; }
-        if (anyOf(w, kHeavy, 7)) { spec->build = AF_BUILD_HEAVY; spec->body_fat = 0.42f; record(out, w, "build", &matched); continue; }
+        if (anyOf(w, kHeavy, 6)) { spec->build = AF_BUILD_HEAVY; spec->body_fat = 0.42f; record(out, w, "build", &matched); continue; }
+        if (w == "curvy") { spec->build = AF_BUILD_CURVY; spec->body_fat = 0.27f; record(out, w, "build", &matched); continue; }
         const std::string nextWord = (i + 1 < words.size()) ? words[i + 1].text : "";
         const bool mediumHairQualifier =
             w == "medium" &&
@@ -329,6 +408,9 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
             else if (w == "bun") spec->hair_style = AF_HAIR_BUN;
             else if (w == "afro") spec->hair_style = AF_HAIR_AFRO;
             else if (w == "mohawk") spec->hair_style = AF_HAIR_MOHAWK;
+            else if (w == "bob") spec->hair_style = AF_HAIR_BOB;
+            else if (w == "bangs" || w == "fringe") spec->hair_style = AF_HAIR_BANGS;
+            else if (w == "curls") spec->hair_style = AF_HAIR_CURLY;
             else if (anyOf(w, kBraids, 4)) spec->hair_style = AF_HAIR_BRAIDS;
             else if (pendingStyle >= 0) {
                 spec->hair_style = pendingStyle;
@@ -336,8 +418,14 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
             /* "dark hair" is a hair colour; "dark skin" is a skin tone. The qualifier decides. */
             if (pendingMelanin >= 0.0f) {
                 if (spec->hair_tone[0] == 0.0f) {
-                    const float v = std::fmax(0.02f, 1.0f - pendingMelanin);
-                    spec->hair_tone[0] = v; spec->hair_tone[1] = v * 0.94f; spec->hair_tone[2] = v * 0.90f;
+                    /* A base colour, like every other entry of the colour table: fair hair for a
+                       "light" qualifier through brown to near-black for "dark". The old value was a
+                       neutral grey (0.12 for "dark hair"), which only looked dark because the
+                       renderer multiplied it by the default hair colour. */
+                    const float t = std::pow(std::fmin(1.0f, std::fmax(0.0f, pendingMelanin)), 0.6f);
+                    spec->hair_tone[0] = 0.60f + (0.022f - 0.60f) * t;
+                    spec->hair_tone[1] = 0.45f + (0.016f - 0.45f) * t;
+                    spec->hair_tone[2] = 0.24f + (0.012f - 0.24f) * t;
                 }
                 pendingMelanin = -1.0f;
             }
@@ -411,10 +499,18 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
 
         if (anyOf(w, kBare, 4)) { spec->outfit = AF_OUTFIT_NONE; spec->footwear = AF_FOOTWEAR_NONE; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kAthleticWear, 4)) { spec->outfit = AF_OUTFIT_ATHLETIC; record(out, w, "outfit", &matched); continue; }
-        if (anyOf(w, kTshirt, 4)) { spec->outfit = AF_OUTFIT_TSHIRT; record(out, w, "outfit", &matched); continue; }
+        if (w == "swimwear" || w == "swimsuit" || w == "bikini") { spec->outfit = AF_OUTFIT_SWIMWEAR; record(out, w, "outfit", &matched); continue; }
+        if (anyOf(w, kTshirt, 4)) { spec->outfit = AF_OUTFIT_TSHIRT; sawTshirt = true; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kDress, 2)) { spec->outfit = AF_OUTFIT_DRESS; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kSuit, 3)) { spec->outfit = AF_OUTFIT_SUIT; spec->footwear = AF_FOOTWEAR_BOOT; record(out, w, "outfit", &matched); continue; }
-        if (anyOf(w, kJeans, 2)) { spec->outfit = AF_OUTFIT_JEANS_JACKET; record(out, w, "outfit", &matched); continue; }
+        if (anyOf(w, kJeans, 2)) {
+            /* "t-shirt and jeans" is a T-shirt worn with jeans, which is what AF_OUTFIT_TSHIRT builds.
+               It used to become the jacket outfit, because "jeans" came last and the T-shirt outfit
+               had no trousers at all. */
+            if (!sawTshirt) spec->outfit = AF_OUTFIT_JEANS_JACKET;
+            record(out, w, "outfit", &matched);
+            continue;
+        }
         if (anyOf(w, kJacket, 3)) { spec->outfit = AF_OUTFIT_JEANS_JACKET; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kLeather, 3)) { spec->outfit = AF_OUTFIT_ARMOR_LEATHER; spec->footwear = AF_FOOTWEAR_BOOT; record(out, w, "outfit", &matched); continue; }
         if (anyOf(w, kPlate, 6)) {
@@ -435,7 +531,49 @@ int parsePrompt(const char* prompt, af_spec* spec, PromptParse* out) {
         if (anyOf(w, kSabatons, 3)) { spec->footwear = AF_FOOTWEAR_SABATON; record(out, w, "footwear", &matched); continue; }
 
         /* ---- colours ---- */
+        /* Hyphenated eye adjectives reach this loop as ONE token ("green-eyed"), because isWordChar
+           keeps internal hyphens (it must, to recognise "t-shirt"). Catch "<colour>-eyed" up front and
+           route the colour straight to the iris; the space-separated "<colour> eye(s)" form is handled
+           inside the colour branch below. */
+        if (w.size() > 5 && w.compare(w.size() - 5, 5, "-eyed") == 0) {
+            const std::string stem = w.substr(0, w.size() - 5);
+            float hrgb[3];
+            if (colourFor(stem, hrgb)) {
+                float iris[3];
+                if (!eyeColourFor(stem, iris)) {
+                    iris[0] = std::fmin(0.85f, hrgb[0] * 1.15f + 0.04f);
+                    iris[1] = std::fmin(0.85f, hrgb[1] * 1.15f + 0.04f);
+                    iris[2] = std::fmin(0.85f, hrgb[2] * 1.15f + 0.04f);
+                }
+                spec->eye_tone[0] = iris[0];
+                spec->eye_tone[1] = iris[1];
+                spec->eye_tone[2] = iris[2];
+                record(out, w, "eye_tone", &matched);
+                continue;
+            }
+        }
+
+        /* ---- colours ---- */
         if (colourFor(w, rgb)) {
+            /* "<colour> eye(s)" / "<colour>-eyed" sets the IRIS colour, never the garment. Handled
+               here (not by the pending-colour noun mechanism) because eyes are not a wardrobe slot.
+               Without this branch "blue eyes" dyed the clothing blue and left eye_tone at zero. */
+            const std::string eyeNext = (i + 1 < words.size()) ? words[i + 1].text : std::string();
+            if (isEyeWord(eyeNext)) {
+                float iris[3];
+                if (!eyeColourFor(w, iris)) {
+                    /* Arbitrary colour word: lift the generic paint reflectance into a plausible iris
+                       range so e.g. "teal eyes" still yields a believable result. */
+                    iris[0] = std::fmin(0.85f, rgb[0] * 1.15f + 0.04f);
+                    iris[1] = std::fmin(0.85f, rgb[1] * 1.15f + 0.04f);
+                    iris[2] = std::fmin(0.85f, rgb[2] * 1.15f + 0.04f);
+                }
+                spec->eye_tone[0] = iris[0];
+                spec->eye_tone[1] = iris[1];
+                spec->eye_tone[2] = iris[2];
+                record(out, w + " eyes", "eye_tone", &matched);
+                continue;   /* the following 'eye(s)' token is intentionally left unmatched */
+            }
             pendingColour[0] = rgb[0];
             pendingColour[1] = rgb[1];
             pendingColour[2] = rgb[2];

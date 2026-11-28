@@ -45,10 +45,12 @@ struct BodyBuildOptions {
      * sample rows and produced twelve vertices of teeth in the entire avatar. 8 mm grid for a
      * 1.8 m body is ~340k samples, which is a fraction of a second on a phone and 2.7 MB.
      */
-    float bodyCell = 0.008f;
+    float bodyCell = 0.004f;
     /* Red-green subdivision rounds in the detail regions. Two rounds take the 8 mm base lattice
        to 2 mm where the surface actually needs it (faces, hands, feet, feature regions). */
-    int   detailRounds = 2;
+    int   detailRounds = 1;
+    /* Refine the trunk and limbs once (8 mm -> 4 mm). Off for draft-quality builds. */
+    bool  refineBody = false;
     /* Taubin smoothing passes (0 disables). One pass removes lattice terracing; more softens
        real anatomy. */
     int   smoothPasses = 1;

@@ -94,6 +94,71 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
     }
 
     /*
+     * A sliver triangle has no usable normal of its own: the cross product of two nearly parallel
+     * edges points wherever rounding puts it. Left like that, every sliver fails the cone test
+     * against all of its neighbours and becomes a chart of one face (measured: 16 537 of them in a
+     * 1.2 M-triangle avatar). Give each sliver the area-weighted normal of its neighbours.
+     */
+    {
+        std::vector<float> faceArea(faceCount);
+        for (size_t f = 0; f < faceCount; ++f) {
+            faceArea[f] = triangleArea(mesh->positions[faces[f][0]], mesh->positions[faces[f][1]],
+                                       mesh->positions[faces[f][2]]);
+        }
+        for (size_t f = 0; f < faceCount; ++f) {
+            const Vec3 a = mesh->positions[faces[f][0]], b = mesh->positions[faces[f][1]], c = mesh->positions[faces[f][2]];
+            const float longest = maxf((b - a).length(), maxf((c - b).length(), (a - c).length()));
+            /* Height over the longest edge, relative to it: below 2 % the face is a needle. */
+            if (faceArea[f] > 1e-12f && longest > 0.0f && (2.0f * faceArea[f] / longest) > 0.02f * longest) continue;
+            Vec3 sum(0, 0, 0);
+            for (int e = 0; e < 3; ++e) {
+                const auto it = edgeFaces.find(ekey(faces[f][static_cast<size_t>(e)],
+                                                    faces[f][static_cast<size_t>((e + 1) % 3)]));
+                if (it == edgeFaces.end()) continue;
+                for (uint32_t nb : it->second) {
+                    if (nb != f) sum += faceNormals[nb] * maxf(faceArea[nb], 1e-12f);
+                }
+            }
+            if (sum.lengthSq() > 1e-20f) faceNormals[f] = sum.normalizedOr(faceNormals[f]);
+        }
+    }
+
+    /*
+     * Region labels are graded per vertex by position, so along a boundary the majority-of-three
+     * vote above flips from one region to the other and back at triangle scale. Charting gates on
+     * the label, so every flip cuts the chart: thousands of single-triangle charts, each smaller
+     * than the gutter it needs, whose texels are never resolvable. The bake then comes out as
+     * speckle along every garment edge and hairline.
+     *
+     * Two majority passes over the edge neighbourhood remove the flicker without moving a real
+     * boundary by more than one triangle: a face keeps its label unless more of its neighbours
+     * carry another one. (Ported from AvatarForge commit eb1bb60.)
+     */
+    for (int pass = 0; pass < 2; ++pass) {
+        std::vector<int32_t> smoothed = faceRegion;
+        for (size_t f = 0; f < faceCount; ++f) {
+            int tally[16] = {0};
+            const int own = faceRegion[f];
+            if (own < 0 || own >= 16) continue;
+            tally[own] += 2;          /* its own label counts double: ties keep it */
+            for (int e = 0; e < 3; ++e) {
+                const auto it = edgeFaces.find(ekey(faces[f][static_cast<size_t>(e)],
+                                                    faces[f][static_cast<size_t>((e + 1) % 3)]));
+                if (it == edgeFaces.end()) continue;
+                for (uint32_t nb : it->second) {
+                    if (nb == f) continue;
+                    const int r = faceRegion[nb];
+                    if (r >= 0 && r < 16) tally[r] += 1;
+                }
+            }
+            int best = own, bestCount = tally[own];
+            for (int r = 0; r < 16; ++r) if (tally[r] > bestCount) { bestCount = tally[r]; best = r; }
+            smoothed[f] = best;
+        }
+        faceRegion.swap(smoothed);
+    }
+
+    /*
      * Charting: DFS growth inside a cone anchored on the seed face's normal.
      *
      * The cone must be anchored to the seed and not to a running average. On a closed surface the
@@ -133,9 +198,10 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
                     if (nb == f || faceChart[nb] >= 0) continue;
                     if (faceRegion[nb] != faceRegion[seed]) continue;
                     if (faceNormals[nb].dot(seedNormal) < kCosTolerance) continue;
-                    /* One island must not eat the atlas; 6000 faces is roughly a whole torso at
-                       the coarse spacing. */
-                    if (chartFaces.size() - chartStart > 6000) continue;
+                    /* One island must not eat the atlas. The limit was 6000 faces, set when a
+                       whole avatar had 140 000; at today's density that cut every smooth garment
+                       panel into dozens of islands, each paying for its own gutter. */
+                    if (chartFaces.size() - chartStart > 40000) continue;
                     faceChart[nb] = chartId;
                     stack.push_back(nb);
                 }
@@ -181,6 +247,115 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
         }
     }
 #endif
+    /*
+     * Merge small islands into a neighbour.
+     *
+     * Every island costs a gutter on all four sides whatever its size, so tens of thousands of
+     * islands of a few faces each consume the atlas in gutters and the packer has to shrink the
+     * whole avatar to make room: measured on a 1.2 M-triangle avatar, 36 123 islands and 2.9 % of
+     * the atlas actually covered, i.e. one texel per 4.3 mm of skin. A small island is absorbed by
+     * the same-region neighbour it shares the longest border with. Islands of a handful of faces
+     * merge unconditionally (they are folds and slivers, with no texture of their own to speak
+     * of); larger ones only when their mean normal is not turned away from the neighbour's.
+     */
+    {
+        const int32_t n0 = static_cast<int32_t>(charts.size());
+        std::vector<int32_t> parent(static_cast<size_t>(n0));
+        for (int32_t i = 0; i < n0; ++i) parent[static_cast<size_t>(i)] = i;
+        const auto root = [&](int32_t c) {
+            while (parent[static_cast<size_t>(c)] != c) {
+                parent[static_cast<size_t>(c)] = parent[static_cast<size_t>(parent[static_cast<size_t>(c)])];
+                c = parent[static_cast<size_t>(c)];
+            }
+            return c;
+        };
+        std::vector<int32_t> size(static_cast<size_t>(n0), 0);
+        std::vector<Vec3> nsum(static_cast<size_t>(n0), Vec3(0, 0, 0));
+        for (size_t f = 0; f < faceCount; ++f) {
+            const size_t c = static_cast<size_t>(faceChart[f]);
+            size[c] += 1;
+            nsum[c] += faceNormals[f] * maxf(triangleArea(mesh->positions[faces[f][0]], mesh->positions[faces[f][1]],
+                                                          mesh->positions[faces[f][2]]), 1e-12f);
+        }
+        const int32_t kSmall = 96, kTiny = 8, kLimit = 60000;
+        const float kCosMerge = std::cos(radians(100.0f));
+        for (int pass = 0; pass < 4; ++pass) {
+            /* Border length between each small island and each neighbouring island. */
+            std::unordered_map<uint64_t, float> border;
+            for (size_t f = 0; f < faceCount; ++f) {
+                const int32_t c1 = root(faceChart[f]);
+                if (size[static_cast<size_t>(c1)] > kSmall) continue;
+                for (int e = 0; e < 3; ++e) {
+                    const uint32_t va = faces[f][static_cast<size_t>(e)], vb = faces[f][static_cast<size_t>((e + 1) % 3)];
+                    const auto it = edgeFaces.find(ekey(va, vb));
+                    if (it == edgeFaces.end()) continue;
+                    for (uint32_t nb : it->second) {
+                        if (nb == f || faceRegion[nb] != faceRegion[f]) continue;
+                        const int32_t c2 = root(faceChart[nb]);
+                        if (c2 == c1) continue;
+                        border[(static_cast<uint64_t>(static_cast<uint32_t>(c1)) << 32) | static_cast<uint32_t>(c2)] +=
+                            (mesh->positions[va] - mesh->positions[vb]).length();
+                    }
+                }
+            }
+            if (border.empty()) break;
+            /* Best neighbour per small island; ties broken by the lower island index so the
+               result does not depend on hash-map iteration order. */
+            std::vector<int32_t> best(static_cast<size_t>(n0), -1);
+            std::vector<float> bestLen(static_cast<size_t>(n0), 0.0f);
+            for (const auto& kv : border) {
+                const int32_t c1 = static_cast<int32_t>(kv.first >> 32);
+                const int32_t c2 = static_cast<int32_t>(kv.first & 0xffffffffu);
+                if (size[static_cast<size_t>(c1)] > kTiny) {
+                    const Vec3 n1 = nsum[static_cast<size_t>(c1)].normalizedOr({0, 1, 0});
+                    const Vec3 n2 = nsum[static_cast<size_t>(c2)].normalizedOr({0, 1, 0});
+                    if (n1.dot(n2) < kCosMerge) continue;
+                }
+                const size_t i = static_cast<size_t>(c1);
+                if (kv.second > bestLen[i] || (kv.second == bestLen[i] && (best[i] < 0 || c2 < best[i]))) {
+                    bestLen[i] = kv.second;
+                    best[i] = c2;
+                }
+            }
+            bool merged = false;
+            for (int32_t c1 = 0; c1 < n0; ++c1) {
+                if (best[static_cast<size_t>(c1)] < 0 || root(c1) != c1) continue;
+                const int32_t c2 = root(best[static_cast<size_t>(c1)]);
+                if (c2 == c1) continue;
+                if (size[static_cast<size_t>(c1)] > kSmall) continue;
+                if (size[static_cast<size_t>(c1)] + size[static_cast<size_t>(c2)] > kLimit) continue;
+                parent[static_cast<size_t>(c1)] = c2;
+                size[static_cast<size_t>(c2)] += size[static_cast<size_t>(c1)];
+                nsum[static_cast<size_t>(c2)] += nsum[static_cast<size_t>(c1)];
+                merged = true;
+            }
+            if (!merged) break;
+        }
+        /* Rebuild the island table from the merged labels, in order of first appearance. */
+        std::vector<int32_t> remap(static_cast<size_t>(n0), -1);
+        std::vector<UVChart> mergedCharts;
+        for (size_t f = 0; f < faceCount; ++f) {
+            const int32_t r = root(faceChart[f]);
+            if (remap[static_cast<size_t>(r)] < 0) {
+                remap[static_cast<size_t>(r)] = static_cast<int32_t>(mergedCharts.size());
+                UVChart ch;
+                ch.material = faceRegion[f];
+                mergedCharts.push_back(ch);
+            }
+            faceChart[f] = remap[static_cast<size_t>(r)];
+            mergedCharts[static_cast<size_t>(faceChart[f])].faceCount += 1;
+        }
+        int32_t offset = 0;
+        for (UVChart& ch : mergedCharts) { ch.firstFace = offset; offset += ch.faceCount; ch.faceCount = 0; }
+        chartFaces.assign(faceCount, 0);
+        for (size_t f = 0; f < faceCount; ++f) {
+            UVChart& ch = mergedCharts[static_cast<size_t>(faceChart[f])];
+            chartFaces[static_cast<size_t>(ch.firstFace + ch.faceCount)] = static_cast<int32_t>(f);
+            ch.faceCount += 1;
+        }
+        charts.swap(mergedCharts);
+    }
+
     /* ---------------------------------------------------------------- 2. projection ----------- */
     struct Chart2D {
         Vec3 axisU, axisV, origin;
@@ -280,10 +455,49 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
     /* Texel density search: pack with a density, halve until everything fits. Starting density is
        derived from the total surface area so the loop is short and the result stable. */
     const float gutterUV = static_cast<float>(std::max(2, texWidth / 512)) / static_cast<float>(texWidth);
+
+    /*
+     * Where the texels go. One density for the whole avatar gives a trouser leg the same texel
+     * size as an iris, which is why eyes, brows and lips baked as a few blurred texels. Each
+     * island is scaled by what it shows: the eyes and the features of the face most, the face and
+     * scalp skin next, uniformly coloured hair least. The head is found from the mesh itself (the
+     * top of the figure), because this stage sees regions and positions, not anatomy.
+     */
+    std::vector<float> chartScale(charts.size(), 1.0f);
+    {
+        float yMin = 1e30f, yMax = -1e30f;
+        for (const Vec3& v : mesh->positions) { yMin = minf(yMin, v.y); yMax = maxf(yMax, v.y); }
+        const float headFloor = yMin + 0.845f * (yMax - yMin);
+        for (size_t c = 0; c < charts.size(); ++c) {
+            const UVChart& ch = charts[c];
+            float ySum = 0.0f;
+            for (int32_t i = 0; i < ch.faceCount; ++i) {
+                const uint32_t f = static_cast<uint32_t>(chartFaces[static_cast<size_t>(ch.firstFace + i)]);
+                ySum += mesh->positions[faces[f][0]].y;
+            }
+            const float yMean = ch.faceCount > 0 ? ySum / static_cast<float>(ch.faceCount) : 0.0f;
+            float scale = 1.0f;
+            switch (ch.material) {
+                /* An iris is 12 mm across. At the body's density that is under twenty texels:
+                   a grey smudge. Fourteen times the base density gives it about a hundred, and
+                   both eyes together still take less than half a percent of the atlas. */
+                case REGION_EYE_L: case REGION_EYE_R: scale = 14.0f; break;
+                case REGION_LIPS: case REGION_LASH:   scale = 4.0f; break;
+                case REGION_NAIL:                     scale = 1.6f; break;
+                case REGION_TEETH: case REGION_TONGUE: scale = 1.2f; break;
+                /* Hair is uniform in colour, but its edge on the face is drawn in this texture. */
+                case REGION_HAIR:                     scale = 1.10f; break;
+                case REGION_SKIN:                     scale = (yMean > headFloor) ? 3.0f : 1.15f; break;
+                default:                              scale = 1.0f; break;
+            }
+            chartScale[c] = scale;
+        }
+    }
+
     float density = 0.0f;
     {
         float totalArea = 0.0f;
-        for (size_t c = 0; c < charts.size(); ++c) totalArea += charts[c].areaSqMeters;
+        for (size_t c = 0; c < charts.size(); ++c) totalArea += charts[c].areaSqMeters * chartScale[c] * chartScale[c];
         if (totalArea <= 1e-9f) return false;
         /* Upper bound: the whole atlas given to the surface, ignoring packing waste. */
         density = std::sqrt(0.52f * static_cast<float>(texWidth) * static_cast<float>(texHeight) / totalArea);
@@ -294,7 +508,10 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
     std::vector<size_t> order(charts.size());
     float usedDensity = density;
     bool packed = false;
-    for (int attempt = 0; attempt < 14 && !packed; ++attempt) {
+    /* The density is lowered in small steps (6 %) until the shelves fit. The step used to be 18 %,
+       which overshot: the first density that fitted was up to a third lower in area than the best
+       one that would have. */
+    for (int attempt = 0; attempt < 60 && !packed; ++attempt) {
         for (size_t i = 0; i < order.size(); ++i) order[i] = i;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
             const Vec2 sa = projected[a].bounds.size();
@@ -309,8 +526,8 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
                has to be converted through the atlas resolution. (Multiplying metres by a
                texel/metre figure and treating the result as UV is what made the first revision
                fail to pack anything - every chart claimed to be a thousand atlases wide.) */
-            float w = sz.x * usedDensity / static_cast<float>(texWidth) + gutterUV * 2.0f;
-            float h = sz.y * usedDensity / static_cast<float>(texHeight) + gutterUV * 2.0f;
+            float w = sz.x * usedDensity * chartScale[idx] / static_cast<float>(texWidth) + gutterUV * 2.0f;
+            float h = sz.y * usedDensity * chartScale[idx] / static_cast<float>(texHeight) + gutterUV * 2.0f;
             bool rot = false;
             /* Try the rotated variant when it clearly reduces the shelf height. */
             if (h > w * 1.6f) { std::swap(w, h); rot = true; }
@@ -320,7 +537,7 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
             shelfX += w;
             shelfH = std::max(shelfH, h);
         }
-        if (!packed) usedDensity *= 0.82f;
+        if (!packed) usedDensity *= 0.94f;
     }
     if (!packed) return false;
 

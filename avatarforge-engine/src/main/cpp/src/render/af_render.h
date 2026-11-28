@@ -48,6 +48,7 @@
 #include <vector>
 
 #include "../../include/afcore.h"
+#include "../af_anim_player.h"
 
 /* ANativeWindow is opaque to us; forward declaration keeps this header usable in host builds. */
 struct ANativeWindow;
@@ -97,18 +98,41 @@ struct CameraState {
     float rollDeg   = 0.0f;
 };
 
-/* Per-frame timing the UI shows in the stats drawer, and the budget controller reads. */
+/* Per-frame statistics the UI shows and the diagnostics report persists.
+ *
+ * Every timing below is MEASURED with std::chrono::steady_clock inside renderFrame(). None of
+ * them is derived from the caller-supplied deltaSeconds (which the app clamps for animation and
+ * therefore cannot describe a slow frame). A value of 0 means "not measured yet", never "fast".
+ * The GLES backend fills all of them; the Vulkan backend (not selected by the app) only fills the
+ * legacy frameMs/fps pair from deltaSeconds and leaves the measured fields at 0. */
 struct RendererStats {
-    float frameMs        = 0.0f;   /* GPU-side frame time, 16-frame rolling mean              */
-    float cpuMs          = 0.0f;   /* CPU submit cost for the same window                     */
-    float fps            = 0.0f;
+    float frameMs        = 0.0f;   /* GLES: smoothed wall time between successful presents (EMA,
+                                      seeded with the first measured interval; 0 until two frames
+                                      have been presented)                                     */
+    float cpuMs          = 0.0f;   /* GLES: smoothed lastCpuMs (EMA seeded with the first sample) */
+    float fps            = 0.0f;   /* 1000 / frameMs, 0 while frameMs is unmeasured            */
+    float lastCpuMs      = 0.0f;   /* this frame: renderFrame() entry -> just before the swap   */
+    float lastSwapMs     = 0.0f;   /* this frame: time spent inside eglSwapBuffers()            */
+    float lastFrameMs    = 0.0f;   /* this frame: lastCpuMs + lastSwapMs                        */
+    float presentIntervalMs = 0.0f;/* wall time between the two most recent successful presents */
     int   drawCalls      = 0;
     int   triangles      = 0;
     int   vertices       = 0;
     int   shadowMapSize  = 0;
     int   msaaSamples    = 1;
     int   bloomLevels    = 0;
-    uint64_t textureBytes = 0;
+    /* GPU memory figures are the byte sizes this renderer REQUESTED from the driver (format x
+       dimensions x samples, including mip chains). A driver may pad, compress or defer them, so
+       they are an accounting of requests, not a measurement of physical GPU memory. */
+    uint64_t textureBytes = 0;       /* avatar material atlas textures, full mip chains          */
+    uint64_t geometryBytes = 0;      /* vertex + index + LOD index buffer capacities             */
+    uint64_t renderTargetBytes = 0;  /* HDR, MSAA colour/depth, shadow map and bloom chain        */
+    /* Error accounting for the production path. glError below is only populated by the
+       verifyFramePixels readback path; these counters are maintained on every frame. */
+    int   glErrorFrames  = 0;      /* frames in which glGetError() returned at least one error  */
+    int   lastGlError    = 0;      /* most recent non-zero GL error code, 0 if none ever        */
+    int   eglErrorFrames = 0;      /* frames whose eglSwapBuffers() failed                      */
+    int   failedDrawCalls = 0;     /* avatar draws skipped or failed because of a GL error      */
     int   qualityLevel   = 2;      /* effective QualityPreset after automatic stepping        */
     int   frames         = 0;
     bool  framePresented = false; /* true only after a successful EGL swap / backend present */
@@ -187,6 +211,52 @@ public:
     virtual void setClip(int clip, float speed, bool loop) = 0;
     virtual int   currentClip() const = 0;
     virtual float clipTime() const = 0;
+
+    /* GPU-skinned playback of the animations the attached model carries (af_engine_animation_*).
+       The bind-pose vertices stay on the GPU; each frame the renderer evaluates one skin matrix
+       per joint (af_engine_evaluate_animation) and the vertex shader blends with them, so playing
+       an animation uploads a few kilobytes per frame instead of the whole vertex buffer, which is
+       what setClip() does and what makes it unusable on a million-triangle avatar.
+       `animation` indexes af_engine_animation_name(); -1 returns the figure to its bind pose.
+       A backend without it keeps these defaults and reports no support. */
+    virtual bool  supportsSkinnedPlayback() const { return false; }
+    virtual bool  setAnimation(int animation, float speed, bool loop) {
+        (void)animation; (void)speed; (void)loop;
+        return false;
+    }
+    virtual void  setAnimationPlayback(float speed, bool loop, bool paused) { (void)speed; (void)loop; (void)paused; }
+    virtual void  seekAnimation(float seconds) { (void)seconds; }
+    virtual int   currentAnimation() const { return -1; }
+    virtual float animationTime() const { return 0.0f; }
+
+    /* Blending, on the same skinned path (af_anim_player.h holds the clocks and the rules).
+       crossFadeToAnimation: `animation` starts and fades in over `fadeSeconds` on top of whatever
+       plays, the rest pose included; -1 fades back to the rest pose.
+       setAnimationOverlay: a second animation on the joints of `mask` (an af_joint_mask), over
+       the base one - a wave over a walk. One that does not loop leaves by itself at its end;
+       -1 fades the present overlay out.
+       Both return false when the backend cannot skin or the index is not an animation. */
+    virtual bool  crossFadeToAnimation(int animation, float fadeSeconds, float speed, bool loop) {
+        (void)animation; (void)fadeSeconds; (void)speed; (void)loop;
+        return false;
+    }
+    virtual bool  setAnimationOverlay(int animation, int mask, float weight, float speed, bool loop, float fadeSeconds) {
+        (void)animation; (void)mask; (void)weight; (void)speed; (void)loop; (void)fadeSeconds;
+        return false;
+    }
+    virtual AnimationPlaybackState animationState() const { return AnimationPlaybackState{}; }
+
+    /* Face animation: weights for the 52 ARKit channels, in af_engine_blendshape_names order.
+       The renderer keeps them until they are set again, packs the kernels that have an effect
+       (af_engine_pack_face) and its vertex shader displaces the face before skinning; nothing is
+       uploaded per vertex. False when the model has no face rig or the backend has no support.
+       faceKernelsActive: how many kernels the last frame evaluated. */
+    virtual bool  supportsFaceAnimation() const { return false; }
+    virtual bool  setFaceWeights(const float* weights, int count) {
+        (void)weights; (void)count;
+        return false;
+    }
+    virtual int   faceKernelsActive() const { return 0; }
 
     /* Waits for the GPU to idle. Needed before the engine frees or rebuilds buffers that the
        renderer may still be reading (e.g. before af_engine_destroy or a geometry rebuild). */

@@ -86,13 +86,33 @@ typedef struct af_callbacks {
 typedef enum af_sex { AF_SEX_UNSPECIFIED = 0, AF_SEX_MALE = 1, AF_SEX_FEMALE = 2 } af_sex;
 
 typedef enum af_build { AF_BUILD_AVERAGE = 0, AF_BUILD_SLIM = 1, AF_BUILD_ATHLETIC = 2,
-                        AF_BUILD_MUSCULAR = 3, AF_BUILD_HEAVY = 4 } af_build;
+                        AF_BUILD_MUSCULAR = 3, AF_BUILD_HEAVY = 4,
+                        AF_BUILD_CURVY = 5   /* narrow waist, full hips and thighs */ } af_build;
 
 typedef enum af_hair_style {
     AF_HAIR_NONE = 0, AF_HAIR_BUZZ = 1, AF_HAIR_SHORT = 2, AF_HAIR_MEDIUM = 3,
     AF_HAIR_LONG = 4, AF_HAIR_PONYTAIL = 5, AF_HAIR_BUN = 6, AF_HAIR_BRAIDS = 7,
-    AF_HAIR_AFRO = 8, AF_HAIR_MOHAWK = 9
+    AF_HAIR_AFRO = 8, AF_HAIR_MOHAWK = 9,
+    AF_HAIR_BOB = 10,          /* cut level at the jaw, blunt ends                          */
+    AF_HAIR_BANGS = 11,        /* shoulder length with a fringe across the forehead         */
+    AF_HAIR_CURLY = 12,        /* a full mass of curls to the shoulders                     */
+    AF_HAIR_BOX_BRAIDS = 13    /* many long braids from the scalp                           */
 } af_hair_style;
+
+/* Indices into af_spec.face. Each value is an offset from the engine's default face, -1..+1,
+   and 0 is that default. They move a feature across its ordinary adult range; none of them is a
+   likeness of anybody. */
+typedef enum af_face_param {
+    AF_FACE_NOSE_WIDTH = 0,    /* width across the wings of the nose                         */
+    AF_FACE_NOSE_BRIDGE = 1,   /* height of the bridge: low (-) to high (+)                  */
+    AF_FACE_LIP_FULLNESS = 2,
+    AF_FACE_EYE_TILT = 3,      /* outer corner of the eye lower (-) or higher (+)            */
+    AF_FACE_EYE_OPENNESS = 4,  /* height of the opening between the lids                     */
+    AF_FACE_CHEEKBONES = 5,
+    AF_FACE_JAW_WIDTH = 6,
+    AF_FACE_RESERVED = 7,
+    AF_FACE_PARAM_COUNT = 8
+} af_face_param;
 
 typedef enum af_outfit {
     AF_OUTFIT_NONE = 0,        /* real unclothed base surface; adult-only (age >= 18)          */
@@ -104,7 +124,8 @@ typedef enum af_outfit {
     AF_OUTFIT_ARMOR_LEATHER = 6,
     AF_OUTFIT_SPACESUIT = 7,
     AF_OUTFIT_ATHLETIC = 8,
-    AF_OUTFIT_COAT = 9
+    AF_OUTFIT_COAT = 9,
+    AF_OUTFIT_SWIMWEAR = 10    /* two-piece: bandeau top and briefs; trunks on a male body       */
 } af_outfit;
 
 typedef enum af_footwear { AF_FOOTWEAR_NONE = 0, AF_FOOTWEAR_SNEAKER = 1, AF_FOOTWEAR_BOOT = 2,
@@ -137,10 +158,21 @@ typedef struct af_spec {
     float     cloth_tone[3];    /* primary garment colour,     0 => neutral grey            */
     float     gear_tone[3];     /* armour / equipment colour,  0 => steel                   */
     float     cloth_roughness;  /* 0..1 override,  <0 => material default                   */
+    float     cloth_metalness;  /* 0..1 garment metalness override, <0 => material default  */
     float     gear_metalness;   /* 0..1 override,  <0 => material default                   */
 
     /* Text prompt that produced this spec (informational; stored in the GLB as metadata). */
     char      prompt[512];
+
+    /* ---- appended after the first release of this struct -------------------------------
+       A caller built before these fields passes a smaller struct_size; the engine then sees
+       zeros here, and zero means "the default" for every one of them.
+
+       `bust` (above) and `glute` shape an ADULT body. For age_years below 18 the engine
+       ignores both and uses its defaults. */
+    float     glute;            /* -1..+1 gluteal volume, 0 => the build's default            */
+    float     eye_tone[3];      /* linear-sRGB iris colour, 0 => derived from skin_melanin    */
+    float     face[AF_FACE_PARAM_COUNT];  /* see af_face_param; 0 => the default face         */
 } af_spec;
 
 void af_spec_init(af_spec* spec);
@@ -194,6 +226,7 @@ typedef enum af_clip {
     AF_CLIP_JOG, AF_CLIP_SQUAT, AF_CLIP_JUMP, AF_CLIP_WAVE, AF_CLIP_PUNCH,
     AF_CLIP_KICK, AF_CLIP_T_POSE, AF_CLIP_A_POSE, AF_CLIP_SIT, AF_CLIP_TURN_360,
     AF_CLIP_PUSHUP,          /* appended: keeps every previously published id stable */
+    AF_CLIP_DANCE, AF_CLIP_HOLD_HAT,
     AF_CLIP_COUNT
 } af_clip;
 
@@ -222,6 +255,14 @@ int32_t af_engine_abi_version(void);
    intermediate buffers are all allocated against this budget; exceeding it fails with
    AF_ERR_BUDGET_EXCEEDED rather than triggering an OOM kill. */
 int32_t af_engine_set_memory_budget(af_engine* engine, uint64_t bytes);
+
+/* Build quality. AF_QUALITY_FULL is the default and is what the app generates. AF_QUALITY_DRAFT
+   extracts on a 16 mm lattice with one refinement round and no trunk refinement: about a tenth of
+   the triangles, in a few seconds. It builds the same skeleton, weights and clips, so it is what
+   the native tests use when they need a rigged avatar and not its surface detail. Must be set
+   before af_engine_fit_anatomy / af_engine_run_all. */
+typedef enum af_quality { AF_QUALITY_DRAFT = 0, AF_QUALITY_FULL = 1 } af_quality;
+int32_t af_engine_set_quality(af_engine* engine, int32_t quality);
 
 int32_t af_engine_create(const af_spec* spec, const af_callbacks* callbacks, af_engine** out_engine);
 void    af_engine_destroy(af_engine* engine);
@@ -363,18 +404,152 @@ void    af_arena_free(void* ptr);
  * with an error and leave the engine exactly as it was: the import is built beside the live state
  * and swapped in only once it is complete.
  *
- * WHAT IS NOT APPLIED, deliberately and visibly: the file's skin, joint hierarchy and animation
- * clips. Posing runs on the engine's own rig, which is built from the anthropometric solve; an
- * imported file cannot silently half-adopt a foreign skeleton, because a figure that looks rigged
- * and does not animate is exactly the kind of plausible fake this project forbids. When the file
- * does carry a skeleton or clips, the import succeeds, an AF_LOG_WARN names what was skipped, and
- * the engine's joint count reads 0 until it is re-rigged.
+ * THE SKELETON: when the file's skin is this engine's own rig (an avatar this engine exported),
+ * it is adopted - joints, rest transforms, inverse bind matrices and the per-vertex weights - and
+ * the clip library is bound to it, so the avatar can be posed and animated again exactly as it
+ * could before export. `af_engine_animation_count` then lists the animations the FILE carries.
+ *
+ * WHAT IS NOT APPLIED, and reported with an AF_LOG_WARN every time: a skeleton that is not this
+ * rig (the model is shown static and the joint count reads 0), animation channels of such a file,
+ * and morph targets (facial blendshapes are available on a generated avatar, not on an import).
  *
  * Returns AF_OK, or AF_ERR_INVALID_ARG / AF_ERR_UNSUPPORTED / AF_ERR_IO / AF_ERR_OUT_OF_MEMORY.
  * `af_engine_last_error` carries the reader's specific reason.
  */
 int32_t af_engine_import_glb(af_engine* engine, const char* absolute_path);
 int32_t af_engine_import_glb_from_memory(af_engine* engine, const uint8_t* bytes, size_t size);
+
+/* ------------------------------------------------------------------ skeletal animation -- */
+/*
+ * Playback data of the model the engine currently holds, whichever way it got there:
+ *
+ *   - after generation (`af_engine_rig` + `af_engine_bake_animation`): the engine's rig and
+ *     every clip of its built-in library;
+ *   - after `af_engine_import_glb` of a file this engine exported: the rig restored from the
+ *     file's skin, and those animations of the file that the clip library can play (matched by
+ *     name; the pose data is the library's, which is what the file's channels were sampled from).
+ *     A file with any other skeleton has no animations here.
+ *
+ * `af_engine_evaluate_animation` does not touch the engine's vertex buffers. It writes one
+ * column-major 4x4 SKIN matrix per joint (joint world transform x inverse bind matrix), indexed
+ * the way `af_vertex::joints` indexes them, so a renderer can blend the bind-pose vertices on the
+ * GPU: `skinned = sum_k weights[k] * skin[joints[k]] * position`. Passing `animation = -1`
+ * evaluates the rest pose (identity skin matrices for a file exported in its bind pose).
+ *
+ * Time handling is the caller's: `time_seconds` is clamped to [0, duration]; looping, speed and
+ * seeking are playback state, not asset state. The call does not modify the engine and does not
+ * allocate after its first use on a thread; it may be made every frame on the thread that owns
+ * the engine.
+ *
+ * Returns the number of joints written (>= 0) or a negative af_result.
+ */
+int32_t af_engine_skin_joint_count(const af_engine* engine);
+int32_t af_engine_animation_count(const af_engine* engine);
+int32_t af_engine_animation_name(const af_engine* engine, int32_t animation, char* out_name, int32_t max_bytes);
+float   af_engine_animation_duration(const af_engine* engine, int32_t animation);
+int32_t af_engine_evaluate_animation(const af_engine* engine, int32_t animation, float time_seconds,
+                                     float* out_skin_matrices4x4, int32_t max_joints);
+
+/* What the UI needs to know about one animation of the model. */
+typedef struct af_animation_info {
+    char    name[64];
+    float   duration;      /* seconds */
+    int32_t looping;       /* 1 when the last pose is the first again */
+    int32_t source;        /* 0 built into the engine, 1 retargeted from an imported file */
+    int32_t frames;        /* stored poses */
+    int32_t moves_root;    /* 1 when the clip translates a joint (a jump, a dance that bounces) */
+    int32_t travels;       /* 1 when the source walked away and the drift was taken out */
+} af_animation_info;
+int32_t af_engine_animation_info(const af_engine* engine, int32_t animation, af_animation_info* out);
+
+/* ------------------------------------------------------------------ blending and layers -- */
+/*
+ * Several animations at once. The pose starts as the rest pose and every layer is blended over
+ * what is there, in order, by `weight` on the joints its `mask` covers:
+ *
+ *   a crossfade from A to B at alpha     {A, tA, 1, FULL} {B, tB, alpha, FULL}
+ *   B fading in from rest                {B, tB, alpha, FULL}
+ *   a wave over a walk                   {walk, t, 1, FULL} {wave, t2, 1, UPPER_BODY}
+ *
+ * Rotations take the shortest way round; translations (root motion) blend linearly. `animation`
+ * indexes af_engine_animation_name, -1 is the rest pose. The output and the threading rules are
+ * those of af_engine_evaluate_animation.
+ */
+typedef enum af_joint_mask {
+    AF_MASK_FULL_BODY = 0,
+    AF_MASK_UPPER_BODY,     /* the spine above the hips, the head and both arms */
+    AF_MASK_LOWER_BODY,     /* everything else: root, hips, legs */
+    AF_MASK_LEFT_ARM,       /* the joints named _L, from the clavicle down */
+    AF_MASK_RIGHT_ARM,
+    AF_MASK_ARMS,
+    AF_MASK_HEAD,           /* neck and head */
+    AF_MASK_COUNT
+} af_joint_mask;
+
+typedef struct af_animation_layer {
+    int32_t animation;
+    float   time_seconds;
+    float   weight;         /* 0..1 */
+    int32_t mask;           /* af_joint_mask */
+} af_animation_layer;
+
+int32_t af_engine_evaluate_layers(const af_engine* engine, const af_animation_layer* layers, int32_t layer_count,
+                                  float* out_skin_matrices4x4, int32_t max_joints);
+/* 1 when `joint` (index as in af_vertex::joints) is covered by `mask`, else 0. */
+float   af_engine_joint_mask_weight(const af_engine* engine, int32_t mask, int32_t joint);
+
+/* ------------------------------------------------------------------ motion from a file --- */
+/*
+ * Adds the animations of another rigged GLB to the model the engine holds, retargeted onto its
+ * skeleton (af_retarget.h): joints recognised by name, sides and facing taken from geometry, rest
+ * poses aligned, travel scaled by the leg length. Only the file's skeleton and animations are
+ * read; its meshes and textures are not decoded. The new animations are appended to
+ * af_engine_animation_* and play like the built-in ones. They belong to this engine instance: a
+ * new import or generation starts without them.
+ *
+ * Returns AF_OK when at least one animation was added. Otherwise nothing changed and the report's
+ * message says why (AF_ERR_UNSUPPORTED: not a humanoid this rig can follow, or no animation;
+ * AF_ERR_NOT_READY: the model has no skeleton; AF_ERR_INVALID_ARG / AF_ERR_IO: unreadable file).
+ * Must be called on the thread that owns the engine, between frames.
+ */
+typedef struct af_motion_import_report {
+    int32_t source_joints;        /* joints of the file's skeleton */
+    int32_t recognised_joints;    /* of those, recognised by name */
+    int32_t mapped_joints;        /* joints of this model that follow one of the file's */
+    int32_t animations_in_file;
+    int32_t animations_added;
+    int32_t compatible;           /* 1 when the file's skeleton is a humanoid this rig can follow */
+    char    message[512];
+} af_motion_import_report;
+int32_t af_engine_import_motions(af_engine* engine, const char* absolute_path, af_motion_import_report* out_report);
+int32_t af_engine_import_motions_from_memory(af_engine* engine, const uint8_t* bytes, size_t size,
+                                             af_motion_import_report* out_report);
+
+/* ------------------------------------------------------------------ face animation ------- */
+/*
+ * The 52 ARKit channels as a handful of formulas instead of 52 arrays of per-vertex offsets
+ * (af_face.h). A renderer uploads the active ones and displaces the bind-pose vertex in its
+ * vertex shader before skinning, so a face of any size animates at no memory cost.
+ *
+ * af_engine_face_kernel_count: 0 when the model has no face rig (a file from elsewhere, or an
+ * avatar exported before the rig was written into the file).
+ * af_engine_pack_face: for `count` channel weights in af_engine_blendshape_names order, writes
+ * the kernels that have an effect, 16 floats each (four vec4), strongest channels first, and the
+ * face box as 8 floats (two vec4); returns the number of kernels written, at most max_kernels.
+ * af_engine_pack_face_block: the same, laid out as the renderer's std140 uniform block
+ * { vec4 boxMin; vec4 boxMax; vec4 params; vec4 kernels[4 * max_kernels]; } with params.x the
+ * number of kernels. `out_block` holds 12 + 16 * max_kernels floats and is written whole (unused
+ * kernels are zero). Returns the number of kernels; 0 when there is no face rig.
+ * af_face_evaluate_packed: the offset that packed form gives one point, computed exactly as the
+ * vertex shader does. For tools and tests.
+ */
+int32_t af_engine_face_kernel_count(const af_engine* engine);
+int32_t af_engine_pack_face(const af_engine* engine, const float* weights, int32_t count,
+                            float* out_kernels, int32_t max_kernels, float* out_box);
+int32_t af_engine_pack_face_block(const af_engine* engine, const float* weights, int32_t count,
+                                  float* out_block, int32_t max_kernels);
+void    af_face_evaluate_packed(const float* kernels, int32_t kernel_count, const float* box,
+                                const float* position3, float* out_delta3);
 
 /* ------------------------------------------------------------------ diagnostics ---------- */
 /* Validates the live post-skin vertex buffer. The report is always populated when capacity > 0;

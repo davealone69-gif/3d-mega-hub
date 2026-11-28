@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+# Verifies a signed release APK and AAB against the Gradle configuration and records the evidence.
+# A successful Gradle build is not treated as verification: every claim below is read back from
+# the built artifacts themselves, and any mismatch fails the job.
+#
+#   verify-release.sh verify  <apk> <aab> <output-dir>
+#   verify-release.sh compare <apk> <aab> <output-dir>   (second clean build vs the verified one)
+set -euo pipefail
+
+MODE="${1:?mode (verify|compare) is required}"
+APK="${2:?APK path is required}"
+AAB="${3:?AAB path is required}"
+OUT="${4:?output directory is required}"
+mkdir -p "$OUT"
+test -s "$APK"
+test -s "$AAB"
+
+BUILD_TOOL() {
+  find "$ANDROID_HOME/build-tools" -type f -name "$1" -perm -u+x -print | sort -V | tail -n 1
+}
+
+if [[ "$MODE" == "compare" ]]; then
+  # Bit-for-bit comparison of a second clean build made with the same key in the same job.
+  REFERENCE_APK="$OUT/3D-Mega-Hub-preview-release.apk"
+  REFERENCE_AAB="$OUT/3D-Mega-Hub-preview-release.aab"
+  test -s "$REFERENCE_APK"
+  test -s "$REFERENCE_AAB"
+  NOT_REPRODUCIBLE=0
+  {
+    echo "REPRODUCIBILITY CHECK (two clean builds, same commit, same runner, same one-run key; second build without the Gradle build cache)"
+    for kind in apk aab; do
+      if [[ "$kind" == "apk" ]]; then first="$REFERENCE_APK"; second="$APK"; else first="$REFERENCE_AAB"; second="$AAB"; fi
+      first_sha="$(sha256sum "$first" | cut -d' ' -f1)"
+      second_sha="$(sha256sum "$second" | cut -d' ' -f1)"
+      echo "$kind build 1 sha256=$first_sha bytes=$(stat -c%s "$first")"
+      echo "$kind build 2 sha256=$second_sha bytes=$(stat -c%s "$second")"
+      if [[ "$first_sha" == "$second_sha" ]]; then
+        echo "$kind REPRODUCIBLE=yes (byte-identical)"
+      else
+        NOT_REPRODUCIBLE=$((NOT_REPRODUCIBLE + 1))
+        echo "$kind REPRODUCIBLE=no (bytes differ)"
+        echo "Zip entries whose name, CRC, size, compressed size or timestamp differ:"
+        diff <(unzip -v "$first" | awk 'NR>3 {print $NF, $(NF-1), $1, $3, $5, $6}' | sort) \
+             <(unzip -v "$second" | awk 'NR>3 {print $NF, $(NF-1), $1, $3, $5, $6}' | sort) | head -n 40 || true
+        # Say which part of the file differs: the zip entries, the APK Signing Block (and which
+        # block inside it), or the central directory.
+        python3 - "$first" "$second" <<'PY' || true
+import hashlib, struct, sys
+
+def sections(path):
+    data = open(path, 'rb').read()
+    eocd = data.rfind(b'PK\x05\x06')
+    cd_offset = struct.unpack_from('<I', data, eocd + 16)[0]
+    out = {}
+    block_start = cd_offset
+    if data[cd_offset - 16:cd_offset] == b'APK Sig Block 42':
+        size = struct.unpack_from('<Q', data, cd_offset - 24)[0]
+        block_start = cd_offset - (size + 8)
+        pos = block_start + 8
+        while pos < cd_offset - 24:
+            length = struct.unpack_from('<Q', data, pos)[0]
+            block_id = struct.unpack_from('<I', data, pos + 8)[0]
+            out['signing block 0x%08x' % block_id] = hashlib.sha256(data[pos + 12:pos + 8 + length]).hexdigest()
+            pos += 8 + length
+    out['zip entries (bytes before the signing block)'] = hashlib.sha256(data[:block_start]).hexdigest()
+    out['central directory and end record'] = hashlib.sha256(data[cd_offset:]).hexdigest()
+    return out
+
+NAMES = {
+    'signing block 0x7109871a': 'APK Signature Scheme v2',
+    'signing block 0xf05368c0': 'APK Signature Scheme v3',
+    'signing block 0x1b93ad61': 'APK Signature Scheme v3.1',
+    'signing block 0x504b4453': 'AGP dependency metadata (encrypted for Google Play)',
+    'signing block 0x42726577': 'verity padding',
+    'signing block 0x6dff800d': 'SourceStamp',
+}
+a, b = sections(sys.argv[1]), sections(sys.argv[2])
+for key in sorted(set(a) | set(b)):
+    same = a.get(key) == b.get(key)
+    label = NAMES.get(key, '')
+    print('  %-48s %s%s' % (key, 'identical' if same else 'DIFFERS', (' - ' + label) if label else ''))
+PY
+      fi
+    done
+    echo "not_reproducible_artifacts=$NOT_REPRODUCIBLE"
+  } | tee "$OUT/REPRODUCIBILITY.txt"
+  if grep -q '^not_reproducible_artifacts=0$' "$OUT/REPRODUCIBILITY.txt"; then
+    echo "Reproducibility check passed: both artifacts are byte-identical across two clean builds."
+    exit 0
+  fi
+  echo "Reproducibility check FAILED: at least one artifact differs between two clean builds of the same commit."
+  exit 1
+fi
+
+[[ "$MODE" == "verify" ]] || { echo "unknown mode: $MODE"; exit 2; }
+
+GRADLE_FILE="app/build.gradle.kts"
+expected() { grep -E "^\s*$1\s*=" "$GRADLE_FILE" | head -n 1 | sed -E 's/.*=\s*"?([^"]*)"?\s*$/\1/'; }
+EXPECTED_ID="$(expected applicationId)"
+EXPECTED_CODE="$(expected versionCode)"
+EXPECTED_NAME="$(expected versionName)"
+EXPECTED_MIN="$(expected minSdk)"
+EXPECTED_TARGET="$(expected targetSdk)"
+echo "Expected from $GRADLE_FILE: applicationId=$EXPECTED_ID versionCode=$EXPECTED_CODE versionName=$EXPECTED_NAME minSdk=$EXPECTED_MIN targetSdk=$EXPECTED_TARGET"
+for value in "$EXPECTED_ID" "$EXPECTED_CODE" "$EXPECTED_NAME" "$EXPECTED_MIN" "$EXPECTED_TARGET"; do
+  test -n "$value"
+done
+
+FAILURES=0
+fail() { echo "VERIFY-FAIL: $*"; FAILURES=$((FAILURES + 1)); }
+
+# ---------------------------------------------------------------- APK
+AAPT2="$(BUILD_TOOL aapt2)"
+APKSIGNER="$(BUILD_TOOL apksigner)"
+test -x "$AAPT2"
+test -x "$APKSIGNER"
+
+echo "::group::APK manifest (aapt2 dump badging)"
+"$AAPT2" dump badging "$APK" > "$OUT/apk-badging-full.txt"
+grep -E "^(package:|sdkVersion:|minSdkVersion:|targetSdkVersion:|native-code:|application-label:|uses-permission:|uses-feature)" \
+  "$OUT/apk-badging-full.txt" | tee "$OUT/apk-badging.txt"
+echo "::endgroup::"
+# Read every value back from the APK's own manifest, then compare with the Gradle configuration.
+PACKAGE_LINE="$(grep -E '^package:' "$OUT/apk-badging-full.txt" || true)"
+badging_attr() { sed -nE "s/.* $1='([^']*)'.*/\\1/p" <<<"$PACKAGE_LINE" | head -n 1; }
+APK_ID="$(badging_attr name)"
+APK_CODE="$(badging_attr versionCode)"
+APK_NAME="$(badging_attr versionName)"
+# aapt2 prints the minimum SDK as "sdkVersion:" in older build-tools and "minSdkVersion:" in newer
+# ones. If neither line is present, read the attribute from the binary manifest directly.
+APK_MIN="$(sed -nE "s/^(sdkVersion|minSdkVersion):'([^']*)'.*/\\2/p" "$OUT/apk-badging-full.txt" | head -n 1)"
+if [[ -z "$APK_MIN" ]]; then
+  APK_MIN="$({ "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml || true; } \
+    | sed -nE 's/.*minSdkVersion\(0x0101020c\)=([0-9]+).*/\1/p' | head -n 1)"
+fi
+APK_TARGET="$(sed -nE "s/^targetSdkVersion:'([^']*)'.*/\\1/p" "$OUT/apk-badging-full.txt" | head -n 1)"
+echo "APK manifest read back: applicationId=${APK_ID:-?} versionCode=${APK_CODE:-?} versionName=${APK_NAME:-?} minSdk=${APK_MIN:-?} targetSdk=${APK_TARGET:-?}" \
+  | tee "$OUT/apk-manifest.txt"
+[[ "$APK_ID" == "$EXPECTED_ID" ]] || fail "APK applicationId is '${APK_ID:-not found}', expected $EXPECTED_ID"
+[[ "$APK_CODE" == "$EXPECTED_CODE" ]] || fail "APK versionCode is '${APK_CODE:-not found}', expected $EXPECTED_CODE"
+[[ "$APK_NAME" == "$EXPECTED_NAME" ]] || fail "APK versionName is '${APK_NAME:-not found}', expected $EXPECTED_NAME"
+[[ "$APK_MIN" == "$EXPECTED_MIN" ]] || fail "APK minSdk is '${APK_MIN:-not found}', expected $EXPECTED_MIN"
+[[ "$APK_TARGET" == "$EXPECTED_TARGET" ]] || fail "APK targetSdk is '${APK_TARGET:-not found}', expected $EXPECTED_TARGET"
+if grep -q "application-debuggable" "$OUT/apk-badging-full.txt"; then fail "release APK is debuggable"; fi
+
+echo "::group::APK native libraries per ABI"
+unzip -Z1 "$APK" | grep -E '^lib/[^/]+/[^/]+\.so$' | sort | tee "$OUT/apk-native-libs.txt"
+echo "::endgroup::"
+grep -q '^lib/arm64-v8a/' "$OUT/apk-native-libs.txt" || fail "APK has no arm64-v8a native libraries"
+REFERENCE_SET="$(grep '^lib/arm64-v8a/' "$OUT/apk-native-libs.txt" | sed -E 's#^lib/[^/]+/##' | sort | tr '\n' ' ')"
+for abi in $(sed -E 's#^lib/([^/]+)/.*#\1#' "$OUT/apk-native-libs.txt" | sort -u); do
+  ABI_SET="$(grep "^lib/$abi/" "$OUT/apk-native-libs.txt" | sed -E 's#^lib/[^/]+/##' | sort | tr '\n' ' ')"
+  echo "ABI $abi: $ABI_SET"
+  # Every packaged ABI must carry the same libraries; an ABI with only some of them installs and
+  # then fails in System.loadLibrary at runtime.
+  [[ "$ABI_SET" == "$REFERENCE_SET" ]] || fail "ABI $abi does not carry the same native libraries as arm64-v8a"
+done
+for required in libmega_hub_avatarforge.so libafcore.so libafrender.so libfilament-jni.so libgltfio-jni.so; do
+  grep -q "^lib/arm64-v8a/$required$" "$OUT/apk-native-libs.txt" || fail "arm64-v8a is missing $required"
+done
+
+# BEGIN native-dependency read-back
+# The app renders with OpenGL ES only. The dynamic section of every packaged library is read back
+# from the APK and printed; the project's own libraries must not link the Vulkan loader, and the
+# renderer library must link OpenGL ES.
+echo "::group::APK native library dependencies (NEEDED entries read back with readelf)"
+READELF="$(command -v readelf || true)"
+if [[ -z "$READELF" ]]; then
+  READELF="$(ls "${ANDROID_HOME:-/nonexistent}"/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf 2>/dev/null | sort | tail -n 1 || true)"
+fi
+if [[ -z "$READELF" ]]; then
+  fail "no readelf is available, so the native library dependencies could not be read back"
+else
+  LIBS_DIR="$OUT/apk-libs"
+  rm -rf "$LIBS_DIR"
+  mkdir -p "$LIBS_DIR"
+  unzip -q -o "$APK" 'lib/*' -d "$LIBS_DIR" || fail "could not extract the native libraries from the APK"
+  : > "$OUT/apk-native-deps.txt"
+  while IFS= read -r library; do
+    NEEDED="$( { "$READELF" -d "$LIBS_DIR/$library" 2>/dev/null || true; } | { grep 'NEEDED' || true; } | sed -E 's/.*\[(.*)\].*/\1/' | sort | tr '\n' ' ')"
+    echo "$library: $NEEDED" | tee -a "$OUT/apk-native-deps.txt"
+  done < "$OUT/apk-native-libs.txt"
+  rm -rf "$LIBS_DIR"
+  for own in libafrender.so libafcore.so libmega_hub_avatarforge.so; do
+    if grep -E "^lib/[^/]+/$own: " "$OUT/apk-native-deps.txt" | grep -q 'libvulkan'; then
+      fail "$own links libvulkan.so; the app must render with OpenGL ES only"
+    fi
+  done
+  for abi in $(sed -E 's#^lib/([^/]+)/.*#\1#' "$OUT/apk-native-libs.txt" | sort -u); do
+    grep -E "^lib/$abi/libafrender.so: " "$OUT/apk-native-deps.txt" | grep -q 'libGLESv3.so' \
+      || fail "$abi libafrender.so does not link libGLESv3.so"
+  done
+fi
+echo "::endgroup::"
+# END native-dependency read-back
+
+echo "::group::APK signature (apksigner verify --verbose --print-certs)"
+"$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$OUT/apk-signature.txt"
+echo "::endgroup::"
+grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" "$OUT/apk-signature.txt" || fail "APK is not v2-signed"
+
+# ---------------------------------------------------------------- AAB
+echo "::group::AAB signature (jarsigner -verify)"
+jarsigner -verify -verbose -certs "$AAB" > "$OUT/aab-signature.txt" 2>&1 || fail "jarsigner could not verify the AAB"
+{ grep -E "jar verified|jar is unsigned|CN=|Signed by|warning|Warning" "$OUT/aab-signature.txt" | sort -u | head -n 20; } || true
+echo "::endgroup::"
+grep -q "jar verified" "$OUT/aab-signature.txt" || fail "AAB signature did not verify"
+
+echo "::group::AAB native libraries per ABI"
+unzip -Z1 "$AAB" | grep -E '^base/lib/[^/]+/[^/]+\.so$' | sort | tee "$OUT/aab-native-libs.txt"
+echo "::endgroup::"
+grep -q '^base/lib/arm64-v8a/libmega_hub_avatarforge.so$' "$OUT/aab-native-libs.txt" || fail "AAB has no arm64-v8a AvatarForge library"
+
+# bundletool is pinned by version AND checksum; it only reads the bundle's manifest here.
+BUNDLETOOL_VERSION="1.18.3"
+BUNDLETOOL_SHA256="a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29"
+BUNDLETOOL_JAR="${RUNNER_TEMP:-/tmp}/bundletool-all-${BUNDLETOOL_VERSION}.jar"
+if [[ ! -s "$BUNDLETOOL_JAR" ]]; then
+  curl --fail --silent --show-error --location --retry 3 -o "$BUNDLETOOL_JAR" \
+    "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar"
+fi
+echo "${BUNDLETOOL_SHA256}  ${BUNDLETOOL_JAR}" | sha256sum --check --status || { echo "bundletool checksum mismatch"; exit 1; }
+aab_attr() { java -jar "$BUNDLETOOL_JAR" dump manifest --bundle="$AAB" --xpath "$1" | tr -d '\r\n'; }
+AAB_ID="$(aab_attr '/manifest/@package')"
+AAB_CODE="$(aab_attr '/manifest/@android:versionCode')"
+AAB_NAME="$(aab_attr '/manifest/@android:versionName')"
+AAB_MIN="$(aab_attr '/manifest/uses-sdk/@android:minSdkVersion')"
+AAB_TARGET="$(aab_attr '/manifest/uses-sdk/@android:targetSdkVersion')"
+echo "AAB manifest (bundletool $BUNDLETOOL_VERSION): package=$AAB_ID versionCode=$AAB_CODE versionName=$AAB_NAME minSdk=$AAB_MIN targetSdk=$AAB_TARGET" \
+  | tee "$OUT/aab-manifest.txt"
+[[ "$AAB_ID" == "$EXPECTED_ID" ]] || fail "AAB package is $AAB_ID"
+[[ "$AAB_CODE" == "$EXPECTED_CODE" ]] || fail "AAB versionCode is $AAB_CODE"
+[[ "$AAB_NAME" == "$EXPECTED_NAME" ]] || fail "AAB versionName is $AAB_NAME"
+[[ "$AAB_MIN" == "$EXPECTED_MIN" ]] || fail "AAB minSdk is $AAB_MIN"
+[[ "$AAB_TARGET" == "$EXPECTED_TARGET" ]] || fail "AAB targetSdk is $AAB_TARGET"
+
+# ---------------------------------------------------------------- hashes and summary
+echo "::group::SHA-256"
+( cd "$(dirname "$APK")" && sha256sum "$(basename "$APK")" ) | tee "$OUT/SHA256SUMS"
+( cd "$(dirname "$AAB")" && sha256sum "$(basename "$AAB")" ) | tee -a "$OUT/SHA256SUMS"
+echo "::endgroup::"
+CERT_SHA256="$(grep -m1 'certificate SHA-256 digest' "$OUT/apk-signature.txt" | sed -E 's/.*: //')"
+{
+  echo "RELEASE VERIFICATION SUMMARY"
+  echo "commit=${GITHUB_SHA:-unknown}"
+  echo "apk_bytes=$(stat -c%s "$APK") apk_sha256=$(sha256sum "$APK" | cut -d' ' -f1)"
+  echo "aab_bytes=$(stat -c%s "$AAB") aab_sha256=$(sha256sum "$AAB" | cut -d' ' -f1)"
+  echo "expected_from_gradle: applicationId=$EXPECTED_ID versionCode=$EXPECTED_CODE versionName=$EXPECTED_NAME minSdk=$EXPECTED_MIN targetSdk=$EXPECTED_TARGET"
+  echo "apk_read_back: applicationId=${APK_ID:-?} versionCode=${APK_CODE:-?} versionName=${APK_NAME:-?} minSdk=${APK_MIN:-?} targetSdk=${APK_TARGET:-?}"
+  echo "aab_read_back: applicationId=${AAB_ID:-?} versionCode=${AAB_CODE:-?} versionName=${AAB_NAME:-?} minSdk=${AAB_MIN:-?} targetSdk=${AAB_TARGET:-?}"
+  echo "apk_abis=$(sed -E 's#^lib/([^/]+)/.*#\1#' "$OUT/apk-native-libs.txt" | sort -u | tr '\n' ' ')"
+  echo "aab_abis=$(sed -E 's#^base/lib/([^/]+)/.*#\1#' "$OUT/aab-native-libs.txt" | sort -u | tr '\n' ' ')"
+  echo "libafrender_needed_arm64=$(grep -E '^lib/arm64-v8a/libafrender.so: ' "$OUT/apk-native-deps.txt" 2>/dev/null | sed -E 's/^[^:]*: //' || true)"
+  echo "signer_certificate_sha256=$CERT_SHA256"
+  echo "signing_identity=${SIGNING_IDENTITY_LABEL:-unspecified}"
+  echo "verification_failures=$FAILURES"
+} | tee "$OUT/VERIFICATION-SUMMARY.txt"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+  { echo '```'; cat "$OUT/VERIFICATION-SUMMARY.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+fi
+if [[ "$FAILURES" -ne 0 ]]; then
+  echo "Release verification FAILED with $FAILURES problem(s)."
+  exit 1
+fi
+echo "Release verification passed: manifest, ABI set, signatures and hashes were read back from the artifacts."

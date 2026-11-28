@@ -9,7 +9,7 @@ class AvatarSpecTest {
     fun defaultSpecPacksAbiV1FieldCountsAndSeed() {
         val spec = AvatarSpec(seed = 42)
         assertEquals(7, spec.packInts().size)
-        assertEquals(33, spec.packFloats().size)
+        assertEquals(45, spec.packFloats().size)
         assertEquals(42, spec.packInts()[6])
         assertEquals(AvatarSpec.DEFAULT_HEIGHT_M, spec.packFloats()[0])
     }
@@ -25,6 +25,9 @@ class AvatarSpecTest {
             seed = 9,
             heightM = 1.68f,
             waistCm = 72f,
+            glute = 0.5f,
+            eyeTone = floatArrayOf(0.1f, 0.2f, 0.3f),
+            face = FloatArray(FaceParam.COUNT) { it * 0.1f - 0.3f },
             prompt = "armored explorer",
         )
         val decoded = AvatarSpec.unpack(source.packInts(), source.packFloats(), source.prompt)
@@ -36,6 +39,9 @@ class AvatarSpecTest {
         assertEquals(source.seed, decoded.seed)
         assertEquals(source.heightM, decoded.heightM, 0.00001f)
         assertEquals(source.waistCm, decoded.waistCm, 0.00001f)
+        assertEquals(source.glute, decoded.glute, 0.00001f)
+        assertEquals(source.eyeTone.toList(), decoded.eyeTone.toList())
+        assertEquals(source.face.toList(), decoded.face.toList())
         assertEquals(source.prompt, decoded.prompt)
     }
 

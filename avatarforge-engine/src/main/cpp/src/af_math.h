@@ -94,13 +94,27 @@ struct Vec3 {
     float lengthSq() const { return x * x + y * y + z * z; }
     float length() const { return std::sqrt(lengthSq()); }
     float distanceTo(const Vec3& o) const { return (*this - o).length(); }
+    /*
+     * A vector is "zero" for normalisation only when it has no direction left in single precision
+     * (length below 1e-15). The test used to be `length < 1e-6`, which is a statement about
+     * METRES: it treated every vector shorter than a micron as zero. That is harmless for a
+     * position difference and wrong for a cross product, whose length is an AREA - 1e-6 is a
+     * square millimetre, so the normal of every triangle with edges under about a millimetre came
+     * back as the fallback. The finest parts of the mesh (the eyes, the lips) are exactly those
+     * triangles: their vertex normals were replaced by "straight up", and the UV charter saw every
+     * one of them as facing the same wrong way.
+     */
     Vec3 normalized() const {
-        const float l = length();
-        return l < kEps ? Vec3(0, 0, 0) : Vec3(x / l, y / l, z / l);
+        const float l2 = lengthSq();
+        if (!(l2 > 1e-30f)) return Vec3(0, 0, 0);
+        const float l = std::sqrt(l2);
+        return Vec3(x / l, y / l, z / l);
     }
     Vec3 normalizedOr(const Vec3& fallback) const {
-        const float l = length();
-        return l < kEps ? fallback : Vec3(x / l, y / l, z / l);
+        const float l2 = lengthSq();
+        if (!(l2 > 1e-30f)) return fallback;
+        const float l = std::sqrt(l2);
+        return Vec3(x / l, y / l, z / l);
     }
     Vec3 lerp(const Vec3& o, float t) const { return {af::lerpf(x, o.x, t), af::lerpf(y, o.y, t), af::lerpf(z, o.z, t)}; }
     Vec3 abs() const { return {std::fabs(x), std::fabs(y), std::fabs(z)}; }
