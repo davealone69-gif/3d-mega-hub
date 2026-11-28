@@ -25,6 +25,10 @@ class AvatarForgeSurfaceView(
     context: Context,
     private val glbFile: File,
     private val verifyVisiblePixels: Boolean = false,
+    private val preferVulkan: Boolean = true,
+    private val allowLiveRig: Boolean = true,
+    private val onCapabilities: (jointCount: Int, blendshapeCount: Int, isLiveRig: Boolean) -> Unit = { _, _, _ -> },
+    private val onRegionPicked: (regionId: Int, distanceM: Float) -> Unit = { _, _ -> },
     private val onStatus: (String) -> Unit
 ) : SurfaceView(context), SurfaceHolder.Callback {
     private val running = AtomicBoolean(false)
@@ -44,9 +48,139 @@ class AvatarForgeSurfaceView(
     private var pendingPitchDeg = 0f
     private var pendingZoomScale = 1f
     private var pendingCameraReset = false
+    private var pendingCameraPresetId: Int? = null
+    private var pendingLightingPresetId: Int? = null
+    private var pendingLightRotationDeg: Float? = null
+    private var pendingLiveMicroLife: Boolean? = null
+    private var pendingInspectionDirty = false
+    private var showSkeleton = false
+    private var flatShading = false
+    private var pendingClipId: Int? = null
+    private var pendingClipSpeed: Float = 1.0f
+    private var pendingClipLoop: Boolean = true
+    private var pendingExpressionId: Int? = null
+    private var pendingPickNormX: Float? = null
+    private var pendingPickNormY: Float? = null
+    private var pendingClearHighlight = false
+    @Volatile private var autoTurntable = false
+    @Volatile private var userInteracting = false
     private var lastTouchX = 0f
     private var lastTouchY = 0f
     private var activePointerId = MotionEvent.INVALID_POINTER_ID
+
+    fun setCameraPreset(preset: CameraPreset) {
+        synchronized(cameraLock) {
+            pendingYawDeg = 0f
+            pendingPitchDeg = 0f
+            pendingZoomScale = 1f
+            pendingCameraReset = false
+            pendingCameraPresetId = preset.nativeId
+        }
+    }
+
+    fun setLightingPreset(preset: LightingPreset) {
+        synchronized(cameraLock) {
+            pendingLightingPresetId = preset.nativeId
+        }
+    }
+
+    fun setLightRotationDeg(offsetDeg: Float) {
+        synchronized(cameraLock) {
+            pendingLightRotationDeg = offsetDeg
+        }
+    }
+
+    fun setLiveMicroLife(enabled: Boolean) {
+        synchronized(cameraLock) {
+            pendingLiveMicroLife = enabled
+        }
+    }
+
+    /** Captures a lossless full-resolution PNG of the live 3D studio viewport via PixelCopy. */
+    fun captureStudioSnapshot(onResult: (Result<File>) -> Unit) {
+        val w = surfaceWidth
+        val h = surfaceHeight
+        if (!surfaceReady || !holder.surface.isValid || w <= 0 || h <= 0) {
+            onResult(Result.failure(IllegalStateException("3D viewport surface is not ready yet.")))
+            return
+        }
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        mainHandler.post {
+            try {
+                PixelCopy.request(this, bitmap, { copyResult ->
+                    if (copyResult != PixelCopy.SUCCESS) {
+                        bitmap.recycle()
+                        onResult(Result.failure(IllegalStateException("Studio snapshot PixelCopy failed ($copyResult).")))
+                        return@request
+                    }
+                    Thread({
+                        val saved = runCatching {
+                            val dir = context.getExternalFilesDir("snapshots") ?: File(context.filesDir, "snapshots")
+                            dir.mkdirs()
+                            val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                                .format(java.util.Date())
+                            val outFile = File(dir, "avatar_studio_$stamp.png")
+                            FileOutputStream(outFile).use { stream ->
+                                bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+                            }
+                            outFile
+                        }.also { bitmap.recycle() }
+                        mainHandler.post { onResult(saved) }
+                    }, "AvatarForge-Snapshot").apply {
+                        isDaemon = true
+                        start()
+                    }
+                }, mainHandler)
+            } catch (failure: Throwable) {
+                bitmap.recycle()
+                onResult(Result.failure(failure))
+            }
+        }
+    }
+
+    fun setSkeletonVisible(visible: Boolean) {
+        synchronized(cameraLock) {
+            if (showSkeleton != visible) {
+                showSkeleton = visible
+                pendingInspectionDirty = true
+            }
+        }
+    }
+
+    fun setFlatShading(enabled: Boolean) {
+        synchronized(cameraLock) {
+            if (flatShading != enabled) {
+                flatShading = enabled
+                pendingInspectionDirty = true
+            }
+        }
+    }
+
+    fun setAutoTurntable(enabled: Boolean) {
+        autoTurntable = enabled
+    }
+
+    fun setAnimationClip(clip: AnimationClipPreset, speed: Float = 1.0f, loop: Boolean = true) {
+        synchronized(cameraLock) {
+            pendingClipId = clip.nativeId
+            pendingClipSpeed = speed.coerceIn(0.1f, 3.0f)
+            pendingClipLoop = loop
+        }
+    }
+
+    fun setFacialExpression(expression: FacialExpressionPreset) {
+        synchronized(cameraLock) {
+            pendingExpressionId = expression.nativeId
+        }
+    }
+
+    fun clearRegionHighlight() {
+        synchronized(cameraLock) {
+            pendingPickNormX = null
+            pendingPickNormY = null
+            pendingClearHighlight = true
+        }
+    }
 
     private val scaleDetector = ScaleGestureDetector(
         context,
@@ -66,6 +200,21 @@ class AvatarForgeSurfaceView(
     private val tapDetector = GestureDetector(
         context,
         object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                val w = width
+                val h = height
+                if (w > 0 && h > 0) {
+                    val nx = (e.x / w.toFloat()).coerceIn(0f, 1f)
+                    val ny = (e.y / h.toFloat()).coerceIn(0f, 1f)
+                    synchronized(cameraLock) {
+                        pendingPickNormX = nx
+                        pendingPickNormY = ny
+                        pendingClearHighlight = false
+                    }
+                }
+                return true
+            }
+
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 synchronized(cameraLock) {
                     pendingYawDeg = 0f
@@ -96,6 +245,7 @@ class AvatarForgeSurfaceView(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                userInteracting = true
                 activePointerId = event.getPointerId(0)
                 lastTouchX = event.x
                 lastTouchY = event.y
@@ -130,6 +280,7 @@ class AvatarForgeSurfaceView(
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                userInteracting = false
                 activePointerId = MotionEvent.INVALID_POINTER_ID
                 parent?.requestDisallowInterceptTouchEvent(false)
             }
@@ -210,20 +361,36 @@ class AvatarForgeSurfaceView(
             var failureStatus: String? = null
             try {
                 recordSmokeResult("STARTING")
-                onStatus("Starting AvatarForge GLES renderer and importing ${glbFile.name}…")
+                onStatus("Starting AvatarForge renderer and importing ${glbFile.name}…")
                 while (running.get() && surfaceReady && (surfaceWidth <= 0 || surfaceHeight <= 0)) Thread.sleep(10)
                 if (!running.get() || !surfaceReady) return@Thread
                 check(glbFile.isFile && glbFile.length() > 0L) { "Selected GLB is not available in app storage." }
-                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight}")
-                nativeHandle = nativeCreate(surfaceHolder.surface, glbFile.absolutePath, max(1, surfaceWidth), max(1, surfaceHeight))
+                Log.i(TAG, "nativeCreate GLB=${glbFile.absolutePath} size=${surfaceWidth}x${surfaceHeight} preferVulkan=$preferVulkan allowLiveRig=$allowLiveRig")
+                nativeHandle = nativeCreate(
+                    surfaceHolder.surface,
+                    glbFile.absolutePath,
+                    max(1, surfaceWidth),
+                    max(1, surfaceHeight),
+                    preferVulkan,
+                    allowLiveRig
+                )
                 check(nativeHandle != 0L) { "AvatarForge native renderer returned a null session." }
-                val rendererInfo = nativeGetInfo(nativeHandle)
-                check(rendererInfo.startsWith("gles31|")) {
-                    "Unexpected AvatarForge backend information: $rendererInfo"
+                val caps = nativeGetCapabilities(nativeHandle)
+                if (caps.size == 3) {
+                    val joints = caps[0]
+                    val shapes = caps[1]
+                    val liveRig = caps[2] == 1
+                    mainHandler.post { onCapabilities(joints, shapes, liveRig) }
                 }
-                val apiVersion = rendererInfo.substringAfter('|').substringBefore('|')
-                recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion)
-                onStatus("AvatarForge GLES renderer active · $apiVersion · ${glbFile.name}")
+                val rendererInfo = nativeGetInfo(nativeHandle)
+                val descriptor = RendererBackendPolicy.parse(rendererInfo)
+                val backendLabel = descriptor.backend.displayName
+                val apiVersion = descriptor.apiVersion
+                val firstPresentBudgetNanos = RendererFrameBudget.firstPresentBudgetNanos(rendererInfo)
+                val firstPresentBudgetSeconds = firstPresentBudgetNanos / 1_000_000_000L
+                recordSmokeResult("RENDERER_ACTIVE", apiVersion = apiVersion, backend = descriptor.backend.id)
+                Log.i(TAG, "RENDERER_ACTIVE backend=${descriptor.backend.id} device=${descriptor.deviceSummary} api=${descriptor.apiVersion}")
+                onStatus("AvatarForge $backendLabel renderer active · ${descriptor.deviceSummary} · ${glbFile.name}")
                 var lastFrame = System.nanoTime()
                 var lastWidth = surfaceWidth
                 var lastHeight = surfaceHeight
@@ -241,24 +408,98 @@ class AvatarForgeSurfaceView(
                     var deltaPitch = 0f
                     var zoomScale = 1f
                     var resetCam = false
+                    var cameraPresetId: Int? = null
+                    var lightingPresetId: Int? = null
+                    var lightRotationNow: Float? = null
+                    var liveMicroLifeNow: Boolean? = null
+                    var applyInspection = false
+                    var skeletonNow = false
+                    var flatNow = false
+                    var clipIdNow: Int? = null
+                    var clipSpeedNow = 1.0f
+                    var clipLoopNow = true
+                    var exprIdNow: Int? = null
+                    var pickXNow: Float? = null
+                    var pickYNow: Float? = null
+                    var clearHighlightNow = false
                     synchronized(cameraLock) {
                         deltaYaw = pendingYawDeg
                         deltaPitch = pendingPitchDeg
                         zoomScale = pendingZoomScale
                         resetCam = pendingCameraReset
+                        cameraPresetId = pendingCameraPresetId
+                        lightingPresetId = pendingLightingPresetId
+                        lightRotationNow = pendingLightRotationDeg
+                        liveMicroLifeNow = pendingLiveMicroLife
+                        applyInspection = pendingInspectionDirty
+                        skeletonNow = showSkeleton
+                        flatNow = flatShading
+                        clipIdNow = pendingClipId
+                        clipSpeedNow = pendingClipSpeed
+                        clipLoopNow = pendingClipLoop
+                        exprIdNow = pendingExpressionId
+                        pickXNow = pendingPickNormX
+                        pickYNow = pendingPickNormY
+                        clearHighlightNow = pendingClearHighlight
                         pendingYawDeg = 0f
                         pendingPitchDeg = 0f
                         pendingZoomScale = 1f
                         pendingCameraReset = false
-                    }
-                    if (resetCam) {
-                        nativeResetCamera(nativeHandle)
-                    } else if (deltaYaw != 0f || deltaPitch != 0f || zoomScale != 1f) {
-                        nativeOrbitCamera(nativeHandle, deltaYaw, deltaPitch, zoomScale)
+                        pendingCameraPresetId = null
+                        pendingLightingPresetId = null
+                        pendingLightRotationDeg = null
+                        pendingLiveMicroLife = null
+                        pendingInspectionDirty = false
+                        pendingClipId = null
+                        pendingExpressionId = null
+                        pendingPickNormX = null
+                        pendingPickNormY = null
+                        pendingClearHighlight = false
                     }
                     val now = System.nanoTime()
                     val delta = ((now - lastFrame).toDouble() / 1_000_000_000.0).coerceIn(0.001, 0.1).toFloat()
                     lastFrame = now
+                    if (lightingPresetId != null) {
+                        nativeSetLightingPreset(nativeHandle, lightingPresetId!!)
+                    }
+                    if (lightRotationNow != null) {
+                        nativeSetLightRotation(nativeHandle, lightRotationNow!!)
+                    }
+                    if (liveMicroLifeNow != null) {
+                        nativeSetLiveMicroLife(nativeHandle, liveMicroLifeNow!!)
+                    }
+                    if (applyInspection) {
+                        nativeSetInspectionModes(nativeHandle, skeletonNow, flatNow)
+                    }
+                    if (clipIdNow != null) {
+                        nativeSetAnimationClip(nativeHandle, clipIdNow!!, clipSpeedNow, clipLoopNow)
+                    }
+                    if (exprIdNow != null) {
+                        nativeApplyExpression(nativeHandle, exprIdNow!!)
+                    }
+                    if (cameraPresetId != null) {
+                        nativeSetCameraPreset(nativeHandle, cameraPresetId!!)
+                    } else if (resetCam) {
+                        nativeResetCamera(nativeHandle)
+                    } else {
+                        if (autoTurntable && !userInteracting && reportedFrame) {
+                            deltaYaw += delta * 24.0f
+                        }
+                        if (deltaYaw != 0f || deltaPitch != 0f || zoomScale != 1f) {
+                            nativeOrbitCamera(nativeHandle, deltaYaw, deltaPitch, zoomScale)
+                        }
+                    }
+                    if (clearHighlightNow) {
+                        nativeClearHighlight(nativeHandle)
+                        mainHandler.post { onRegionPicked(-1, 0f) }
+                    } else if (pickXNow != null && pickYNow != null) {
+                        val picked = nativePickRegion(nativeHandle, pickXNow!!, pickYNow!!)
+                        if (picked.size == 2) {
+                            val hitRegion = picked[0].toInt()
+                            val hitDist = picked[1]
+                            mainHandler.post { onRegionPicked(hitRegion, hitDist) }
+                        }
+                    }
                     val presentedThisFrame = nativeRender(nativeHandle, delta)
                     val stats = nativeGetStats(nativeHandle)
                     check(stats.size == 9) { "AvatarForge returned ${stats.size} renderer statistics; expected 9." }
@@ -277,9 +518,9 @@ class AvatarForgeSurfaceView(
                             recordSmokeResult("FRAME_PRESENTED", apiVersion, frames, drawCalls, triangles,
                                 presentedFrames, boundsInFrustum, outsideCorners, glError, eglError)
                             Log.i(TAG, "FRAME_PRESENTED api=$apiVersion frames=$frames presented=$presentedFrames draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum")
-                            onStatus("EGL frame presented · $presentedFrames successful swaps · $drawCalls draw calls · $triangles triangles")
-                        } else if (System.nanoTime() - frameWaitStarted > 15_000_000_000L) {
-                            error("No drawable EGL-presented model frame within 15 seconds " +
+                            onStatus("$backendLabel frame presented · $presentedFrames swaps · $drawCalls draws · $triangles tris")
+                        } else if (System.nanoTime() - frameWaitStarted > firstPresentBudgetNanos) {
+                            error("No drawable $backendLabel-presented model frame within $firstPresentBudgetSeconds seconds " +
                                 "(frames=$frames presented=$presentedFrames framePresented=$framePresented " +
                                 "draws=$drawCalls triangles=$triangles boundsInFrustum=$boundsInFrustum " +
                                 "outsideCorners=$outsideCorners glError=0x${glError.toString(16)} eglError=0x${eglError.toString(16)})")
@@ -287,8 +528,16 @@ class AvatarForgeSurfaceView(
                     }
                     if (verifyVisiblePixels && presentedThisFrame && presentedFrames >= 3 &&
                         drawCalls > 0 && triangles > 0 && boundsInFrustum && !pixelCopyComplete.get()) {
+                        // Finish GPU work for the presented frame and hold the next frame until
+                        // PixelCopy completes. On software SwiftShader emulators, submitting new
+                        // frames back-to-back starves SurfaceFlinger's PixelCopy readback until
+                        // the 15s timeout fires.
+                        nativeWaitIdle(nativeHandle)
                         requestVisiblePixelCopy(apiVersion, frames, drawCalls, triangles, presentedFrames,
                             boundsInFrustum, outsideCorners, glError, eglError)
+                        while (pixelCopyPending.get() && running.get() && surfaceReady) {
+                            Thread.sleep(5)
+                        }
                     }
                     val remaining = 16_666_667L - (System.nanoTime() - now)
                     if (remaining > 0L) Thread.sleep(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
@@ -340,10 +589,11 @@ class AvatarForgeSurfaceView(
         eglError: Int = 0,
         pixelCount: Int = 0,
         screenshotPath: String = "",
-        error: String = ""
+        error: String = "",
+        backend: String = ""
     ) {
         val preferences = context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE)
-        preferences.edit()
+        val editor = preferences.edit()
             .putString("status", status)
             .putString("api_version", apiVersion)
             .putInt("frames", frames)
@@ -358,7 +608,10 @@ class AvatarForgeSurfaceView(
             .putString("screenshot_path", screenshotPath)
             .putString("error", error)
             .putLong("updated_at_epoch_ms", System.currentTimeMillis())
-            .commit()
+        if (backend.isNotEmpty()) {
+            editor.putString("backend", backend)
+        }
+        editor.commit()
 
         // Keep a durable, machine-readable report in Downloads, not only SharedPreferences.
         val report = org.json.JSONObject()
@@ -477,15 +730,14 @@ class AvatarForgeSurfaceView(
                 PixelCopy.request(this, bitmap, { copyResult ->
                     /* A late callback from a timed-out or destroyed surface must never
                        complete a newer request or overwrite its diagnostic result. */
-                    if (pixelCopyActiveAttempt.get() != attempt ||
-                        !pixelCopyPending.compareAndSet(true, false)) {
+                    if (!pixelCopyActiveAttempt.compareAndSet(attempt, 0)) {
                         recycleBitmap()
                         return@request
                     }
                     mainHandler.removeCallbacks(timeout)
-                    pixelCopyActiveAttempt.compareAndSet(attempt, 0)
 
                     if (copyResult != PixelCopy.SUCCESS) {
+                        pixelCopyPending.set(false)
                         recycleBitmap()
                         if (attempt >= MAX_PIXEL_COPY_ATTEMPTS) {
                             pixelCopyComplete.set(true)
@@ -499,70 +751,90 @@ class AvatarForgeSurfaceView(
                         return@request
                     }
 
-                    val pixels = IntArray(captureWidth * captureHeight)
-                    bitmap.getPixels(pixels, 0, captureWidth, 0, 0, captureWidth, captureHeight)
-                    /* Estimate the actual clear colour from the four corners. A dark
-                       blue-grey background must not count as avatar geometry. */
-                    val corners = intArrayOf(
-                        pixels[0],
-                        pixels[captureWidth - 1],
-                        pixels[(captureHeight - 1) * captureWidth],
-                        pixels[pixels.lastIndex]
-                    )
-                    fun medianChannel(channel: (Int) -> Int): Int {
-                        val values = corners.map(channel).sorted()
-                        return (values[1] + values[2]) / 2
-                    }
-                    val backgroundRed = medianChannel(Color::red)
-                    val backgroundGreen = medianChannel(Color::green)
-                    val backgroundBlue = medianChannel(Color::blue)
-                    val visiblePixels = pixels.count { pixel ->
-                        val redDelta = abs(Color.red(pixel) - backgroundRed)
-                        val greenDelta = abs(Color.green(pixel) - backgroundGreen)
-                        val blueDelta = abs(Color.blue(pixel) - backgroundBlue)
-                        redDelta + greenDelta + blueDelta >= 48 &&
-                            maxOf(redDelta, greenDelta, blueDelta) >= 16
-                    }
-                    val passed = visiblePixels >= MIN_VISIBLE_PIXELS
-                    val generatedDiagnostic = glbFile.name.startsWith("diagnostic-seed-1337-")
-                    val outputName = when {
-                        !passed -> "failed_render.png"
-                        generatedDiagnostic -> "generated_avatar_diagnostic.png"
-                        else -> "imported_glb_diagnostic.png"
-                    }
-                    val outputFile = context.getExternalFilesDir(null)?.let { File(it, outputName) }
-                    val saved = outputFile != null && runCatching {
-                        FileOutputStream(outputFile).use { stream ->
-                            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
-                                "Bitmap PNG compression failed"
+                    /* Offload pixel scan, PNG compression, MediaStore Downloads export and
+                       SharedPreferences commits off the Android UI main thread so rapid activity
+                       transitions never trigger keyDispatchingTimedOut ANRs. Keep pixelCopyPending
+                       held until verification finishes so software renderers do not starve it. */
+                    Thread({
+                        try {
+                            val pixels = IntArray(captureWidth * captureHeight)
+                            bitmap.getPixels(pixels, 0, captureWidth, 0, 0, captureWidth, captureHeight)
+                            /* Estimate the actual clear colour from the four corners. A dark
+                               blue-grey background must not count as avatar geometry. */
+                            val corners = intArrayOf(
+                                pixels[0],
+                                pixels[captureWidth - 1],
+                                pixels[(captureHeight - 1) * captureWidth],
+                                pixels[pixels.lastIndex]
+                            )
+                            fun medianChannel(channel: (Int) -> Int): Int {
+                                val values = corners.map(channel).sorted()
+                                return (values[1] + values[2]) / 2
                             }
+                            val backgroundRed = medianChannel(Color::red)
+                            val backgroundGreen = medianChannel(Color::green)
+                            val backgroundBlue = medianChannel(Color::blue)
+                            val visiblePixels = pixels.count { pixel ->
+                                val redDelta = abs(Color.red(pixel) - backgroundRed)
+                                val greenDelta = abs(Color.green(pixel) - backgroundGreen)
+                                val blueDelta = abs(Color.blue(pixel) - backgroundBlue)
+                                redDelta + greenDelta + blueDelta >= 48 &&
+                                    maxOf(redDelta, greenDelta, blueDelta) >= 16
+                            }
+                            val passed = visiblePixels >= MIN_VISIBLE_PIXELS
+                            val generatedDiagnostic = glbFile.name.startsWith("diagnostic-seed-1337-")
+                            val outputName = when {
+                                !passed -> "failed_render.png"
+                                generatedDiagnostic -> "generated_avatar_diagnostic.png"
+                                else -> "imported_glb_diagnostic.png"
+                            }
+                            val outputFile = context.getExternalFilesDir(null)?.let { File(it, outputName) }
+                            val saved = outputFile != null && runCatching {
+                                FileOutputStream(outputFile).use { stream ->
+                                    check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
+                                        "Bitmap PNG compression failed"
+                                    }
+                                }
+                            }.isSuccess
+                            recycleBitmap()
+                            pixelCopyComplete.set(true)
+                            val screenshot = if (saved) outputFile!!.absolutePath else "UNAVAILABLE"
+                            val downloadsScreenshotUri = if (saved) runCatching {
+                                DiagnosticDownloads.save(context, outputName, "image/png") { output ->
+                                    outputFile!!.inputStream().buffered().use { it.copyTo(output) }
+                                }
+                            }.onFailure { failure ->
+                                Log.e(TAG, "Could not save renderer screenshot to Downloads", failure)
+                            }.getOrNull() else null
+                            context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE).edit()
+                                .putString("downloads_screenshot_uri", downloadsScreenshotUri?.toString())
+                                .commit()
+                            val downloadsLabel = downloadsScreenshotUri?.let { "; saved to ${DiagnosticDownloads.locationLabel()}/$outputName" }
+                                ?: "; Downloads screenshot export failed (see renderer_diagnostics.json)"
+                            val message = if (passed) {
+                                "REAL + VERIFIED: PixelCopy saw $visiblePixels geometry pixels (background RGB=$backgroundRed,$backgroundGreen,$backgroundBlue) after $presentedFrames successful EGL swaps; screenshot=$screenshot$downloadsLabel"
+                            } else {
+                                "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot$downloadsLabel"
+                            }
+                            recordSmokeResult(if (passed) "PIXELS_VERIFIED" else "FAILED",
+                                apiVersion, frames, drawCalls, triangles, presentedFrames, boundsInFrustum,
+                                outsideCorners, glError, eglError, visiblePixels, screenshot,
+                                if (passed) "" else message)
+                            onStatus(message)
+                        } catch (failure: Throwable) {
+                            recycleBitmap()
+                            pixelCopyComplete.set(true)
+                            val message = "FAILED: PixelCopy verification worker threw ${failure.message ?: failure.javaClass.simpleName}"
+                            recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
+                                presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
+                            onStatus(message)
+                        } finally {
+                            pixelCopyPending.set(false)
                         }
-                    }.isSuccess
-                    recycleBitmap()
-                    pixelCopyComplete.set(true)
-                    val screenshot = if (saved) outputFile!!.absolutePath else "UNAVAILABLE"
-                    val downloadsScreenshotUri = if (saved) runCatching {
-                        DiagnosticDownloads.save(context, outputName, "image/png") { output ->
-                            outputFile!!.inputStream().buffered().use { it.copyTo(output) }
-                        }
-                    }.onFailure { failure ->
-                        Log.e(TAG, "Could not save renderer screenshot to Downloads", failure)
-                    }.getOrNull() else null
-                    context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE).edit()
-                        .putString("downloads_screenshot_uri", downloadsScreenshotUri?.toString())
-                        .commit()
-                    val downloadsLabel = downloadsScreenshotUri?.let { "; saved to ${DiagnosticDownloads.locationLabel()}/$outputName" }
-                        ?: "; Downloads screenshot export failed (see renderer_diagnostics.json)"
-                    val message = if (passed) {
-                        "REAL + VERIFIED: PixelCopy saw $visiblePixels geometry pixels (background RGB=$backgroundRed,$backgroundGreen,$backgroundBlue) after $presentedFrames successful EGL swaps; screenshot=$screenshot$downloadsLabel"
-                    } else {
-                        "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot$downloadsLabel"
+                    }, "AvatarForge-PixelVerify").apply {
+                        isDaemon = true
+                        start()
                     }
-                    recordSmokeResult(if (passed) "PIXELS_VERIFIED" else "FAILED",
-                        apiVersion, frames, drawCalls, triangles, presentedFrames, boundsInFrustum,
-                        outsideCorners, glError, eglError, visiblePixels, screenshot,
-                        if (passed) "" else message)
-                    onStatus(message)
                 }, mainHandler)
             } catch (failure: Throwable) {
                 mainHandler.removeCallbacks(timeout)
@@ -586,11 +858,29 @@ class AvatarForgeSurfaceView(
             onStatus(message)
         }
     }
-    private external fun nativeCreate(surface: android.view.Surface, glbPath: String, width: Int, height: Int): Long
+    private external fun nativeCreate(
+        surface: android.view.Surface,
+        glbPath: String,
+        width: Int,
+        height: Int,
+        preferVulkan: Boolean,
+        allowLiveRig: Boolean
+    ): Long
     private external fun nativeResize(handle: Long, width: Int, height: Int)
     private external fun nativeOrbitCamera(handle: Long, deltaYawDeg: Float, deltaPitchDeg: Float, zoomScale: Float)
     private external fun nativeResetCamera(handle: Long)
+    private external fun nativeSetCameraPreset(handle: Long, presetId: Int)
+    private external fun nativeSetLightingPreset(handle: Long, presetId: Int)
+    private external fun nativeSetLightRotation(handle: Long, offsetDeg: Float)
+    private external fun nativeSetLiveMicroLife(handle: Long, enabled: Boolean)
+    private external fun nativeSetInspectionModes(handle: Long, showSkeleton: Boolean, flatShading: Boolean)
+    private external fun nativeGetCapabilities(handle: Long): IntArray
+    private external fun nativeSetAnimationClip(handle: Long, clipId: Int, speed: Float, loop: Boolean)
+    private external fun nativeApplyExpression(handle: Long, expressionId: Int)
+    private external fun nativePickRegion(handle: Long, normX: Float, normY: Float): FloatArray
+    private external fun nativeClearHighlight(handle: Long)
     private external fun nativeRender(handle: Long, deltaSeconds: Float): Boolean
+    private external fun nativeWaitIdle(handle: Long)
     private external fun nativeGetInfo(handle: Long): String
     private external fun nativeGetStats(handle: Long): IntArray
     private external fun nativeDestroy(handle: Long)

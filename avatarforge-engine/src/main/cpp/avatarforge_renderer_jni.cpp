@@ -3,7 +3,10 @@
 #include <android/native_window_jni.h>
 
 #include "afcore.h"
+#include "avatarforge_live_rig.h"
+#include "avatarforge_studio_life.h"
 #include "render/af_render.h"
+#include "render/af_render_common.h"
 
 #include <algorithm>
 #include <cmath>
@@ -18,12 +21,24 @@
 namespace {
 struct NativeAvatarSession {
     ANativeWindow* window = nullptr;
+    std::shared_ptr<af_engine> liveEngine;
     af_engine* engine = nullptr;
     af::Renderer* renderer = nullptr;
     int width = 0;
     int height = 0;
     af::CameraState camera{};
+    af::CameraState targetCamera{};
     af::CameraState initialCamera{};
+    bool cameraGliding = false;
+    af::RendererOptions baseOptions{};
+    int32_t activeLightingPreset = 0;
+    float lightRotationOffsetDeg = 0.0f;
+    af::StudioMicroLifeState microLife{};
+    bool allForeignSubmeshes = false;
+    bool isLiveRig = false;
+    int32_t highlightedRegion = -1;
+    float boundsMin[3] = {0.0f, 0.0f, 0.0f};
+    float boundsMax[3] = {0.0f, 1.75f, 0.0f};
     float minDistance = 0.05f;
     float maxDistance = 100.0f;
     std::string verificationReport;
@@ -35,7 +50,10 @@ struct NativeAvatarSession {
             delete renderer;
             renderer = nullptr;
         }
-        if (engine) {
+        if (liveEngine) {
+            engine = nullptr;
+            liveEngine.reset();
+        } else if (engine) {
             af_engine_destroy(engine);
             engine = nullptr;
         }
@@ -57,47 +75,59 @@ void throwState(JNIEnv* env, const std::string& message) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
-    JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height) {
+    JNIEnv* env, jobject, jobject surface, jstring glbPath, jint width, jint height,
+    jboolean preferVulkan, jboolean allowLiveRig) {
     if (!surface || !glbPath || width <= 0 || height <= 0) {
         throwState(env, "AvatarForge renderer requires a Surface, GLB path and non-zero size");
         return 0;
     }
     const char* path = env->GetStringUTFChars(glbPath, nullptr);
     if (!path) return 0;
+    const std::string pathStr(path);
+    env->ReleaseStringUTFChars(glbPath, path);
 
     std::unique_ptr<NativeAvatarSession> session(new (std::nothrow) NativeAvatarSession());
     if (!session) {
-        env->ReleaseStringUTFChars(glbPath, path);
         throwState(env, "Unable to allocate AvatarForge render session");
         return 0;
     }
 
     session->window = ANativeWindow_fromSurface(env, surface);
     if (!session->window) {
-        env->ReleaseStringUTFChars(glbPath, path);
         throwState(env, "Android could not provide a native window for the AvatarForge surface");
         return 0;
     }
     session->width = width;
     session->height = height;
 
-    af_spec spec{};
-    af_spec_init(&spec);
-    const int32_t createResult = af_engine_create(&spec, nullptr, &session->engine);
-    if (createResult != AF_OK || !session->engine) {
-        env->ReleaseStringUTFChars(glbPath, path);
-        throwState(env, "af_engine_create failed: " + std::to_string(createResult));
-        return 0;
+    if (allowLiveRig == JNI_TRUE) {
+        auto live = af::LiveRigRegistry::acquireForPath(pathStr);
+        if (live && af_engine_submesh_count(live.get()) > 0) {
+            session->liveEngine = std::move(live);
+            session->engine = session->liveEngine.get();
+            session->isLiveRig = true;
+            float zeroWeights[52] = {};
+            af_engine_apply_blendshapes(session->engine, zeroWeights, 52);
+        }
     }
 
-    const int32_t importResult = af_engine_import_glb(session->engine, path);
-    const std::string importError = af_engine_last_error(session->engine)
-        ? af_engine_last_error(session->engine) : "";
-    env->ReleaseStringUTFChars(glbPath, path);
-    if (importResult != AF_OK) {
-        throwState(env, "AvatarForge GLB import failed (" + std::to_string(importResult) +
-                        "): " + importError);
-        return 0;
+    if (!session->engine) {
+        af_spec spec{};
+        af_spec_init(&spec);
+        const int32_t createResult = af_engine_create(&spec, nullptr, &session->engine);
+        if (createResult != AF_OK || !session->engine) {
+            throwState(env, "af_engine_create failed: " + std::to_string(createResult));
+            return 0;
+        }
+
+        const int32_t importResult = af_engine_import_glb(session->engine, pathStr.c_str());
+        const std::string importError = af_engine_last_error(session->engine)
+            ? af_engine_last_error(session->engine) : "";
+        if (importResult != AF_OK) {
+            throwState(env, "AvatarForge GLB import failed (" + std::to_string(importResult) +
+                            "): " + importError);
+            return 0;
+        }
     }
 
     /* Apply the initial skin pose before reading submesh bounds for camera framing.
@@ -128,7 +158,9 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     }
 
     af::RendererOptions options{};
-    options.preferVulkan = false; // Samsung Galaxy S24 (SM-S921B) uses the dedicated GLES 3.2 path.
+    /* Vulkan-first on hardware Android GPUs (Xclipse 940, Adreno, Mali, Immortalis) with
+       automatic GLES 3.1 fallback on software emulators or when Vulkan is unavailable. */
+    options.preferVulkan = (preferVulkan == JNI_TRUE);
     options.quality = af::QualityPreset::HIGH;
     options.msaaSamples = 4;
     options.shadowMapSize = 2048;
@@ -152,7 +184,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     std::string rendererError;
     session->renderer = af::Renderer::create(session->window, options, &rendererError);
     if (!session->renderer) {
-        throwState(env, "AvatarForge GLES renderer creation failed: " + rendererError);
+        throwState(env, "AvatarForge renderer creation failed: " + rendererError);
         return 0;
     }
     if (!session->renderer->resize(width, height)) {
@@ -194,8 +226,16 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeCreate(
     camera.targetZ = cz;
     camera.fovDeg = 28.0f;
     camera.distance = std::max(fitDistH, fitDistV) * 1.12f;
+    session->baseOptions = options;
+    session->allForeignSubmeshes = allForeignSubmeshes;
+    for (int axis = 0; axis < 3; ++axis) {
+        session->boundsMin[axis] = boundsMin[axis];
+        session->boundsMax[axis] = boundsMax[axis];
+    }
     session->camera = camera;
+    session->targetCamera = camera;
     session->initialCamera = camera;
+    session->cameraGliding = false;
     session->minDistance = std::max(0.02f, radius * 0.25f);
     session->maxDistance = std::max(session->minDistance * 8.0f, camera.distance * 6.0f);
     // buildCameraUbo derives near/far from the imported model bounds each frame.
@@ -480,6 +520,21 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeRender(
     JNIEnv*, jobject, jlong handle, jfloat deltaSeconds) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return JNI_FALSE;
+    if (session->cameraGliding) {
+        session->cameraGliding = af::stepCameraGlide(&session->camera, session->targetCamera, deltaSeconds);
+        session->renderer->setCamera(session->camera);
+    }
+    if (session->isLiveRig && session->engine && af_engine_joint_count(session->engine) > 0) {
+        const float relYaw = session->allForeignSubmeshes
+            ? af::wrapAngleDeltaDeg(session->camera.yawDeg, session->initialCamera.yawDeg)
+            : af::wrapAngleDeltaDeg(session->initialCamera.yawDeg, session->camera.yawDeg);
+        std::array<float, 52> weights{};
+        if (session->microLife.step(deltaSeconds, relYaw, session->camera.pitchDeg, &weights)) {
+            if (af_engine_apply_blendshapes(session->engine, weights.data(), 52) == AF_OK) {
+                session->renderer->invalidateMesh();
+            }
+        }
+    }
     session->renderer->renderFrame(deltaSeconds);
     return session->renderer->stats().framePresented ? JNI_TRUE : JNI_FALSE;
 }
@@ -521,8 +576,9 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeOrbitCamera(
     JNIEnv*, jobject, jlong handle, jfloat deltaYawDeg, jfloat deltaPitchDeg, jfloat zoomScale) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return;
+    session->cameraGliding = false;
     if (std::isfinite(deltaYawDeg)) {
-        session->camera.yawDeg = std::fmod(session->camera.yawDeg + deltaYawDeg, 360.0f);
+        session->camera.yawDeg = std::fmod(session->camera.yawDeg + deltaYawDeg + 360.0f, 360.0f);
     }
     if (std::isfinite(deltaPitchDeg)) {
         session->camera.pitchDeg = std::max(-85.0f, std::min(85.0f, session->camera.pitchDeg + deltaPitchDeg));
@@ -531,6 +587,7 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeOrbitCamera(
         session->camera.distance = std::max(session->minDistance,
                                             std::min(session->maxDistance, session->camera.distance * zoomScale));
     }
+    session->targetCamera = session->camera;
     session->renderer->setCamera(session->camera);
 }
 
@@ -539,8 +596,278 @@ Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeResetCamera(
     JNIEnv*, jobject, jlong handle) {
     auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
     if (!session || !session->renderer) return;
-    session->camera = session->initialCamera;
-    session->renderer->setCamera(session->camera);
+    session->targetCamera = session->initialCamera;
+    session->cameraGliding = true;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetCameraPreset(
+    JNIEnv*, jobject, jlong handle, jint presetId) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    af::CameraState cam = session->initialCamera;
+    const float baseYaw = session->initialCamera.yawDeg;
+    const float dy = std::max(0.05f, session->boundsMax[1] - session->boundsMin[1]);
+    const float dz = std::max(0.05f, session->boundsMax[2] - session->boundsMin[2]);
+    switch (presetId) {
+        case 1: { // Portrait / Face close-up (frames dual-mesh eyes, 3D brows/lashes, hair cards)
+            cam.targetY = session->boundsMin[1] + dy * 0.875f;
+            cam.yawDeg = std::fmod(baseYaw - 12.0f + 360.0f, 360.0f);
+            cam.pitchDeg = 2.0f;
+            cam.fovDeg = 26.0f;
+            cam.distance = std::max(session->minDistance, std::max(dy * 0.36f, dz * 1.45f));
+            break;
+        }
+        case 2: { // 3/4 Hero
+            cam.yawDeg = std::fmod(baseYaw - 34.0f + 360.0f, 360.0f);
+            cam.pitchDeg = 6.0f;
+            cam.distance = std::max(session->minDistance, session->initialCamera.distance * 0.88f);
+            break;
+        }
+        case 3: { // Side Profile
+            cam.yawDeg = std::fmod(baseYaw + 90.0f, 360.0f);
+            cam.pitchDeg = 3.0f;
+            cam.distance = std::max(session->minDistance, session->initialCamera.distance * 0.92f);
+            break;
+        }
+        case 4: { // Back View
+            cam.yawDeg = std::fmod(baseYaw + 180.0f, 360.0f);
+            cam.pitchDeg = 4.0f;
+            cam.distance = std::max(session->minDistance, session->initialCamera.distance * 0.96f);
+            break;
+        }
+        case 5: { // Bust / Upper Portrait (showcases sculpted clavicles, neck, shoulders & face)
+            cam.targetY = session->boundsMin[1] + dy * 0.80f;
+            cam.yawDeg = std::fmod(baseYaw - 18.0f + 360.0f, 360.0f);
+            cam.pitchDeg = 3.5f;
+            cam.fovDeg = 26.0f;
+            cam.distance = std::max(session->minDistance, std::max(dy * 0.56f, dz * 1.85f));
+            break;
+        }
+        case 6: { // Eyes Macro (ultra close-up on corneal catchlights, refractive iris, 3D lashes & Cupid's bow)
+            cam.targetY = session->boundsMin[1] + dy * 0.895f;
+            cam.yawDeg = std::fmod(baseYaw - 6.0f + 360.0f, 360.0f);
+            cam.pitchDeg = 1.0f;
+            cam.fovDeg = 22.0f;
+            cam.distance = std::max(session->minDistance, std::max(dy * 0.24f, dz * 1.05f));
+            break;
+        }
+        default: // 0 = Full Body
+            break;
+    }
+    cam.distance = std::max(session->minDistance, std::min(session->maxDistance, cam.distance));
+    session->targetCamera = cam;
+    session->cameraGliding = true;
+}
+
+namespace {
+void applyStudioLighting(NativeAvatarSession* session) {
+    if (!session || !session->renderer) return;
+    af::RendererOptions opt = session->baseOptions;
+    const float baseAz = session->baseOptions.sunAzimuthDeg;
+    switch (session->activeLightingPreset) {
+        case 1: { // Golden Hour
+            opt.sunAzimuthDeg = baseAz + 32.0f;
+            opt.sunElevationDeg = 12.0f;
+            opt.sunIntensity = 1.85f;
+            opt.turbidity = 4.2f;
+            opt.environmentIntensity = 0.72f;
+            opt.exposure = 0.88f;
+            opt.enableBloom = true;
+            break;
+        }
+        case 2: { // Dramatic Rim
+            opt.sunAzimuthDeg = baseAz + 138.0f;
+            opt.sunElevationDeg = 22.0f;
+            opt.sunIntensity = 2.10f;
+            opt.turbidity = 2.2f;
+            opt.environmentIntensity = 0.36f;
+            opt.exposure = 0.78f;
+            opt.enableBloom = true;
+            break;
+        }
+        case 3: { // Soft Overcast
+            opt.sunAzimuthDeg = baseAz;
+            opt.sunElevationDeg = 62.0f;
+            opt.sunIntensity = 0.78f;
+            opt.turbidity = 5.2f;
+            opt.environmentIntensity = 1.15f;
+            opt.exposure = 0.86f;
+            opt.enableBloom = false;
+            break;
+        }
+        case 4: { // Rembrandt Portrait (classic 45° chiaroscuro key lighting sculpting cheek triangle)
+            opt.sunAzimuthDeg = baseAz + 48.0f;
+            opt.sunElevationDeg = 38.0f;
+            opt.sunIntensity = 1.75f;
+            opt.turbidity = 2.8f;
+            opt.environmentIntensity = 0.44f;
+            opt.exposure = 0.86f;
+            opt.enableBloom = true;
+            break;
+        }
+        case 5: { // Noir Rim (moody high-contrast silhouette rim & specular highlight showcase)
+            opt.sunAzimuthDeg = baseAz + 158.0f;
+            opt.sunElevationDeg = 16.0f;
+            opt.sunIntensity = 2.35f;
+            opt.turbidity = 2.0f;
+            opt.environmentIntensity = 0.24f;
+            opt.exposure = 0.76f;
+            opt.enableBloom = true;
+            break;
+        }
+        default: // 0 = Studio
+            break;
+    }
+    opt.sunAzimuthDeg = std::fmod(opt.sunAzimuthDeg + session->lightRotationOffsetDeg + 720.0f, 360.0f);
+    session->renderer->setOptions(opt);
+}
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLightingPreset(
+    JNIEnv*, jobject, jlong handle, jint presetId) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->activeLightingPreset = presetId;
+    applyStudioLighting(session);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLightRotation(
+    JNIEnv*, jobject, jlong handle, jfloat offsetDeg) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer || !std::isfinite(offsetDeg)) return;
+    session->lightRotationOffsetDeg = std::fmod(offsetDeg + 720.0f, 360.0f);
+    applyStudioLighting(session);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetLiveMicroLife(
+    JNIEnv*, jobject, jlong handle, jboolean enabled) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session) return;
+    session->microLife.enabled = (enabled == JNI_TRUE);
+    session->microLife.hasAppliedOnce = false;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetInspectionModes(
+    JNIEnv*, jobject, jlong handle, jboolean showSkeleton, jboolean flatShading) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->renderer->setSkeletonVisible(showSkeleton == JNI_TRUE);
+    session->renderer->setFlatShading(flatShading == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeGetCapabilities(
+    JNIEnv* env, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    jint values[3] = {0, 0, 0};
+    if (session && session->engine) {
+        values[0] = static_cast<jint>(af_engine_joint_count(session->engine));
+        af_stats stats{};
+        if (af_engine_stats(session->engine, &stats) == AF_OK) {
+            values[1] = static_cast<jint>(stats.blendshape_count);
+        }
+        values[2] = session->isLiveRig ? 1 : 0;
+    }
+    jintArray out = env->NewIntArray(3);
+    if (out) env->SetIntArrayRegion(out, 0, 3, values);
+    return out;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeSetAnimationClip(
+    JNIEnv*, jobject, jlong handle, jint clipId, jfloat speed, jboolean loop) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer || !session->engine) return;
+    if (af_engine_joint_count(session->engine) <= 0) return;
+    const int32_t safeClip = std::clamp<int32_t>(clipId, AF_CLIP_REST, AF_CLIP_COUNT - 1);
+    const float safeSpeed = std::isfinite(speed) ? std::clamp(speed, 0.1f, 3.0f) : 1.0f;
+    session->renderer->setClip(safeClip, safeSpeed, loop == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeApplyExpression(
+    JNIEnv*, jobject, jlong handle, jint expressionId) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer || !session->engine) return;
+    if (af_engine_joint_count(session->engine) <= 0) return;
+    session->microLife.setExpressionPreset(expressionId);
+    if (!session->isLiveRig) {
+        if (af_engine_apply_blendshapes(session->engine, session->microLife.targetExpression.data(), 52) == AF_OK) {
+            session->renderer->invalidateMesh();
+        }
+    }
+}
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativePickRegion(
+    JNIEnv* env, jobject, jlong handle, jfloat normX, jfloat normY) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    jfloat result[2] = {-1.0f, 0.0f};
+    if (session && session->renderer && session->engine && session->width > 0 && session->height > 0 &&
+        std::isfinite(normX) && std::isfinite(normY)) {
+        const af::CameraState& cam = session->camera;
+        const float aspect = static_cast<float>(session->width) / static_cast<float>(session->height);
+        const float yaw = cam.yawDeg * 3.14159265358979323846f / 180.0f;
+        const float pitch = cam.pitchDeg * 3.14159265358979323846f / 180.0f;
+        const float dist = cam.distance < 0.3f ? 0.3f : cam.distance;
+        const af::Vec3 target{cam.targetX, cam.targetY, cam.targetZ};
+        const af::Vec3 eye{
+            cam.targetX + dist * std::cos(pitch) * std::sin(yaw),
+            cam.targetY + dist * std::sin(pitch),
+            cam.targetZ + dist * std::cos(pitch) * std::cos(yaw)
+        };
+        const af::Vec3 forward = af::vnormalize(af::vsub(target, eye));
+        const af::Vec3 worldUp{0.0f, 1.0f, 0.0f};
+        af::Vec3 right = af::vcross(forward, worldUp);
+        if (af::vdot(right, right) < 1e-10f) right = af::Vec3{1.0f, 0.0f, 0.0f};
+        else right = af::vnormalize(right);
+        const af::Vec3 camUp = af::vcross(right, forward);
+        const float safeFov = std::isfinite(cam.fovDeg) ? std::clamp(cam.fovDeg, 10.0f, 120.0f) : 32.0f;
+        const float tanHalfV = std::tan(safeFov * 3.14159265358979323846f / 360.0f);
+        const float ndcX = std::clamp(normX, 0.0f, 1.0f) * 2.0f - 1.0f;
+        const float ndcY = 1.0f - std::clamp(normY, 0.0f, 1.0f) * 2.0f;
+        const af::Vec3 rayDir = af::vnormalize(
+            af::vadd(af::vadd(forward, af::vscale(right, ndcX * aspect * tanHalfV)),
+                     af::vscale(camUp, ndcY * tanHalfV)));
+
+        const float origArr[3] = {eye.x, eye.y, eye.z};
+        const float dirArr[3] = {rayDir.x, rayDir.y, rayDir.z};
+        float hitDist = 0.0f;
+        const int32_t hitRegion = af::pickRegion(session->engine, origArr, dirArr, &hitDist, nullptr);
+        if (hitRegion >= 0 && hitRegion == session->highlightedRegion) {
+            session->highlightedRegion = -1;
+            hitDist = 0.0f;
+        } else {
+            session->highlightedRegion = hitRegion;
+        }
+        session->renderer->setHighlightRegion(session->highlightedRegion);
+        result[0] = static_cast<jfloat>(session->highlightedRegion);
+        result[1] = session->highlightedRegion >= 0 ? hitDist : 0.0f;
+    }
+    jfloatArray out = env->NewFloatArray(2);
+    if (out) env->SetFloatArrayRegion(out, 0, 2, result);
+    return out;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeClearHighlight(
+    JNIEnv*, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (!session || !session->renderer) return;
+    session->highlightedRegion = -1;
+    session->renderer->setHighlightRegion(-1);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_davemega_hub_avatarforge_AvatarForgeSurfaceView_nativeWaitIdle(
+    JNIEnv*, jobject, jlong handle) {
+    auto* session = reinterpret_cast<NativeAvatarSession*>(handle);
+    if (session && session->renderer) session->renderer->waitIdle();
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -112,6 +112,22 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
     std::vector<UVChart> charts;
     std::vector<int32_t> chartFaces;
 
+    /* Group all procedural hair-card faces into one shared high-resolution 4-variant strand
+       sheet chart so every lock preserves its authored root-to-tip UV flow and strand tangents. */
+    {
+        const int32_t hairChartId = static_cast<int32_t>(charts.size());
+        UVChart hch;
+        hch.material = REGION_HAIR_CARD;
+        hch.firstFace = static_cast<int32_t>(chartFaces.size());
+        for (size_t f = 0; f < faceCount; ++f) {
+            if (faceRegion[f] != REGION_HAIR_CARD) continue;
+            faceChart[f] = hairChartId;
+            chartFaces.push_back(static_cast<int32_t>(f));
+        }
+        hch.faceCount = static_cast<int32_t>(chartFaces.size()) - hch.firstFace;
+        if (hch.faceCount > 0) charts.push_back(hch);
+    }
+
     for (size_t seed = 0; seed < faceCount; ++seed) {
         if (faceChart[seed] >= 0) continue;
         const int32_t chartId = static_cast<int32_t>(charts.size());
@@ -191,6 +207,29 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
     std::vector<Chart2D> projected(charts.size());
     for (size_t c = 0; c < charts.size(); ++c) {
         const UVChart& ch = charts[c];
+        Chart2D& p2 = projected[c];
+        if (ch.material == REGION_HAIR_CARD) {
+            /* Preserve authored parametric (u_variant, v_root_to_tip) strand UVs verbatim and
+               allocate a generous square tile (~0.55 m equivalent) in the unified atlas so all
+               4 strand strips bake with crisp per-fibre normal/alpha resolution. */
+            constexpr float kHairCardTileMeters = 0.55f;
+            const bool hasPreUvs = mesh->uvs.size() >= mesh->vertexCount() * 2;
+            p2.uvs.reserve(static_cast<size_t>(ch.faceCount) * 3);
+            for (int32_t i = 0; i < ch.faceCount; ++i) {
+                const uint32_t f = static_cast<uint32_t>(chartFaces[static_cast<size_t>(ch.firstFace + i)]);
+                for (int k = 0; k < 3; ++k) {
+                    const uint32_t vi = faces[f][static_cast<size_t>(k)];
+                    const float u = hasPreUvs ? clampf(mesh->uvs[vi * 2], 0.0f, 1.0f) : 0.0f;
+                    const float v = hasPreUvs ? clampf(mesh->uvs[vi * 2 + 1], 0.0f, 1.0f) : 0.0f;
+                    p2.uvs.push_back(Vec2(u * kHairCardTileMeters, v * kHairCardTileMeters));
+                }
+            }
+            p2.bounds.mn = Vec2(0.0f, 0.0f);
+            p2.bounds.mx = Vec2(kHairCardTileMeters, kHairCardTileMeters);
+            p2.area = kHairCardTileMeters * kHairCardTileMeters;
+            charts[c].areaSqMeters = p2.area;
+            continue;
+        }
         /* Area-weighted axis of the chart. The cone growth guarantees every face is within 62
            degrees of this axis, so the projection is a genuine flattening of the chart and not a
            fold, and the axis is well conditioned because the cone is anchored. */
@@ -203,8 +242,15 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
             nsum += faceNormals[f] * triangleArea(a, b, cc);
         }
         const Vec3 n = nsum.normalizedOr(faceNormals[chartFaces[static_cast<size_t>(ch.firstFace)]]);
-        Chart2D& p2 = projected[c];
         basisFromNormal(n, &p2.axisU, &p2.axisV);
+
+        /* Hero texel-density weighting: eyes carry high-frequency iris/limbus/sclera detail on a
+           24 mm globe, so give inner eye charts 6x linear texel density (~2.5% of the atlas for
+           crisp iris fibres and pupil edges). Outer cornea charts use scalar Fresnel/clearcoat
+           and need minimal atlas area. */
+        float uvScale = 1.0f;
+        if (ch.material == REGION_EYE_L || ch.material == REGION_EYE_R) uvScale = 6.0f;
+        else if (ch.material == REGION_CORNEA_L || ch.material == REGION_CORNEA_R) uvScale = 0.25f;
 
         /* Project relative to the chart's own first vertex: keeps the numbers small and makes
            the packing resolution-independent. */
@@ -214,12 +260,12 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
             const uint32_t f = static_cast<uint32_t>(chartFaces[static_cast<size_t>(ch.firstFace + i)]);
             for (int k = 0; k < 3; ++k) {
                 const Vec3 rel = mesh->positions[faces[f][static_cast<size_t>(k)]] - p2.origin;
-                const Vec2 uv(p2.axisU.dot(rel), p2.axisV.dot(rel));
+                const Vec2 uv(p2.axisU.dot(rel) * uvScale, p2.axisV.dot(rel) * uvScale);
                 p2.uvs.push_back(uv);
                 p2.bounds.add(uv);
             }
             const Vec3 a = mesh->positions[faces[f][0]], b = mesh->positions[faces[f][1]], cc = mesh->positions[faces[f][2]];
-            p2.area += triangleArea(a, b, cc);
+            p2.area += triangleArea(a, b, cc) * uvScale * uvScale;
         }
         charts[c].areaSqMeters = p2.area;
 
@@ -312,8 +358,9 @@ bool unwrapAtlas(Mesh* mesh, int texWidth, int texHeight, UVLayout* outLayout) {
             float w = sz.x * usedDensity / static_cast<float>(texWidth) + gutterUV * 2.0f;
             float h = sz.y * usedDensity / static_cast<float>(texHeight) + gutterUV * 2.0f;
             bool rot = false;
-            /* Try the rotated variant when it clearly reduces the shelf height. */
-            if (h > w * 1.6f) { std::swap(w, h); rot = true; }
+            /* Try the rotated variant when it clearly reduces the shelf height; keep the
+               procedural hair-card strand sheet unrotated so V strictly tracks root -> tip. */
+            if (charts[idx].material != REGION_HAIR_CARD && h > w * 1.6f) { std::swap(w, h); rot = true; }
             if (shelfX + w > 1.0f) { shelfX = 0.0f; shelfY += shelfH; shelfH = 0.0f; }
             if (shelfY + h > 1.0f) { packed = false; break; }
             placement[idx] = {shelfX, shelfY, w, h, rot};

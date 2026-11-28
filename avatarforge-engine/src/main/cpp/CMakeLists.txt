@@ -17,6 +17,7 @@ add_library(afcore SHARED
     src/af_field.cpp
     src/af_glb.cpp
     src/af_glb_read.cpp
+    src/af_hair_cards.cpp
     src/af_json.cpp
     src/af_image.cpp
     src/af_isosurface.cpp
@@ -40,9 +41,9 @@ if(ANDROID)
     target_link_libraries(afcore PRIVATE dl log)
 endif()
 
-# AvatarForge custom renderer, copied from the canonical engine source.
-# GLES is forced by the Hub runtime on the target Samsung profile; Vulkan remains
-# compiled as an optional backend but is not selected by default.
+# AvatarForge custom PBR renderer, copied from the canonical engine source.
+# Runs Vulkan 1.0/1.1 first on hardware Android GPUs with automatic OpenGL ES 3.1/3.2
+# fallback on software emulators or when hardware Vulkan is unavailable.
 if(ANDROID)
     add_library(afrender SHARED
         src/render/af_render.cpp
@@ -95,6 +96,7 @@ if(BUILD_TESTING AND NOT ANDROID)
     add_executable(af_camera_frustum_test
         ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/camera_frustum_test.cpp)
     target_include_directories(af_camera_frustum_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/render
         ${CMAKE_CURRENT_SOURCE_DIR}/include)

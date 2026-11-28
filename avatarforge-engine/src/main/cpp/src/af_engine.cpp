@@ -64,11 +64,12 @@ enum : uint32_t {
 };
 
 const char* regionLabel(int region) {
-    static const char* const kNames[13] = {
+    static const char* const kNames[REGION_COUNT] = {
         "skin", "eye_left", "eye_right", "teeth", "tongue", "lips", "hair", "lash",
-        "nail", "cloth_upper", "cloth_lower", "shoe", "gear"
+        "nail", "cloth_upper", "cloth_lower", "shoe", "gear", "cornea_left", "cornea_right",
+        "hair_cards"
     };
-    return (region >= 0 && region < 13) ? kNames[region] : "skin";
+    return (region >= 0 && region < REGION_COUNT) ? kNames[region] : "skin";
 }
 
 /* Resolve ABI-1 legacy values before any stage can observe the spec. Height stays in metres here;
@@ -304,7 +305,7 @@ void rebuildSubmeshesAndMaterials(af_engine* e) {
 
     /* Materials: one per distinct material NAME, in first-seen region order. */
     std::vector<int> regionOfMaterial;
-    for (int r = 0; r < 13; ++r) {
+    for (int r = 0; r < REGION_COUNT; ++r) {
         const std::string name = materialForRegion(r).name;
         int found = -1;
         for (size_t i = 0; i < e->materials.size(); ++i) {
@@ -327,16 +328,17 @@ void rebuildSubmeshesAndMaterials(af_engine* e) {
                 if (gt[0] > 0.0f || gt[1] > 0.0f || gt[2] > 0.0f) {
                     base[0] = gt[0]; base[1] = gt[1]; base[2] = gt[2];
                 }
-            } else if (r == REGION_HAIR) {
+            } else if (r == REGION_HAIR || r == REGION_HAIR_CARD) {
                 const float* ht = e->spec.hair_tone;
                 if (ht[0] > 0.0f || ht[1] > 0.0f || ht[2] > 0.0f) {
                     base[0] = ht[0]; base[1] = ht[1]; base[2] = ht[2];
                 }
             }
+            const bool isCornea = (r == REGION_CORNEA_L || r == REGION_CORNEA_R);
             am.base_color_factor[0] = base[0];
             am.base_color_factor[1] = base[1];
             am.base_color_factor[2] = base[2];
-            am.base_color_factor[3] = 1.0f;
+            am.base_color_factor[3] = isCornea ? 0.04f : 1.0f;
             am.metallic = (e->spec.gear_metalness >= 0.0f && (r == REGION_GEAR || r == REGION_SHOE))
                               ? e->spec.gear_metalness : md.metallic;
             am.roughness = (e->spec.cloth_roughness >= 0.0f && (r == REGION_CLOTH_UPPER || r == REGION_CLOTH_LOWER))
@@ -346,10 +348,10 @@ void rebuildSubmeshesAndMaterials(af_engine* e) {
             am.sheen_tint = md.sheenTint;
             am.subsurface = md.subsurface;
             am.anisotropic = md.anisotropic;
-            am.has_base_color_tex = 1;
-            am.has_normal_tex = 1;
-            am.has_mr_tex = 1;
-            am.has_ao_tex = 1;
+            am.has_base_color_tex = isCornea ? 0 : 1;
+            am.has_normal_tex = isCornea ? 0 : 1;
+            am.has_mr_tex = isCornea ? 0 : 1;
+            am.has_ao_tex = isCornea ? 0 : 1;
             e->materials.push_back(am);
             regionOfMaterial.push_back(r);
         }
@@ -361,7 +363,7 @@ void rebuildSubmeshesAndMaterials(af_engine* e) {
     std::vector<std::vector<uint32_t>> groupIndices(e->materials.size());
     for (size_t t = 0; t < m.triangleCount(); ++t) {
         const int32_t r = m.regions.empty() ? 0 : m.regions[m.indices[t * 3]];
-        const std::string name = materialForRegion((r >= 0 && r < 13) ? r : 0).name;
+        const std::string name = materialForRegion((r >= 0 && r < REGION_COUNT) ? r : 0).name;
         int mat = 0;
         for (size_t i = 0; i < e->materials.size(); ++i) {
             if (name == e->materials[i].name) { mat = static_cast<int>(i); break; }
@@ -494,6 +496,10 @@ int32_t af_engine_create(const af_spec* spec, const af_callbacks* callbacks, af_
     e->stats.blendshape_count = 0;
     *out_engine = e;
     return static_cast<int32_t>(AF_OK);
+}
+
+void af_engine_clear_callbacks(af_engine* engine) {
+    if (engine) engine->cb = af_callbacks{};
 }
 
 void af_engine_destroy(af_engine* engine) {
@@ -1338,12 +1344,12 @@ int32_t af_engine_export_glb_to_memory(af_engine* engine, uint8_t** out_bytes, s
  * ============================================================================================ */
 namespace {
 
-/* Region for an imported submesh: the exporter names materials after AvatarForge's 13 canonical
+/* Region for an imported submesh: the exporter names materials after AvatarForge's canonical
    regions, so an engine-made file round-trips its regions exactly. Foreign materials return -1
    (AF_KIND_GENERIC) so standard glTF 2.0 assets use standard PBR without skin subsurface scatter. */
 int32_t regionForMaterialName(const char* name) {
     if (!name || !*name) return -1;
-    for (int r = 0; r < 13; ++r) {
+    for (int r = 0; r < REGION_COUNT; ++r) {
         if (std::strcmp(name, materialForRegion(r).name.c_str()) == 0) return r;
     }
     return -1;

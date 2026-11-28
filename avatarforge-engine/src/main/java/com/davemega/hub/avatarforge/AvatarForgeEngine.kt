@@ -90,6 +90,7 @@ object AvatarForgeEngine {
         prompt: String = spec.prompt,
         outputName: String = "avatar-${spec.seed}-${System.currentTimeMillis()}.glb",
         requestedMemoryBudgetBytes: Long = DEFAULT_MEMORY_BUDGET_BYTES,
+        preserveLiveRig: Boolean = true,
     ): AvatarGenerationResult = runInterruptible(Dispatchers.IO) {
         require(requestedMemoryBudgetBytes >= MIN_MEMORY_BUDGET_BYTES) {
             "AvatarForge generation budget must be at least 512 MiB"
@@ -133,6 +134,7 @@ object AvatarForgeEngine {
                 memoryBudgetBytes = budget,
                 adultModeConfirmed = spec.adultModeConfirmed,
                 cancellationToken = NativeCancellationToken(),
+                preserveLiveRig = preserveLiveRig,
             ).also { result ->
                 check(result.size == 11) { "AvatarForge returned ${result.size} result fields; expected 11" }
                 check(result.all { it >= 0L }) { "AvatarForge returned a negative statistic." }
@@ -153,6 +155,7 @@ object AvatarForgeEngine {
             }
         } catch (failure: Throwable) {
             temporaryOutput.delete()
+            NativeMethods.clearLiveRig()
             throw failure
         }
 
@@ -160,7 +163,14 @@ object AvatarForgeEngine {
             Files.move(temporaryOutput.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE)
         } catch (failure: Exception) {
             temporaryOutput.delete()
+            NativeMethods.clearLiveRig()
             throw IllegalStateException("Could not atomically publish the validated avatar GLB.", failure)
+        }
+
+        if (preserveLiveRig) {
+            NativeMethods.bindLiveRigPath(destination.absolutePath)
+        } else {
+            NativeMethods.clearLiveRig()
         }
 
         AvatarGenerationResult(
@@ -192,7 +202,10 @@ private object NativeMethods {
         memoryBudgetBytes: Long,
         adultModeConfirmed: Boolean,
         cancellationToken: NativeCancellationToken,
+        preserveLiveRig: Boolean,
     ): LongArray
+    external fun bindLiveRigPath(publishedPath: String)
+    external fun clearLiveRig()
 }
 
 internal class NativeCancellationToken(

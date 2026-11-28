@@ -114,7 +114,7 @@ const std::vector<std::string>& materialNames() {
     static std::vector<std::string> names;
     if (names.empty()) {
         std::map<std::string, int> seen;
-        for (int r = 0; r < 13; ++r) {
+        for (int r = 0; r < REGION_COUNT; ++r) {
             const std::string n = materialForRegion(r).name;
             if (!seen.count(n)) {
                 seen[n] = static_cast<int>(names.size());
@@ -136,10 +136,21 @@ int materialIndexForRegion(int region) {
 
 /* The first region that maps to a given material, used for the material's own properties. */
 int representativeRegion(int material) {
-    for (int r = 0; r < 13; ++r) {
+    for (int r = 0; r < REGION_COUNT; ++r) {
         if (materialIndexForRegion(r) == material) return r;
     }
     return 0;
+}
+
+/* KHR_materials_sheen is a fabric microfiber grazing lobe. AvatarForge currently does not bake a
+   sheen texture (its native GLES/Vulkan renderer evaluates cloth sheen directly from the region
+   material table). Emitting KHR_materials_sheen only when a cloth material has an authored sheen
+   texture prevents unweighted velvet sheen on non-fabric materials (skin, lips, nails, gear) and
+   avoids triggering optional sheen ubershader variants in external glTF viewers such as Filament. */
+bool shouldEmitGlbSheen(int region, const MaterialDef& md, int texSheen) {
+    const bool isClothRegion = (region == REGION_CLOTH_UPPER || region == REGION_CLOTH_LOWER ||
+                                region == REGION_SHOE);
+    return isClothRegion && texSheen >= 0 && md.sheen > 1e-3f && md.sheenTint > 1e-3f;
 }
 
 } // namespace
@@ -278,7 +289,7 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
         int region = 0;
         if (!mesh.regions.empty()) {
             const int32_t r = mesh.regions[mesh.indices[t * 3]];
-            region = (r >= 0 && r < 13) ? r : 0;
+            region = (r >= 0 && r < REGION_COUNT) ? r : 0;
         }
         std::vector<uint32_t>& g = groups[materialIndexForRegion(region)];
         g.push_back(mesh.indices[t * 3 + 0]);
@@ -401,6 +412,7 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
     const int texMR = textureSlot[2];
     const int texAO = textureSlot[3];
     const int texSSS = textureSlot[4];
+    const int texSheen = -1; /* No sheen texture is currently baked; cloth sheen uses native shaders. */
 
     /* ==========================================================================================
      * Skeleton.
@@ -651,37 +663,46 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
         j += "\"materials\":[";
         for (size_t mi = 0; mi < names.size(); ++mi) {
             const int materialRegion = representativeRegion(static_cast<int>(mi));
+            const bool isCornea = (materialRegion == REGION_CORNEA_L || materialRegion == REGION_CORNEA_R);
+            const bool isHairCard = (materialRegion == REGION_HAIR_CARD);
             const MaterialDef& md = materialForRegion(materialRegion);
-            const Vec3 baseColor = materialRegion == REGION_HAIR
+            const Vec3 baseColor = (materialRegion == REGION_HAIR || isHairCard)
                 ? hairBaseColorForSpec(spec) : md.baseColor;
             if (mi) j += ',';
             j += "{\"name\":\"";
             jsonEscape(j, names[mi]);
-            j += "\",\"doubleSided\":false,\"pbrMetallicRoughness\":{\"baseColorFactor\":[";
+            j += isHairCard ? "\",\"doubleSided\":true" : "\",\"doubleSided\":false";
+            if (isCornea) {
+                j += ",\"alphaMode\":\"BLEND\"";
+            } else if (isHairCard) {
+                j += ",\"alphaMode\":\"MASK\",\"alphaCutoff\":0.35";
+            }
+            j += ",\"pbrMetallicRoughness\":{\"baseColorFactor\":[";
             jsonNum(j, baseColor.x); j += ',';
             jsonNum(j, baseColor.y); j += ',';
-            jsonNum(j, baseColor.z);
-            j += ",1],\"metallicFactor\":";
+            jsonNum(j, baseColor.z); j += ',';
+            jsonNum(j, isCornea ? 0.04 : 1.0);
+            j += "],\"metallicFactor\":";
             jsonNum(j, md.metallic);
             j += ",\"roughnessFactor\":";
             jsonNum(j, md.roughness);
-            if (texBaseColor >= 0) {
+            if (!isCornea && texBaseColor >= 0) {
                 j += ",\"baseColorTexture\":{\"index\":";
                 j += std::to_string(texBaseColor);
                 j += "}";
             }
-            if (texMR >= 0) {
+            if (!isCornea && texMR >= 0) {
                 j += ",\"metallicRoughnessTexture\":{\"index\":";
                 j += std::to_string(texMR);
                 j += "}";
             }
             j += '}';
-            if (texNormal >= 0) {
+            if (!isCornea && texNormal >= 0) {
                 j += ",\"normalTexture\":{\"index\":";
                 j += std::to_string(texNormal);
                 j += ",\"scale\":1}";
             }
-            if (texAO >= 0) {
+            if (!isCornea && texAO >= 0) {
                 j += ",\"occlusionTexture\":{\"index\":";
                 j += std::to_string(texAO);
                 j += ",\"strength\":1}";
@@ -689,14 +710,21 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
             j += ",\"extensions\":{\"KHR_materials_ior\":{\"ior\":";
             jsonNum(j, md.ior);
             j += '}';
-            if (md.sheen > 1e-3f) {
+            if (isCornea) {
+                j += ",\"KHR_materials_clearcoat\":{\"clearcoatFactor\":1,\"clearcoatRoughnessFactor\":0.035}";
+            }
+            if (shouldEmitGlbSheen(materialRegion, md, texSheen)) {
+                const float sheenColor = clampf(md.sheen * md.sheenTint, 0.0f, 1.0f);
+                const float sheenRoughness = clampf(1.0f - 0.5f * md.sheen, 0.0f, 1.0f);
                 j += ",\"KHR_materials_sheen\":{\"sheenColorFactor\":[";
-                jsonNum(j, md.sheenTint); j += ',';
-                jsonNum(j, md.sheenTint); j += ',';
-                jsonNum(j, md.sheenTint);
+                jsonNum(j, sheenColor); j += ',';
+                jsonNum(j, sheenColor); j += ',';
+                jsonNum(j, sheenColor);
                 j += "],\"sheenRoughnessFactor\":";
-                jsonNum(j, 1.0f - 0.5f * md.sheen);
-                j += '}';
+                jsonNum(j, sheenRoughness);
+                j += ",\"sheenColorTexture\":{\"index\":";
+                j += std::to_string(texSheen);
+                j += "}}";
             }
             if (texSSS >= 0 && md.subsurface > 1e-3f) {
                 /* Subsurface scattering is not in core glTF 2.0. The map and the per-channel
@@ -855,13 +883,16 @@ bool writeGlb(const Mesh& mesh, const UVLayout* layout, const Rig* rig, const Te
     /* extensionsUsed: only those actually emitted. */
     {
         std::string used = "\"extensionsUsed\":[\"KHR_materials_ior\"";
-        bool sheen = false, sss = false;
+        bool clearcoat = false, sheen = false, sss = false;
         const std::vector<std::string>& names = materialNames();
         for (size_t mi = 0; mi < names.size(); ++mi) {
-            const MaterialDef& md = materialForRegion(representativeRegion(static_cast<int>(mi)));
-            if (md.sheen > 1e-3f) sheen = true;
+            const int materialRegion = representativeRegion(static_cast<int>(mi));
+            const MaterialDef& md = materialForRegion(materialRegion);
+            if (materialRegion == REGION_CORNEA_L || materialRegion == REGION_CORNEA_R) clearcoat = true;
+            if (shouldEmitGlbSheen(materialRegion, md, texSheen)) sheen = true;
             if (texSSS >= 0 && md.subsurface > 1e-3f) sss = true;
         }
+        if (clearcoat) used += ",\"KHR_materials_clearcoat\"";
         if (sheen) used += ",\"KHR_materials_sheen\"";
         if (sss) used += ",\"AF_subsurface\"";
         used += "]";

@@ -321,6 +321,20 @@ class FilamentPreviewView(context: Context) : FrameLayout(context), SurfaceHolde
         var candidateCameraEntity = 0
 
         try {
+            // Filament defaults to Feature Level 1 even on GLES 3.1+ backends. Promote to the
+            // highest feature level the backend actually supports before constructing gltfio's
+            // UbershaderProvider so shader uniform declarations match gltfio's expectations
+            // (preventing PreconditionPanic on uniforms such as "sheenColorIndex").
+            val supportedFeatureLevel = candidateEngine.getSupportedFeatureLevel()
+            val activeFeatureLevel = candidateEngine.setActiveFeatureLevel(supportedFeatureLevel)
+            Log.i(
+                TAG,
+                "Filament ${backend.displayName()} feature levels: supported=$supportedFeatureLevel active=$activeFeatureLevel"
+            )
+            persistCheckpoint(
+                "Filament ${backend.displayName()} feature level $activeFeatureLevel (supported $supportedFeatureLevel)"
+            )
+
             val newRenderer = checkNotNull(candidateEngine.createRenderer()) { "Filament renderer was null" }
             candidateRenderer = newRenderer
             val newScene = checkNotNull(candidateEngine.createScene()) { "Filament scene was null" }

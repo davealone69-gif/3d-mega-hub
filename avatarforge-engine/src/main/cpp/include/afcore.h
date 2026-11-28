@@ -224,6 +224,7 @@ int32_t af_engine_abi_version(void);
 int32_t af_engine_set_memory_budget(af_engine* engine, uint64_t bytes);
 
 int32_t af_engine_create(const af_spec* spec, const af_callbacks* callbacks, af_engine** out_engine);
+void    af_engine_clear_callbacks(af_engine* engine);
 void    af_engine_destroy(af_engine* engine);
 int32_t af_engine_reset(af_engine* engine, const af_spec* spec);
 

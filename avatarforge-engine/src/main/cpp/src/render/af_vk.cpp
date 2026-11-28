@@ -40,9 +40,11 @@
 #include <vulkan/vulkan_android.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -125,6 +127,7 @@ public:
 private:
     /* ---- setup steps (each returns false and fills error on failure) ---- */
     bool createInstance(std::string* error);
+    bool probeHardwareDevice(std::string* error);
     bool createSurface(ANativeWindow* window, std::string* error);
     bool pickPhysicalDevice(std::string* error);
     bool createDevice(std::string* error);
@@ -249,6 +252,8 @@ private:
     VkPipelineLayout postLayout_ = VK_NULL_HANDLE;     /* set0 only                   */
     VkPipeline shadowPipeline_ = VK_NULL_HANDLE;
     VkPipeline forwardPipeline_ = VK_NULL_HANDLE;
+    VkPipeline hairCardPipeline_ = VK_NULL_HANDLE;
+    VkPipeline corneaPipeline_ = VK_NULL_HANDLE;
     VkPipeline groundPipeline_ = VK_NULL_HANDLE;
     VkPipeline linePipeline_ = VK_NULL_HANDLE;
     VkPipeline bloomDownPipeline_ = VK_NULL_HANDLE;
@@ -360,6 +365,9 @@ private:
 bool VulkanRenderer::init(ANativeWindow* window, const RendererOptions& options, std::string* error) {
     options_ = options;
     if (!createInstance(error)) return false;
+    /* Reject CPU/software Vulkan devices BEFORE calling vkCreateAndroidSurfaceKHR so
+       ANativeWindow stays completely untouched when falling back to OpenGL ES 3.1. */
+    if (!probeHardwareDevice(error)) return false;
     if (!createSurface(window, error)) return false;
     if (!pickPhysicalDevice(error)) return false;
     if (!createDevice(error)) return false;
@@ -436,6 +444,52 @@ bool VulkanRenderer::createInstance(std::string* error) {
     return true;
 }
 
+namespace {
+bool isSoftwareVulkanDevice(const VkPhysicalDeviceProperties& p) {
+    if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) return true;
+    std::string lower = p.deviceName;
+    for (char& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return lower.find("swiftshader") != std::string::npos ||
+           lower.find("lavapipe") != std::string::npos ||
+           lower.find("llvmpipe") != std::string::npos ||
+           lower.find("subzero") != std::string::npos;
+}
+} /* namespace */
+
+bool VulkanRenderer::probeHardwareDevice(std::string* error) {
+    uint32_t count = 0;
+    vkEnumeratePhysicalDevices(instance_, &count, nullptr);
+    if (count == 0) {
+        *error = "no Vulkan device present";
+        return false;
+    }
+    std::vector<VkPhysicalDevice> devices(count);
+    vkEnumeratePhysicalDevices(instance_, &count, devices.data());
+    std::string skippedSoftwareDevice;
+    for (VkPhysicalDevice dev : devices) {
+        VkPhysicalDeviceProperties p{};
+        vkGetPhysicalDeviceProperties(dev, &p);
+        if (isSoftwareVulkanDevice(p)) {
+            skippedSoftwareDevice = p.deviceName;
+            continue;
+        }
+        uint32_t qcount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qcount, nullptr);
+        std::vector<VkQueueFamilyProperties> queues(qcount);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qcount, queues.data());
+        for (uint32_t q = 0; q < qcount; ++q) {
+            if (queues[q].queueFlags & VK_QUEUE_GRAPHICS_BIT) return true;
+        }
+    }
+    if (!skippedSoftwareDevice.empty()) {
+        *error = "skipping CPU/software Vulkan device (" + skippedSoftwareDevice +
+                 ") so GLES 3.1 fallback handles emulator rendering";
+    } else {
+        *error = "no hardware Vulkan graphics device present";
+    }
+    return false;
+}
+
 bool VulkanRenderer::createSurface(ANativeWindow* window, std::string* error) {
     VkAndroidSurfaceCreateInfoKHR ci{};
     ci.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
@@ -461,6 +515,7 @@ bool VulkanRenderer::pickPhysicalDevice(std::string* error) {
     VkPhysicalDevice best = VK_NULL_HANDLE;
     int bestScore = -1;
     uint32_t bestFamily = 0;
+    std::string skippedSoftwareDevice;
     for (VkPhysicalDevice dev : devices) {
         uint32_t qcount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(dev, &qcount, nullptr);
@@ -473,6 +528,10 @@ bool VulkanRenderer::pickPhysicalDevice(std::string* error) {
             if (!present) continue;
             VkPhysicalDeviceProperties p{};
             vkGetPhysicalDeviceProperties(dev, &p);
+            if (isSoftwareVulkanDevice(p)) {
+                skippedSoftwareDevice = p.deviceName;
+                break;
+            }
             int score = 0;
             switch (p.deviceType) {
                 case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   score = 400; break;
@@ -489,7 +548,12 @@ bool VulkanRenderer::pickPhysicalDevice(std::string* error) {
         }
     }
     if (best == VK_NULL_HANDLE) {
-        *error = "no Vulkan device with a graphics+present queue for this surface";
+        if (!skippedSoftwareDevice.empty()) {
+            *error = "skipping CPU/software Vulkan device (" + skippedSoftwareDevice +
+                     ") so GLES 3.1 fallback handles emulator rendering";
+        } else {
+            *error = "no hardware Vulkan device with a graphics+present queue for this surface";
+        }
         return false;
     }
     phys_ = best;
@@ -1534,7 +1598,56 @@ bool VulkanRenderer::createPipelines(std::string* error) {
         ci.layout = avatarLayout_;
         ci.renderPass = hdrPass_;
         const VkResult r = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr, &forwardPipeline_);
-        if (r != VK_SUCCESS) { setError(error, "vkCreateGraphicsPipelines(forward)", r); return false; }
+        if (r != VK_SUCCESS) {
+            vkDestroyShaderModule(device_, vert, nullptr);
+            vkDestroyShaderModule(device_, frag, nullptr);
+            setError(error, "vkCreateGraphicsPipelines(forward)", r);
+            return false;
+        }
+
+        /* Double-sided forward pipeline for layered hair cards (REGION_HAIR_CARD). */
+        {
+            VkPipelineRasterizationStateCreateInfo hcr = raster;
+            hcr.cullMode = VK_CULL_MODE_NONE;
+            ci.pRasterizationState = &hcr;
+            const VkResult rHc = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr, &hairCardPipeline_);
+            ci.pRasterizationState = &raster;
+            if (rHc != VK_SUCCESS) {
+                vkDestroyShaderModule(device_, vert, nullptr);
+                vkDestroyShaderModule(device_, frag, nullptr);
+                setError(error, "vkCreateGraphicsPipelines(hairCard)", rHc);
+                return false;
+            }
+        }
+
+        /* Translucent wet corneal dome pipeline: additive Fresnel specular catchlights over
+           the recessed concave iris with depth writes disabled. */
+        {
+            VkPipelineDepthStencilStateCreateInfo cd = depth;
+            cd.depthWriteEnable = VK_FALSE;
+            VkPipelineColorBlendAttachmentState cba{};
+            cba.blendEnable = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cba.colorBlendOp = VK_BLEND_OP_ADD;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cba.alphaBlendOp = VK_BLEND_OP_ADD;
+            cba.colorWriteMask = 0xF;
+            VkPipelineColorBlendStateCreateInfo cb = blend;
+            cb.pAttachments = &cba;
+            ci.pDepthStencilState = &cd;
+            ci.pColorBlendState = &cb;
+            const VkResult rCor = vkCreateGraphicsPipelines(device_, VK_NULL_HANDLE, 1, &ci, nullptr, &corneaPipeline_);
+            ci.pDepthStencilState = &depth;
+            ci.pColorBlendState = &blend;
+            if (rCor != VK_SUCCESS) {
+                vkDestroyShaderModule(device_, vert, nullptr);
+                vkDestroyShaderModule(device_, frag, nullptr);
+                setError(error, "vkCreateGraphicsPipelines(cornea)", rCor);
+                return false;
+            }
+        }
 
         /* Ground: the studio plane never needs back-face culling, and it must stay visible when
            the camera dips below the horizon line. */
@@ -2163,22 +2276,45 @@ void VulkanRenderer::rebuildMaterialBlocks() {
         const af_material& m = (materials && sm.material_index >= 0 && sm.material_index < materialCount)
                                    ? materials[sm.material_index] : af_material{};
         MaterialUbo block{};
-        block.baseColorFactor[0] = m.base_color_factor[0];
-        block.baseColorFactor[1] = m.base_color_factor[1];
-        block.baseColorFactor[2] = m.base_color_factor[2];
-        block.baseColorFactor[3] = m.base_color_factor[3];
-        block.pbr[0] = m.metallic;
-        block.pbr[1] = m.roughness;
-        block.pbr[2] = m.ior;
-        block.pbr[3] = m.sheen;
-        block.pbr2[0] = m.subsurface;
-        block.pbr2[1] = m.anisotropic;
-        block.pbr2[2] = float(materialKindForRegion(sm.region, m.metallic));
-        block.pbr2[3] = m.has_normal_tex ? 1.0f : 0.0f;
-        block.texFlags[0] = m.has_base_color_tex ? 1.0f : 0.0f;
-        block.texFlags[1] = m.has_mr_tex ? 1.0f : 0.0f;
-        block.texFlags[2] = m.has_ao_tex ? 1.0f : 0.0f;
-        block.texFlags[3] = atlasUploaded_ ? 1.0f : 0.0f;
+        const bool isCornea = isCorneaRegion(sm.region);
+        if (isCornea) {
+            /* Zero diffuse albedo + low optical alpha + low roughness IOR 1.376:
+               additive-over-iris blending adds pure crisp GGX + IBL catchlights without
+               washing out the recessed pupil or iris beneath. */
+            block.baseColorFactor[0] = 0.0f;
+            block.baseColorFactor[1] = 0.0f;
+            block.baseColorFactor[2] = 0.0f;
+            block.baseColorFactor[3] = 0.06f;
+            block.pbr[0] = 0.0f;
+            block.pbr[1] = 0.032f;
+            block.pbr[2] = 1.376f;
+            block.pbr[3] = 0.0f;
+            block.pbr2[0] = 0.0f;
+            block.pbr2[1] = 0.0f;
+            block.pbr2[2] = float(AF_KIND_GENERIC);
+            block.pbr2[3] = 0.0f;
+            block.texFlags[0] = 0.0f;
+            block.texFlags[1] = 0.0f;
+            block.texFlags[2] = 0.0f;
+            block.texFlags[3] = 0.0f;
+        } else {
+            block.baseColorFactor[0] = m.base_color_factor[0];
+            block.baseColorFactor[1] = m.base_color_factor[1];
+            block.baseColorFactor[2] = m.base_color_factor[2];
+            block.baseColorFactor[3] = m.base_color_factor[3];
+            block.pbr[0] = m.metallic;
+            block.pbr[1] = m.roughness;
+            block.pbr[2] = m.ior;
+            block.pbr[3] = m.sheen;
+            block.pbr2[0] = m.subsurface;
+            block.pbr2[1] = m.anisotropic;
+            block.pbr2[2] = float(materialKindForRegion(sm.region, m.metallic));
+            block.pbr2[3] = m.has_normal_tex ? 1.0f : 0.0f;
+            block.texFlags[0] = m.has_base_color_tex ? 1.0f : 0.0f;
+            block.texFlags[1] = m.has_mr_tex ? 1.0f : 0.0f;
+            block.texFlags[2] = m.has_ao_tex ? 1.0f : 0.0f;
+            block.texFlags[3] = atlasUploaded_ ? 1.0f : 0.0f;
+        }
         block.region[0] = float(sm.region);
         block.region[1] = (highlightRegion_ >= 0 && sm.region == highlightRegion_) ? 1.0f : 0.0f;
         /* Eye regions additionally carry the uv extent of their atlas island plus a flag: the eye
@@ -2404,14 +2540,18 @@ void VulkanRenderer::recordShadowPass(VkCommandBuffer cmd) {
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
         if (indirectBuffer_ != VK_NULL_HANDLE && indirectCommandCount_ >= uint32_t(n)) {
-            for (int i = 0; i < n; ++i)
+            for (int i = 0; i < n; ++i) {
+                if (submeshes && isCorneaRegion(submeshes[i].region)) continue;
                 vkCmdDrawIndexedIndirect(cmd, indirectBuffer_,
                                          VkDeviceSize(i) * sizeof(VkDrawIndexedIndirectCommand), 1,
                                          sizeof(VkDrawIndexedIndirectCommand));
+            }
         } else {
-            for (int i = 0; i < n; ++i)
+            for (int i = 0; i < n; ++i) {
+                if (submeshes && isCorneaRegion(submeshes[i].region)) continue;
                 vkCmdDrawIndexed(cmd, uint32_t(submeshes[i].index_count), 1,
                                  uint32_t(submeshes[i].index_offset), 0, 0);
+            }
         }
     }
     vkCmdEndRenderPass(cmd);
@@ -2485,21 +2625,38 @@ void VulkanRenderer::recordForwardPass(VkCommandBuffer cmd, uint32_t imageIndex)
 
         const af_submesh* submeshes = af_engine_submeshes(engine_);
         const int n = af_engine_submesh_count(engine_);
-        for (int i = 0; i < n; ++i) {
-            if (materialSet_ != VK_NULL_HANDLE) {
-                const uint32_t matOffset = uint32_t(i) * materialStride_;
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, avatarLayout_, 1, 1,
-                                        &materialSet_, 1, &matOffset);
+        VkPipeline boundPipeline = forwardPipeline_;
+        /* Pass 0: opaque anatomy, inner eye sclera/iris, and double-sided hair cards.
+           Pass 1: translucent wet corneal domes with additive Fresnel catchlights. */
+        for (int pass = 0; pass < 2; ++pass) {
+            const bool corneaPass = (pass == 1);
+            for (int i = 0; i < n; ++i) {
+                const int region = submeshes ? submeshes[i].region : -1;
+                const bool isCornea = isCorneaRegion(region);
+                if (isCornea != corneaPass) continue;
+                VkPipeline desired = corneaPass ? corneaPipeline_
+                                   : (isHairCardRegion(region) || region == -2) ? hairCardPipeline_
+                                   : forwardPipeline_;
+                if (desired == VK_NULL_HANDLE) desired = forwardPipeline_;
+                if (desired != boundPipeline) {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, desired);
+                    boundPipeline = desired;
+                }
+                if (materialSet_ != VK_NULL_HANDLE) {
+                    const uint32_t matOffset = uint32_t(i) * materialStride_;
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, avatarLayout_, 1, 1,
+                                            &materialSet_, 1, &matOffset);
+                }
+                if (indirectBuffer_ != VK_NULL_HANDLE && indirectCommandCount_ > uint32_t(i)) {
+                    vkCmdDrawIndexedIndirect(cmd, indirectBuffer_,
+                                             VkDeviceSize(i) * sizeof(VkDrawIndexedIndirectCommand), 1,
+                                             sizeof(VkDrawIndexedIndirectCommand));
+                } else {
+                    vkCmdDrawIndexed(cmd, uint32_t(submeshes[i].index_count), 1,
+                                     uint32_t(submeshes[i].index_offset), 0, 0);
+                }
+                ++drawCallsThisFrame_;
             }
-            if (indirectBuffer_ != VK_NULL_HANDLE && indirectCommandCount_ > uint32_t(i)) {
-                vkCmdDrawIndexedIndirect(cmd, indirectBuffer_,
-                                         VkDeviceSize(i) * sizeof(VkDrawIndexedIndirectCommand), 1,
-                                         sizeof(VkDrawIndexedIndirectCommand));
-            } else {
-                vkCmdDrawIndexed(cmd, uint32_t(submeshes[i].index_count), 1,
-                                 uint32_t(submeshes[i].index_offset), 0, 0);
-            }
-            ++drawCallsThisFrame_;
         }
         trianglesThisFrame_ = indexCount_ / 3;
     }
@@ -2632,6 +2789,9 @@ void VulkanRenderer::recordCommands(VkCommandBuffer cmd, uint32_t imageIndex) {
  *  Frame loop
  * ============================================================================================ */
 void VulkanRenderer::renderFrame(float deltaSeconds) {
+    stats_.framePresented = false;
+    stats_.glError = 0;
+    stats_.eglError = 0;
     if (targetsDirty_) applyOptionChanges();
     if (!device_ || swapchain_ == VK_NULL_HANDLE) return;
 
@@ -2653,11 +2813,74 @@ void VulkanRenderer::renderFrame(float deltaSeconds) {
         framebufferResized_ = true;
         return;
     }
+    if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
+        stats_.eglError = int(acquired);
+        return;
+    }
     if (acquired == VK_SUBOPTIMAL_KHR) framebufferResized_ = true;
     vkResetFences(device_, 1, &inFlight_[frameIndex_]);
 
-    updateScene(deltaSeconds);
     updateAnimation(deltaSeconds);
+    updateScene(deltaSeconds);
+
+    /* Frustum & depth-range verification telemetry (parity with GlRenderer).
+       Vulkan projection maps clip Z into [0, +cw]. */
+    stats_.nearPlane = scene_.nearPlane;
+    stats_.farPlane = scene_.farPlane;
+    stats_.minViewDepth = std::numeric_limits<float>::infinity();
+    stats_.maxViewDepth = -std::numeric_limits<float>::infinity();
+    int outsidePlane[6] = {0, 0, 0, 0, 0, 0};
+    stats_.outsideCorners = 0;
+    stats_.firstOutsideCorner = -1;
+    stats_.firstOutsideViewX = stats_.firstOutsideViewY = stats_.firstOutsideViewZ = 0.0f;
+    stats_.boundsAllCornersInDepthRange = scene_.hasModel;
+    if (scene_.hasModel) {
+        for (int corner = 0; corner < 8; ++corner) {
+            const float x = (corner & 1) ? scene_.modelMax[0] : scene_.modelMin[0];
+            const float y = (corner & 2) ? scene_.modelMax[1] : scene_.modelMin[1];
+            const float z = (corner & 4) ? scene_.modelMax[2] : scene_.modelMin[2];
+            const float* v = scene_.camera.view;
+            const float vx = v[0]*x + v[4]*y + v[8]*z + v[12];
+            const float vy = v[1]*x + v[5]*y + v[9]*z + v[13];
+            const float vz = v[2]*x + v[6]*y + v[10]*z + v[14];
+            const float depth = -vz;
+            const bool depthInside = depth >= scene_.nearPlane && depth <= scene_.farPlane;
+            stats_.boundsAllCornersInDepthRange = stats_.boundsAllCornersInDepthRange && depthInside;
+            stats_.minViewDepth = std::min(stats_.minViewDepth, depth);
+            stats_.maxViewDepth = std::max(stats_.maxViewDepth, depth);
+            const float* m = scene_.camera.viewProj;
+            const float cx = m[0]*x + m[4]*y + m[8]*z + m[12];
+            const float cy = m[1]*x + m[5]*y + m[9]*z + m[13];
+            const float cz = m[2]*x + m[6]*y + m[10]*z + m[14];
+            const float cw = m[3]*x + m[7]*y + m[11]*z + m[15];
+            if (cx < -cw) ++outsidePlane[0];
+            if (cx >  cw) ++outsidePlane[1];
+            if (cy < -cw) ++outsidePlane[2];
+            if (cy >  cw) ++outsidePlane[3];
+            if (cz <  0.0f) ++outsidePlane[4];
+            if (cz >  cw) ++outsidePlane[5];
+            const bool cornerOutside = !depthInside || cx < -cw || cx > cw || cy < -cw || cy > cw || cz < 0.0f || cz > cw;
+            if (cornerOutside) {
+                if (stats_.firstOutsideCorner < 0) {
+                    stats_.firstOutsideCorner = corner;
+                    stats_.firstOutsideViewX = vx;
+                    stats_.firstOutsideViewY = vy;
+                    stats_.firstOutsideViewZ = vz;
+                }
+                ++stats_.outsideCorners;
+            }
+        }
+        bool rejectedByPlane = false;
+        for (int count : outsidePlane) rejectedByPlane = rejectedByPlane || count == 8;
+        const bool depthOverlap = stats_.maxViewDepth >= scene_.nearPlane &&
+                                  stats_.minViewDepth <= scene_.farPlane;
+        stats_.boundsInFrustum = !rejectedByPlane && depthOverlap &&
+                                 std::isfinite(stats_.minViewDepth) &&
+                                 std::isfinite(stats_.maxViewDepth);
+    } else {
+        stats_.boundsInFrustum = false;
+        stats_.boundsAllCornersInDepthRange = false;
+    }
 
     vkResetCommandBuffer(cmd_[frameIndex_], 0);
     recordCommands(cmd_[frameIndex_], imageIndex);
@@ -2672,7 +2895,11 @@ void VulkanRenderer::renderFrame(float deltaSeconds) {
     submit.pCommandBuffers = &cmd_[frameIndex_];
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &renderFinished_[imageIndex];
-    if (vkQueueSubmit(queue_, 1, &submit, inFlight_[frameIndex_]) != VK_SUCCESS) return;
+    const VkResult submitted = vkQueueSubmit(queue_, 1, &submit, inFlight_[frameIndex_]);
+    if (submitted != VK_SUCCESS) {
+        stats_.eglError = int(submitted);
+        return;
+    }
 
     VkPresentInfoKHR present{};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -2682,6 +2909,12 @@ void VulkanRenderer::renderFrame(float deltaSeconds) {
     present.pSwapchains = &swapchain_;
     present.pImageIndices = &imageIndex;
     const VkResult presented = vkQueuePresentKHR(queue_, &present);
+    if (presented == VK_SUCCESS || presented == VK_SUBOPTIMAL_KHR) {
+        stats_.framePresented = true;
+        ++stats_.presentedFrames;
+    } else if (presented != VK_ERROR_OUT_OF_DATE_KHR) {
+        stats_.eglError = int(presented);
+    }
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR) framebufferResized_ = true;
 
     frameIndex_ = (frameIndex_ + 1) % kFramesInFlight;
@@ -2836,9 +3069,9 @@ void VulkanRenderer::destroyTargets() {
 }
 
 void VulkanRenderer::destroyPipelines() {
-    for (VkPipeline* p : {&shadowPipeline_, &forwardPipeline_, &groundPipeline_, &linePipeline_,
-                          &bloomDownPipeline_, &bloomUpPipeline_, &compositePipeline_,
-                          &forwardPlusPipeline_})
+    for (VkPipeline* p : {&shadowPipeline_, &forwardPipeline_, &hairCardPipeline_, &corneaPipeline_,
+                          &groundPipeline_, &linePipeline_, &bloomDownPipeline_, &bloomUpPipeline_,
+                          &compositePipeline_, &forwardPlusPipeline_})
         if (*p) { vkDestroyPipeline(device_, *p, nullptr); *p = VK_NULL_HANDLE; }
     if (descriptorPool_) { vkDestroyDescriptorPool(device_, descriptorPool_, nullptr); descriptorPool_ = VK_NULL_HANDLE; }
     cameraSets_.clear();
@@ -2852,7 +3085,14 @@ void VulkanRenderer::destroyPipelines() {
 
 void VulkanRenderer::destroyAll() {
     if (!device_) {
-        if (instance_) vkDestroyInstance(instance_, nullptr);
+        if (surface_ && instance_) {
+            vkDestroySurfaceKHR(instance_, surface_, nullptr);
+            surface_ = VK_NULL_HANDLE;
+        }
+        if (instance_) {
+            vkDestroyInstance(instance_, nullptr);
+            instance_ = VK_NULL_HANDLE;
+        }
         return;
     }
     vkDeviceWaitIdle(device_);
