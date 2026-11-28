@@ -730,15 +730,14 @@ class AvatarForgeSurfaceView(
                 PixelCopy.request(this, bitmap, { copyResult ->
                     /* A late callback from a timed-out or destroyed surface must never
                        complete a newer request or overwrite its diagnostic result. */
-                    if (pixelCopyActiveAttempt.get() != attempt ||
-                        !pixelCopyPending.compareAndSet(true, false)) {
+                    if (!pixelCopyActiveAttempt.compareAndSet(attempt, 0)) {
                         recycleBitmap()
                         return@request
                     }
                     mainHandler.removeCallbacks(timeout)
-                    pixelCopyActiveAttempt.compareAndSet(attempt, 0)
 
                     if (copyResult != PixelCopy.SUCCESS) {
+                        pixelCopyPending.set(false)
                         recycleBitmap()
                         if (attempt >= MAX_PIXEL_COPY_ATTEMPTS) {
                             pixelCopyComplete.set(true)
@@ -752,70 +751,90 @@ class AvatarForgeSurfaceView(
                         return@request
                     }
 
-                    val pixels = IntArray(captureWidth * captureHeight)
-                    bitmap.getPixels(pixels, 0, captureWidth, 0, 0, captureWidth, captureHeight)
-                    /* Estimate the actual clear colour from the four corners. A dark
-                       blue-grey background must not count as avatar geometry. */
-                    val corners = intArrayOf(
-                        pixels[0],
-                        pixels[captureWidth - 1],
-                        pixels[(captureHeight - 1) * captureWidth],
-                        pixels[pixels.lastIndex]
-                    )
-                    fun medianChannel(channel: (Int) -> Int): Int {
-                        val values = corners.map(channel).sorted()
-                        return (values[1] + values[2]) / 2
-                    }
-                    val backgroundRed = medianChannel(Color::red)
-                    val backgroundGreen = medianChannel(Color::green)
-                    val backgroundBlue = medianChannel(Color::blue)
-                    val visiblePixels = pixels.count { pixel ->
-                        val redDelta = abs(Color.red(pixel) - backgroundRed)
-                        val greenDelta = abs(Color.green(pixel) - backgroundGreen)
-                        val blueDelta = abs(Color.blue(pixel) - backgroundBlue)
-                        redDelta + greenDelta + blueDelta >= 48 &&
-                            maxOf(redDelta, greenDelta, blueDelta) >= 16
-                    }
-                    val passed = visiblePixels >= MIN_VISIBLE_PIXELS
-                    val generatedDiagnostic = glbFile.name.startsWith("diagnostic-seed-1337-")
-                    val outputName = when {
-                        !passed -> "failed_render.png"
-                        generatedDiagnostic -> "generated_avatar_diagnostic.png"
-                        else -> "imported_glb_diagnostic.png"
-                    }
-                    val outputFile = context.getExternalFilesDir(null)?.let { File(it, outputName) }
-                    val saved = outputFile != null && runCatching {
-                        FileOutputStream(outputFile).use { stream ->
-                            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
-                                "Bitmap PNG compression failed"
+                    /* Offload pixel scan, PNG compression, MediaStore Downloads export and
+                       SharedPreferences commits off the Android UI main thread so rapid activity
+                       transitions never trigger keyDispatchingTimedOut ANRs. Keep pixelCopyPending
+                       held until verification finishes so software renderers do not starve it. */
+                    Thread({
+                        try {
+                            val pixels = IntArray(captureWidth * captureHeight)
+                            bitmap.getPixels(pixels, 0, captureWidth, 0, 0, captureWidth, captureHeight)
+                            /* Estimate the actual clear colour from the four corners. A dark
+                               blue-grey background must not count as avatar geometry. */
+                            val corners = intArrayOf(
+                                pixels[0],
+                                pixels[captureWidth - 1],
+                                pixels[(captureHeight - 1) * captureWidth],
+                                pixels[pixels.lastIndex]
+                            )
+                            fun medianChannel(channel: (Int) -> Int): Int {
+                                val values = corners.map(channel).sorted()
+                                return (values[1] + values[2]) / 2
                             }
+                            val backgroundRed = medianChannel(Color::red)
+                            val backgroundGreen = medianChannel(Color::green)
+                            val backgroundBlue = medianChannel(Color::blue)
+                            val visiblePixels = pixels.count { pixel ->
+                                val redDelta = abs(Color.red(pixel) - backgroundRed)
+                                val greenDelta = abs(Color.green(pixel) - backgroundGreen)
+                                val blueDelta = abs(Color.blue(pixel) - backgroundBlue)
+                                redDelta + greenDelta + blueDelta >= 48 &&
+                                    maxOf(redDelta, greenDelta, blueDelta) >= 16
+                            }
+                            val passed = visiblePixels >= MIN_VISIBLE_PIXELS
+                            val generatedDiagnostic = glbFile.name.startsWith("diagnostic-seed-1337-")
+                            val outputName = when {
+                                !passed -> "failed_render.png"
+                                generatedDiagnostic -> "generated_avatar_diagnostic.png"
+                                else -> "imported_glb_diagnostic.png"
+                            }
+                            val outputFile = context.getExternalFilesDir(null)?.let { File(it, outputName) }
+                            val saved = outputFile != null && runCatching {
+                                FileOutputStream(outputFile).use { stream ->
+                                    check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)) {
+                                        "Bitmap PNG compression failed"
+                                    }
+                                }
+                            }.isSuccess
+                            recycleBitmap()
+                            pixelCopyComplete.set(true)
+                            val screenshot = if (saved) outputFile!!.absolutePath else "UNAVAILABLE"
+                            val downloadsScreenshotUri = if (saved) runCatching {
+                                DiagnosticDownloads.save(context, outputName, "image/png") { output ->
+                                    outputFile!!.inputStream().buffered().use { it.copyTo(output) }
+                                }
+                            }.onFailure { failure ->
+                                Log.e(TAG, "Could not save renderer screenshot to Downloads", failure)
+                            }.getOrNull() else null
+                            context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE).edit()
+                                .putString("downloads_screenshot_uri", downloadsScreenshotUri?.toString())
+                                .commit()
+                            val downloadsLabel = downloadsScreenshotUri?.let { "; saved to ${DiagnosticDownloads.locationLabel()}/$outputName" }
+                                ?: "; Downloads screenshot export failed (see renderer_diagnostics.json)"
+                            val message = if (passed) {
+                                "REAL + VERIFIED: PixelCopy saw $visiblePixels geometry pixels (background RGB=$backgroundRed,$backgroundGreen,$backgroundBlue) after $presentedFrames successful EGL swaps; screenshot=$screenshot$downloadsLabel"
+                            } else {
+                                "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot$downloadsLabel"
+                            }
+                            recordSmokeResult(if (passed) "PIXELS_VERIFIED" else "FAILED",
+                                apiVersion, frames, drawCalls, triangles, presentedFrames, boundsInFrustum,
+                                outsideCorners, glError, eglError, visiblePixels, screenshot,
+                                if (passed) "" else message)
+                            onStatus(message)
+                        } catch (failure: Throwable) {
+                            recycleBitmap()
+                            pixelCopyComplete.set(true)
+                            val message = "FAILED: PixelCopy verification worker threw ${failure.message ?: failure.javaClass.simpleName}"
+                            recordSmokeResult("FAILED", apiVersion, frames, drawCalls, triangles,
+                                presentedFrames, boundsInFrustum, outsideCorners, glError, eglError, error = message)
+                            onStatus(message)
+                        } finally {
+                            pixelCopyPending.set(false)
                         }
-                    }.isSuccess
-                    recycleBitmap()
-                    pixelCopyComplete.set(true)
-                    val screenshot = if (saved) outputFile!!.absolutePath else "UNAVAILABLE"
-                    val downloadsScreenshotUri = if (saved) runCatching {
-                        DiagnosticDownloads.save(context, outputName, "image/png") { output ->
-                            outputFile!!.inputStream().buffered().use { it.copyTo(output) }
-                        }
-                    }.onFailure { failure ->
-                        Log.e(TAG, "Could not save renderer screenshot to Downloads", failure)
-                    }.getOrNull() else null
-                    context.getSharedPreferences(SMOKE_PREFS, Context.MODE_PRIVATE).edit()
-                        .putString("downloads_screenshot_uri", downloadsScreenshotUri?.toString())
-                        .commit()
-                    val downloadsLabel = downloadsScreenshotUri?.let { "; saved to ${DiagnosticDownloads.locationLabel()}/$outputName" }
-                        ?: "; Downloads screenshot export failed (see renderer_diagnostics.json)"
-                    val message = if (passed) {
-                        "REAL + VERIFIED: PixelCopy saw $visiblePixels geometry pixels (background RGB=$backgroundRed,$backgroundGreen,$backgroundBlue) after $presentedFrames successful EGL swaps; screenshot=$screenshot$downloadsLabel"
-                    } else {
-                        "FAILED: PixelCopy saw only $visiblePixels geometry pixels after background subtraction (required >=$MIN_VISIBLE_PIXELS); screenshot=$screenshot$downloadsLabel"
+                    }, "AvatarForge-PixelVerify").apply {
+                        isDaemon = true
+                        start()
                     }
-                    recordSmokeResult(if (passed) "PIXELS_VERIFIED" else "FAILED",
-                        apiVersion, frames, drawCalls, triangles, presentedFrames, boundsInFrustum,
-                        outsideCorners, glError, eglError, visiblePixels, screenshot,
-                        if (passed) "" else message)
-                    onStatus(message)
                 }, mainHandler)
             } catch (failure: Throwable) {
                 mainHandler.removeCallbacks(timeout)
