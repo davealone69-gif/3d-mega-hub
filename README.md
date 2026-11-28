@@ -674,3 +674,45 @@ APK package/application ID, APK signing certificate identity and APK-file SHA-25
 **NOT READY.** The required production generated-GLB-to-GLES SurfaceView test now has an exact-SHA execution, but it **fails** with only two presented frames and no drawable model frame within 15 seconds. All ordinary Android build jobs passed, and a fresh signed preview artifact exists for the same SHA, but neither can override the failed production render gate. Do not distribute this APK as the first READY test APK.
 
 This update is documentation-only. No application source was changed, no branch was created, no force-push occurred, PR #9 remains unmerged, and `main` remains untouched. This README commit changes the branch head; all evidence above applies only to `9baf7c670052748887bbadcd7aebf970380687f0`. Fetch the new PR and branch SHA and require fresh exact-head Actions and artifact evidence on the next check.
+
+
+## Exact-head Android test APK monitor update — 2026-11-28 (inspected SHA `8685b7983abda6ee07f65e59a9084e304c6377b2`)
+
+**Decision: NOT READY.** Fresh PR #9 metadata and the branch ref both point to `integration/avatarforge-renderer-port` at `8685b7983abda6ee07f65e59a9084e304c6377b2`. PR #9 is open, targets `main`, and is not merged.
+
+### All Actions runs associated with this exact SHA
+
+The complete repository Actions query filtered by `head_sha=8685b7983abda6ee07f65e59a9084e304c6377b2` returned exactly two runs:
+
+- [Android CI #45949788774](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774): **FAILURE**.
+  - Native C++ sampling regression, job [140342736502](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774/job/140342736502): **PASS**.
+  - Release R8/minification, job [140342736681](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774/job/140342736681): **PASS**.
+  - Unit tests, job [140342736718](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774/job/140342736718): **PASS**.
+  - Debug APK build, job [140342736774](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774/job/140342736774): **PASS**.
+  - Android lint, job [140342736793](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774/job/140342736793): **PASS**.
+  - AvatarForge GLES GLB render smoke, job [140342736812](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774/job/140342736812): **FAIL**. The executed test was `AvatarForgeRendererSmokeTest#generatedAvatarDebugDiagnosticVerifiesImportedGlesPixels`, an imported-GLB diagnostic. Its log records the test failure, then `Instrumentation run failed due to Process crashed` and `:app:connectedDebugAndroidTest FAILED`. This is not the required generated-GLB production SurfaceView test.
+
+- [Release preview and Android emulator smoke #45949788781](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788781): **SUCCESS**.
+  - Signed release preview, job [140342736463](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788781/job/140342736463): **PASS**, using a one-run ephemeral CI signing key.
+  - Emulator install/launch smoke, job [140342736667](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788781/job/140342736667): **PASS**. This does not prove production generated-GLB rendering.
+
+### Required production generated-GLB-to-GLES SurfaceView test
+
+**MISSING on this exact SHA.** The test source exists at `app/src/androidTest/java/com/davemega/hub/avatarforge/GeneratedAvatarRuntimeTest.kt` as `GeneratedAvatarRuntimeTest#generatedAvatarExportedGlbMustRenderThroughProductionSurfaceView`. It generates a GLB, attaches the production `AvatarForgeSurfaceView`, and asserts visible pixels, draw calls, multiple presented frames and a saved screenshot.
+
+The current Actions run listing contains no run of `.github/workflows/avatarforge-generated-runtime.yml` for this SHA. That workflow file exists on this branch, but the same path is absent from `main`; no exact-SHA production runtime job or passing test log exists. The Android CI renderer job above invokes the separate imported-GLB smoke and failed.
+
+### Exact-SHA artifacts and inspection boundary
+
+- Fresh debug APK artifact [15176710437](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774/artifacts/15176710437), uploaded by the successful debug APK job; artifact size 32,206,249 bytes.
+- Signed preview artifact [15176209330](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788781/artifacts/15176209330), produced by the successful ephemeral-key preview job; artifact size 48,298,006 bytes.
+- Imported-GLB renderer diagnostics artifact [15175899896](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788774/artifacts/15175899896).
+- Emulator smoke diagnostics artifact [15176800486](https://github.com/davealone69-gif/3d-mega-hub/actions/runs/45949788781/artifacts/15176800486).
+
+All four artifacts are associated with source SHA `8685b7983abda6ee07f65e59a9084e304c6377b2`. The APK binaries have **not** been downloaded and inspected. Package/application ID, APK signing certificate identity/signature and APK-file SHA-256 remain **UNVERIFIED**. Artifact ZIP size or digest is not an APK-file hash.
+
+### Readiness decision
+
+**NOT READY.** The required production generated-GLB-to-GLES SurfaceView test has no exact-SHA run, the only renderer instrumentation job ran a different imported-GLB test and failed, and APK-level package/signature/hash inspection is outstanding. The successful build and preview jobs do not override those missing gates. Do not distribute either APK as the first READY test APK.
+
+This monitor update is documentation-only. No application source was changed, no branch was created, no force-push occurred, PR #9 remains unmerged, and `main` remains untouched. This README commit changes the branch head; all evidence above applies only to `8685b7983abda6ee07f65e59a9084e304c6377b2`. The next check must re-fetch PR metadata and the branch ref, then require fresh exact-head workflow and APK evidence.
