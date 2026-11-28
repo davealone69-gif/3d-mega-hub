@@ -17,7 +17,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
@@ -44,10 +43,19 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
+private const val READY_TO_GENERATE =
+    "Ready to generate on this device; the current model stays unchanged until generation succeeds."
+
 @Composable
-fun AvatarStudioScreen(
+internal fun AvatarStudioScreen(
     avatarUri: Uri?,
     avatarName: String,
+    generationPrompt: String,
+    selectedPresetId: String?,
+    characterDraft: CharacterDraft,
+    onPresetSelected: (String) -> Unit,
+    onCharacterDraftChange: (CharacterDraft) -> Unit,
+    onGenerationPromptChange: (String) -> Unit,
     onImport: () -> Unit,
     onImportUrl: (String) -> Unit = {},
     onRemove: () -> Unit,
@@ -62,33 +70,67 @@ fun AvatarStudioScreen(
     var pixelDiagnosticPath by remember { mutableStateOf<String?>(null) }
     var diagnosticScreenshot by remember { mutableStateOf<File?>(null) }
     var remoteGlbUrl by remember { mutableStateOf("") }
-    var generationPrompt by remember {
-        mutableStateOf("Adult woman, athletic build, 175 cm tall, medium dark hair, black t-shirt and jeans")
-    }
-    var generationStatus by remember { mutableStateOf("On-device generation has not been run in this session.") }
+    var generationStatus by remember { mutableStateOf(READY_TO_GENERATE) }
     var rendererStatus by remember { mutableStateOf("Waiting for AvatarForge GLES or Filament preview surface.") }
     // Imported GLBs open in the animation-capable gltfio preview by default.
     // The native AvatarForge GLES renderer currently does not skin imported GLBs.
     var useFilamentAnimationPreview by remember(avatarUri) {
-        mutableStateOf(avatarUri != null && avatarUri.scheme == "file")
+        // The debug diagnostic must exercise the GLES renderer rather than the default
+        // animation-capable route; ordinary generated/imported files still open in Filament.
+        mutableStateOf(avatarUri != null && avatarUri.scheme == "file" && avatarUri.path != pixelDiagnosticPath)
     }
-    var filamentPreviewView by remember { mutableStateOf<FilamentPreviewView?>(null) }
-    var animationCount by remember { mutableStateOf(0) }
-    var selectedAnimation by remember { mutableStateOf(0) }
-    var animationPlaying by remember { mutableStateOf(false) }
-    var animationLoop by remember { mutableStateOf(true) }
-    var animationSpeed by remember { mutableStateOf(1.0f) }
-    var animationDuration by remember { mutableStateOf(0.0f) }
-    var animationPosition by remember { mutableStateOf(0.0f) }
     val hasImportedFile = avatarUri?.takeIf { it.scheme == "file" }?.path?.let(::File)?.isFile == true
+    // The built-in sample also uses Filament, even though it currently has no animation clips.
+    val usingFilamentPreview = !hasImportedFile || useFilamentAnimationPreview
+    var filamentPreviewView by remember(avatarUri, usingFilamentPreview) { mutableStateOf<FilamentPreviewView?>(null) }
+    var animationPlayback by remember(avatarUri, usingFilamentPreview) { mutableStateOf(AnimationPlaybackState()) }
     var generationJob by remember { mutableStateOf<Job?>(null) }
+    // Keep the viewport visible on a normal studio launch, while the home-screen Scout action
+    // opens the library directly. Collapsing after a successful build reveals the new model.
+    var showCharacterLibrary by remember { mutableStateOf(selectedPresetId != null) }
     val generating = generationJob?.isActive == true
+    val selectedPreset = CharacterPresets.find(selectedPresetId)
+        ?.takeIf { it.id == characterDraft.presetId && characterDraft.prompt() == generationPrompt.trim() }
+    val canGenerate = engineHealth.usable && !generating && !isImporting && generationPrompt.isNotBlank()
+
+    fun generateDraft() {
+        if (!canGenerate || generationJob?.isActive == true) return
+        // Snapshot the draft before dispatching native work. An edited prompt must not silently
+        // inherit the original preset's parameters, even if a stale ID survives a state restore.
+        val promptAtStart = generationPrompt.trim()
+        val presetAtStart = selectedPreset
+        val specAtStart = CharacterPresets.specForDraft(selectedPresetId, promptAtStart, characterDraft)
+        generationJob = scope.launch {
+            generationStatus = "Generating on this device. Resource and thermal checks run before work begins."
+            try {
+                pixelDiagnosticPath = null
+                diagnosticScreenshot = null
+                val result = AvatarForgeEngine.generate(
+                    context = context,
+                    spec = specAtStart,
+                    prompt = promptAtStart,
+                )
+                val displayName = presetAtStart?.let { "${it.name} · ${result.file.name}" } ?: result.file.name
+                onGenerated(Uri.fromFile(result.file), displayName)
+                showCharacterLibrary = false
+                val warning = result.promptMatchWarning?.let { " · WARNING: $it" }.orEmpty()
+                generationStatus = "Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB · deformed mesh validated=${result.deformedMeshValidated}$warning"
+            } catch (cancelled: CancellationException) {
+                generationStatus = "Generation cancelled; the current model was not changed."
+            } catch (failure: Exception) {
+                generationStatus = "Generation failed: ${failure.message ?: failure.javaClass.simpleName}"
+            } finally {
+                generationJob = null
+            }
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Avatar studio", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         if (isDebuggable) {
             OutlinedButton(
                 onClick = {
+                    showCharacterLibrary = false
                     val diagnosticPrefs = context.getSharedPreferences("avatarforge_renderer_smoke", Context.MODE_PRIVATE)
                     diagnosticPrefs.edit().clear().putString("status", "GENERATING").commit()
                     generationJob = scope.launch {
@@ -133,10 +175,38 @@ fun AvatarStudioScreen(
                 enabled = engineHealth.usable && !generating && !isImporting,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(if (generating) "Diagnostic running…" else "Run generated-avatar GLES diagnostic")
+                Text(if (generating) "Generation running…" else "Run generated-avatar GLES diagnostic")
             }
         }
-        Text("Imported GLBs open in the Filament gltfio preview so embedded skeletal animation can play. Switch to AvatarForge GLES preview for the native static-render path.")
+        OutlinedButton(
+            onClick = { showCharacterLibrary = !showCharacterLibrary },
+            enabled = !generating,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (showCharacterLibrary) "Hide character presets" else "Browse character presets")
+        }
+        if (showCharacterLibrary) {
+            CharacterPresetSection(
+                selected = selectedPreset,
+                draft = characterDraft,
+                canSelect = !generating && !isImporting,
+                canGenerate = canGenerate && selectedPreset != null,
+                generating = generating,
+                generationStatus = if (engineHealth.usable) generationStatus else
+                    "AvatarForge unavailable: ${engineHealth.problem ?: "native engine health check failed"}",
+                onSelect = {
+                    generationStatus = READY_TO_GENERATE
+                    onPresetSelected(it)
+                },
+                onDraftChange = {
+                    generationStatus = READY_TO_GENERATE
+                    onCharacterDraftChange(it)
+                },
+                onGenerate = ::generateDraft,
+                onCancel = { generationJob?.cancel() },
+            )
+        }
+        Text("Generated and imported GLBs open in the Filament preview for animation. The AvatarForge GLES preview is currently static.")
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -162,15 +232,7 @@ fun AvatarStudioScreen(
                             factory = { viewContext ->
                                 FilamentPreviewView(viewContext).apply {
                                     setStatusListener { rendererStatus = it }
-                                    setAnimationInfoListener { count, index, playing, loop, speed, duration, position ->
-                                        animationCount = count
-                                        selectedAnimation = index
-                                        animationPlaying = playing
-                                        animationLoop = loop
-                                        animationSpeed = speed
-                                        animationDuration = duration
-                                        animationPosition = position
-                                    }
+                                    setAnimationInfoListener { animationPlayback = it }
                                     setModel(avatarUri)
                                     filamentPreviewView = this
                                 }
@@ -184,72 +246,30 @@ fun AvatarStudioScreen(
                     }
                 }
                 Text(
-                    "Drag to orbit · Pinch to zoom · Double-tap to reset camera",
+                    if (usingFilamentPreview) "Animation uses the clips embedded in this GLB."
+                    else "Drag to orbit · Pinch to zoom · Double-tap to reset camera",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
                 if (hasImportedFile) {
                     OutlinedButton(
-                        onClick = {
-                            useFilamentAnimationPreview = !useFilamentAnimationPreview
-                            if (!useFilamentAnimationPreview) {
-                                filamentPreviewView = null
-                                animationCount = 0
-                                animationPosition = 0f
-                            }
-                        },
+                        onClick = { useFilamentAnimationPreview = !useFilamentAnimationPreview },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(if (useFilamentAnimationPreview) "Use AvatarForge GLES preview" else "Open animation-capable Filament preview")
                     }
                 }
-                if (useFilamentAnimationPreview) {
-                    if (animationCount > 0) {
-                        Text("GLB animations · ${selectedAnimation + 1} of $animationCount · ${"%.2f".format(animationDuration)} s")
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = { filamentPreviewView?.selectAnimation((selectedAnimation - 1).coerceAtLeast(0)) },
-                                enabled = selectedAnimation > 0
-                            ) { Text("Previous") }
-                            Button(onClick = { filamentPreviewView?.setAnimationPlaying(!animationPlaying) }) {
-                                Text(if (animationPlaying) "Pause" else "Play")
-                            }
-                            OutlinedButton(onClick = { filamentPreviewView?.stopAnimation() }) {
-                                Text("Stop / reset")
-                            }
-                            OutlinedButton(
-                                onClick = { filamentPreviewView?.selectAnimation((selectedAnimation + 1).coerceAtMost(animationCount - 1)) },
-                                enabled = selectedAnimation < animationCount - 1
-                            ) { Text("Next") }
-                        }
-                        if (animationDuration > 0f) {
-                            Slider(
-                                value = animationPosition.coerceIn(0f, animationDuration),
-                                onValueChange = { value ->
-                                    animationPosition = value
-                                    filamentPreviewView?.seekAnimation(value)
-                                },
-                                valueRange = 0f..animationDuration
-                            )
-                            Text("${"%.2f".format(animationPosition)} / ${"%.2f".format(animationDuration)} seconds")
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = {
-                                animationLoop = !animationLoop
-                                filamentPreviewView?.setAnimationLoop(animationLoop)
-                            }) { Text(if (animationLoop) "Loop: on" else "Loop: off") }
-                            listOf(0.5f, 1.0f, 1.5f, 2.0f).forEach { speed ->
-                                OutlinedButton(onClick = {
-                                    animationSpeed = speed
-                                    filamentPreviewView?.setAnimationSpeed(speed)
-                                }) { Text("${speed}x") }
-                            }
-                        }
-                    } else {
-                        Text("Waiting for GLB animation tracks. If this reports zero animations, the file has no playable clip for Filament.")
-                    }
-                }
+                CharacterAnimationControls(
+                    usingFilament = usingFilamentPreview,
+                    playback = animationPlayback,
+                    onSelectClip = { filamentPreviewView?.selectAnimation(it) },
+                    onPlayingChange = { filamentPreviewView?.setAnimationPlaying(it) },
+                    onStop = { filamentPreviewView?.stopAnimation() },
+                    onLoopChange = { filamentPreviewView?.setAnimationLoop(it) },
+                    onSpeedChange = { filamentPreviewView?.setAnimationSpeed(it) },
+                    onSeek = { filamentPreviewView?.seekAnimation(it) },
+                )
+                Text(rendererStatus, style = MaterialTheme.typography.bodySmall)
                 Text(
                     "Renderer diagnostics are saved automatically to Downloads/3D Mega Hub Diagnostics when a renderer check runs.",
                     style = MaterialTheme.typography.bodySmall,
@@ -328,36 +348,19 @@ fun AvatarStudioScreen(
                 }
                 OutlinedTextField(
                     value = generationPrompt,
-                    onValueChange = { generationPrompt = it.take(500) },
+                    onValueChange = {
+                        generationStatus = READY_TO_GENERATE
+                        onGenerationPromptChange(it.take(500))
+                    },
+                    enabled = !generating && !isImporting,
                     label = { Text("Describe your avatar") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 3
                 )
                 Text("Generation uses AvatarForge's deterministic prompt/measurement parser. It is not photo-to-identity reconstruction or an embedded LLM.", style = MaterialTheme.typography.bodySmall)
                 Button(
-                    onClick = {
-                        generationJob = scope.launch {
-                            generationStatus = "Running native generation on this device. Resource and thermal gates are checked before work begins."
-                            try {
-                                pixelDiagnosticPath = null
-                                val result = AvatarForgeEngine.generate(
-                                    context = context,
-                                    spec = AvatarSpec(prompt = generationPrompt.trim()),
-                                    prompt = generationPrompt.trim()
-                                )
-                                onGenerated(Uri.fromFile(result.file), result.file.name)
-                                val warning = result.promptMatchWarning?.let { " · WARNING: $it" }.orEmpty()
-                                generationStatus = "Generated ${result.triangleCount} triangles · ${result.vertexCount} vertices · ${result.jointCount} joints · ${result.blendshapeCount} blendshapes · ${result.glbBytes / 1024L} KiB GLB · deformed mesh validated=${result.deformedMeshValidated}$warning"
-                            } catch (cancelled: CancellationException) {
-                                generationStatus = "Generation cancelled."
-                            } catch (failure: Exception) {
-                                generationStatus = "Generation failed: ${failure.message ?: failure.javaClass.simpleName}"
-                            } finally {
-                                generationJob = null
-                            }
-                        }
-                    },
-                    enabled = engineHealth.usable && !generating && !isImporting && generationPrompt.isNotBlank(),
+                    onClick = ::generateDraft,
+                    enabled = canGenerate,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(if (generating) "Generating…" else "Generate avatar")

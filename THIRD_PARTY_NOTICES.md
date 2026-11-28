@@ -1,5 +1,10 @@
 # Third-party notices and asset provenance
 
+## Character concept artwork
+
+- Files: `app/src/main/res/drawable-nodpi/scout_concept.jpg` and `sentinel_concept.jpg`.
+- AI-generated for this project using the owner's supplied images as visual references. These are illustrative concept art, not 3D model renders. The supplied reference screenshots are not included in the app.
+
 ## Filament Android
 
 - Dependencies:

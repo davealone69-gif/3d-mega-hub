@@ -79,6 +79,10 @@ class AvatarForgeRendererSmokeTest {
         val diagnosticButton = device.findObject(button)
         assertNotNull("Generated-avatar diagnostic button disappeared", diagnosticButton)
         diagnosticButton!!.click()
+        // Keep the viewport at least partly visible while native generation runs, so the
+        // newly selected GLES SurfaceView can receive a surface when the GLB is ready.
+        device.swipe(device.displayWidth / 2, (device.displayHeight * 0.80f).toInt(),
+            device.displayWidth / 2, (device.displayHeight * 0.35f).toInt(), 18)
 
         // This exercises the complete native generation -> validated GLB export -> GLES import
         // path. On software-rendered CI emulators native generation can take substantially longer
@@ -248,27 +252,62 @@ class AvatarForgeRendererSmokeTest {
             return null
         }
 
-        // The viewport is below the import and generation controls in a vertically scrolling
-        // Compose screen. Bring it on-screen so SurfaceView receives surfaceCreated; merely
-        // launching the Avatar tab does not guarantee that an off-screen SurfaceView has a surface.
-        val scrollDeadline = SystemClock.elapsedRealtime() + 30_000L
-        var viewport = findAvatarForgeSurface(activity.window.decorView)
-        while ((viewport == null || !viewport.isShown || !viewport.isAttachedToWindow) &&
-            SystemClock.elapsedRealtime() < scrollDeadline) {
+        // Imported files normally open in the animation-capable Filament viewer. Explicitly
+        // switch to the native route before verifying the GLES SurfaceView and its pixels.
+        val switchDeadline = SystemClock.elapsedRealtime() + 30_000L
+        val switchSelector = By.text("Use AvatarForge GLES preview")
+        var switchButton = device.findObject(switchSelector)
+        while (switchButton == null && SystemClock.elapsedRealtime() < switchDeadline) {
             val width = device.displayWidth
             val height = device.displayHeight
-            device.swipe(width / 2, (height * 0.82f).toInt(), width / 2, (height * 0.22f).toInt(), 18)
+            device.swipe(width / 2, (height * 0.80f).toInt(), width / 2, (height * 0.40f).toInt(), 18)
+            SystemClock.sleep(400L)
+            switchButton = device.findObject(switchSelector)
+        }
+        assertNotNull("The AvatarForge GLES preview switch was not found", switchButton)
+        switchButton!!.click()
+
+        // The renderer switch sits below the viewport. Scroll back toward the top, then wait
+        // for attachment *and* layout/surface creation; isShown can be true before width is set.
+        fun viewportReady(view: View?): Boolean {
+            val visible = Rect()
+            return view is SurfaceView && view.isAttachedToWindow && view.isShown &&
+                view.width > 100 && view.height > 100 && view.getGlobalVisibleRect(visible) &&
+                visible.width() >= view.width * 0.8f && visible.height() >= view.height * 0.8f &&
+                view.holder.surface.isValid
+        }
+        val scrollDeadline = SystemClock.elapsedRealtime() + 30_000L
+        var viewport = findAvatarForgeSurface(activity.window.decorView)
+        while (!viewportReady(viewport) && SystemClock.elapsedRealtime() < scrollDeadline) {
+            val visible = Rect()
+            val position = IntArray(2)
+            viewport?.getLocationOnScreen(position)
+            val hasVisibleRect = viewport?.getGlobalVisibleRect(visible) == true
+            val sufficientlyVisible = viewport != null && hasVisibleRect &&
+                viewport.width > 100 && viewport.height > 100 &&
+                visible.width() >= viewport.width * 0.8f && visible.height() >= viewport.height * 0.8f
+            if (!sufficientlyVisible) {
+                val scrollTowardTop = when {
+                    viewport == null -> true
+                    !hasVisibleRect -> position[1] < device.displayHeight / 2
+                    else -> (visible.top - position[1]) > (position[1] + viewport.height - visible.bottom)
+                }
+                val width = device.displayWidth
+                val height = device.displayHeight
+                val start = if (scrollTowardTop) 0.42f else 0.62f
+                val end = if (scrollTowardTop) 0.62f else 0.42f
+                device.swipe(width / 2, (height * start).toInt(), width / 2, (height * end).toInt(), 18)
+            }
             SystemClock.sleep(400L)
             viewport = findAvatarForgeSurface(activity.window.decorView)
         }
-        assertNotNull(
-            "Imported GLB did not create an AvatarForgeSurfaceView after scrolling the Avatar Studio viewport into view.",
-            viewport
-        )
+        assertNotNull("Imported GLB did not create an AvatarForgeSurfaceView.", viewport)
         val avatarForgeView = requireNotNull(viewport) { "Imported AvatarForge viewport was not created." }
-        assertTrue("AvatarForge SurfaceView is not attached to the Activity window",
-            avatarForgeView.isAttachedToWindow && avatarForgeView.isShown &&
-                avatarForgeView.width > 100 && avatarForgeView.height > 100)
+        assertTrue(
+            "AvatarForge SurfaceView did not become visible and ready: attached=${avatarForgeView.isAttachedToWindow}, " +
+                "shown=${avatarForgeView.isShown}, size=${avatarForgeView.width}x${avatarForgeView.height}",
+            viewportReady(avatarForgeView)
+        )
 
         val deadline = SystemClock.elapsedRealtime() + 90_000L
         while (SystemClock.elapsedRealtime() < deadline) {

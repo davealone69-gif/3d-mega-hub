@@ -18,6 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -33,10 +34,6 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.concurrent.thread
 
-private enum class HubPage(val label: String) {
-    HOME("Home"), AVATAR("Avatar"), AI("AI"), VOICE("Voice"), SETTINGS("Settings")
-}
-
 private data class ChatLine(val fromUser: Boolean, val text: String)
 
 class MainActivity : ComponentActivity() {
@@ -49,7 +46,7 @@ class MainActivity : ComponentActivity() {
                 initialImportUrl != null || initialImportUri != null
         )
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            MegaHubTheme {
                 Surface(Modifier.fillMaxSize()) {
                     MegaHubApp(
                         startPage = startPage,
@@ -105,8 +102,15 @@ private fun MegaHubApp(
 ) {
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("mega_hub", Context.MODE_PRIVATE) }
-    var page by remember {
+    var page by rememberSaveable {
         mutableStateOf(if (startPage == HubStartPage.AVATAR) HubPage.AVATAR else HubPage.HOME)
+    }
+    // Keep the draft and selection while navigating between tools; selecting a preset never
+    // replaces the current model until a generation has actually succeeded.
+    var generationPrompt by rememberSaveable { mutableStateOf(CharacterPresets.DEFAULT_PROMPT) }
+    var selectedPresetId by rememberSaveable { mutableStateOf<String?>(null) }
+    var characterDraft by rememberSaveable(stateSaver = CharacterDraftSaver) {
+        mutableStateOf(CharacterPresets.SCOUT.initialDraft())
     }
     var endpoint by remember { mutableStateOf(prefs.getString("ollama_url", "http://localhost:11434") ?: "http://localhost:11434") }
     var model by remember { mutableStateOf(prefs.getString("ollama_model", "llama3.2:1b") ?: "llama3.2:1b") }
@@ -122,6 +126,14 @@ private fun MegaHubApp(
     var voiceStatus by remember { mutableStateOf("Android text-to-speech is available on this device.") }
     var tts by remember { mutableStateOf<TextToSpeech?>(null) }
     var ttsReady by remember { mutableStateOf(false) }
+
+    fun selectPreset(id: String) {
+        val preset = CharacterPresets.find(id) ?: return
+        val draft = preset.initialDraft()
+        selectedPresetId = preset.id
+        characterDraft = draft
+        generationPrompt = draft.prompt()
+    }
 
     DisposableEffect(context) {
         val engine = TextToSpeech(context) { result ->
@@ -369,39 +381,49 @@ private fun MegaHubApp(
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(title = { Text("3D Mega Hub", fontWeight = FontWeight.Bold) })
-        },
-        bottomBar = {
-            NavigationBar {
-                HubPage.entries.forEach { item ->
-                    NavigationBarItem(
-                        selected = page == item,
-                        onClick = { page = item },
-                        icon = { Text(when (item) { HubPage.HOME -> "⌂"; HubPage.AVATAR -> "◇"; HubPage.AI -> "✦"; HubPage.VOICE -> "♫"; HubPage.SETTINGS -> "⚙" }) },
-                        label = { Text(item.label) }
-                    )
-                }
-            }
-        }
+        topBar = { HubAppBar() },
+        bottomBar = { HubBottomBar(page = page, onPageSelected = { page = it }) },
+        containerColor = HubColors.Background,
     ) { padding ->
+        // Do not carry the scroll position from the previous section into a newly opened page.
+        val pageScrollState = key(page) { rememberScrollState() }
         Column(
-            Modifier.fillMaxSize().padding(padding).imePadding().verticalScroll(rememberScrollState()).padding(16.dp),
+            Modifier.fillMaxSize().padding(padding).imePadding().verticalScroll(pageScrollState).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             when (page) {
                 HubPage.HOME -> {
-                    Text("Your creative workspace", style = MaterialTheme.typography.headlineSmall)
-                    Text("A single hub for 3D assets, local AI and voice. Each integration reports its real connection state.")
-                    HubCard("3D / Avatar", avatarName, "Import a GLB or generate an avatar on-device.") { page = HubPage.AVATAR }
-                    HubCard("Local AI", connection, "Endpoint: $endpoint · Model: $model") { page = HubPage.AI }
-                    HubCard("Voice", voiceStatus, "Android speech output") { page = HubPage.VOICE }
-                    HubCard("Device", "${Build.MANUFACTURER} ${Build.MODEL}", "Android ${Build.VERSION.RELEASE} · API ${Build.VERSION.SDK_INT}") { page = HubPage.SETTINGS }
+                    HubHomeScreen(
+                        avatarName = avatarName,
+                        connection = connection,
+                        voiceStatus = voiceStatus,
+                        onCreateScout = {
+                            selectPreset(CharacterPresets.SCOUT.id)
+                            page = HubPage.AVATAR
+                        },
+                        onOpenAvatar = { page = HubPage.AVATAR },
+                        onOpenAi = { page = HubPage.AI },
+                        onOpenVoice = { page = HubPage.VOICE },
+                        onOpenSettings = { page = HubPage.SETTINGS },
+                    )
                 }
                 HubPage.AVATAR -> {
                     AvatarStudioScreen(
                         avatarUri = avatarUri,
                         avatarName = avatarName,
+                        generationPrompt = generationPrompt,
+                        selectedPresetId = selectedPresetId,
+                        characterDraft = characterDraft,
+                        onPresetSelected = { selectPreset(it) },
+                        onCharacterDraftChange = { draft ->
+                            characterDraft = draft
+                            selectedPresetId = draft.presetId
+                            generationPrompt = draft.prompt()
+                        },
+                        onGenerationPromptChange = {
+                            generationPrompt = it
+                            selectedPresetId = null
+                        },
                         onImport = {
                             // Use */* so Android DocumentProviders (Downloads, Dropbox, Drive) do not grey out .glb files;
                             // GlbValidator strictly verifies binary glTF 2.0 headers and chunks on import.

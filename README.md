@@ -2,6 +2,14 @@
 
 **Project status: integration and validation in progress. Not yet approved for merge to `main`.**
 
+## Character creator menu
+
+The Android studio now has a dark character-creator menu and two reference-inspired starting points, **Scout** and **Sentinel**. Open **Create Scout** on the home screen, or **Avatar → Browse character presets**, then adjust body, height, hair, skin tone, outfit and footwear before generating. Preset selection does not replace the current model; a validated GLB is selected only after generation succeeds. Editing the free-text prompt switches back to the existing prompt-based flow.
+
+Below the 3D viewport, the animation panel has **Idle, Walk, Run and Wave** buttons, a list of all embedded clips, play/pause, stop, timeline, loop and speed controls. Buttons only play clips actually present in the loaded GLB. The bundled sample is static, so generate a character or import an animated GLB and use the Filament preview to enable playback.
+
+The artwork is illustrative concept art, not a preview of the generated model. AvatarForge produces simplified procedural clothing and does not reconstruct the supplied likenesses, helmets, bows or other equipment. On-device generation, rendering and the new UI still require Android/device verification. See [the character creator notes](docs/CHARACTER_CREATOR.md).
+
 ## Avatar quality implementation handover — procedural hair
 
 **Work branch:** `integration/avatarforge-renderer-port`  

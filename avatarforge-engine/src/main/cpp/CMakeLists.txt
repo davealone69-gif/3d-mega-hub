@@ -81,6 +81,13 @@ if(BUILD_TESTING AND NOT ANDROID)
     target_link_libraries(af_native_sampling_test PRIVATE afcore Threads::Threads)
     add_test(NAME native_sampling_regression COMMAND af_native_sampling_test)
 
+    add_executable(af_character_preset_prompt_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/character_preset_prompt_test.cpp)
+    target_include_directories(af_character_preset_prompt_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(af_character_preset_prompt_test PRIVATE afcore)
+    add_test(NAME character_preset_prompt_regression COMMAND af_character_preset_prompt_test)
+
     add_executable(af_glb_extension_test
         ${CMAKE_CURRENT_SOURCE_DIR}/../../test/cpp/glb_extension_test.cpp)
     target_include_directories(af_glb_extension_test PRIVATE

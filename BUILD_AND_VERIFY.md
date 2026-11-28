@@ -2,11 +2,11 @@
 
 ## Active renderer routes
 
-- **Bundled sample preview:** remains on the separate Filament preview route.
-- **Imported and generated GLBs:** use `AvatarForgeSurfaceView` and the integrated native AvatarForge GLES renderer.
-- **Backend policy:** the imported/generated route explicitly selects GLES. Vulkan is not selected for the phone-first path.
-- **Initial skinned pose:** imported skinned GLBs apply `AF_CLIP_REST` before submesh bounds are read for camera target/distance. Static unskinned GLBs skip the pose call.
-- **Frame ordering:** CPU animation/deformation runs before scene bounds and frustum updates. Submesh AABBs are refreshed from the actual indexed, deformed vertices.
+- **Bundled sample preview:** uses Filament; the sample has no embedded animation clips.
+- **Imported and generated GLBs:** open in the Filament gltfio preview by default so embedded animations can play. The studio also offers **Use AvatarForge GLES preview** for the native static-import renderer.
+- **Backend policy:** the native AvatarForge route selects GLES. Filament attempts GLES first and may fall back to Vulkan.
+- **Native generation:** a generated avatar is posed and validated before export. The GLES foreign-GLB import path does not currently play the imported skeleton; use Filament for GLB animations.
+- **Diagnostics:** the generated-avatar GLES diagnostic explicitly selects the native route, independent of the normal Filament default.
 
 ## Generated-avatar validation
 
@@ -41,6 +41,8 @@ Local commands:
 ```bash
 ./gradlew clean :app:lintDebug :app:testDebugUnitTest :app:assembleDebug
 ./gradlew :app:connectedDebugAndroidTest
+# To run only the new animation controls smoke test on a connected device:
+./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.davemega.hub.CharacterAnimationSmokeTest
 ```
 
 A production release APK/AAB still requires the user's own release keystore and signing credentials. CI preview signing is not a production signing identity.
@@ -59,4 +61,4 @@ Until this phone test passes, Samsung visual rendering and lifecycle status rema
 
 ## Historical Filament notes
 
-Filament exposure, swap-chain sizing, and preview lifecycle work apply only to the bundled Filament preview route. They do not verify or repair the imported/generated AvatarForge GLES path. Do not use a Filament preview frame as evidence that the native GLES renderer works.
+Filament exposure, swap-chain sizing, and preview lifecycle work apply to the Filament preview route. They do not verify or repair the optional imported/generated AvatarForge GLES path. Do not use a Filament preview frame as evidence that the native GLES renderer works.
